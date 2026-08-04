@@ -149,4 +149,14 @@ static inline char *g_trim(char *s)
     return s;
 }
 
+/* Every program records what it was linked against, in a section the loader
+ * reads before it will run the binary. This is how a libc upgrade can break
+ * everything at once: the check is real, performed against the library
+ * actually installed on the machine, by code that was trying to run the
+ * program. */
+#ifndef NOM_NO_NEEDS
+__attribute__((section(".nomneed"), used))
+static const char _nomneed[] = "libc.so.6 2.38\n";
+#endif
+
 #endif /* GSYS_H */

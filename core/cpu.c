@@ -131,6 +131,43 @@ bool cpu_load_elf(Cpu *c, const uint8_t *elf, size_t len, char *err, size_t errs
     return true;
 }
 
+/* Read the .nomneed section. Real section-header parsing: the loader has to
+ * find it in the file the same way anything else would, so a truncated or
+ * mangled binary simply has no readable dependency list. */
+bool cpu_elf_needs(const uint8_t *elf, size_t len, char *out, size_t outsz)
+{
+    if (out && outsz) out[0] = '\0';
+    if (len < 64 || memcmp(elf, "\x7f" "ELF", 4) != 0) return false;
+
+    uint64_t shoff = rd64(elf + 40);
+    uint16_t shent = rd16(elf + 58);
+    uint16_t shnum = rd16(elf + 60);
+    uint16_t shstr = rd16(elf + 62);
+    if (shent < 64 || shoff >= len || shnum == 0) return false;
+    if ((uint64_t)shnum * shent > len - shoff) return false;
+    if (shstr >= shnum) return false;
+
+    const uint8_t *sh = elf + shoff;
+    const uint8_t *strsec = sh + (uint64_t)shstr * shent;
+    uint64_t stroff = rd64(strsec + 24), strsz = rd64(strsec + 32);
+    if (stroff >= len || strsz > len - stroff) return false;
+
+    for (uint16_t i = 0; i < shnum; i++) {
+        const uint8_t *s = sh + (uint64_t)i * shent;
+        uint32_t nameoff = rd32(s);
+        if (nameoff >= strsz) continue;
+        const char *nm = (const char *)(elf + stroff + nameoff);
+        if (strncmp(nm, ".nomneed", 9) != 0) continue;
+        uint64_t off = rd64(s + 24), sz = rd64(s + 32);
+        if (off >= len || sz > len - off) return false;
+        if (sz >= outsz) sz = outsz - 1;
+        memcpy(out, elf + off, sz);
+        out[sz] = '\0';
+        return true;
+    }
+    return false;
+}
+
 /* ----------------------------------------------------------- execution -- */
 
 /* Sign-extend the low `bits` of v. Done in unsigned arithmetic throughout. */

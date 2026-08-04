@@ -191,6 +191,9 @@ static bool proc_read(Machine *m, Proc *self, const char *path, Buf *out)
 
 static const char *PROC_FILES[] = { "status", "cmdline", "cwd", "ns", NULL };
 
+static bool link_check(Machine *m, Vfs *fs, const char *needs,
+                       char *err, size_t errsz);
+
 /* Read a NUL-terminated string out of guest memory, bounded. */
 static bool guest_str(Cpu *c, uint64_t addr, char *out, size_t outsz)
 {
@@ -663,6 +666,22 @@ int64_t kernel_spawn_as(Machine *m, const char *path, const char *arg,
         return spawn_fail(console, err, errsz, SPAWN_EPERM,
                           "%s: permission denied (mode %04o)", path, n->mode);
 
+    /* THE DYNAMIC LINKER. Before a single instruction runs, every library the
+     * binary was linked against has to be present, on a path ld.so.conf names,
+     * and at a compatible version. This is why a bad libc upgrade takes the
+     * whole machine down at once -- including the tools you would reach for to
+     * fix it, which is exactly why the rescue medium exists. */
+    {
+        char needs[512];
+        if (cpu_elf_needs((const uint8_t *)n->data.p, n->data.len,
+                          needs, sizeof needs)) {
+            char lderr[NOM_ERR_MAX];
+            if (!link_check(m, pfs, needs, lderr, sizeof lderr))
+                return spawn_fail(console, err, errsz, SPAWN_ENOEXEC,
+                                  "%s: %s", path, lderr);
+        }
+    }
+
     Cpu c;
     cpu_init(&c);
     char lerr[128] = "";
@@ -802,6 +821,102 @@ int64_t kernel_run(Machine *m, const char *line, Buf *console)
     char err[NOM_ERR_MAX] = "";
     return kernel_spawn_as(m, "/bin/sh", line, console, 0, NULL, ses,
                            err, sizeof err);
+}
+
+/* --------------------------------------------------------- the linker -- */
+
+/* The search path, read from /etc/ld.so.conf. A library that is installed but
+ * on a path nobody lists is a library that is not found -- which is a real
+ * fault and a genuinely annoying one. */
+static bool find_lib(Machine *m, Vfs *fs, const char *soname,
+                     char *out, size_t outsz)
+{
+    Buf conf = {0};
+    VNode *cn = vfs_resolve(fs, "/etc/ld.so.conf", NULL);
+    if (cn && cn->kind == VN_FILE) buf_put(&conf, cn->data.p, cn->data.len);
+    else buf_puts(&conf, "/lib\n/usr/lib\n");     /* the built-in default */
+
+    const char *p = conf.p, *end = conf.p + conf.len;
+    bool found = false;
+    while (p && p < end && !found) {
+        const char *nl = memchr(p, '\n', (size_t)(end - p));
+        size_t len = nl ? (size_t)(nl - p) : (size_t)(end - p);
+        char dir[NOM_PATH_MAX];
+        if (len && len < sizeof dir) {
+            memcpy(dir, p, len);
+            dir[len] = '\0';
+            char cand[NOM_PATH_MAX];
+            snprintf(cand, sizeof cand, "%s/%s", dir, soname);
+            VNode *ln = vfs_resolve(fs, cand, NULL);
+            if (ln && ln->kind == VN_FILE) {
+                snprintf(out, outsz, "%s", cand);
+                found = true;
+            }
+        }
+        p = nl ? nl + 1 : NULL;
+    }
+    buf_free(&conf);
+    return found;
+}
+
+/* A library declares its own version on its first line: "<stub> <name> <ver>".
+ * Reading it out of the file is what makes an upgrade real -- replace the file
+ * and every consumer sees the new number. */
+static bool lib_version(Vfs *fs, const char *path, char *out, size_t outsz)
+{
+    VNode *n = vfs_resolve(fs, path, NULL);
+    if (!n || n->kind != VN_FILE) return false;
+    size_t len = n->data.len;
+    const char *nl = memchr(n->data.p, '\n', len);
+    if (nl) len = (size_t)(nl - n->data.p);
+    /* the version is the last whitespace-separated word of the first line */
+    size_t e = len;
+    while (e && (n->data.p[e-1] == ' ' || n->data.p[e-1] == '\r')) e--;
+    size_t b = e;
+    while (b && n->data.p[b-1] != ' ') b--;
+    if (b >= e) return false;
+    size_t nl2 = e - b;
+    if (nl2 >= outsz) nl2 = outsz - 1;
+    memcpy(out, n->data.p + b, nl2);
+    out[nl2] = '\0';
+    return true;
+}
+
+static bool link_check(Machine *m, Vfs *fs, const char *needs,
+                       char *err, size_t errsz)
+{
+    const char *p = needs;
+    while (*p) {
+        const char *nl = strchr(p, '\n');
+        size_t len = nl ? (size_t)(nl - p) : strlen(p);
+        char line[160];
+        if (len >= sizeof line) len = sizeof line - 1;
+        memcpy(line, p, len);
+        line[len] = '\0';
+        p = nl ? nl + 1 : p + strlen(p);
+
+        char soname[80] = "", want[40] = "";
+        if (sscanf(line, "%79s %39s", soname, want) < 1) continue;
+        if (!soname[0]) continue;
+
+        char path[NOM_PATH_MAX];
+        if (!find_lib(m, fs, soname, path, sizeof path)) {
+            snprintf(err, errsz,
+                     "error while loading shared libraries: %s: "
+                     "cannot open shared object file", soname);
+            return false;
+        }
+        char have[40] = "";
+        if (want[0] && lib_version(fs, path, have, sizeof have) &&
+            strcmp(have, want) != 0) {
+            snprintf(err, errsz,
+                     "error while loading shared libraries: %s: "
+                     "version %s not found (installed: %s)",
+                     soname, want, have);
+            return false;
+        }
+    }
+    return true;
 }
 
 /* --------------------------------------------------------------- mount -- */

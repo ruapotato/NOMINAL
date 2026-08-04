@@ -329,8 +329,8 @@ static const Package PKG_SHELL = {
 static const Package PKG_LIBC = {
     "libc", "2.38", "the C library",
     {
-      { "/lib/libc.so.6",  "\x7fELF (stub) libc 2.38\n", 0755, NULL },
-      { "/lib/libm.so.6",  "\x7fELF (stub) libm 2.38\n", 0755, NULL },
+      { "/lib/libc.so.6",  "stub libc 2.38\n", 0755, NULL },
+      { "/lib/libm.so.6",  "stub libm 2.38\n", 0755, NULL },
       { "/etc/ld.so.conf", "/lib\n/usr/lib\n", 0644, NULL },
       { "/etc/nsswitch.conf",
         "passwd: files\ngroup: files\nhosts: files dns\n", 0644, NULL },
@@ -577,13 +577,19 @@ static const Package PKG_RESCUE_BASE = {
         "10.0.2.30       support.internal support\n"
         "10.0.2.44       bofh.hamnix.org bofh\n", 0644, NULL },
       { "/etc/resolv.conf", "nameserver 10.0.2.3\n", 0644, NULL },
+      /* The live medium has its OWN libc. That is the whole point of it: when
+       * the customer's libc is wrong, nothing on their disk runs, including
+       * the tools you would fix it with. */
+      { "/lib/libc.so.6",  "stub libc 2.38\n", 0755, NULL },
+      { "/lib/libm.so.6",  "stub libm 2.38\n", 0755, NULL },
+      { "/etc/ld.so.conf", "/lib\n/usr/lib\n", 0644, NULL },
       { "/etc/motd",
         "Hamnix rescue medium.\n"
         "  the customer disk is /dev/sda1 and is not mounted\n"
         "  links wiki.hamnix.org/rescue    for the procedure\n", 0644, NULL },
       { "/usr/lib/sysinit/init", NULL, 0755, NULL },
       { "/sbin/init", NULL, 0777, "/usr/lib/sysinit/init" },
-    }, 11
+    }, 14
 };
 
 static const Package PKG_RESCUE_TOOLS = {

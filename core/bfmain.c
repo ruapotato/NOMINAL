@@ -72,6 +72,16 @@ int main(int argc, char **argv)
             machine_boot_rescue(&m);
             kernel_run(&m, "mount /dev/sda1 /mnt", &o);
             kernel_run(&m, "for i in dev sys proc; do mount /$i /mnt/$i; done", &o);
+            /* Repair from OUTSIDE first. If the disk's libc is the wrong
+             * version, nothing on it will run at all -- so chrooting in and
+             * using its tools is not an option, and this is the only way
+             * back. Same reason rpm and dpkg have --root. */
+            for (int k = 0; k < m.npkg; k++) {
+                char cmd[160];
+                snprintf(cmd, sizeof cmd, "pkg --root /mnt reinstall %s",
+                         m.pkg[k]->name);
+                kernel_run(&m, cmd, &o);
+            }
             kernel_run(&m, "chroot /mnt", &o);
 
             /* a unit no package owns was never installed: remove it */

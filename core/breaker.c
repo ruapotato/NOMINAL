@@ -294,9 +294,55 @@ static void fault_missing_module(Machine *m, Rng *r, char *d, size_t ds)
     snprintf(d, ds, "removed module %s and dropped a line from the initrd", mod);
 }
 
+/* A bad libc upgrade. Everything dynamically linked stops working at once --
+ * including every tool on the disk you would use to fix it. There is no way
+ * back except the rescue medium, which carries its own libc, and `pkg --root`,
+ * which repairs a filesystem without chrooting into it. */
+static void fault_bad_libc(Machine *m, Rng *r, char *d, size_t ds)
+{
+    static const char *VERS[] = { "2.41", "2.39", "2.35", "2.28" };
+    const char *v = VERS[rng_next(r) % 4];
+    VNode *n = vfs_lookup(&m->disk, "/lib/libc.so.6");
+    if (!n || n->kind != VN_FILE) return;
+    buf_clear(&n->data);
+    buf_printf(&n->data, "stub libc %s\n", v);
+    snprintf(d, ds, "upgraded libc to %s, which nothing on the disk is built for", v);
+}
+
+/* A package built for the wrong architecture. The file is a perfectly valid
+ * ELF -- it is simply not machine code this cpu can execute. */
+static void fault_wrong_arch(Machine *m, Rng *r, char *d, size_t ds)
+{
+    static const char *VICTIMS[] = {
+        "/usr/sbin/syslogd", "/usr/sbin/netd", "/usr/sbin/udevd",
+        "/sbin/svcinit", "/bin/rc", "/usr/sbin/nft",
+    };
+    const char *path = VICTIMS[rng_next(r) % 6];
+    VNode *n = vfs_lookup(&m->disk, path);
+    if (!n || n->kind != VN_FILE || n->data.len < 20) return;
+    /* e_machine lives at offset 18. 62 is x86-64, 183 is aarch64. */
+    unsigned m2 = (rng_next(r) % 2) ? 62 : 183;
+    n->data.p[18] = (char)(m2 & 0xff);
+    n->data.p[19] = (char)(m2 >> 8);
+    snprintf(d, ds, "replaced %s with a build for the wrong architecture", path);
+}
+
+/* A library removed from the search path entirely: installed, but nowhere
+ * ld.so.conf looks. */
+static void fault_ldsoconf(Machine *m, Rng *r, char *d, size_t ds)
+{
+    (void)r;
+    VNode *n = vfs_lookup(&m->disk, "/etc/ld.so.conf");
+    if (!n || n->kind != VN_FILE) return;
+    buf_clear(&n->data);
+    buf_puts(&n->data, "/usr/lib\n/usr/local/lib\n");
+    snprintf(d, ds, "dropped /lib from ld.so.conf");
+}
+
 typedef void (*StructuralFault)(Machine *, Rng *, char *, size_t);
 static const StructuralFault STRUCTURAL[] = {
     fault_bootsector, fault_stray_unit, fault_wrong_uuid, fault_missing_module,
+    fault_bad_libc, fault_wrong_arch, fault_ldsoconf,
 };
 #define NSTRUCT ((int)(sizeof STRUCTURAL / sizeof STRUCTURAL[0]))
 

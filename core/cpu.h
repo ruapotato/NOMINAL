@@ -84,6 +84,11 @@ void cpu_free(Cpu *c);
  * itself a diagnosable failure, since a corrupted binary lands here. */
 bool cpu_load_elf(Cpu *c, const uint8_t *elf, size_t len, char *err, size_t errsz);
 
+/* What a binary was linked against, read out of its .nomneed section: one
+ * "<soname> <version>" line each. Returns false if the image has no such
+ * section, which means it declares no dependencies. */
+bool cpu_elf_needs(const uint8_t *elf, size_t len, char *out, size_t outsz);
+
 /* Run at most `budget` instructions. Returns the trap that stopped it;
  * TRAP_BUDGET means it is still live and can be resumed. */
 CpuTrap cpu_run(Cpu *c, uint64_t budget);

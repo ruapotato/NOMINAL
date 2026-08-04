@@ -14,9 +14,22 @@
 
 static char arg[256], manifest[8192], filebuf[65536], path[256];
 
+/* Operate on a filesystem mounted somewhere else, without chrooting into it.
+ * This is not a convenience: when the customer's libc is the wrong version,
+ * NOTHING on their disk will run -- so you cannot chroot in and use their
+ * tools, and repairing from outside is the only way back. rpm and dpkg both
+ * have this for exactly the same reason. */
+static char root[128];
+
+static void rooted(const char *p2)
+{
+    g_copy(path, root, sizeof path);
+    g_cat(path, p2, sizeof path);
+}
+
 static int read_manifest(const char *pkg)
 {
-    g_copy(path, "/var/lib/pkg/", sizeof path);
+    rooted("/var/lib/pkg/");
     g_cat(path, pkg, sizeof path);
     g_cat(path, "/files", sizeof path);
     return g_slurp(path, manifest, sizeof manifest) >= 0;
@@ -86,9 +99,12 @@ static int verify_one(const char *pkg, int *bad)
         /* A symlink is checked by its target, not its contents. stat follows
          * links, so a dangling one fails stat -- which is exactly the report
          * we want, but it has to be attributed to the link itself. */
+        static char real[300];
+        g_copy(real, root, sizeof real);
+        g_cat(real, fp, sizeof real);
         if (g_streq(mode, "link")) {
             static char tgt[256];
-            i64 tl = g_readlink(fp, tgt, sizeof tgt);
+            i64 tl = g_readlink(real, tgt, sizeof tgt);
             if (tl < 0)      { finding(pkg, fp, "MISSING (symlink)"); (*bad)++; }
             else if (g_hash(tgt, (u64)tl) != parse_hex(hash))
                              { finding(pkg, fp, "REPOINTED"); (*bad)++; }
@@ -96,11 +112,11 @@ static int verify_one(const char *pkg, int *bad)
         }
 
         NomStat st;
-        if (g_stat(fp, &st) != 0) {
+        if (g_stat(real, &st) != 0) {
             finding(pkg, fp, "MISSING"); (*bad)++;
             continue;
         }
-        i64 n = g_slurp(fp, filebuf, sizeof filebuf);
+        i64 n = g_slurp(real, filebuf, sizeof filebuf);
         if (n < 0) { finding(pkg, fp, "UNREADABLE"); (*bad)++; continue; }
         unsigned long h = g_hash(filebuf, (u64)n);
         if (h != parse_hex(hash)) {
@@ -119,9 +135,11 @@ static int verify_one(const char *pkg, int *bad)
 
 static void each_package(void (*fn)(const char *))
 {
-    static char name[64];
+    static char name[64], dir[160];
+    g_copy(dir, root, sizeof dir);
+    g_cat(dir, "/var/lib/pkg", sizeof dir);
     for (int i = 0; i < 128; i++) {
-        if (g_readdir("/var/lib/pkg", i, name) < 0) break;
+        if (g_readdir(dir, i, name) < 0) break;
         fn(name);
     }
 }
@@ -131,8 +149,9 @@ static void verify_cb(const char *n) { verify_one(n, &g_bad); }
 
 static void list_cb(const char *n)
 {
-    static char p2[128], ver[256];
-    g_copy(p2, "/var/lib/pkg/", sizeof p2);
+    static char p2[192], ver[256];
+    g_copy(p2, root, sizeof p2);
+    g_cat(p2, "/var/lib/pkg/", sizeof p2);
     g_cat(p2, n, sizeof p2);
     g_cat(p2, "/version", sizeof p2);
     g_puts(n);
@@ -146,7 +165,19 @@ void _start(void)
     g_getarg(arg, sizeof arg);
     char *v[GARGS];
     int n = g_argv(arg, v);
-    if (n < 1) { g_putln("usage: pkg list|owns|verify|diff|reinstall"); g_exit(1); }
+    root[0] = 0;
+    if (n >= 2 && g_streq(v[0], "--root")) {
+        g_copy(root, v[1], sizeof root);
+        for (int i = 0; i + 2 < n; i++) v[i] = v[i + 2];
+        n -= 2;
+    }
+    if (n < 1) {
+        g_putln("usage: pkg [--root DIR] list|owns|verify|diff|reinstall");
+        g_putln("  --root repairs a filesystem mounted elsewhere, without");
+        g_putln("         chrooting into it -- which you cannot do when the");
+        g_putln("         disk's own libc is broken");
+        g_exit(1);
+    }
 
     if (g_streq(v[0], "list")) { each_package(list_cb); g_exit(0); }
 
@@ -154,7 +185,10 @@ void _start(void)
         if (n < 2) { g_putln("usage: pkg owns <path>"); g_exit(1); }
         static char name[64];
         for (int i = 0; i < 128; i++) {
-            if (g_readdir("/var/lib/pkg", i, name) < 0) break;
+            rooted("/var/lib/pkg");
+            static char pkgdir[160];
+            g_copy(pkgdir, path, sizeof pkgdir);
+            if (g_readdir(pkgdir, i, name) < 0) break;
             if (!read_manifest(name)) continue;
             char *p = manifest;
             while (*p) {
@@ -289,11 +323,14 @@ void _start(void)
             }
             i64 got = g_repo(v[1], fp, filebuf);
             if (got < 0) { g_puts("  cannot fetch "); g_putln(fp); failed++; continue; }
-            int fd = g_open(fp, O_WRONLY | O_CREAT | O_TRUNC);
-            if (fd < 0) { g_puts("  cannot write "); g_putln(fp); failed++; continue; }
+            static char rp[300];
+            g_copy(rp, root, sizeof rp);
+            g_cat(rp, fp, sizeof rp);
+            int fd = g_open(rp, O_WRONLY | O_CREAT | O_TRUNC);
+            if (fd < 0) { g_puts("  cannot write "); g_putln(rp); failed++; continue; }
             sysc(SYS_write, fd, (i64)filebuf, got);
             g_close(fd);
-            sysc(1035, (i64)fp, (i64)parse_oct(mode), 0);   /* SYS_chmod */
+            sysc(SYS_chmod, (i64)rp, (i64)parse_oct(mode), 0);
             done++;
         }
         g_puts(v[1]); g_puts(": "); g_putn(done); g_puts(" files restored");
