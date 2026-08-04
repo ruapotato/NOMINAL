@@ -126,6 +126,7 @@ VNode *vfs_mkfile(Vfs *fs, const char *path, const char *contents)
     VNode *n = walk(fs, norm, true, VN_FILE);
     if (!n) return NULL;
     n->kind = VN_FILE;
+    if (n->mode == 0) n->mode = 0644;
     buf_clear(&n->data);
     if (contents) buf_puts(&n->data, contents);
     return n;
@@ -160,6 +161,34 @@ VNode *vfs_mkfield(Vfs *fs, const char *path, DevRead rd, int id, int src)
     return n;
 }
 
+/* A symlink, unlike a bind, may point at nothing. That is the whole reason it
+ * is useful here: `/sbin/init -> /usr/lib/sysinit` with the target gone is one
+ * of the most common real ways a machine stops booting. */
+static VNode *deref(Vfs *fs, VNode *n, char *pathout, size_t outsz);
+
+VNode *vfs_symlink(Vfs *fs, const char *target, const char *path)
+{
+    char norm[NOM_PATH_MAX * 2];
+    vfs_normalize("/", path, norm, sizeof norm);
+    VNode *n = walk(fs, norm, true, VN_LINK);
+    if (!n) return NULL;
+    n->kind = VN_LINK;
+    n->mode = 0777;
+    snprintf(n->target, sizeof n->target, "%s", target);
+    return n;
+}
+
+VNode *vfs_resolve(Vfs *fs, const char *path, bool *dangling)
+{
+    if (dangling) *dangling = false;
+    VNode *n = vfs_lookup(fs, path);
+    if (!n) return NULL;
+    bool was_link = (n->kind == VN_LINK || n->kind == VN_BIND);
+    n = deref(fs, n, NULL, 0);
+    if (!n && was_link && dangling) *dangling = true;
+    return n;
+}
+
 VNode *vfs_bind(Vfs *fs, const char *target, const char *path)
 {
     char norm[NOM_PATH_MAX * 2], tnorm[NOM_PATH_MAX * 2];
@@ -179,7 +208,7 @@ VNode *vfs_bind(Vfs *fs, const char *target, const char *path)
 /* Follow a chain of binds to the node that actually holds the data. */
 static VNode *deref(Vfs *fs, VNode *n, char *pathout, size_t outsz)
 {
-    for (int hop = 0; n && n->kind == VN_BIND && hop < 8; hop++) {
+    for (int hop = 0; n && (n->kind == VN_BIND || n->kind == VN_LINK) && hop < 8; hop++) {
         if (pathout) snprintf(pathout, outsz, "%s", n->target);
         n = vfs_lookup(fs, n->target);
     }

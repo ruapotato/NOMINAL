@@ -134,7 +134,11 @@ int64_t val_int(Value v);
  * block right now" answer. D5. */
 typedef struct VNode VNode;
 
-typedef enum { VN_DIR, VN_FILE, VN_DEV, VN_BIND } VNodeKind;
+/* VN_BIND grafts one path onto another (a bind mount). VN_LINK is a real
+ * symlink: it derefs the same way, but it is a file you can see, edit and
+ * break, and a dangling one is a legitimate state rather than an error in the
+ * tree. The boot chain needs both. */
+typedef enum { VN_DIR, VN_FILE, VN_DEV, VN_BIND, VN_LINK } VNodeKind;
 
 /* Return values shared by device callbacks. */
 typedef enum {
@@ -160,7 +164,10 @@ struct VNode {
     void      *ctx;
     int        id;       /* device-specific discriminator */
     int        src;      /* for a field file: the aggregate it reads out of */
-    char       target[NOM_PATH_MAX];  /* VN_BIND: the path this stands for */
+    char       target[NOM_PATH_MAX];  /* VN_BIND/VN_LINK: what this stands for */
+    /* Unix mode bits, low 9 only. An init that is not executable is a real
+     * fault with a real error message, so this has to be modelled. */
+    unsigned   mode;
     
     /* bookkeeping the sim uses to surface honest diagnostics */
     uint64_t   reads, writes, blocks;
@@ -190,6 +197,10 @@ bool   vfs_remove(Vfs *fs, const char *path);
  * `target`, so a script that only knows /dev/scrubber does not care that it is
  * really /n/wreck/dev/thm-04. This is the whole point of the namespace. */
 VNode *vfs_bind(Vfs *fs, const char *target, const char *path);
+VNode *vfs_symlink(Vfs *fs, const char *target, const char *path);
+/* Resolve through symlinks and binds. Returns NULL for a dangling link, and
+ * sets *dangling so the caller can tell "missing" from "points at nothing". */
+VNode *vfs_resolve(Vfs *fs, const char *path, bool *dangling);
 void   vfs_normalize(const char *cwd, const char *in, char *out, size_t outsz);
 
 /* ------------------------------------------------------------------ lang */
