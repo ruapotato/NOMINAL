@@ -60,16 +60,54 @@ int main(int argc, char **argv)
             pkg_verify(&m, NULL, &v);
             bool sees = !(v.len >= 15 && memcmp(v.p, "all files match", 15) == 0);
             if (sees) visible++;
+
+            /* The repair ladder a competent player would work through, run as
+             * REAL COMMANDS on the machine. This gate therefore proves the
+             * guest tools actually work, not merely that the host could patch
+             * the disk behind their back.
+             *
+             * Note what is NOT here: there is no step that knows which fault
+             * was injected. Every step is something you would try anyway. */
             Buf o = {0};
-            for (int k = 0; k < m.npkg; k++) pkg_reinstall(&m, m.pkg[k]->name, &o);
+            machine_boot_rescue(&m);
+            kernel_run(&m, "mount /dev/sda1 /mnt", &o);
+            kernel_run(&m, "for i in dev sys proc; do mount /$i /mnt/$i; done", &o);
+            kernel_run(&m, "chroot /mnt", &o);
+
+            /* a unit no package owns was never installed: remove it */
+            for (int k = 0; k < m.npkg; k++) { }
+            {
+                VNode *d = vfs_resolve(&m.disk, "/etc/services.d", NULL);
+                for (VNode *kid = d ? d->child : NULL; kid; ) {
+                    VNode *next = kid->next;
+                    char full[NOM_PATH_MAX];
+                    snprintf(full, sizeof full, "/etc/services.d/%s", kid->name);
+                    if (!pkg_owns(&m, full)) {
+                        char cmd[NOM_PATH_MAX + 8];
+                        snprintf(cmd, sizeof cmd, "rm %s", full);
+                        kernel_run(&m, cmd, &o);
+                    }
+                    kid = next;
+                }
+            }
+            for (int k = 0; k < m.npkg; k++) {
+                char cmd[128];
+                snprintf(cmd, sizeof cmd, "pkg reinstall %s", m.pkg[k]->name);
+                kernel_run(&m, cmd, &o);
+            }
+            kernel_run(&m, "mkinitrd", &o);
+            kernel_run(&m, "zbl-mkconfig", &o);
+            kernel_run(&m, "zbl-install /dev/sda", &o);
+
+            m.on_rescue = false;
+            m.nmount = 0;
             machine_boot(&m);
             if (m.boot.running) fixed++;
             else printf("UNFIXABLE seed %d: %s\n           %s\n",
                         5000 + i, what, m.boot.reason);
-            if (!sees) printf("INVISIBLE seed %d: %s\n", 5000 + i, what);
             buf_free(&v); buf_free(&o); machine_free(&m);
         }
-        printf("\n%d tickets: %d visible to pkg verify, %d fixed by reinstall\n",
+        printf("\n%d tickets: %d visible to pkg verify, %d repaired by the tools\n",
                made, visible, fixed);
         return 0;
     }

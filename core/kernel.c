@@ -489,6 +489,16 @@ static int64_t kernel_syscall(Cpu *c, int64_t n, int64_t a0, int64_t a1,
         buf_free(&b);
         return r;
     }
+    case SYS_bootsec:
+        /* a0 != 0 writes one, which is what zbl-install does */
+        if (a0) p->m->bootsector = true;
+        return p->m->bootsector ? 1 : 0;
+    case SYS_rootuuid: {
+        const char *u = p->m->root_uuid;
+        size_t n = strlen(u);
+        if ((int64_t)n + 1 > a1) return -1;
+        return cpu_write(c, (uint64_t)a0, u, n + 1) ? (int64_t)n : -1;
+    }
     case SYS_unlink: {
         char raw[NOM_PATH_MAX], path[NOM_PATH_MAX];
         if (!guest_str(c, (uint64_t)a0, raw, sizeof raw)) return -1;
@@ -671,6 +681,21 @@ int64_t kernel_spawn_as(Machine *m, const char *path, const char *arg,
     p.console = console;
     p.depth = depth;
     snprintf(p.arg, sizeof p.arg, "%s", arg ? arg : "");
+
+    /* Reap. The table is finite and a real session runs hundreds of commands;
+     * when it filled, new processes got no ProcInfo at all and silently lost
+     * their chroot and namespace, quietly operating on the wrong filesystem.
+     * Exited processes are dropped oldest-first, keeping the session (ppid
+     * -1) and anything still running. */
+    if (!as && m->nproc >= PROC_MAX) {
+        int w = 0;
+        for (int i = 0; i < m->nproc; i++) {
+            ProcInfo *q = &m->proc[i];
+            bool keep = q->alive || q->ppid == -1 || i >= m->nproc - PROC_MAX / 2;
+            if (keep) m->proc[w++] = *q;
+        }
+        m->nproc = w;
+    }
 
     ProcInfo *pi = as;
     if (as) {

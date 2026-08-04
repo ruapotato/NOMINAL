@@ -190,6 +190,116 @@ static void mut_relink(Vfs *fs, const char *path, Rng *r, char *d, size_t ds)
     snprintf(d, ds, "repointed %s -> %s", path, t);
 }
 
+/* Replace the first line starting with `prefix` (after indentation). Passing
+ * NULL for `with` deletes the line. This is how a config gets a wrong value or
+ * loses one, which is what an admin's bad afternoon actually looks like. */
+static void rewrite_line(Machine *m, const char *path, const char *prefix,
+                         const char *with)
+{
+    VNode *n = vfs_lookup(&m->disk, path);
+    if (!n || n->kind != VN_FILE) return;
+    Buf out = {0};
+    const char *p = n->data.p, *end = n->data.p + n->data.len;
+    size_t plen = strlen(prefix);
+    bool done = false;
+    while (p && p < end) {
+        const char *nl = memchr(p, '\n', (size_t)(end - p));
+        size_t len = nl ? (size_t)(nl - p) : (size_t)(end - p);
+        const char *s2 = p; size_t sl = len;
+        while (sl && (*s2 == ' ' || *s2 == '\t')) { s2++; sl--; }
+        if (!done && sl >= plen && strncmp(s2, prefix, plen) == 0) {
+            done = true;
+            if (with) { buf_puts(&out, with); buf_putc(&out, '\n'); }
+        } else {
+            buf_put(&out, p, len);
+            buf_putc(&out, '\n');
+        }
+        p = nl ? nl + 1 : NULL;
+    }
+    buf_clear(&n->data);
+    buf_put(&n->data, out.p, out.len);
+    buf_free(&out);
+}
+
+/* --- faults that are not "a file changed" -------------------------------
+ * These exist because the repair has to be different. If every ticket ends
+ * in `pkg reinstall`, the player has learned one move and the game is over.
+ */
+
+/* The boot sector is not a file. No package owns it, verify cannot see it,
+ * and reinstalling everything on the disk will not put it back. The fix is
+ * zbl-install. */
+static void fault_bootsector(Machine *m, Rng *r, char *d, size_t ds)
+{
+    (void)r;
+    if (!m->bootsector) return;
+    m->bootsector = false;
+    snprintf(d, ds, "wiped the boot sector (not a file: verify cannot see it)");
+}
+
+/* A stray unit nobody installed. It is not in any manifest, so `pkg verify`
+ * reports a completely clean machine -- and svcinit still refuses to finish
+ * because the unit says it is critical. The fix is to work out that no
+ * package owns it and delete it. */
+static void fault_stray_unit(Machine *m, Rng *r, char *d, size_t ds)
+{
+    static const char *NAMES[] = { "zz-monitoring", "vendor-agent",
+                                   "backup-helper", "site-check" };
+    const char *nm = NAMES[rng_next(r) % 4];
+    char path[NOM_PATH_MAX], body[512];
+    snprintf(path, sizeof path, "/etc/services.d/%s.svc", nm);
+    if (vfs_lookup(&m->disk, path)) return;
+    snprintf(body, sizeof body,
+             "# dropped in by the vendor installer, %s\n"
+             "name: %s\n"
+             "exec: /opt/%s/bin/agent\n"
+             "description: %s agent\n"
+             "critical: yes\n"
+             "enabled: yes\n"
+             "runlevel: 3 5\n", nm, nm, nm, nm);
+    VNode *n = vfs_mkfile(&m->disk, path, body);
+    if (n) n->mode = 0644;
+    snprintf(d, ds, "added a stray unit %s owned by no package", path);
+}
+
+/* A well-formed uuid that is simply not this disk's. Every file is legal,
+ * nothing is corrupt in any way a hash can see -- but zbl.cfg is generated
+ * content, so verify DOES catch it. The interesting part is the repair:
+ * reinstalling zbl writes the config for the machine the package was built
+ * for, and zbl-mkconfig writes one for the machine in front of you. */
+static void fault_wrong_uuid(Machine *m, Rng *r, char *d, size_t ds)
+{
+    char line[96];
+    snprintf(line, sizeof line, "  root UUID=%04llx-%04llx-%04llx-%04llx",
+             (unsigned long long)(rng_next(r) % 0xffff),
+             (unsigned long long)(rng_next(r) % 0xffff),
+             (unsigned long long)(rng_next(r) % 0xffff),
+             (unsigned long long)(rng_next(r) % 0xffff));
+    rewrite_line(m, "/boot/zbl/zbl.cfg", "root", line);
+    snprintf(d, ds, "pointed zbl.cfg at a uuid this disk does not have");
+}
+
+/* A module removed from /lib/modules. The initrd on disk still has it listed,
+ * so the machine boots -- until something rebuilds the initrd. Left here as a
+ * SECOND fault it pairs with, never alone. */
+static void fault_missing_module(Machine *m, Rng *r, char *d, size_t ds)
+{
+    static const char *MODS[] = { "virtio_blk", "ext4", "dm_mod" };
+    const char *mod = MODS[rng_next(r) % 3];
+    char path[NOM_PATH_MAX];
+    snprintf(path, sizeof path, "/lib/modules/6.4.11/%s.ko", mod);
+    if (!vfs_lookup(&m->disk, path)) return;
+    vfs_remove(&m->disk, path);
+    rewrite_line(m, "/boot/initrd-6.4.11", "module", NULL);
+    snprintf(d, ds, "removed module %s and dropped a line from the initrd", mod);
+}
+
+typedef void (*StructuralFault)(Machine *, Rng *, char *, size_t);
+static const StructuralFault STRUCTURAL[] = {
+    fault_bootsector, fault_stray_unit, fault_wrong_uuid, fault_missing_module,
+};
+#define NSTRUCT ((int)(sizeof STRUCTURAL / sizeof STRUCTURAL[0]))
+
 typedef void (*Mutation)(Vfs *, const char *, Rng *, char *, size_t);
 static const Mutation MUTATION[] = {
     mut_delete, mut_truncate, mut_flip, mut_zero,
@@ -204,6 +314,16 @@ static const Mutation MUTATION[] = {
  * no-op (wrong kind of file for it, empty file), which the caller retries. */
 bool machine_corrupt(Machine *m, Rng *r, char *what, size_t whatsz)
 {
+    /* Roughly one ticket in four is structural rather than a damaged file, so
+     * `pkg reinstall` is not the answer often enough that the player cannot
+     * rely on it. */
+    if (rng_next(r) % 100 < 15) {
+        char d[200] = "";
+        STRUCTURAL[rng_next(r) % (uint64_t)NSTRUCT](m, r, d, sizeof d);
+        if (d[0]) { snprintf(what, whatsz, "%s", d); return true; }
+        return false;
+    }
+
     PathSet ps = { .n = 0 };
     collect(m->disk.root, "", &ps);
     if (ps.n == 0) return false;

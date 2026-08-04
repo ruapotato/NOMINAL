@@ -41,6 +41,8 @@ static inline i64  g_readdir(const char *dir, int i, char *buf)
 static inline int  g_stat(const char *p, NomStat *st) { return (int)sysc(SYS_stat, (i64)p, (i64)st, 0); }
 static inline i64  g_spawn(const char *p, const char *arg) { return sysc(SYS_spawn, (i64)p, (i64)arg, 0); }
 static inline i64  g_getarg(char *buf, u64 n) { return sysc(SYS_getarg, (i64)buf, (i64)n, 0); }
+static inline int  g_bootsec(int write) { return (int)sysc(SYS_bootsec, write, 0, 0); }
+static inline i64  g_rootuuid(char *b, u64 n) { return sysc(SYS_rootuuid, (i64)b, (i64)n, 0); }
 static inline i64  g_dns(const char *n, char *b, u64 c) { return sysc(SYS_dns, (i64)n, (i64)b, (i64)c); }
 static inline i64  g_http(const char *ip, const char *p, char *b) { return sysc(SYS_http, (i64)ip, (i64)p, (i64)b); }
 static inline i64  g_readlink(const char *p, char *b, u64 n) { return sysc(SYS_readlink, (i64)p, (i64)b, (i64)n); }

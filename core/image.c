@@ -55,8 +55,8 @@ static const Package PKG_BOOTLOADER = {
     "zbl", "2.06", "the bootloader",
     {
       { "/boot/zbl/zbl.cfg", NULL, 0644, NULL },
-      { "/usr/sbin/zbl-install",  "#!zbl-install\n",  0755, NULL },
-      { "/usr/sbin/zbl-mkconfig", "#!zbl-mkconfig\n", 0755, NULL },
+      { "/usr/sbin/zbl-install",  NULL, 0755, NULL },
+      { "/usr/sbin/zbl-mkconfig", NULL, 0755, NULL },
     }, 3
 };
 
@@ -71,7 +71,7 @@ static const Package PKG_KERNEL = {
         "module ext4\n"
         "module dm_mod\n", 0644, NULL },
       { "/boot/initrd", NULL, 0777, "/boot/initrd-6.4.11" },
-      { "/usr/bin/mkinitrd", "#!mkinitrd\n", 0755, NULL },
+      { "/usr/bin/mkinitrd", NULL, 0755, NULL },
       { "/lib/modules/6.4.11/virtio_blk.ko", "\x7fMOD virtio_blk\n", 0644, NULL },
       { "/lib/modules/6.4.11/ext4.ko",       "\x7fMOD ext4\n",       0644, NULL },
       { "/lib/modules/6.4.11/dm_mod.ko",     "\x7fMOD dm_mod\n",     0644, NULL },
@@ -707,6 +707,12 @@ void image_generated(const Machine *m, const char *path, Buf *out)
         buf_put(out, (const char *)GUEST_LINKS, GUEST_LINKS_LEN);
     else if (strcmp(path, "/usr/bin/man") == 0)
         buf_put(out, (const char *)GUEST_MAN, GUEST_MAN_LEN);
+    else if (strcmp(path, "/usr/sbin/zbl-install") == 0)
+        buf_put(out, (const char *)GUEST_ZBL_INSTALL, GUEST_ZBL_INSTALL_LEN);
+    else if (strcmp(path, "/usr/sbin/zbl-mkconfig") == 0)
+        buf_put(out, (const char *)GUEST_ZBL_MKCONFIG, GUEST_ZBL_MKCONFIG_LEN);
+    else if (strcmp(path, "/usr/bin/mkinitrd") == 0)
+        buf_put(out, (const char *)GUEST_MKINITRD, GUEST_MKINITRD_LEN);
     else if (strcmp(path, "/sbin/svcinit") == 0)
         buf_put(out, (const char *)GUEST_SVCINIT, GUEST_SVCINIT_LEN);
     else if (strcmp(path, "/sbin/login") == 0)

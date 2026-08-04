@@ -25,7 +25,7 @@ TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
   echo
 } > "$TMP/h"
 
-for p in init rc svcinit login sh ls cat ps ns pkg stat chmod mount umount chroot links cp mv rm touch grep head uname whoami df man; do
+for p in init rc svcinit login sh ls cat ps ns pkg stat chmod mount umount chroot links cp mv rm touch grep head uname whoami df man zbl-install zbl-mkconfig mkinitrd; do
     # -Ttext keeps every program at a fixed load address: same layout every
     # run, on every host, which is one more thing determinism does not have
     # to be careful about.
@@ -34,7 +34,9 @@ for p in init rc svcinit login sh ls cat ps ns pkg stat chmod mount umount chroo
     python3 - "$TMP/$p.elf" "$p" >> "$TMP/h" <<'PY'
 import sys
 data = open(sys.argv[1], 'rb').read()
-name = sys.argv[2]
+# A C identifier cannot contain a hyphen, and zbl-install is a perfectly
+# reasonable program name, so the symbol is sanitised rather than the file.
+name = sys.argv[2].replace('-', '_')
 print(f"static const unsigned char GUEST_{name.upper()}[] = {{")
 for i in range(0, len(data), 12):
     print("    " + " ".join(f"0x{b:02x}," for b in data[i:i+12]))
