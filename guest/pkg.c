@@ -84,6 +84,18 @@ static int verify_one(const char *pkg, int *bad)
         char *mode, *hash, *fp;
         if (!split3(t, &mode, &hash, &fp)) continue;
 
+        /* A symlink is checked by its target, not its contents. stat follows
+         * links, so a dangling one fails stat -- which is exactly the report
+         * we want, but it has to be attributed to the link itself. */
+        if (g_streq(mode, "link")) {
+            static char tgt[256];
+            i64 tl = g_readlink(fp, tgt, sizeof tgt);
+            if (tl < 0)      { finding(pkg, fp, "MISSING (symlink)"); (*bad)++; }
+            else if (g_hash(tgt, (u64)tl) != parse_hex(hash))
+                             { finding(pkg, fp, "REPOINTED"); (*bad)++; }
+            continue;
+        }
+
         NomStat st;
         if (g_stat(fp, &st) != 0) {
             finding(pkg, fp, "MISSING"); (*bad)++;
@@ -190,6 +202,14 @@ void _start(void)
             if (!*t || !split3(t, &mode, &hash, &fp)) continue;
             /* Pull the pristine bytes from the repository, which is not on
              * this disk -- that is why this works on a wrecked machine. */
+            if (g_streq(mode, "link")) {
+                /* the repo restores links through the same call; the host
+                 * knows it is a link and recreates it */
+                if (g_repo(v[1], fp, filebuf) < 0) {
+                    g_puts("  cannot restore link "); g_putln(fp); failed++;
+                } else done++;
+                continue;
+            }
             i64 got = g_repo(v[1], fp, filebuf);
             if (got < 0) { g_puts("  cannot fetch "); g_putln(fp); failed++; continue; }
             int fd = g_open(fp, O_WRONLY | O_CREAT | O_TRUNC);

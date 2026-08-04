@@ -37,7 +37,36 @@ var console_box: RichTextLabel
 var tree_box: RichTextLabel
 var detail_box: RichTextLabel
 var status_bar: Label
+var cmd_in: LineEdit
 var cwd := "/"
+var term := ""
+
+
+# Every command goes through the machine's own /bin/sh, via the same
+# kernel_run() the TCP socket uses. The desktop is a view, never a shortcut.
+func _on_command(text: String) -> void:
+	cmd_in.clear()
+	if text.strip_edges() == "":
+		return
+	term += "[color=#6fdc96]rescue#[/color] " + _esc(text) + "\n"
+	var out: String = machine.sh(text)
+	if out != "":
+		term += _esc(out)
+		if not out.ends_with("\n"):
+			term += "\n"
+	detail_box.text = term
+	_refresh_tree()
+	_update_status(machine.booted())
+
+
+func _boot_rescue() -> void:
+	console_box.text = _colourise(machine.boot_rescue())
+	term += "[color=#5b646d]--- booted the rescue medium ---[/color]\n"
+	detail_box.text = term
+	cwd = "/"
+	_refresh_tree()
+	status_bar.text = "rescue medium   the customer disk is /dev/sda1, not mounted"
+	status_bar.add_theme_color_override("font_color", Color("#2a5fa8"))
 
 
 func _ready() -> void:
@@ -82,8 +111,10 @@ func _parse_args() -> void:
 		elif a.begins_with("--cd="):
 			cwd = a.substr(5)
 			_refresh_tree()
-		elif a == "--verify":
-			_verify()
+		elif a == "--rescue":
+			_boot_rescue()
+		elif a.begins_with("--cmd="):
+			_on_command(a.substr(6))
 		elif a == "--healthy":
 			machine.install(seed_no)
 			_boot()
@@ -170,19 +201,19 @@ func _build_ui() -> void:
 	status_bar.add_theme_font_size_override("font_size", 13)
 	top.add_child(status_bar)
 
-	var bx := 700.0
+	var bx := 620.0
 	for spec in [["New ticket", func(): _new_ticket()],
-				 ["Boot", func(): _boot()],
-				 ["Verify", func(): _verify()],
+				 ["Boot disk", func(): _boot()],
+				 ["Boot rescue disk", func(): _boot_rescue()],
 				 ["Harder", func(): faults += 1; _new_ticket()]]:
 		var b := Button.new()
 		b.text = str(spec[0])
 		b.position = Vector2(bx, 2)
-		b.size = Vector2(120, 24)
+		b.size = Vector2(140, 24)
 		b.add_theme_font_size_override("font_size", 12)
 		b.pressed.connect(spec[1])
 		top.add_child(b)
-		bx += 128
+		bx += 148
 
 	# --- the machine's console ---
 	var cc := _panel("console - customer machine", Rect2(14, 40, 700, 700))
@@ -229,13 +260,32 @@ func _build_ui() -> void:
 			_show_file(s.substr(2)))
 	vb.add_child(tree_box)
 
-	# --- what the tools say ---
-	var dc := _panel("output", Rect2(726, 430, 540, 310))
+	# --- a real terminal on the machine ---
+	var dc := _panel("terminal", Rect2(726, 430, 540, 310))
+	var tv := VBoxContainer.new()
+	dc.add_child(tv)
 	detail_box = RichTextLabel.new()
 	detail_box.bbcode_enabled = true
+	detail_box.scroll_following = true
+	detail_box.custom_minimum_size = Vector2(0, 236)
 	detail_box.add_theme_font_override("normal_font", mono)
 	detail_box.add_theme_font_size_override("normal_font_size", 12)
-	dc.add_child(detail_box)
+	var tsb2 := StyleBoxFlat.new()
+	tsb2.bg_color = TERM_BG
+	tsb2.set_content_margin_all(6)
+	detail_box.add_theme_stylebox_override("normal", tsb2)
+	tv.add_child(detail_box)
+
+	var row := HBoxContainer.new()
+	tv.add_child(row)
+	var pr := Label.new()
+	pr.text = "rescue#"
+	pr.add_theme_color_override("font_color", PHOSPHOR)
+	row.add_child(pr)
+	cmd_in = LineEdit.new()
+	cmd_in.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	cmd_in.text_submitted.connect(_on_command)
+	row.add_child(cmd_in)
 
 
 func _esc(s: String) -> String:
@@ -248,14 +298,16 @@ func _new_ticket() -> void:
 	cwd = "/"
 	_boot()
 	_refresh_tree()
-	detail_box.text = "[color=#5b646d]A machine arrived and will not boot.\n" \
-		+ "Read the console. Walk the disk. Find what is wrong.\n\n" \
-		+ "verify shows what differs from what each package shipped.[/color]"
+	term = "[color=#5b646d]A machine arrived and will not boot.\n\n" \
+		+ "Boot rescue disk, then:\n" \
+		+ "  mount /dev/sda1 /mnt\n" \
+		+ "  for i in dev sys proc; do mount /$i /mnt/$i; done\n" \
+		+ "  chroot /mnt\n" \
+		+ "  pkg verify\n[/color]"
+	detail_box.text = term
 
 
-func _boot() -> void:
-	var out: String = machine.boot()
-	var up: bool = machine.booted()
+func _colourise(out: String) -> String:
 	var body := ""
 	for line in out.split("\n"):
 		var col := "#d7dee6"
@@ -269,8 +321,12 @@ func _boot() -> void:
 		elif line.begins_with("svcinit: started"):
 			col = "#a5d6a7"
 		body += "[color=%s]%s[/color]\n" % [col, _esc(line)]
-	console_box.text = body
-	_update_status(up)
+	return body
+
+
+func _boot() -> void:
+	console_box.text = _colourise(machine.boot())
+	_update_status(machine.booted())
 
 
 func _update_status(up: bool) -> void:

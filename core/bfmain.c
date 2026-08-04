@@ -147,7 +147,21 @@ int main(int argc, char **argv)
             size_t L = strlen(line);
             while (L && (line[L-1] == '\n' || line[L-1] == '\r')) line[--L] = 0;
             if (strcmp(line, "exit") == 0) break;
+            if (strcmp(line, "help") == 0) {
+                printf("boot     boot the customer's disk and watch the console\n"
+                       "rescue   boot the rescue medium (always works)\n"
+                       "exit     leave\n"
+                       "anything else runs on the machine; try `help` there too\n");
+                continue;
+            }
+            if (strcmp(line, "rescue") == 0) {
+                machine_boot_rescue(&m);
+                fwrite(m.boot.console.p, 1, m.boot.console.len, stdout);
+                continue;
+            }
             if (strcmp(line, "boot") == 0) {
+                m.on_rescue = false;
+                m.nmount = 0;
                 machine_boot(&m);
                 fwrite(m.boot.console.p, 1, m.boot.console.len, stdout);
                 printf("[%s at %s]\n", m.boot.running ? "UP" : "DOWN",

@@ -31,6 +31,7 @@
 
 typedef struct {
     bool  used;
+    Vfs  *fs;                 /* which filesystem this path is really on */
     char  path[NOM_PATH_MAX];
     Buf   data;        /* the whole file, read at open */
     size_t pos;
@@ -47,15 +48,80 @@ struct Proc {
     ProcInfo *info;          /* our own row: cwd and namespace live here */
 };
 
-/* Turn whatever a program said into an absolute path in ITS namespace.
- * Relative paths are resolved against the process's cwd first, because a
- * process that has chdir'd somewhere expects "ls" to mean where it is. */
+/* Which filesystem is a path actually on, and where on it?
+ *
+ * Four transforms, in the order a real kernel applies them:
+ *   1. relative -> absolute, against the process's cwd
+ *   2. chroot   -> the process's root is prepended, so "/" means /mnt
+ *   3. namespace-> plan 9 bindings, longest prefix (ns.c)
+ *   4. mounts   -> longest mountpoint wins; the remainder is the path on
+ *                  THAT filesystem
+ *
+ * Step 4 is what makes `mount /dev/sda1 /mnt` real: below /mnt, lookups stop
+ * happening on the rescue medium and start happening on the customer's disk.
+ */
+static Vfs *resolve_fs(Proc *p, const char *in, char *out, size_t outsz)
+{
+    Machine *m = p->m;
+    char abs[NOM_PATH_MAX * 2], rooted[NOM_PATH_MAX * 2], nsr[NOM_PATH_MAX * 2];
+
+    vfs_normalize(p->info ? p->info->cwd : "/", in, abs, sizeof abs);
+
+    const char *root = (p->info && p->info->root[0]) ? p->info->root : "/";
+    if (strcmp(root, "/") != 0)
+        snprintf(rooted, sizeof rooted, "%s%s", root, abs);
+    else
+        snprintf(rooted, sizeof rooted, "%s", abs);
+
+    if (p->info) ns_resolve(&p->info->ns, rooted, nsr, sizeof nsr);
+    else         snprintf(nsr, sizeof nsr, "%s", rooted);
+
+    Vfs *fs = m->on_rescue ? &m->rescue : &m->disk;
+    int best = -1;
+    size_t bestlen = 0;
+    for (int i = 0; i < m->nmount; i++) {
+        if (!m->mount[i].used) continue;
+        size_t al = strlen(m->mount[i].at);
+        if (strncmp(nsr, m->mount[i].at, al) != 0) continue;
+        if (!(al == 1 || nsr[al] == 0 || nsr[al] == '/')) continue;
+        if (best < 0 || al > bestlen) { best = i; bestlen = al; }
+    }
+    if (best >= 0) {
+        const char *rest = (bestlen == 1) ? nsr : nsr + bestlen;
+        if (!*rest) rest = "/";
+        if (m->mount[best].sub[0]) {
+            char j[NOM_PATH_MAX * 2];
+            snprintf(j, sizeof j, "%s%s", m->mount[best].sub, rest);
+            vfs_normalize("/", j, out, outsz);
+        } else {
+            snprintf(out, outsz, "%s", rest);
+        }
+        return m->mount[best].fs;
+    }
+    snprintf(out, outsz, "%s", nsr);
+    return fs;
+}
+
+/* Resolve for MOUNT and friends: cwd, chroot and namespace, but deliberately
+ * NOT the mount table. A mountpoint is a name in the process's view of the
+ * world; running it through the mount table would rewrite /mnt/dev back into
+ * /dev on the underlying disk and mount it over the wrong place. */
+static void resolve_ns(Proc *p, const char *in, char *out, size_t outsz)
+{
+    char abs[NOM_PATH_MAX * 2], rooted[NOM_PATH_MAX * 2];
+    vfs_normalize(p->info ? p->info->cwd : "/", in, abs, sizeof abs);
+    const char *root = (p->info && p->info->root[0]) ? p->info->root : "/";
+    if (strcmp(root, "/") != 0) snprintf(rooted, sizeof rooted, "%s%s", root, abs);
+    else                        snprintf(rooted, sizeof rooted, "%s", abs);
+    if (p->info) ns_resolve(&p->info->ns, rooted, out, outsz);
+    else         snprintf(out, outsz, "%s", rooted);
+}
+
+/* The common case: callers that only want the path, on the machine's own
+ * current root filesystem. */
 static void resolve(Proc *p, const char *in, char *out, size_t outsz)
 {
-    char abs[NOM_PATH_MAX * 2];
-    vfs_normalize(p->info ? p->info->cwd : "/", in, abs, sizeof abs);
-    if (p->info) ns_resolve(&p->info->ns, abs, out, outsz);
-    else         snprintf(out, outsz, "%s", abs);
+    resolve_fs(p, in, out, outsz);
 }
 
 /* ------------------------------------------------------------- /proc ----
@@ -144,7 +210,7 @@ static int64_t sys_open(Proc *p, Cpu *c, uint64_t pathp, int64_t flags)
 {
     char raw[NOM_PATH_MAX], path[NOM_PATH_MAX];
     if (!guest_str(c, pathp, raw, sizeof raw)) return -1;
-    resolve(p, raw, path, sizeof path);
+    Vfs *fs = resolve_fs(p, raw, path, sizeof path);
 
     /* /proc is generated, read-only, and not on any disk. */
     {
@@ -163,9 +229,9 @@ static int64_t sys_open(Proc *p, Cpu *c, uint64_t pathp, int64_t flags)
     }
 
     bool dangling = false;
-    VNode *n = vfs_resolve(&p->m->disk, path, &dangling);
+    VNode *n = vfs_resolve(fs, path, &dangling);
     if (!n && (flags & O_CREAT)) {
-        n = vfs_mkfile(&p->m->disk, path, "");
+        n = vfs_mkfile(fs, path, "");
         if (!n) return -1;
     }
     if (!n || dangling) return -1;
@@ -177,6 +243,7 @@ static int64_t sys_open(Proc *p, Cpu *c, uint64_t pathp, int64_t flags)
     memset(f, 0, sizeof *f);
     f->used = true;
     f->writable = (flags & (O_WRONLY | O_RDWR)) != 0;
+    f->fs = fs;
     snprintf(f->path, sizeof f->path, "%s", path);
     if (!(flags & O_TRUNC))
         buf_put(&f->data, n->data.p, n->data.len);
@@ -224,7 +291,7 @@ static int64_t sys_close(Proc *p, int64_t fd)
     if (fd < 3 || fd >= FD_MAX || !p->fd[fd].used) return -1;
     Fd *f = &p->fd[fd];
     if (f->writable) {
-        VNode *n = vfs_lookup(&p->m->disk, f->path);
+        VNode *n = vfs_lookup(f->fs ? f->fs : &p->m->disk, f->path);
         if (n && n->kind == VN_FILE) {
             buf_clear(&n->data);
             buf_put(&n->data, f->data.p, f->data.len);
@@ -240,7 +307,7 @@ static int64_t sys_readdir(Proc *p, Cpu *c, uint64_t pathp, int64_t idx,
 {
     char raw[NOM_PATH_MAX], path[NOM_PATH_MAX], name[NOM_NAME_MAX];
     if (!guest_str(c, pathp, raw, sizeof raw)) return -1;
-    resolve(p, raw, path, sizeof path);
+    Vfs *fs = resolve_fs(p, raw, path, sizeof path);
 
     /* /proc listings come from the process table */
     {
@@ -262,7 +329,7 @@ static int64_t sys_readdir(Proc *p, Cpu *c, uint64_t pathp, int64_t idx,
         }
     }
 
-    VNode *d = vfs_resolve(&p->m->disk, path, NULL);
+    VNode *d = vfs_resolve(fs, path, NULL);
     if (!d || d->kind != VN_DIR) return -1;
     int64_t i = 0;
     for (VNode *k = d->child; k; k = k->next, i++) {
@@ -279,7 +346,7 @@ static int64_t sys_stat(Proc *p, Cpu *c, uint64_t pathp, uint64_t sbuf)
 {
     char raw[NOM_PATH_MAX], path[NOM_PATH_MAX];
     if (!guest_str(c, pathp, raw, sizeof raw)) return -1;
-    resolve(p, raw, path, sizeof path);
+    Vfs *fs = resolve_fs(p, raw, path, sizeof path);
 
     {
         int pid; char leaf[64];
@@ -298,7 +365,7 @@ static int64_t sys_stat(Proc *p, Cpu *c, uint64_t pathp, uint64_t sbuf)
         }
     }
 
-    VNode *ln = vfs_lookup(&p->m->disk, path);
+    VNode *ln = vfs_lookup(fs, path);
     if (!ln) return -1;
     NomStat st;
     memset(&st, 0, sizeof st);
@@ -306,7 +373,7 @@ static int64_t sys_stat(Proc *p, Cpu *c, uint64_t pathp, uint64_t sbuf)
         /* stat follows the link; a dangling one is a genuine failure and the
          * guest is entitled to see it as one. */
         bool dangling = false;
-        VNode *t = vfs_resolve(&p->m->disk, path, &dangling);
+        VNode *t = vfs_resolve(fs, path, &dangling);
         if (!t || dangling) return -1;
         ln = t;
     }
@@ -364,10 +431,10 @@ static int64_t kernel_syscall(Cpu *c, int64_t n, int64_t a0, int64_t a1,
     case SYS_chdir: {
         char raw[NOM_PATH_MAX], path[NOM_PATH_MAX];
         if (!guest_str(c, (uint64_t)a0, raw, sizeof raw)) return -1;
-        resolve(p, raw, path, sizeof path);
+        Vfs *cfs = resolve_fs(p, raw, path, sizeof path);
         int pid; char leaf[64];
         bool isproc = proc_split(path, &pid, leaf, sizeof leaf, p);
-        VNode *d = isproc ? NULL : vfs_resolve(&p->m->disk, path, NULL);
+        VNode *d = isproc ? NULL : vfs_resolve(cfs, path, NULL);
         if (!isproc && (!d || d->kind != VN_DIR)) return -1;
         if (p->info) {
             char abs[NOM_PATH_MAX * 2];
@@ -385,11 +452,70 @@ static int64_t kernel_syscall(Cpu *c, int64_t n, int64_t a0, int64_t a1,
     case SYS_chmod: {
         char raw[NOM_PATH_MAX], path[NOM_PATH_MAX];
         if (!guest_str(c, (uint64_t)a0, raw, sizeof raw)) return -1;
-        resolve(p, raw, path, sizeof path);
-        VNode *n = vfs_lookup(&p->m->disk, path);
+        Vfs *mfs = resolve_fs(p, raw, path, sizeof path);
+        VNode *n = vfs_lookup(mfs, path);
         if (!n) return -1;
         n->mode = (unsigned)(a1 & 0777);
         return 0;
+    }
+    case SYS_readlink: {
+        char raw[NOM_PATH_MAX], path[NOM_PATH_MAX];
+        if (!guest_str(c, (uint64_t)a0, raw, sizeof raw)) return -1;
+        Vfs *lfs = resolve_fs(p, raw, path, sizeof path);
+        VNode *n = vfs_lookup(lfs, path);
+        if (!n || n->kind != VN_LINK) return -1;
+        size_t tl = strlen(n->target);
+        if ((int64_t)tl + 1 > a2) return -1;
+        return cpu_write(c, (uint64_t)a1, n->target, tl + 1) ? (int64_t)tl : -1;
+    }
+    case SYS_mount: {
+        char dev[64], raw[NOM_PATH_MAX], at[NOM_PATH_MAX];
+        if (!guest_str(c, (uint64_t)a0, dev, sizeof dev)) return -1;
+        if (!guest_str(c, (uint64_t)a1, raw, sizeof raw)) return -1;
+        resolve_ns(p, raw, at, sizeof at);
+        char rdev[NOM_PATH_MAX];
+        if ((int)a2 & MNT_BIND) { resolve_ns(p, dev, rdev, sizeof rdev);
+                                  snprintf(dev, sizeof dev, "%s", rdev); }
+        return machine_mount(p->m, dev, at, (int)a2) ? 0 : -1;
+    }
+    case SYS_umount: {
+        char raw[NOM_PATH_MAX], at[NOM_PATH_MAX];
+        if (!guest_str(c, (uint64_t)a0, raw, sizeof raw)) return -1;
+        resolve_ns(p, raw, at, sizeof at);
+        return machine_umount(p->m, at) ? 0 : -1;
+    }
+    case SYS_chroot: {
+        char raw[NOM_PATH_MAX], path[NOM_PATH_MAX];
+        if (!guest_str(c, (uint64_t)a0, raw, sizeof raw)) return -1;
+        Vfs *rfs = resolve_fs(p, raw, path, sizeof path);
+        VNode *d = vfs_resolve(rfs, path, NULL);
+        if (!d || d->kind != VN_DIR) return -1;
+        if (!p->info) return -1;
+        /* chroot is relative to the CURRENT root, so chrooting twice nests
+         * rather than escaping -- which is the property that makes it a
+         * containment tool and not just a path prefix. */
+        char abs[NOM_PATH_MAX * 2], newroot[NOM_PATH_MAX * 2];
+        vfs_normalize(p->info->cwd, raw, abs, sizeof abs);
+        const char *cur = p->info->root[0] ? p->info->root : "/";
+        if (strcmp(cur, "/") == 0) snprintf(newroot, sizeof newroot, "%s", abs);
+        else snprintf(newroot, sizeof newroot, "%s%s", cur, abs);
+        snprintf(p->info->root, sizeof p->info->root, "%s", newroot);
+        snprintf(p->info->cwd, sizeof p->info->cwd, "/");
+        return 0;
+    }
+    case SYS_mounts: {
+        Buf b = {0};
+        for (int i = 0; i < p->m->nmount; i++) {
+            if (!p->m->mount[i].used) continue;
+            buf_printf(&b, "%s on %s%s\n", p->m->mount[i].dev,
+                       p->m->mount[i].at,
+                       p->m->mount[i].sub[0] ? " (bind)" : "");
+        }
+        int64_t r = -1;
+        if ((int64_t)b.len < a1 && cpu_write(c, (uint64_t)a0, b.p, b.len))
+            r = (int64_t)b.len;
+        buf_free(&b);
+        return r;
     }
     case SYS_repo: {
         char pkg[64], path[NOM_PATH_MAX];
@@ -452,13 +578,22 @@ int64_t kernel_spawn_as(Machine *m, const char *path, const char *arg,
      * is who said it. A child that inherits a bind can be handed a path its
      * parent could not have resolved, and vice versa. */
     char rpath[NOM_PATH_MAX];
-    if (parent) resolve(parent, path, rpath, sizeof rpath);
-    else        snprintf(rpath, sizeof rpath, "%s", path);
+    Vfs *pfs;
+    if (parent) {
+        pfs = resolve_fs(parent, path, rpath, sizeof rpath);
+    } else if (as) {
+        Proc tmp; memset(&tmp, 0, sizeof tmp);
+        tmp.m = m; tmp.info = as;
+        pfs = resolve_fs(&tmp, path, rpath, sizeof rpath);
+    } else {
+        snprintf(rpath, sizeof rpath, "%s", path);
+        pfs = m->on_rescue ? &m->rescue : &m->disk;
+    }
     path = rpath;
 
     bool dangling = false;
-    VNode *ln = vfs_lookup(&m->disk, path);
-    VNode *n = vfs_resolve(&m->disk, path, &dangling);
+    VNode *ln = vfs_lookup(pfs, path);
+    VNode *n = vfs_resolve(pfs, path, &dangling);
     if (dangling)
         return spawn_fail(console, err, errsz, SPAWN_ENOENT,
                           "%s -> %s: no such file", path, ln ? ln->target : "?");
@@ -513,6 +648,9 @@ int64_t kernel_spawn_as(Machine *m, const char *path, const char *arg,
         if (parent && parent->info) {
             ns_copy(&pi->ns, &parent->info->ns);
             snprintf(pi->cwd, sizeof pi->cwd, "%s", parent->info->cwd);
+            /* and the root: a child of a chrooted process is inside the same
+             * chroot, which is the entire point of chroot */
+            snprintf(pi->root, sizeof pi->root, "%s", parent->info->root);
         } else {
             ns_init(&pi->ns);
             snprintf(pi->cwd, sizeof pi->cwd, "/");
@@ -592,4 +730,81 @@ int64_t kernel_run(Machine *m, const char *line, Buf *console)
     char err[NOM_ERR_MAX] = "";
     return kernel_spawn_as(m, "/bin/sh", line, console, 0, NULL, ses,
                            err, sizeof err);
+}
+
+/* --------------------------------------------------------------- mount -- */
+
+/* The block devices this machine has. The customer's disk is /dev/sda1 --
+ * present as a device whether or not anything on it works, which is exactly
+ * why you can rescue it. */
+static Vfs *device_fs(Machine *m, const char *dev)
+{
+    if (strcmp(dev, "/dev/sda1") == 0 || strcmp(dev, "/dev/sda") == 0)
+        return &m->disk;
+    if (strcmp(dev, "/dev/sr0") == 0)
+        return &m->rescue;
+    return NULL;
+}
+
+bool machine_mount(Machine *m, const char *dev, const char *at, int flags)
+{
+    if (m->nmount >= MOUNT_MAX) return false;
+    /* Mounting at / would shadow the running system with itself and make
+     * every subsequent lookup nonsense. Real mount(8) allows it; here it is
+     * only ever a mistake, and one that is very hard to see afterwards. */
+    if (!at || strcmp(at, "/") == 0) return false;
+    if (!dev || !*dev) return false;
+
+    Vfs *fs = NULL;
+    char sub[NOM_PATH_MAX] = "";
+    if (flags & MNT_BIND) {
+        /* A bind mount grafts a subtree of the CURRENT root, which is how
+         * `mount /dev /mnt/dev` works before you chroot. */
+        fs = m->on_rescue ? &m->rescue : &m->disk;
+        snprintf(sub, sizeof sub, "%s", dev);
+        if (!vfs_lookup(fs, dev)) return false;
+    } else {
+        fs = device_fs(m, dev);
+        if (!fs) return false;
+    }
+
+    /* The mountpoint has to exist, as on any real system -- and it is looked
+     * for through the mounts already in place, so /mnt/dev can be a directory
+     * on the customer's disk that we mounted a moment ago. */
+    Vfs *host = m->on_rescue ? &m->rescue : &m->disk;
+    const char *rest = at;
+    for (int i = 0; i < m->nmount; i++) {
+        if (!m->mount[i].used) continue;
+        size_t al = strlen(m->mount[i].at);
+        if (strncmp(at, m->mount[i].at, al) != 0) continue;
+        if (!(al == 1 || at[al] == 0 || at[al] == '/')) continue;
+        host = m->mount[i].fs;
+        rest = (al == 1) ? at : at + al;
+        if (!*rest) rest = "/";
+    }
+    VNode *mp = vfs_resolve(host, rest, NULL);
+    if (!mp || mp->kind != VN_DIR) return false;
+
+    for (int i = 0; i < m->nmount; i++)
+        if (m->mount[i].used && strcmp(m->mount[i].at, at) == 0) return false;
+
+    Mount *mt = &m->mount[m->nmount++];
+    memset(mt, 0, sizeof *mt);
+    mt->used = true;
+    mt->fs = fs;
+    snprintf(mt->at, sizeof mt->at, "%s", at);
+    snprintf(mt->dev, sizeof mt->dev, "%s", dev);
+    snprintf(mt->sub, sizeof mt->sub, "%s", sub);
+    return true;
+}
+
+bool machine_umount(Machine *m, const char *at)
+{
+    for (int i = 0; i < m->nmount; i++) {
+        if (!m->mount[i].used || strcmp(m->mount[i].at, at) != 0) continue;
+        for (int j = i; j < m->nmount - 1; j++) m->mount[j] = m->mount[j + 1];
+        m->nmount--;
+        return true;
+    }
+    return false;
 }

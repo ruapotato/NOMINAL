@@ -51,6 +51,13 @@ typedef unsigned long      uint64_t;
                              * the machine -- that is why reinstall can fix a
                              * disk that has nothing good left on it. */
 #define SYS_chmod    1035   /* (path, mode) -> 0 or -1                      */
+#define SYS_mount    1036   /* (dev, at, flags) -> 0 or -1                  */
+#define SYS_umount   1037   /* (at) -> 0 or -1                              */
+#define SYS_chroot   1038   /* (path) -> 0 or -1                            */
+#define SYS_mounts   1039   /* (buf, len) -> bytes: the mount table         */
+#define SYS_readlink 1040   /* (path, buf, len) -> length of the target     */
+
+#define MNT_BIND  1         /* `at` is another path, not a device           */
 
 #define O_RDONLY  0
 #define O_WRONLY  1

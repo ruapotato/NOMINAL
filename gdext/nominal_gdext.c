@@ -154,6 +154,8 @@ static void m_take_ticket(Station *st, const GDExtensionConstTypePtr *args, void
 static void m_boot(Station *st, const GDExtensionConstTypePtr *args, void *ret)
 {
     (void)args;
+    st->m.on_rescue = false;
+    st->m.nmount = 0;
     machine_boot(&st->m);
     c_to_gdstring(ret, st->m.boot.console.p ? st->m.boot.console.p : "");
 }
@@ -282,6 +284,36 @@ static void m_run(Station *st, const GDExtensionConstTypePtr *args, void *ret)
     buf_free(&out);
 }
 
+/* boot_rescue() -> String — boot the live medium. It is never corrupted, so
+ * this is the button that always works, and the reason a player is never
+ * stuck with a machine they cannot get a shell on. */
+static void m_boot_rescue(Station *st, const GDExtensionConstTypePtr *args, void *ret)
+{
+    (void)args;
+    machine_boot_rescue(&st->m);
+    c_to_gdstring(ret, st->m.boot.console.p ? st->m.boot.console.p : "");
+}
+
+/* on_rescue() -> bool — which medium are we on */
+static void m_on_rescue(Station *st, const GDExtensionConstTypePtr *args, void *ret)
+{
+    (void)args;
+    *(GDExtensionBool *)ret = st->m.on_rescue ? 1 : 0;
+}
+
+/* sh(String line) -> String — run one command line on the machine, through
+ * the same kernel_run() the socket uses. The desktop therefore cannot do
+ * anything a remote player cannot, which is the point. */
+static void m_sh(Station *st, const GDExtensionConstTypePtr *args, void *ret)
+{
+    char line[2048];
+    gdstring_to_c(args[0], line, sizeof line);
+    Buf out; buf_init(&out);
+    kernel_run(&st->m, line, &out);
+    c_to_gdstring(ret, out.p ? out.p : "");
+    buf_free(&out);
+}
+
 /* chmod(String path, int mode) -> bool */
 static void m_chmod(Station *st, const GDExtensionConstTypePtr *args, void *ret)
 {
@@ -318,6 +350,9 @@ static const MethodDef METHODS[] = {
     { "owns",        m_owns,        1, { GDEXTENSION_VARIANT_TYPE_STRING },       GDEXTENSION_VARIANT_TYPE_STRING },
     { "run",         m_run,         2, { GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_STRING },   GDEXTENSION_VARIANT_TYPE_STRING },
     { "chmod",       m_chmod,       2, { GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_INT },   GDEXTENSION_VARIANT_TYPE_BOOL },
+    { "boot_rescue", m_boot_rescue, 0, { 0 },                              GDEXTENSION_VARIANT_TYPE_STRING },
+    { "on_rescue",   m_on_rescue,   0, { 0 },                              GDEXTENSION_VARIANT_TYPE_BOOL },
+    { "sh",          m_sh,          1, { GDEXTENSION_VARIANT_TYPE_STRING }, GDEXTENSION_VARIANT_TYPE_STRING },
 };
 #define NMETHODS ((int)(sizeof METHODS / sizeof METHODS[0]))
 

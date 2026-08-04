@@ -233,10 +233,13 @@ static const Package PKG_SHELL = {
       { "/bin/ns",    NULL, 0755, NULL },
       { "/bin/stat",  NULL, 0755, NULL },
       { "/bin/chmod", NULL, 0755, NULL },
+      { "/bin/mount", NULL, 0755, NULL },
+      { "/bin/umount", NULL, 0755, NULL },
+      { "/bin/chroot", NULL, 0755, NULL },
       { "/usr/bin/pkg", NULL, 0755, NULL },
       { "/bin/false", "#!false\n", 0755, NULL },
       { "/bin/true",  "#!true\n",  0755, NULL },
-    }, 11
+    }, 14
 };
 
 static const Package *IMAGE[] = {
@@ -245,13 +248,119 @@ static const Package *IMAGE[] = {
 };
 #define IMAGE_N ((int)(sizeof IMAGE / sizeof IMAGE[0]))
 
+void image_generated(const Machine *m, const char *path, Buf *out);
+
+/* ---------------------------------------------------------- the rescue --
+ * A complete, separate system on its own medium. It is never corrupted: the
+ * breaker only ever touches m->disk. That is what makes it a live image and
+ * not just another thing that can go wrong.
+ *
+ * It is package-backed like everything else, so `pkg verify` works inside it
+ * too -- and so a player who has learned the rescue system has learned the
+ * customer's, because they are the same system with different contents.
+ */
+static const char *SRC_RESCUE_RC =
+"# /etc/rc.boot on the rescue medium.\n"
+"echo rescue: live system, read-only medium\n"
+"echo rescue: the customer disk is /dev/sda1 and is NOT mounted\n"
+"echo\n"
+"echo   mount /dev/sda1 /mnt\n"
+"echo   for i in dev sys proc; do mount /$i /mnt/$i; done\n"
+"echo   chroot /mnt\n"
+"echo\n";
+
+static const Package PKG_RESCUE_BASE = {
+    "rescue-base", "3.2", "the live rescue system",
+    {
+      { "/etc/inittab",
+        "# rescue medium: straight to a shell.\n"
+        "/bin/rc /etc/rc.boot\n", 0644, NULL },
+      { "/etc/rc.boot",  NULL, 0755, NULL },
+      { "/etc/hostname", "rescue\n", 0644, NULL },
+      { "/etc/issue",    "Hamnix rescue 3.2 -- live medium\n", 0644, NULL },
+      { "/etc/os-release",
+        "NAME=\"Hamnix Rescue\"\nVERSION=\"3.2\"\nID=hamnix-rescue\n", 0644, NULL },
+      { "/etc/fstab", "# nothing is mounted automatically on the rescue medium\n",
+        0644, NULL },
+      { "/usr/lib/sysinit/init", NULL, 0755, NULL },
+      { "/sbin/init", NULL, 0777, "/usr/lib/sysinit/init" },
+    }, 8
+};
+
+static const Package PKG_RESCUE_TOOLS = {
+    "rescue-tools", "3.2", "the tools on the live medium",
+    {
+      { "/bin/rc",      NULL, 0755, NULL },
+      { "/bin/sh",      NULL, 0755, NULL },
+      { "/bin/ls",      NULL, 0755, NULL },
+      { "/bin/cat",     NULL, 0755, NULL },
+      { "/bin/ps",      NULL, 0755, NULL },
+      { "/bin/ns",      NULL, 0755, NULL },
+      { "/bin/stat",    NULL, 0755, NULL },
+      { "/bin/chmod",   NULL, 0755, NULL },
+      { "/bin/mount",   NULL, 0755, NULL },
+      { "/bin/umount",  NULL, 0755, NULL },
+      { "/bin/chroot",  NULL, 0755, NULL },
+      { "/usr/bin/pkg", NULL, 0755, NULL },
+    }, 12
+};
+
+static const Package *RESCUE_IMAGE[] = { &PKG_RESCUE_BASE, &PKG_RESCUE_TOOLS };
+
+static void install_rescue(Machine *m)
+{
+    /* image_generated() asks the machine which medium it is describing, so it
+     * has to be told before the rescue root is written -- otherwise the live
+     * medium is installed with the customer's rc.boot on it, and the one
+     * thing guaranteed to work is broken by construction. */
+    bool was = m->on_rescue;
+    m->on_rescue = true;
+    vfs_init(&m->rescue);
+    static const char *DIRS[] = {
+        "/bin", "/dev", "/etc", "/mnt", "/proc", "/root", "/sbin", "/sys",
+        "/tmp", "/usr", "/usr/bin", "/usr/lib", "/usr/lib/sysinit", "/usr/sbin",
+        "/var", "/var/lib", "/var/lib/pkg", NULL
+    };
+    for (int i = 0; DIRS[i]; i++) vfs_mkdir(&m->rescue, DIRS[i]);
+
+    /* Device nodes, so `ls /dev` on the rescue medium shows you what there is
+     * to mount. The customer disk is present whether or not it works. */
+    for (const char **d = (const char *[]){ "sda", "sda1", "sr0", NULL }; *d; d++) {
+        char p2[NOM_PATH_MAX];
+        snprintf(p2, sizeof p2, "/dev/%s", *d);
+        VNode *n = vfs_mkfile(&m->rescue, p2, "");
+        if (n) { n->kind = VN_DEV; n->mode = 0660; }
+    }
+
+    Vfs *save = NULL; (void)save;
+    for (int i = 0; i < 2; i++) {
+        const Package *p = RESCUE_IMAGE[i];
+        for (int j = 0; j < p->nfiles; j++) {
+            const PkgFile *f = &p->file[j];
+            if (f->link) { vfs_symlink(&m->rescue, f->link, f->path); continue; }
+            Buf b = {0};
+            if (f->content) buf_puts(&b, f->content);
+            else            image_generated(m, f->path, &b);
+            VNode *n = vfs_mkfile(&m->rescue, f->path, "");
+            if (n) {
+                buf_clear(&n->data);
+                buf_put(&n->data, b.p, b.len);
+                n->mode = f->mode;
+            }
+            buf_free(&b);
+        }
+    }
+}
+
 /* Content that belongs to a package but names THIS installation, plus the
  * userland sources, which live in C string literals but are files on the disk
  * in every sense that matters: they are read, compiled and executed from
  * there, and `pkg reinstall` restores them from here. */
 void image_generated(const Machine *m, const char *path, Buf *out)
 {
-    if (strcmp(path, "/usr/lib/sysinit/init") == 0)
+    if (strcmp(path, "/etc/rc.boot") == 0 && m->on_rescue)
+        buf_puts(out, SRC_RESCUE_RC);
+    else if (strcmp(path, "/usr/lib/sysinit/init") == 0)
         buf_put(out, (const char *)GUEST_INIT, GUEST_INIT_LEN);
     else if (strcmp(path, "/bin/rc") == 0)
         buf_put(out, (const char *)GUEST_RC, GUEST_RC_LEN);
@@ -269,6 +378,12 @@ void image_generated(const Machine *m, const char *path, Buf *out)
         buf_put(out, (const char *)GUEST_STAT, GUEST_STAT_LEN);
     else if (strcmp(path, "/bin/chmod") == 0)
         buf_put(out, (const char *)GUEST_CHMOD, GUEST_CHMOD_LEN);
+    else if (strcmp(path, "/bin/mount") == 0)
+        buf_put(out, (const char *)GUEST_MOUNT, GUEST_MOUNT_LEN);
+    else if (strcmp(path, "/bin/umount") == 0)
+        buf_put(out, (const char *)GUEST_UMOUNT, GUEST_UMOUNT_LEN);
+    else if (strcmp(path, "/bin/chroot") == 0)
+        buf_put(out, (const char *)GUEST_CHROOT, GUEST_CHROOT_LEN);
     else if (strcmp(path, "/usr/bin/pkg") == 0)
         buf_put(out, (const char *)GUEST_PKG, GUEST_PKG_LEN);
     else if (strcmp(path, "/sbin/svcinit") == 0)
@@ -356,7 +471,16 @@ static void install_pkgdb(Machine *m)
         Buf man = {0};
         for (int j = 0; j < p->nfiles; j++) {
             const PkgFile *f = &p->file[j];
-            if (f->link) continue;      /* a symlink has no content to hash */
+            if (f->link) {
+                /* A symlink has no content, but it very much has a value, and
+                 * a deleted or repointed one is one of the commonest ways a
+                 * machine stops booting. Recording the hash of its TARGET is
+                 * what lets verify see that. */
+                buf_printf(&man, "link %016llx %s\n",
+                           (unsigned long long)fnv1a(f->link, strlen(f->link)),
+                           f->path);
+                continue;
+            }
             Buf c = {0};
             pristine(m, f, &c);
             buf_printf(&man, "%04o %016llx %s\n", f->mode,
@@ -386,9 +510,9 @@ void machine_install(Machine *m, uint64_t seed)
         "/bin", "/boot", "/boot/zbl", "/dev", "/etc", "/etc/hamde",
         "/etc/net", "/etc/rc.d", "/etc/services.d", "/etc/ssh", "/etc/udev",
         "/etc/udev/rules.d", "/home", "/home/hamowner", "/lib", "/lib/modules",
-        "/lib/modules/6.4.11", "/proc", "/root", "/sbin", "/tmp", "/usr",
-        "/usr/bin", "/usr/lib", "/usr/lib/sysinit", "/usr/sbin", "/usr/share",
-        "/var", "/var/log", NULL
+        "/lib/modules/6.4.11", "/proc", "/root", "/sbin", "/sys", "/tmp",
+        "/mnt", "/media", "/usr", "/usr/bin", "/usr/lib", "/usr/lib/sysinit",
+        "/usr/sbin", "/usr/share", "/var", "/var/log", NULL
     };
     for (int i = 0; DIRS[i]; i++) vfs_mkdir(&m->disk, DIRS[i]);
 
@@ -398,12 +522,14 @@ void machine_install(Machine *m, uint64_t seed)
             install_file(m, &IMAGE[i]->file[j]);
     }
     install_pkgdb(m);
+    install_rescue(m);
     m->next_pid = 1;
 }
 
 void machine_free(Machine *m)
 {
     vfs_free(&m->disk);
+    vfs_free(&m->rescue);
     buf_free(&m->boot.console);
 }
 
@@ -473,7 +599,15 @@ bool pkg_file_content(const Machine *m, const char *pkgname, const char *path,
     if (!p) return false;
     for (int j = 0; j < p->nfiles; j++) {
         if (strcmp(p->file[j].path, path) != 0) continue;
-        if (p->file[j].link) return false;      /* a link is not content */
+        if (p->file[j].link) {
+            /* Restoring a link is not a copy of bytes -- recreate it here and
+             * report success with no content, which is what the guest expects
+             * for a `link` manifest entry. */
+            Machine *mm = (Machine *)(void *)(uintptr_t)m;
+            vfs_remove(&mm->disk, path);
+            vfs_symlink(&mm->disk, p->file[j].link, path);
+            return true;
+        }
         pristine(m, &p->file[j], out);
         return true;
     }

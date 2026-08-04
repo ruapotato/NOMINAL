@@ -396,3 +396,34 @@ void machine_boot(Machine *m)
 done:
     buf_free(&f);
 }
+
+/* Boot the rescue medium. There is no bootloader chain to walk: a live image
+ * is loaded by the firmware directly, which is precisely why it still works
+ * when the installed system's boot chain does not. */
+void machine_boot_rescue(Machine *m)
+{
+    buf_clear(&m->boot.console);
+    m->on_rescue = true;
+    m->nmount = 0;                 /* a fresh boot has nothing mounted */
+    m->boot.running = false;
+    m->boot.reason[0] = '\0';
+    m->boot.reached = BOOT_FIRMWARE;
+
+    BootCtx cx = { m, &m->boot.console };
+    say(&cx, "zbios 1.4  booting from /dev/sr0 (rescue medium)");
+
+    char uerr[NOM_ERR_MAX] = "";
+    int64_t rc = kernel_spawn(m, "/sbin/init", "", &m->boot.console, 0,
+                              uerr, sizeof uerr);
+    if (rc != 0) {
+        /* The rescue medium failing is a bug in NOMINAL, not a ticket: it is
+         * never corrupted, so if it will not come up something is wrong with
+         * the game rather than with the customer's machine. */
+        fail(m, &cx, BOOT_INIT, "rescue medium failed to start: %s",
+             uerr[0] ? uerr : "unknown");
+        return;
+    }
+    m->boot.reached = BOOT_TARGET;
+    m->boot.failed_at = BOOT_TARGET;
+    m->boot.running = true;
+}

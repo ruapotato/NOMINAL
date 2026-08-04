@@ -26,6 +26,7 @@ typedef struct {
     char     name[64];
     char     arg[128];
     char     cwd[NOM_PATH_MAX];
+    char     root[NOM_PATH_MAX];   /* chroot: what "/" means to this process */
     Ns       ns;
     bool     alive;
     int64_t  exit_code;
@@ -75,9 +76,28 @@ typedef struct {
     int        emergency;    /* dropped to an emergency shell in the initrd */
 } BootResult;
 
+#define MOUNT_MAX 12
+
+/* A mounted filesystem. `dev` is what you named when you mounted it, so
+ * `mount` can print the table the way mount(8) does. */
+typedef struct {
+    char  at[NOM_PATH_MAX];
+    char  dev[40];
+    Vfs  *fs;
+    char  sub[NOM_PATH_MAX];   /* a bind mount names a subtree, not a device */
+    bool  used;
+} Mount;
+
 typedef struct {
     char  id[16];            /* "4823" — the seed, and the machine's name  */
-    Vfs   disk;              /* the installed root filesystem              */
+    Vfs   disk;              /* the customer's installed system, /dev/sda1  */
+    /* The rescue medium: a complete, separate, working system that is never
+     * corrupted. Booting it is how you get a shell on a machine whose own
+     * disk cannot produce one -- which is the whole point of a live image. */
+    Vfs   rescue;
+    bool  on_rescue;         /* which medium did we boot                    */
+    Mount mount[MOUNT_MAX];
+    int   nmount;
     char  root_uuid[40];     /* what the root partition actually IS        */
     bool  bootsector;        /* firmware can find something to chain to    */
     BootResult boot;
@@ -99,6 +119,14 @@ void machine_free(Machine *m);
 /* Run the boot chain against whatever is on the disk right now. Pure function
  * of disk state — call it as often as you like. */
 void machine_boot(Machine *m);
+
+/* Boot the rescue medium instead of the customer's disk. The rescue system is
+ * a complete, separate installation that is never corrupted, so this always
+ * gets you a shell -- which is the entire reason a live image exists. */
+void machine_boot_rescue(Machine *m);
+
+bool machine_mount(Machine *m, const char *dev, const char *at, int flags);
+bool machine_umount(Machine *m, const char *at);
 
 /* --- the package database, which is the fix verb ---------------------- */
 const Package *pkg_find(const Machine *m, const char *name);

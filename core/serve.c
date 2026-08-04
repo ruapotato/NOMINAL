@@ -121,7 +121,18 @@ static bool client_line(Client *c)
 
     if (strcmp(cmd, "quit") == 0 || strcmp(cmd, "exit") == 0) return false;
 
-    if (strcmp(cmd, "boot") == 0) { send_boot(c); return true; }
+    if (strcmp(cmd, "boot") == 0) {
+        c->m.on_rescue = false;
+        c->m.nmount = 0;
+        send_boot(c);
+        return true;
+    }
+
+    if (strcmp(cmd, "rescue") == 0) {
+        machine_boot_rescue(&c->m);
+        send_all(c->fd, c->m.boot.console.p, c->m.boot.console.len);
+        return true;
+    }
 
     if (strncmp(cmd, "ticket", 6) == 0) {
         uint64_t seed = 0; int faults = 1;
@@ -139,14 +150,18 @@ static bool client_line(Client *c)
         send_str(c->fd,
             "you are at a rescue shell with the customer's disk mounted.\n"
             "\n"
-            "  boot              try to boot the machine and watch the console\n"
+            "  boot              try to boot the customer's disk\n"
+            "  rescue            boot the rescue medium -- this always works\n"
             "  ticket [seed] [n] take a new ticket (n = how many faults)\n"
             "  quit              hang up\n"
             "\n"
-            "everything else runs on the machine. try:\n"
-            "  ls /etc           pkg verify        cat /proc/self/ns\n"
-            "  ps                pkg owns <path>   stat <path>\n"
-            "  help              (the shell's own builtins)\n");
+            "everything else runs on the machine. after `rescue`:\n"
+            "  mount /dev/sda1 /mnt\n"
+            "  for i in dev sys proc; do mount /$i /mnt/$i; done\n"
+            "  chroot /mnt\n"
+            "  pkg verify\n"
+            "\n"
+            "  ls /etc   ps   ns   stat <path>   pkg owns <path>   mount\n");
         return true;
     }
 
