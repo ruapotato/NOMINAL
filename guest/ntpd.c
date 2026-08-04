@@ -27,7 +27,18 @@ static void publish(void)
      * with a stale configuration" becomes a state the machine can notice
      * rather than a thing only a person could spot. */
     int fd = g_open("/run/ntpd.state", O_WRONLY | O_CREAT | O_TRUNC);
-    if (fd < 0) return;
+    if (fd < 0) {
+        /* A daemon that cannot write its state file is not running properly,
+         * whatever it thinks. This used to return quietly, which meant that
+         * deleting /run -- something a careless cleanup really does -- left
+         * every service reporting itself healthy while the machine had no
+         * idea what any of them had loaded. Silence here is how a fault stops
+         * being a fault. */
+        g_puts("ntpd: ");
+        g_puts("/run/ntpd.state");
+        g_putln(": cannot write state -- refusing to start");
+        g_exit(1);
+    }
     sysc(SYS_write, fd, (i64)CONF[0], (i64)g_strlen(CONF[0]));
     sysc(SYS_write, fd, (i64)"\n", 1);
     sysc(SYS_write, fd, (i64)state, (i64)g_strlen(state));

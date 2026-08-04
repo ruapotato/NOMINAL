@@ -323,6 +323,22 @@ static int64_t sys_open(Proc *p, Cpu *c, uint64_t pathp, int64_t flags)
     bool dangling = false;
     VNode *n = vfs_resolve(fs, path, &dangling);
     if (!n && (flags & O_CREAT)) {
+        /* O_CREAT creates the FILE, never the directories above it. The vfs
+         * walk has mkdir -p semantics because the installer needs them, and
+         * open inherited that by accident: deleting /var/log did nothing at
+         * all, because syslogd's first O_CREAT quietly put it back. A real
+         * open returns ENOENT and the daemon dies, which is the whole reason
+         * a missing directory is a fault worth having. */
+        const char *slash = strrchr(path, '/');
+        if (slash && slash != path) {
+            char parent[NOM_PATH_MAX * 2];
+            size_t pl = (size_t)(slash - path);
+            if (pl >= sizeof parent) return -1;
+            memcpy(parent, path, pl);
+            parent[pl] = 0;
+            VNode *pd = vfs_lookup(fs, parent);
+            if (!pd || pd->kind != VN_DIR) return -1;
+        }
         n = vfs_mkfile(fs, path, "");
         if (!n) return -1;
     }
