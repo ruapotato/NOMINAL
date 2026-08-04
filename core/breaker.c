@@ -457,12 +457,67 @@ static void fault_wrong_channel(Machine *m, Rng *r, char *d, size_t ds)
     snprintf(d, ds, "repo pointed at testing and upgraded: libc is 12.0's");
 }
 
+/* fstab faults. The file is read at every boot by /sbin/mountall, so these
+ * are not cosmetic: a line that names a device this machine does not have
+ * stops the boot dead, and the fix is usually to delete a line rather than to
+ * restore a file. */
+static void fault_fstab(Machine *m, Rng *r, char *d, size_t ds)
+{
+    VNode *n = vfs_lookup(&m->disk, "/etc/fstab");
+    if (!n || n->kind != VN_FILE) return;
+
+    switch (rng_next(r) % 4) {
+    case 0:
+        /* A disk somebody added and then removed, left in fstab. The
+         * commonest fstab fault there is. */
+        buf_puts(&n->data, "/dev/sdb1                       /backup ext4  defaults\n");
+        snprintf(d, ds, "fstab entry for /dev/sdb1, a disk that is not there");
+        return;
+    case 1: {
+        /* noauto dropped from the optical drive, so the boot waits for a
+         * disc that is not in it. */
+        Buf out = {0};
+        const char *p = n->data.p, *end = n->data.p + n->data.len;
+        while (p && p < end) {
+            const char *nl = memchr(p, '\n', (size_t)(end - p));
+            size_t len = nl ? (size_t)(nl - p) : (size_t)(end - p);
+            if (len > 8 && strncmp(p, "/dev/sr0", 8) == 0)
+                buf_puts(&out, "/dev/sr0                        /media iso9660 defaults");
+            else
+                buf_put(&out, p, len);
+            buf_putc(&out, '\n');
+            p = nl ? nl + 1 : NULL;
+        }
+        buf_clear(&n->data);
+        buf_put(&n->data, out.p, out.len);
+        buf_free(&out);
+        snprintf(d, ds, "removed noauto from the optical drive's fstab entry");
+        return;
+    }
+    case 2:
+        /* A mount point that is a file, not a directory. */
+        vfs_remove(&m->disk, "/media");
+        {
+            VNode *f = vfs_mkfile(&m->disk, "/media", "this was meant to be a directory\n");
+            if (f) f->mode = 0644;
+        }
+        buf_puts(&n->data, "/dev/sr0                        /media iso9660 defaults\n");
+        snprintf(d, ds, "/media replaced with a file, and fstab mounts onto it");
+        return;
+    default:
+        /* A line missing its type field, which the parser rejects. */
+        buf_puts(&n->data, "/dev/sdb1  /data\n");
+        snprintf(d, ds, "fstab line missing its filesystem type");
+        return;
+    }
+}
+
 typedef void (*StructuralFault)(Machine *, Rng *, char *, size_t);
 static const StructuralFault STRUCTURAL[] = {
     fault_bootsector, fault_stray_unit, fault_wrong_uuid, fault_missing_module,
     fault_bad_libc, fault_wrong_arch, fault_ldsoconf,
     fault_bad_shell, fault_no_root, fault_unclean_shutdown,
-    fault_wrong_channel,
+    fault_wrong_channel, fault_fstab,
 };
 #define NSTRUCT ((int)(sizeof STRUCTURAL / sizeof STRUCTURAL[0]))
 

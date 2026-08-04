@@ -36,8 +36,8 @@ static const char *SRC_RCBOOT =
 "# Brings the filesystems online and enters the default runlevel.\n"
 "echo rc.boot: bootstrap rc starting\n"
 "need /sbin/svcinit\n"
-"mount none /proc\n"
-"mount none /tmp\n"
+"# /etc/fstab is the single source of truth for what gets mounted.\n"
+"exec /sbin/mountall\n"
 "run /etc/rc.d/rc.3\n";
 
 static const char *SRC_RC3 =
@@ -90,6 +90,7 @@ static const Package PKG_SYSINIT = {
       { "/sbin/svcinit", NULL, 0755, NULL },           /* GUEST_SVCINIT */
       { "/sbin/login",   NULL, 0755, NULL },           /* GUEST_LOGIN   */
       { "/sbin/getty",   NULL, 0755, NULL },           /* GUEST_GETTY   */
+      { "/sbin/mountall", NULL, 0755, NULL },          /* GUEST_MOUNTALL */
       { "/etc/inittab",
         "# /etc/inittab -- the last non-comment line is run by /sbin/init.\n"
         "/bin/rc /etc/rc.boot\n", 0644, NULL },
@@ -97,7 +98,7 @@ static const Package PKG_SYSINIT = {
       { "/etc/rc.d/rc.3", NULL, 0755, NULL },          /* SRC_RC3 */
       { "/etc/rc.d/rc.0", NULL, 0755, NULL },          /* SRC_RC0 */
       { "/etc/rc.conf", "3\n", 0644, NULL },
-    }, 10
+    }, 11
 };
 
 static const Package PKG_BASE = {
@@ -751,6 +752,8 @@ void image_generated(const Machine *m, const char *path, Buf *out)
         buf_put(out, (const char *)GUEST_GETTY, GUEST_GETTY_LEN);
     else if (strcmp(path, "/sbin/fsck") == 0)
         buf_put(out, (const char *)GUEST_FSCK, GUEST_FSCK_LEN);
+    else if (strcmp(path, "/sbin/mountall") == 0)
+        buf_put(out, (const char *)GUEST_MOUNTALL, GUEST_MOUNTALL_LEN);
     else if (strcmp(path, "/etc/rc.boot") == 0)       buf_puts(out, SRC_RCBOOT);
     else if (strcmp(path, "/etc/rc.d/rc.3") == 0)     buf_puts(out, SRC_RC3);
     else if (strcmp(path, "/etc/rc.d/rc.0") == 0)     buf_puts(out, SRC_RC0);
@@ -769,6 +772,7 @@ void image_generated(const Machine *m, const char *path, Buf *out)
         buf_puts(out, "  /      ext4  defaults\n");
         buf_puts(out, "none                            /proc  proc  defaults\n");
         buf_puts(out, "none                            /tmp   tmpfs defaults\n");
+        buf_puts(out, "/dev/sr0                        /media iso9660 noauto\n");
     } else if (strcmp(path, "/etc/hostname") == 0) {
         buf_puts(out, "node-");
         buf_puts(out, m->id);

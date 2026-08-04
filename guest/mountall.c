@@ -1,0 +1,106 @@
+/* /sbin/mountall — bring up everything in /etc/fstab.
+ *
+ * Read by rc.boot, before anything that needs a filesystem to be there. An
+ * entry that names a device this machine does not have stops the boot, with
+ * the line number, because that is what you need to know and it is the one
+ * thing the machine can tell you for certain.
+ *
+ * The `noauto` option is honoured, so an entry can legitimately be present
+ * and not mounted -- which matters, because "it is in fstab" and "it is
+ * mounted" are different claims and confusing them is a classic.
+ */
+#include "gsys.h"
+
+static char fstab[8192], line[256];
+
+static int has_opt(const char *opts, const char *want)
+{
+    u64 wl = g_strlen(want);
+    for (u64 i = 0; opts[i]; i++) {
+        u64 k = 0;
+        while (k < wl && opts[i + k] == want[k]) k++;
+        if (k == wl && (opts[i + k] == 0 || opts[i + k] == ','))
+            if (i == 0 || opts[i - 1] == ',') return 1;
+    }
+    return 0;
+}
+
+void _start(void)
+{
+    if (g_slurp("/etc/fstab", fstab, sizeof fstab) < 0) {
+        g_putln("mountall: /etc/fstab: cannot read");
+        g_exit(1);
+    }
+
+    int lineno = 0, mounted = 0;
+    char *p = fstab;
+    while (*p) {
+        char *nl = p; while (*nl && *nl != '\n') nl++;
+        char save = *nl; *nl = 0;
+        g_copy(line, p, sizeof line);
+        *nl = save; p = *nl ? nl + 1 : nl;
+        lineno++;
+
+        char *t = g_trim(line);
+        if (!*t || *t == '#') continue;
+
+        char *v[GARGS];
+        int n = g_argv(t, v);
+        if (n < 3) {
+            g_puts("mountall: /etc/fstab:");
+            g_putn(lineno);
+            g_puts(": needs at least a device, a mount point and a type: ");
+            g_putln(t);
+            g_exit(1);
+        }
+        const char *dev = v[0], *at = v[1], *type = v[2];
+        const char *opts = n > 3 ? v[3] : "defaults";
+
+        if (has_opt(opts, "noauto")) continue;
+
+        if (at[0] != '/') {
+            g_puts("mountall: /etc/fstab:");
+            g_putn(lineno);
+            g_puts(": mount point is not an absolute path: ");
+            g_putln(at);
+            g_exit(1);
+        }
+
+        /* The root is already mounted by the initrd; re-mounting it here
+         * would be wrong and mount() would refuse anyway. */
+        if (g_streq(at, "/")) continue;
+
+        NomStat st;
+        if (g_stat(at, &st) != 0) {
+            g_puts("mountall: ");
+            g_puts(at);
+            g_putln(": mount point does not exist");
+            g_exit(1);
+        }
+        if (st.kind != NOM_KIND_DIR) {
+            g_puts("mountall: ");
+            g_puts(at);
+            g_putln(": mount point is not a directory");
+            g_exit(1);
+        }
+
+        if (sysc(SYS_mount, (i64)dev, (i64)at, 0) != 0) {
+            g_puts("mountall: /etc/fstab:");
+            g_putn(lineno);
+            g_puts(": cannot mount ");
+            g_puts(dev);
+            g_puts(" on ");
+            g_puts(at);
+            g_putln("");
+            g_puts("          the device is not there. Check the entry, or "
+                   "add noauto if\n          it is not supposed to be.\n");
+            g_exit(1);
+        }
+        g_puts("mountall: mounted ");
+        g_puts(dev);
+        g_puts(" on ");
+        g_putln(at);
+        mounted++;
+    }
+    g_exit(0);
+}

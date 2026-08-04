@@ -84,6 +84,7 @@ static Vfs *resolve_fs(Proc *p, const char *in, char *out, size_t outsz)
     size_t bestlen = 0;
     for (int i = 0; i < m->nmount; i++) {
         if (!m->mount[i].used) continue;
+        if (!m->mount[i].fs) continue;      /* virtual: nothing is layered */
         size_t al = strlen(m->mount[i].at);
         if (strncmp(nsr, m->mount[i].at, al) != 0) continue;
         if (!(al == 1 || nsr[al] == 0 || nsr[al] == '/')) continue;
@@ -962,6 +963,14 @@ bool machine_mount(Machine *m, const char *dev, const char *at, int flags)
         fs = m->on_rescue ? &m->rescue : &m->disk;
         snprintf(sub, sizeof sub, "%s", dev);
         if (!vfs_lookup(fs, dev)) return false;
+    } else if (strcmp(dev, "none") == 0 || strcmp(dev, "proc") == 0 ||
+               strcmp(dev, "tmpfs") == 0 || strcmp(dev, "sysfs") == 0 ||
+               strcmp(dev, "devtmpfs") == 0) {
+        /* A virtual filesystem has no backing device. It is recorded so that
+         * `mount` and `df` show it -- which is the whole reason it is in
+         * fstab -- but nothing is layered over the path, because /proc is
+         * synthesised by the kernel and /tmp is already a directory. */
+        fs = NULL;
     } else {
         fs = device_fs(m, dev);
         if (!fs) return false;
@@ -977,7 +986,7 @@ bool machine_mount(Machine *m, const char *dev, const char *at, int flags)
     Vfs *host = m->on_rescue ? &m->rescue : &m->disk;
     const char *rest = at;
     for (int i = 0; i < m->nmount; i++) {
-        if (!m->mount[i].used) continue;
+        if (!m->mount[i].used || !m->mount[i].fs) continue;
         size_t al = strlen(m->mount[i].at);
         if (strncmp(at, m->mount[i].at, al) != 0) continue;
         if (!(al == 1 || at[al] == 0 || at[al] == '/')) continue;

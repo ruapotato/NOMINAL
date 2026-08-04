@@ -80,11 +80,18 @@ Legend: **[done]** built · **[next]** in progress or immediately next ·
 ## 5. fstab and mounts
 
 - **[done]** an entry naming a device that does not exist stops the boot.
-- **[next]** **fstab misconfiguration that strands you in the initrd**, with
-  the emergency shell as the working environment.
-- **[todo]** a mountpoint that is a file, not a directory.
-- **[todo]** an entry with a mangled options field that the parser rejects,
-  reported with a line number.
+- **[done]** a mountpoint that is a file, not a directory.
+- **[done]** an entry missing its type field, rejected with a line number.
+- **[done]** `noauto` dropped from a removable drive, so the boot waits for a
+  disc that is not in it.
+
+  `/etc/fstab` had quietly stopped being read at all: the C parser went when
+  the boot moved to real userland, and nothing replaced it. It is now
+  `/sbin/mountall`, a real program run by `rc.boot`, and fstab is the single
+  source of truth for what gets mounted — `rc.boot` no longer mounts anything
+  by hand. Virtual filesystems (`none`, `proc`, `tmpfs`) are understood by the
+  kernel, recorded in the mount table so `mount` and `df` show them, and
+  nothing is layered over the path.
 - **[todo]** `/var` or `/usr` on a separate filesystem that does not mount, so
   the system comes up with a *hollow* directory where a populated one belongs.
   Everything that reads from it fails oddly and nothing is corrupt.
