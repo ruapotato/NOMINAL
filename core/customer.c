@@ -22,6 +22,7 @@
 #include <stdio.h>
 #include "nom.h"
 #include "machine.h"
+#include "kernel.h"
 
 /* WHO THEY ARE, as opposed to what they know.
  *
@@ -969,7 +970,8 @@ void customer_ask(Machine *m, const char *question, Buf *out)
  * The model supplies the words, the table supplies the effect.
  */
 typedef enum {
-    A_NONE = 0, A_POWER, A_SCREEN, A_DISC, A_CABLE, A_TYPEPW, A_SITDOWN
+    A_NONE = 0, A_POWER, A_SCREEN, A_DISC, A_CABLE, A_TYPEPW, A_SITDOWN,
+    A_RUN
 } Action;
 
 static Action action_of(const char *q)
@@ -985,6 +987,11 @@ static Action action_of(const char *q)
                      "unplug", "plugged in", 0 } },
       { A_TYPEPW,  { "type the password", "type in the password",
                      "enter the password", "type your password", 0 } },
+      /* DICTATION. On an air-gapped box this is the only terminal you have.
+       * Listed before the others because "type ls /boot" must not be caught
+       * by the password matcher. */
+      { A_RUN,     { "type ", "run ", "could you type", "please type",
+                     "enter the command", "at the prompt type", 0 } },
       { A_SITDOWN, { "are you at the machine", "go to the machine",
                      "sit down at", "in front of it", 0 } },
     };
@@ -1074,6 +1081,97 @@ bool customer_do(Machine *m, const char *request, Buf *out)
         } else {
             buf_puts(out, "  \"It is just black. Nothing at all.\"\n");
         }
+        return true;
+    }
+
+    case A_RUN: {
+        /* THEY TYPE WHAT YOU DICTATE, AND READ BACK WHAT THEY SEE.
+         *
+         * The command really runs on their machine -- this is not a canned
+         * response, it is a shell round trip through a person. What comes
+         * back is degraded the way a person degrades it: they read the last
+         * few lines, they do not know which parts matter, and they say so.
+         *
+         * It stays FAIR because the output is real. Every character they read
+         * back is a character the machine printed. They are a slow, narrow
+         * pipe, not an unreliable one. */
+        const char *cmd = NULL;
+        static const char *LEAD[] = { "type ", "run ", "enter the command ",
+                                      "at the prompt type ", NULL };
+        char low[512];
+        size_t n2 = 0;
+        for (; request[n2] && n2 < sizeof low - 1; n2++)
+            low[n2] = (request[n2] >= 'A' && request[n2] <= 'Z')
+                    ? (char)(request[n2] + 32) : request[n2];
+        low[n2] = 0;
+        for (int i = 0; LEAD[i] && !cmd; i++) {
+            const char *at = strstr(low, LEAD[i]);
+            if (at) cmd = request + (at - low) + strlen(LEAD[i]);
+        }
+        if (!cmd || !*cmd) {
+            buf_puts(out, "  \"Type what, sorry? Tell me exactly what to put "
+                          "in and I will read out whatever it says.\"\n");
+            return true;
+        }
+
+        /* Strip the quotes and backticks a technician naturally puts round a
+         * command when dictating it. */
+        char clean[256];
+        size_t k = 0;
+        for (const char *q = cmd; *q && k < sizeof clean - 1; q++) {
+            if (*q == '`' || *q == '"' || *q == '\'') continue;
+            clean[k++] = *q;
+        }
+        while (k && (clean[k-1] == ' ' || clean[k-1] == '.' ||
+                     clean[k-1] == '?' || clean[k-1] == '\n')) k--;
+        clean[k] = 0;
+        if (!clean[0]) {
+            buf_puts(out, "  \"I did not catch the command.\"\n");
+            return true;
+        }
+
+        m->cust.at_machine = true;
+        if (!m->boot.running) {
+            buf_puts(out, "  \"There is nowhere to type it. It has not "
+                          "finished starting up -- there is no prompt, just "
+                          "the writing that stopped.\"\n");
+            return true;
+        }
+
+        Buf o = {0};
+        kernel_run(m, clean, &o);
+
+        buf_printf(out, "  \"Alright... I have typed %s.\"\n", clean);
+        if (!o.len) {
+            buf_puts(out, "  \"It did not say anything back. Just the prompt "
+                          "again.\"\n");
+            buf_free(&o);
+            return true;
+        }
+
+        /* They read out the tail. A person reads what is in front of them,
+         * and what is in front of them is the end of the output. */
+        int lines = 0;
+        size_t e = o.len;
+        while (e && o.p[e-1] == '\n') e--;
+        size_t b = e;
+        while (b && lines < 6) {
+            if (o.p[b-1] == '\n') { lines++; if (lines >= 6) break; }
+            b--;
+        }
+        buf_puts(out, "  \"It says:\"\n");
+        for (size_t i = b; i < e; ) {
+            size_t le = i;
+            while (le < e && o.p[le] != '\n') le++;
+            buf_puts(out, "    | ");
+            buf_put(out, o.p + i, le - i);
+            buf_puts(out, "\n");
+            i = le < e ? le + 1 : e;
+        }
+        if (b > 0)
+            buf_puts(out, "  \"There is more above that but it has scrolled "
+                          "off. Do you want me to do it again?\"\n");
+        buf_free(&o);
         return true;
     }
 

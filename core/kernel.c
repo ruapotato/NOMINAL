@@ -820,6 +820,9 @@ static int64_t kernel_syscall(Cpu *c, int64_t n, int64_t a0, int64_t a1,
          * is not a console. */
         Machine *t = p->m->peer;
         if (!t) return -1;
+        /* An air-gapped machine has nothing listening. The technician finds
+         * this out the way they do in life: by trying. */
+        if (t->airgapped) return -3;
         int op = (int)a0, arg = (int)a1;
         switch (op) {
         case SP_STATUS:

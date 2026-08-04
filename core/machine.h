@@ -123,6 +123,14 @@ typedef struct Machine_ {
      * the customer's machine points at nothing. */
     struct Machine_ *peer;
     char  peer_addr[32];     /* what the customer reads off the sticker     */
+    /* NO SERVICE PROCESSOR, NO NETWORK. Some machines are air-gapped: a
+     * secure site, a factory floor, a box that was never on the network. You
+     * cannot reach it at all, and the only terminal you have is the person
+     * standing in front of it. You dictate; they type; they read back what
+     * they see, badly. It is a real support scenario and a genuinely
+     * different puzzle -- every command costs a round trip through somebody
+     * who does not know what any of it means. */
+    bool  airgapped;
     bool  sp_connected;      /* has the technician attached to the console  */
     bool  sp_media;          /* is the rescue medium in the virtual drive   */
     int   sp_bootdev;        /* 0 disk, 1 the attached medium               */

@@ -303,6 +303,14 @@ int main(int argc, char **argv)
         char what[512] = "";
         machine_break(&cust, seed, argc > 3 ? atoi(argv[3]) : 1, what, sizeof what);
 
+        /* ONE TICKET IN FIVE IS AIR-GAPPED: a secure site, a factory floor,
+         * a box that was never on a network. You cannot reach it at all, and
+         * the only terminal you have is the person standing in front of it.
+         * Every command costs a round trip through somebody who does not know
+         * what any of it means, which is a completely different kind of hard
+         * from anything else in the game. */
+        cust.airgapped = ((seed / 7) % 5) == 0;
+
         static Machine desk;
         machine_install(&desk, 1);          /* healthy, always */
         machine_boot(&desk);
@@ -314,9 +322,17 @@ int main(int argc, char **argv)
         printf("\n--- ticket %llu ---\n", (unsigned long long)(seed % 10000));
         printf("  %s is on the line. Their machine is not coming up.\n",
                customer_name(&cust));
-        printf("  they read you the address on the sticker: %s\n", desk.peer_addr);
-        printf("  you are at YOUR workstation. `rcon connect %s` to reach theirs.\n",
-               desk.peer_addr);
+        if (cust.airgapped) {
+            printf("  it is not on any network -- there is no address to give you.\n");
+            printf("  you are at YOUR workstation, and your only terminal on their\n");
+            printf("  machine is %s. `ask type <command>` and they will read back\n",
+                   customer_name(&cust));
+            printf("  whatever appears on the screen.\n");
+        } else {
+            printf("  they read you the address on the sticker: %s\n", desk.peer_addr);
+            printf("  you are at YOUR workstation. `rcon connect %s` to reach theirs.\n",
+                   desk.peer_addr);
+        }
         printf("  `ask <question>` to talk to them.\n\n");
 
         char line[1024];

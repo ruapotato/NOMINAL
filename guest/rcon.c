@@ -39,7 +39,16 @@ void _start(void)
 
     if (g_streq(v[0], "connect")) {
         if (n < 2) { g_putln("rcon: connect needs an address"); g_exit(1); }
-        if (sysc(SYS_sp, SP_CONNECT, 0, 0) != 0) {
+        i64 rc0 = sysc(SYS_sp, SP_CONNECT, 0, 0);
+        if (rc0 == -3) {
+            g_puts("rcon: no route to "); g_putln(v[1]);
+            g_putln("  that machine is not on any network you can reach.");
+            g_putln("  you will have to work through the person in front of it:");
+            g_putln("    ask them to type <command>   -- they will read back what");
+            g_putln("                                    they see on the screen");
+            g_exit(1);
+        }
+        if (rc0 != 0) {
             g_putln("rcon: nothing answers at that address.");
             g_putln("  the customer can read it off the sticker on the front.");
             g_exit(1);

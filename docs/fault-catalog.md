@@ -373,6 +373,29 @@ Two answers, both of them what a real system does:
 The sloppy path still exists, because it must — sometimes the config really is
 the fault. It is now a deliberate act with a name and a receipt.
 
+## 13b. The machine you cannot reach
+
+- **[done]** **an air-gapped machine.** David's idea, and it is the best kind
+  of hard: nothing is wrong with the *fault*, everything is wrong with your
+  *access*. A secure site, a factory floor, a box that was never on a network.
+  `rcon connect` finds no route and says so, and the only terminal you have is
+  the person standing in front of it.
+
+  `ask type <command>` really runs that command on their machine and they read
+  back what they see -- the last few lines, because that is what is in front
+  of them, and they say when something has scrolled off. Every character is a
+  character the machine printed: they are a slow, narrow pipe, not an
+  unreliable one, so the ticket stays fair.
+
+  It changes what a good question is. On a normal ticket you run six commands
+  because they cost nothing. Here each one costs a round trip through somebody
+  who does not know what any of it means, so you think first. One ticket in
+  five.
+
+  Proven solvable end to end by dictation alone: ask them to insert the rescue
+  disc, ask them to power cycle, `ask type mount /dev/sda1 /mnt`, `ask type
+  pkg --root /mnt verify` -- and they read back the real verify output.
+
 ## 14. What the previous administrator's notes say
 
 `/home/nomowner/notes.txt` is ten numbered lessons and **every one of them
