@@ -170,7 +170,6 @@ static GDExtensionObjectPtr station_create(void *userdata,
     GDExtensionObjectPtr obj = classdb_construct(&sn_parent);
     Station *st = nom_alloc(sizeof(Station));
     memset(st, 0, sizeof *st);
-    nominal_load_model();     /* once, before anyone can ask a question */
     machine_install(&st->m, 1);
     st->installed = true;
     buf_init(&st->scratch);
@@ -447,6 +446,14 @@ static void m_sh(Station *st, const GDExtensionConstTypePtr *args, void *ret)
  * end. A view that cannot see half the game is not a view of the game. */
 static void m_ask(Station *st, const GDExtensionConstTypePtr *args, void *ret)
 {
+    /* LAZILY, AND NOT ON THE WAY IN.
+     *
+     * Loading 1.8 GB of weights at construction blocked the whole desktop
+     * before it drew a single frame -- over three minutes on a busy machine,
+     * for a screen with nothing on it. Nobody needs the customer until they
+     * open the chat, and the chat already calls this from a worker thread, so
+     * loading here costs the first message and nothing else. */
+    nominal_load_model();
     char q[1024];
     gdstring_to_c(args[0], q, sizeof q);
     Buf out; buf_init(&out);
@@ -461,6 +468,7 @@ static void m_ask(Station *st, const GDExtensionConstTypePtr *args, void *ret)
  * The other two people in the chat window, and the name of the first. */
 static void m_colleague(Station *st, const GDExtensionConstTypePtr *args, void *ret)
 {
+    nominal_load_model();
     char who[32], q[1024];
     gdstring_to_c(args[0], who, sizeof who);
     gdstring_to_c(args[1], q, sizeof q);

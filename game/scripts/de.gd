@@ -426,7 +426,7 @@ func _launch(kind: String) -> void:
 			l.fg = TERM_FG
 			l.accent = GREEN
 			l.banner = []
-		l.prompt_fn = func() -> String: return ""
+			l.prompt_fn = func() -> String: return ""
 			l.on_command = func(_s: String) -> String: return ""
 			_win("log viewer - your workstation",
 				Rect2(W * 0.24, PANEL_H + 50, W * 0.5, H * 0.45), l)
