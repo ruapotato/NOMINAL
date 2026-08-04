@@ -123,6 +123,29 @@ void _start(void)
     char *v[GARGS];
     int argn = g_argv(arg, v);
     if (argn >= 1) {
+        /* `svc status <name>` -- why is THIS one unhappy.
+         *
+         * The table could say running or DEAD and nothing else, so on a
+         * machine that boots with a service quietly down there was no way to
+         * ask the follow-up question. The kernel has always recorded what the
+         * service said when it died and how many times it was restarted. */
+        if (g_streq(v[0], "status")) {
+            if (argn < 2) { g_putln("usage: svc status <name>"); g_exit(1); }
+            static char info[1024];
+            i64 n2 = sysc(SYS_svcinfo, (i64)v[1], (i64)info, sizeof info - 1);
+            if (n2 <= 0) {
+                g_puts("svc: "); g_puts(v[1]);
+                g_putln(": nothing by that name has been started on this boot.");
+                g_putln("  `svc` lists the units; a unit that is disabled or in");
+                g_putln("  another runlevel was never started, so there is");
+                g_putln("  nothing to report about it.");
+                g_exit(1);
+            }
+            info[n2] = 0;
+            g_write(1, info, (u64)n2);
+            g_exit(0);
+        }
+
         int off = g_streq(v[0], "disable");
         if (off || g_streq(v[0], "enable")) {
             if (argn < 2) {
@@ -142,7 +165,7 @@ void _start(void)
             g_exit(0);
         }
         g_puts("svc: unknown command: "); g_putln(v[0]);
-        g_putln("usage: svc  |  svc enable <name>  |  svc disable <name>");
+        g_putln("usage: svc  |  svc status <name>  |  svc enable <name>  |  svc disable <name>");
         g_exit(1);
     }
 

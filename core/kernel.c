@@ -793,6 +793,46 @@ static int64_t kernel_syscall(Cpu *c, int64_t n, int64_t a0, int64_t a1,
         snprintf(p->info->cwd, sizeof p->info->cwd, "/");
         return 0;
     }
+    case SYS_svcinfo: {
+        /* WHY IS THIS ONE UNHAPPY. `svc` could say running or DEAD and
+         * nothing else, so on a machine that boots with a service quietly
+         * down -- the class of ticket this game is most interested in --
+         * there was no way to ask the follow-up question. The daemon record
+         * has carried the answer all along. */
+        char want[64];
+        if (!guest_str(c, (uint64_t)a0, want, sizeof want)) return -1;
+        Buf b = {0};
+        bool found = false;
+        for (int i = 0; i < p->m->ndaemon; i++) {
+            struct Daemon *d = &p->m->daemon[i];
+            if (strcmp(d->name, want) != 0) continue;
+            found = true;
+            buf_printf(&b, "service   %s\n", d->name);
+            buf_printf(&b, "exec      %s\n", d->path);
+            buf_printf(&b, "state     %s\n",
+                       d->running ? "running"
+                                  : d->gave_up ? "gave up after repeated failures"
+                                               : "not running");
+            buf_printf(&b, "restarts  %d\n", d->restarts);
+            if (!d->running)
+                buf_printf(&b, "exit      %lld\n", (long long)d->exit_code);
+            if (d->died[0])
+                buf_printf(&b, "last said %s\n", d->died);
+            if (d->pending_sig)
+                buf_printf(&b, "signal    %d pending\n", d->pending_sig);
+            if (!d->running)
+                buf_printf(&b, "\nwhat it said on the way down is in the boot log:\n"
+                               "  dmesg -f %s\n", d->name);
+            break;
+        }
+        if (!found) return 0;
+        int64_t r = -1;
+        if ((int64_t)b.len < a2 && cpu_write(c, (uint64_t)a1, b.p, b.len))
+            r = (int64_t)b.len;
+        buf_free(&b);
+        return r;
+    }
+
     case SYS_restore: {
         char pkg[64], raw[NOM_PATH_MAX], path[NOM_PATH_MAX];
         if (!guest_str(c, (uint64_t)a0, pkg, sizeof pkg)) return -1;

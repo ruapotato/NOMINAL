@@ -556,7 +556,7 @@ void _start(void)
             g_puts("pkg: "); g_puts(v[1]); g_putln(": no such package");
             g_exit(1);
         }
-        int done = 0, failed = 0, kept = 0;
+        int done = 0, failed = 0, kept = 0, saved = 0;
         char *p = manifest;
         while (*p) {
             char *nl = p; while (*nl && *nl != '\n') nl++;
@@ -594,11 +594,41 @@ void _start(void)
                 } else done++;
                 continue;
             }
-            i64 got = g_repo(v[1], fp, filebuf);
-            if (got < 0) { g_puts("  cannot fetch "); g_putln(fp); failed++; continue; }
             static char rp[300];
             g_copy(rp, root, sizeof rp);
             g_cat(rp, fp, sizeof rp);
+
+            /* --force ON AN EDITED CONFIG KEEPS A COPY.
+             *
+             * dpkg writes .dpkg-old, rpm writes .rpmsave, and both do it for
+             * the reason a playtester ran into head-on: --force is the only
+             * way past a config the package manager is protecting, it has no
+             * undo, and the message telling you off afterwards is the first
+             * you hear of it. Now there is something to go back to.
+             *
+             * Only for /etc, only when it actually differs, and never for a
+             * .pkgsave of a .pkgsave. */
+            if (force && fp[0] == '/' && fp[1] == 'e' && fp[2] == 't' &&
+                fp[3] == 'c' && fp[4] == '/' && !g_endswith(fp, ".pkgsave")) {
+                static char sv[65536];
+                i64 cur = g_slurp(rp, sv, sizeof sv);
+                if (cur >= 0 && g_hash(sv, (u64)cur) != parse_hex(hash)) {
+                    static char svp[320];
+                    g_copy(svp, rp, sizeof svp);
+                    g_cat(svp, ".pkgsave", sizeof svp);
+                    int sfd = g_open(svp, O_WRONLY | O_CREAT | O_TRUNC);
+                    if (sfd >= 0) {
+                        sysc(SYS_write, sfd, (i64)sv, cur);
+                        g_close(sfd);
+                        g_puts("  saved your "); g_puts(fp);
+                        g_puts(" as "); g_puts(fp); g_putln(".pkgsave");
+                        saved++;
+                    }
+                }
+            }
+
+            i64 got = g_repo(v[1], fp, filebuf);
+            if (got < 0) { g_puts("  cannot fetch "); g_putln(fp); failed++; continue; }
             int fd = g_open(rp, O_WRONLY | O_CREAT | O_TRUNC);
             if (fd < 0) { g_puts("  cannot write "); g_putln(rp); failed++; continue; }
             sysc(SYS_write, fd, (i64)filebuf, got);
@@ -610,6 +640,11 @@ void _start(void)
         if (kept)   { g_puts(", "); g_putn(kept); g_puts(" kept"); }
         if (failed) { g_puts(", "); g_putn(failed); g_puts(" failed"); }
         g_puts("\n");
+        if (saved) {
+            g_putln("  the edited copies are beside the originals as .pkgsave --");
+            g_putln("  `cat <file>.pkgsave` to see what was there, and");
+            g_putln("  `cp <file>.pkgsave <file>` to put it back.");
+        }
         if (kept) {
             g_putln("  those files were edited on this machine and have been");
             g_putln("  left alone. If one of them is the fault, look at it with");
