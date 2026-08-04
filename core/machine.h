@@ -124,6 +124,11 @@ typedef struct {
      * is what stops verify from being an oracle. */
     char  local[8][NOM_PATH_MAX];
     int   nlocal;
+    /* What each local edit looked like when the machine arrived, so the bench
+     * can tell the player afterwards which of the administrator's decisions
+     * they reverted. Fixing the machine and quietly undoing somebody's work
+     * is not the same as fixing the machine. */
+    Buf   local_orig[8];
 
     /* The person whose machine it is. Briefed with ground truth from the
      * breaker, and unwilling to volunteer it. See customer.c. */
@@ -175,6 +180,8 @@ void machine_boot_rescue(Machine *m);
 void customer_brief(Machine *m, const char *what);
 void customer_ask(Machine *m, const char *question, Buf *out);
 void customer_intro(Machine *m, Buf *out);
+/* Which local configuration decisions no longer survive. Returns how many. */
+int machine_collateral(Machine *m, Buf *out);
 /* Ask the customer to DO something. Returns false if the request was not
  * understood as an action, in which case it was a question. */
 bool customer_do(Machine *m, const char *request, Buf *out);

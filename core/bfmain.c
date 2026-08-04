@@ -113,7 +113,11 @@ int main(int argc, char **argv)
              * back. Same reason rpm and dpkg have --root. */
             for (int k = 0; k < m.npkg; k++) {
                 char cmd[160];
-                snprintf(cmd, sizeof cmd, "pkg --root /mnt reinstall %s",
+                /* --force, because a ladder is a blunt instrument by
+                 * definition. A PERSON should not use it without looking:
+                 * without the flag, reinstall now keeps locally modified
+                 * config, which is the whole point of the flag existing. */
+                snprintf(cmd, sizeof cmd, "pkg --root /mnt reinstall --force %s",
                          m.pkg[k]->name);
                 kernel_run(&m, cmd, &o);
             }
@@ -137,7 +141,7 @@ int main(int argc, char **argv)
             }
             for (int k = 0; k < m.npkg; k++) {
                 char cmd[128];
-                snprintf(cmd, sizeof cmd, "pkg reinstall %s", m.pkg[k]->name);
+                snprintf(cmd, sizeof cmd, "pkg reinstall --force %s", m.pkg[k]->name);
                 kernel_run(&m, cmd, &o);
             }
             kernel_run(&m, "mkinitrd", &o);
@@ -268,6 +272,12 @@ int main(int argc, char **argv)
                 fwrite(m.boot.console.p, 1, m.boot.console.len, stdout);
                 printf("[%s at %s]\n", m.boot.running ? "UP" : "DOWN",
                        boot_stage_name(m.boot.failed_at));
+                if (m.boot.running) {
+                    Buf col = {0};
+                    if (machine_collateral(&m, &col))
+                        fwrite(col.p, 1, col.len, stdout);
+                    buf_free(&col);
+                }
                 continue;
             }
             Buf out = {0};

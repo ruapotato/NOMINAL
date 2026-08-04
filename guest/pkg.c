@@ -172,7 +172,7 @@ void _start(void)
         n -= 2;
     }
     if (n < 1) {
-        g_putln("usage: pkg [--root DIR] list|owns|verify|diff|reinstall|upgrade");
+        g_putln("usage: pkg [--root DIR] list|owns|verify|diff|reinstall [--force]|upgrade");
         g_putln("  --root repairs a filesystem mounted elsewhere, without");
         g_putln("         chrooting into it -- which you cannot do when the");
         g_putln("         disk's own libc is broken");
@@ -355,12 +355,26 @@ void _start(void)
     }
 
     if (g_streq(v[0], "reinstall")) {
+        /* --force overwrites configuration files that have been edited. Without
+         * it they are left alone, which is what dpkg does and for the same
+         * reason: a package ships a default, an administrator makes a decision,
+         * and a reinstall that silently reverts the decision has destroyed
+         * somebody's work to fix a problem that was somewhere else. */
+        int force = 0;
+        for (int i = 1; i < n; i++) {
+            if (g_streq(v[i], "--force") || g_streq(v[i], "-f")) {
+                force = 1;
+                for (int k = i; k + 1 < n; k++) v[k] = v[k + 1];
+                n--;
+                break;
+            }
+        }
         if (n < 2) { g_putln("usage: pkg reinstall <name>"); g_exit(1); }
         if (!read_manifest(v[1])) {
             g_puts("pkg: "); g_puts(v[1]); g_putln(": no such package");
             g_exit(1);
         }
-        int done = 0, failed = 0;
+        int done = 0, failed = 0, kept = 0;
         char *p = manifest;
         while (*p) {
             char *nl = p; while (*nl && *nl != '\n') nl++;
@@ -373,6 +387,22 @@ void _start(void)
             if (!*t || !split3(t, &mode, &hash, &fp)) continue;
             /* Pull the pristine bytes from the repository, which is not on
              * this disk -- that is why this works on a wrecked machine. */
+            /* A configuration file is one under /etc. If it differs from what
+             * the package shipped, somebody changed it on purpose until
+             * proven otherwise. */
+            if (!force && fp[0] == '/' && fp[1] == 'e' && fp[2] == 't' &&
+                fp[3] == 'c' && fp[4] == '/') {
+                static char cur[300];
+                g_copy(cur, root, sizeof cur);
+                g_cat(cur, fp, sizeof cur);
+                i64 have = g_slurp(cur, filebuf, sizeof filebuf);
+                if (have >= 0 && g_hash(filebuf, (u64)have) != parse_hex(hash)) {
+                    g_puts("  keeping locally modified ");
+                    g_putln(fp);
+                    kept++;
+                    continue;
+                }
+            }
             if (g_streq(mode, "link")) {
                 /* the repo restores links through the same call; the host
                  * knows it is a link and recreates it */
@@ -394,8 +424,14 @@ void _start(void)
             done++;
         }
         g_puts(v[1]); g_puts(": "); g_putn(done); g_puts(" files restored");
+        if (kept)   { g_puts(", "); g_putn(kept); g_puts(" kept"); }
         if (failed) { g_puts(", "); g_putn(failed); g_puts(" failed"); }
         g_puts("\n");
+        if (kept) {
+            g_putln("  those files were edited on this machine and have been");
+            g_putln("  left alone. If one of them is the fault, look at it with");
+            g_putln("  `pkg diff` first, then `pkg reinstall --force <name>`.");
+        }
         g_exit(failed ? 1 : 0);
     }
 

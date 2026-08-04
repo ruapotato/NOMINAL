@@ -93,6 +93,13 @@ static void send_boot(Client *c)
              c->m.boot.running ? "UP" : "DOWN",
              boot_stage_name(c->m.boot.failed_at));
     send_str(c->fd, tail);
+
+    /* The machine booting is not the whole of the job. */
+    if (c->m.boot.running) {
+        Buf col = {0};
+        if (machine_collateral(&c->m, &col)) send_all(c->fd, col.p, col.len);
+        buf_free(&col);
+    }
 }
 
 static void new_ticket(Client *c, uint64_t seed, int faults)

@@ -252,6 +252,26 @@ healthy"**, and add `svc status` so the player can see the difference.
 - **[todo]** two faults where repairing the first makes the second *look* like
   a new problem you caused.
 
+## The cost of being sloppy
+
+A playtester's sharpest criticism: *"nothing stops you reinstalling every
+flagged package — I did exactly that on four tickets and it worked every time
+with zero penalty. There's no cost to being sloppy, so the detective framing
+is optional, not enforced."*
+
+Two answers, both of them what a real system does:
+
+1. **`pkg reinstall` keeps modified configuration**, names it, and tells you
+   how to look at it. `--force` overwrites. This is dpkg's conffile behaviour
+   and it exists for exactly this reason: a package ships a default, an
+   administrator makes a decision, and a reinstall that silently reverts the
+   decision has destroyed somebody's work to fix a problem that was elsewhere.
+2. **The bench reports collateral damage.** A machine that boots is not the
+   whole job; if local configuration no longer survives, it says which.
+
+The sloppy path still exists, because it must — sometimes the config really is
+the fault. It is now a deliberate act with a name and a receipt.
+
 ## What makes a fault good
 
 1. **The evidence is on the machine.** The console says what it tried and what

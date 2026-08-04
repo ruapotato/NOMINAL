@@ -1028,12 +1028,42 @@ static void install_local_edits(Machine *m, uint64_t seed)
         if (!n || n->kind != VN_FILE) continue;
         buf_clear(&n->data);
         buf_puts(&n->data, EDITS[i].content);
-        snprintf(m->local[m->nlocal++], NOM_PATH_MAX, "%s", EDITS[i].path);
+        buf_puts(&m->local_orig[m->nlocal], EDITS[i].content);
+        snprintf(m->local[m->nlocal], NOM_PATH_MAX, "%s", EDITS[i].path);
+        m->nlocal++;
     }
+}
+
+/* Did the repair survive the administrator's decisions?
+ *
+ * A playtester's sharpest criticism was that nothing stopped them reinstalling
+ * every flagged package, and there was no cost to being sloppy. There is one
+ * now: `pkg reinstall` keeps modified config unless forced, and this reports
+ * what was reverted anyway. Fixing the machine while quietly undoing
+ * somebody's work is not the same as fixing the machine. */
+int machine_collateral(Machine *m, Buf *out)
+{
+    int lost = 0;
+    for (int i = 0; i < m->nlocal; i++) {
+        VNode *n = vfs_lookup(&m->disk, m->local[i]);
+        bool gone = !n || n->kind != VN_FILE ||
+                    n->data.len != m->local_orig[i].len ||
+                    (n->data.len &&
+                     memcmp(n->data.p, m->local_orig[i].p, n->data.len) != 0);
+        if (!gone) continue;
+        if (!lost) buf_puts(out, "\nlocal configuration that no longer survives:\n");
+        buf_printf(out, "  %s\n", m->local[i]);
+        lost++;
+    }
+    if (lost)
+        buf_puts(out, "  someone chose those settings deliberately. `pkg diff`\n"
+                      "  before reinstalling would have shown you which.\n");
+    return lost;
 }
 
 void machine_free(Machine *m)
 {
+    for (int i = 0; i < 8; i++) buf_free(&m->local_orig[i]);
     kernel_stop_daemons(m);
     vfs_free(&m->disk);
     vfs_free(&m->rescue);
