@@ -372,7 +372,12 @@ static const Package PKG_SHELL = {
       { "/bin/df", NULL, 0755, NULL },
       { "/bin/false", "#!false\n", 0755, NULL },
       { "/bin/true",  "#!true\n",  0755, NULL },
-    }, 32
+      /* The remote console. It lives on the technician's workstation, and
+       * on the customer's machine too -- every NomnixOS install has it,
+       * because every one of them might be the machine you are calling from
+       * when the next ticket comes in. */
+      { "/usr/bin/rcon", NULL, 0755, NULL },
+    }, 34
 };
 
 
@@ -888,6 +893,8 @@ void image_generated(const Machine *m, const char *path, Buf *out)
         buf_put(out, (const char *)GUEST_LDD, GUEST_LDD_LEN);
     else if (strcmp(path, "/bin/dmesg") == 0)
         buf_put(out, (const char *)GUEST_DMESG, GUEST_DMESG_LEN);
+    else if (strcmp(path, "/usr/bin/rcon") == 0)
+        buf_put(out, (const char *)GUEST_RCON, GUEST_RCON_LEN);
     else if (strcmp(path, "/usr/sbin/zbl-install") == 0)
         buf_put(out, (const char *)GUEST_ZBL_INSTALL, GUEST_ZBL_INSTALL_LEN);
     else if (strcmp(path, "/usr/sbin/zbl-mkconfig") == 0)

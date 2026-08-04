@@ -11,9 +11,9 @@
 #   the customer  what a non-technical person sitting at the machine can see.
 #                 Their name and manner are drawn per ticket and stay bound to
 #                 each other, so the same name is always the same person.
-#   Sam           a technician at the next desk. He has NOT seen this machine
+#   Ben           a technician at the next desk. He has NOT seen this machine
 #                 and knows only what you tell him.
-#   Rebecca       the engineer who wrote the runbook. Knows the architecture
+#   Json       the engineer who wrote the runbook. Knows the architecture
 #                 of the whole system and nothing about your particular fault.
 #
 # All three are the same 3B model with different briefs. The difference
@@ -27,7 +27,7 @@ var ink := Color("#c9d3e0")
 var dim := Color("#78849a")
 var bg := Color("#1b212c")
 
-const NAMES := ["customer", "Sam", "Rebecca"]
+const NAMES := ["customer", "Ben", "Json"]
 const ROLES := ["on the phone", "next desk", "wrote the runbook"]
 const LIST_W := 132.0
 const LINE_H := 15
@@ -39,6 +39,7 @@ var cur := ""
 var caret := 0
 var thinking := false
 var blink := 0.0
+var scroll := 0        # lines up from the bottom
 
 
 func _ready() -> void:
@@ -47,8 +48,8 @@ func _ready() -> void:
 	if mono == null:
 		mono = ThemeDB.fallback_font
 	set_process(true)
-	logs[2].append(["Rebecca", "Morning. Shout if you get stuck -- I know how the box is put together, even if I cannot see yours."])
-	logs[1].append(["Sam", "Alright? I have not seen your machine, so tell me what it is doing."])
+	logs[2].append(["Json", "Morning. Shout if you get stuck -- I know how the box is put together, even if I cannot see yours."])
+	logs[1].append(["Ben", "Alright? I have not seen your machine, so tell me what it is doing."])
 
 
 func take_focus() -> void:
@@ -89,6 +90,7 @@ func post(w: int, text: String) -> void:
 		return
 	who = clampi(w, 0, 2)
 	logs[who].append(["you", text])
+	scroll = 0
 	thinking = true
 	_pending_who = who
 	queue_redraw()
@@ -109,9 +111,9 @@ func _collect() -> void:
 	thinking = false
 
 	reply = reply.strip_edges()
-	# The engine frames replies as "  \"...\"" or "  Sam: \"...\"". In a chat
+	# The engine frames replies as "  \"...\"" or "  Ben: \"...\"". In a chat
 	# window the speaker is already a label, so strip it.
-	reply = reply.trim_prefix("Sam:").trim_prefix("Rebecca:").strip_edges()
+	reply = reply.trim_prefix("Ben:").trim_prefix("Json:").strip_edges()
 	reply = reply.trim_prefix("\"").trim_suffix("\"")
 	if reply == "":
 		reply = "(no reply)"
@@ -120,6 +122,10 @@ func _collect() -> void:
 
 
 func _gui_input(e: InputEvent) -> void:
+	if e is InputEventMouseButton and e.pressed and e.button_index == MOUSE_BUTTON_WHEEL_UP:
+		scroll += 3; queue_redraw(); return
+	if e is InputEventMouseButton and e.pressed and e.button_index == MOUSE_BUTTON_WHEEL_DOWN:
+		scroll = max(0, scroll - 3); queue_redraw(); return
 	if e is InputEventMouseButton and e.pressed and e.button_index == MOUSE_BUTTON_LEFT:
 		grab_focus()
 		if e.position.x < LIST_W:
@@ -214,9 +220,10 @@ func _draw() -> void:
 		cols.append(Color("#d3b06a"))
 
 	var visible := int((size.y - 34) / LINE_H)
-	var first: int = max(0, rows.size() - visible)
+	scroll = clampi(scroll, 0, max(0, rows.size() - visible))
+	var first: int = max(0, rows.size() - visible - scroll)
 	var y2 := 16.0
-	for i in range(first, rows.size()):
+	for i in range(first, min(rows.size(), first + visible)):
 		draw_string(mono, Vector2(x, y2), rows[i],
 			HORIZONTAL_ALIGNMENT_LEFT, -1, 12, cols[i])
 		y2 += LINE_H

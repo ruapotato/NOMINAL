@@ -672,7 +672,7 @@ const char *customer_name(const Machine *m)
  * the system and they are a senior colleague worth asking.
  */
 static const char *COWORKER_BRIEF =
-"You are Sam, a support technician at the next desk. You are competent, "
+"You are Ben, a support technician at the next desk. You are competent, "
 "friendly, and slightly overworked.\n"
 "\n"
 "CRITICAL: you have NOT seen this machine. You have no access to it, no logs "
@@ -690,7 +690,7 @@ static const char *COWORKER_BRIEF =
 "Two or three sentences. Talk like a colleague, not a manual.\n";
 
 static const char *MANAGER_BRIEF =
-"You are Rebecca, the senior engineer who wrote this system's runbook. Your "
+"You are Json, the senior engineer who wrote this system's runbook. Your "
 "colleague is working a break-fix ticket and has come to you for advice.\n"
 "\n"
 "YOU KNOW HOW THE SYSTEM WORKS. You do NOT know what is wrong with their "
@@ -731,7 +731,7 @@ static const char *MANAGER_BRIEF =
 void colleague_ask(Machine *m, const char *who, const char *question, Buf *out)
 {
     bool boss = who && who[0] == 'm';
-    const char *name = boss ? "Rebecca" : "Sam";
+    const char *name = boss ? "Json" : "Ben";
 
     if (llm_available()) {
         char reply[600];

@@ -68,6 +68,9 @@ typedef unsigned long      uint64_t;
                              * captures its stdout back into it, which is all
                              * a pipeline is.                              */
 #define SYS_pipeout  1049   /* () -> flush the pipe buffer to the console  */
+#define SYS_sp       1059   /* (op, arg, buf) -> the service processor of the
+                             * machine this one can reach. How a technician
+                             * touches a box that will not boot.          */
 #define SYS_svcinfo  1058   /* (name, buf, len) -> bytes describing ONE service:
                              * whether it is running, how many times it has
                              * been restarted, and what it said when it died.
@@ -126,6 +129,14 @@ typedef struct {
     int32_t  mode;      /* low 9 bits, as usual */
     int32_t  kind;      /* NOM_KIND_*           */
 } NomStat;
+
+/* Service processor operations. */
+#define SP_STATUS     0
+#define SP_CONNECT    1
+#define SP_POWER      2      /* arg: 0 off, 1 on, 2 cycle                  */
+#define SP_MEDIA      3      /* arg: 0 eject, 1 insert the rescue medium   */
+#define SP_BOOTDEV    4      /* arg: 0 disk, 1 the attached medium         */
+#define SP_CONSOLE    5      /* read the console back                      */
 
 /* Spawn failures are distinguishable, because "the binary is corrupt" and
  * "the binary is missing" are different tickets. */

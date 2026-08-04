@@ -804,6 +804,61 @@ static int64_t kernel_syscall(Cpu *c, int64_t n, int64_t a0, int64_t a1,
         snprintf(p->info->cwd, sizeof p->info->cwd, "/");
         return 0;
     }
+    case SYS_sp: {
+        /* THE SERVICE PROCESSOR of the machine this one can reach.
+         *
+         * This is the whole remote-hands workflow in one syscall. The
+         * technician's workstation runs `rcon`, which lands here, and the
+         * target is p->m->peer -- a separate Machine with its own disk, cpu
+         * and boot state. Nothing about the target's health matters: a
+         * service processor is a small computer on the motherboard that is up
+         * whether or not the host is, which is exactly why you can fix a box
+         * that will not boot.
+         *
+         * The console is the target's own boot output, unchanged. It is not
+         * summarised or interpreted here, because a console that editorialises
+         * is not a console. */
+        Machine *t = p->m->peer;
+        if (!t) return -1;
+        int op = (int)a0, arg = (int)a1;
+        switch (op) {
+        case SP_STATUS:
+            return (t->boot.running ? 1 : 0)
+                 | (p->m->sp_connected ? 2 : 0)
+                 | (p->m->sp_media ? 4 : 0)
+                 | (p->m->sp_bootdev ? 8 : 0);
+        case SP_CONNECT:
+            p->m->sp_connected = true;
+            return 0;
+        case SP_POWER:
+            if (arg == 0) {                       /* off */
+                kernel_stop_daemons(t);
+                t->boot.running = false;
+                buf_clear(&t->boot.console);
+                buf_puts(&t->boot.console, "[power off]\n");
+                return 0;
+            }
+            /* on, or cycle: boot whatever the boot device says */
+            if (p->m->sp_bootdev == 1 && p->m->sp_media) machine_boot_rescue(t);
+            else                                          machine_boot(t);
+            return 0;
+        case SP_MEDIA:
+            p->m->sp_media = (arg != 0);
+            return 0;
+        case SP_BOOTDEV:
+            if (arg == 1 && !p->m->sp_media) return -2;   /* nothing in the drive */
+            p->m->sp_bootdev = arg;
+            return 0;
+        case SP_CONSOLE: {
+            size_t n = t->boot.console.len;
+            if (n > 60000) n = 60000;
+            if (!cpu_write(c, (uint64_t)a2, t->boot.console.p, n)) return -1;
+            return (int64_t)n;
+        }
+        default: return -1;
+        }
+    }
+
     case SYS_svcinfo: {
         /* WHY IS THIS ONE UNHAPPY. `svc` could say running or DEAD and
          * nothing else, so on a machine that boots with a service quietly

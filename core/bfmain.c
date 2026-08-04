@@ -282,6 +282,75 @@ int main(int argc, char **argv)
         return bench_serve(port, true, argc > 3 ? strtoull(argv[3], NULL, 10) : 4800);
     }
 
+    /* --desk: THE WORKFLOW, as it actually is.
+     *
+     * You are not sitting at the broken machine. You are at your own
+     * workstation -- a healthy install of the same system, which is what makes
+     * "compare it against mine" a real move -- and the customer's box is
+     * reachable only through its service processor, the way iDRAC or iLO is.
+     *
+     * So this shell runs on YOUR machine. `rcon connect <address>` attaches to
+     * theirs, `rcon power cycle` restarts it and shows you the console, and
+     * `rcon media insert` puts the rescue medium in its virtual drive. There
+     * is no command here that reaches inside their disk without going through
+     * the service processor first, because there is no such thing on a real
+     * support desk either.
+     */
+    if (argc > 1 && strcmp(argv[1], "--desk") == 0) {
+        uint64_t seed = argc > 2 ? strtoull(argv[2], NULL, 10) : 4823;
+
+        static Machine cust;
+        char what[512] = "";
+        machine_break(&cust, seed, argc > 3 ? atoi(argv[3]) : 1, what, sizeof what);
+
+        static Machine desk;
+        machine_install(&desk, 1);          /* healthy, always */
+        machine_boot(&desk);
+        desk.peer = &cust;
+        snprintf(desk.peer_addr, sizeof desk.peer_addr, "10.0.2.%d",
+                 60 + (int)(seed % 40));
+
+        printf("%s", desk.boot.console.p ? desk.boot.console.p : "");
+        printf("\n--- ticket %llu ---\n", (unsigned long long)(seed % 10000));
+        printf("  %s is on the line. Their machine is not coming up.\n",
+               customer_name(&cust));
+        printf("  they read you the address on the sticker: %s\n", desk.peer_addr);
+        printf("  you are at YOUR workstation. `rcon connect %s` to reach theirs.\n",
+               desk.peer_addr);
+        printf("  `ask <question>` to talk to them.\n\n");
+
+        char line[1024];
+        while (fgets(line, sizeof line, stdin)) {
+            size_t l = strlen(line);
+            while (l && (line[l-1] == '\n' || line[l-1] == '\r')) line[--l] = 0;
+            if (strcmp(line, "quit") == 0) break;
+            if (strncmp(line, "ask ", 4) == 0) {
+                Buf a = {0};
+                customer_ask(&cust, line + 4, &a);
+                fwrite(a.p, 1, a.len, stdout);
+                buf_free(&a);
+                continue;
+            }
+            if (strncmp(line, "ben ", 4) == 0 || strncmp(line, "json ", 5) == 0) {
+                Buf a = {0};
+                colleague_ask(&cust, line[0] == 'b' ? "coworker" : "manager",
+                              line + (line[0] == 'b' ? 4 : 5), &a);
+                fwrite(a.p, 1, a.len, stdout);
+                buf_free(&a);
+                continue;
+            }
+            Buf o = {0};
+            kernel_run(&desk, line, &o);
+            fwrite(o.p, 1, o.len, stdout);
+            buf_free(&o);
+            printf("you@desk# ");
+            fflush(stdout);
+        }
+        machine_free(&desk);
+        machine_free(&cust);
+        return 0;
+    }
+
     if (argc > 1 && strcmp(argv[1], "--sh") == 0) {
         /* An interactive session against one machine: the whole game, with no
          * GUI anywhere near it. Each line is executed by /bin/sh ON the

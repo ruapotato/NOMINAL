@@ -100,7 +100,7 @@ typedef struct {
     bool  used;
 } Mount;
 
-typedef struct {
+typedef struct Machine_ {
     char  id[16];            /* "4823" — the seed, and the machine's name  */
     Vfs   disk;              /* the customer's installed system, /dev/sda1  */
     /* The rescue medium: a complete, separate, working system that is never
@@ -108,6 +108,24 @@ typedef struct {
      * disk cannot produce one -- which is the whole point of a live image. */
     Vfs   rescue;
     bool  on_rescue;         /* which medium did we boot                    */
+
+    /* THE MACHINE THIS ONE CAN REACH.
+     *
+     * A support engineer does not sit at the broken box. They sit at their
+     * own workstation -- a healthy install of the same system, which is what
+     * makes "compare it with mine" possible -- and reach the customer's
+     * machine through its service processor, the way iDRAC or iLO works: a
+     * little computer on the motherboard that is up even when the host is
+     * not, and can power cycle it, attach media, choose a boot device and
+     * show you the console.
+     *
+     * `peer` is that link. The workstation points at the customer's machine;
+     * the customer's machine points at nothing. */
+    struct Machine_ *peer;
+    char  peer_addr[32];     /* what the customer reads off the sticker     */
+    bool  sp_connected;      /* has the technician attached to the console  */
+    bool  sp_media;          /* is the rescue medium in the virtual drive   */
+    int   sp_bootdev;        /* 0 disk, 1 the attached medium               */
     /* An unclean shutdown leaves the filesystem marked dirty. Nothing will
      * mount it until fsck has been run, which is the point: the repair has to
      * happen BEFORE you can even look at the disk. */

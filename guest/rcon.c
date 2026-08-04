@@ -1,0 +1,118 @@
+/* /usr/bin/rcon — the remote console on somebody else's machine.
+ *
+ * A support engineer does not sit at the broken box. They sit at their own
+ * workstation and reach the customer's machine through its service processor
+ * -- the little computer on the motherboard that is powered whether or not
+ * the host is, which is the entire reason you can fix a machine that will not
+ * boot. iDRAC, iLO, IPMI: same idea, different badge.
+ *
+ *   rcon connect <address>   attach to the console
+ *   rcon status              power, media, boot device
+ *   rcon power off|on|cycle
+ *   rcon media insert|eject  the rescue medium, in the virtual drive
+ *   rcon boot disk|media     what it boots from next time
+ *   rcon console             what the machine has said since it powered on
+ *
+ * This is a REAL program on the workstation. It reaches the other machine
+ * through a syscall, not through the desktop, so everything it can do is
+ * available from a script and from a terminal with no GUI anywhere near it.
+ */
+#include "gsys.h"
+
+static char buf[60000];
+
+static void usage(void)
+{
+    g_putln("usage: rcon connect <address> | status | console");
+    g_putln("       rcon power off|on|cycle");
+    g_putln("       rcon media insert|eject");
+    g_putln("       rcon boot disk|media");
+}
+
+void _start(void)
+{
+    static char arg[256];
+    g_getarg(arg, sizeof arg);
+    char *v[GARGS];
+    int n = g_argv(arg, v);
+    if (n < 1) { usage(); g_exit(1); }
+
+    if (g_streq(v[0], "connect")) {
+        if (n < 2) { g_putln("rcon: connect needs an address"); g_exit(1); }
+        if (sysc(SYS_sp, SP_CONNECT, 0, 0) != 0) {
+            g_putln("rcon: nothing answers at that address.");
+            g_putln("  the customer can read it off the sticker on the front.");
+            g_exit(1);
+        }
+        g_puts("rcon: attached to "); g_putln(v[1]);
+        g_putln("  the service processor is up even though the machine may not be.");
+        g_putln("  `rcon console` shows what it has said; `rcon power cycle`");
+        g_putln("  restarts it; `rcon media insert` puts the rescue medium in.");
+        g_exit(0);
+    }
+
+    i64 st = sysc(SYS_sp, SP_STATUS, 0, 0);
+    if (st < 0) {
+        g_putln("rcon: no machine is reachable from here.");
+        g_exit(1);
+    }
+
+    if (g_streq(v[0], "status")) {
+        g_puts("power   "); g_putln((st & 1) ? "on" : "off");
+        g_puts("console "); g_putln((st & 2) ? "attached" : "not attached");
+        g_puts("media   "); g_putln((st & 4) ? "rescue medium inserted" : "empty");
+        g_puts("boot    "); g_putln((st & 8) ? "the attached medium" : "the disk");
+        g_exit(0);
+    }
+
+    if (g_streq(v[0], "console")) {
+        i64 got = sysc(SYS_sp, SP_CONSOLE, 0, (i64)buf);
+        if (got <= 0) { g_putln("rcon: the console is empty -- is it powered on?"); g_exit(1); }
+        g_write(1, buf, (u64)got);
+        g_exit(0);
+    }
+
+    if (g_streq(v[0], "power")) {
+        if (n < 2) { usage(); g_exit(1); }
+        int a = g_streq(v[1], "off") ? 0 : g_streq(v[1], "on") ? 1 : 2;
+        if (!g_streq(v[1], "off") && !g_streq(v[1], "on") && !g_streq(v[1], "cycle")) {
+            usage(); g_exit(1);
+        }
+        sysc(SYS_sp, SP_POWER, a, 0);
+        if (a == 0) { g_putln("rcon: powered off."); g_exit(0); }
+        g_putln(a == 1 ? "rcon: powered on." : "rcon: power cycled.");
+        /* Show what it said coming up: that is the whole point of a console. */
+        i64 got = sysc(SYS_sp, SP_CONSOLE, 0, (i64)buf);
+        if (got > 0) { g_putln(""); g_write(1, buf, (u64)got); }
+        g_exit(0);
+    }
+
+    if (g_streq(v[0], "media")) {
+        if (n < 2) { usage(); g_exit(1); }
+        int in = g_streq(v[1], "insert");
+        if (!in && !g_streq(v[1], "eject")) { usage(); g_exit(1); }
+        sysc(SYS_sp, SP_MEDIA, in, 0);
+        g_putln(in ? "rcon: rescue medium inserted in the virtual drive."
+                   : "rcon: virtual drive emptied.");
+        if (in) g_putln("  `rcon boot media` then `rcon power cycle` to boot it.");
+        g_exit(0);
+    }
+
+    if (g_streq(v[0], "boot")) {
+        if (n < 2) { usage(); g_exit(1); }
+        int m = g_streq(v[1], "media");
+        if (!m && !g_streq(v[1], "disk")) { usage(); g_exit(1); }
+        i64 rc = sysc(SYS_sp, SP_BOOTDEV, m, 0);
+        if (rc == -2) {
+            g_putln("rcon: there is nothing in the virtual drive.");
+            g_putln("  `rcon media insert` first.");
+            g_exit(1);
+        }
+        g_putln(m ? "rcon: next boot is from the attached medium."
+                  : "rcon: next boot is from the disk.");
+        g_exit(0);
+    }
+
+    usage();
+    g_exit(1);
+}

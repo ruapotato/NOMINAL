@@ -118,6 +118,7 @@ func _build_desktop() -> void:
 	_window("chat", Rect2(24 + col, 52 + h * 0.44, col, h * 0.52 - 64), chat)
 
 	_focus(term)
+	_rebuild_tasks()
 
 
 func _build_panel() -> void:
@@ -144,9 +145,16 @@ func _build_panel() -> void:
 
 	status_lbl = Label.new()
 	status_lbl.position = Vector2(x + 12, 6)
+	status_lbl.z_index = 1
 	status_lbl.add_theme_font_size_override("font_size", 12)
 	status_lbl.add_theme_color_override("font_color", DIM)
 	panel.add_child(status_lbl)
+
+	task_x = x + 12
+	task_holder = Control.new()
+	task_holder.set_anchors_preset(Control.PRESET_TOP_WIDE)
+	task_holder.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	panel.add_child(task_holder)
 
 	clock_lbl = Label.new()
 	clock_lbl.add_theme_font_size_override("font_size", 12)
@@ -156,7 +164,10 @@ func _build_panel() -> void:
 	panel.add_child(clock_lbl)
 
 
-# A window: title bar you can drag, a body, and focus that means something.
+# A window: a title bar you can drag, a close box, a resize grip in the
+# corner, and focus that means something. Without close and resize it is not a
+# window, it is a rectangle -- and the first thing anyone does with a desktop
+# is move something out of the way and make the terminal bigger.
 func _window(title: String, rect: Rect2, content: Control) -> Control:
 	var win := Control.new()
 	win.position = rect.position
@@ -168,14 +179,31 @@ func _window(title: String, rect: Rect2, content: Control) -> Control:
 		win.draw_rect(Rect2(0, 0, win.size.x, win.size.y), WIN_EDGE, false, 1.0)
 		win.draw_rect(Rect2(1, 1, win.size.x - 2, 20), TITLE_ON if on else TITLE_OFF)
 		win.draw_string(mono, Vector2(8, 15), str(win.get_meta("title")),
-			HORIZONTAL_ALIGNMENT_LEFT, -1, 12, INK if on else DIM))
+			HORIZONTAL_ALIGNMENT_LEFT, -1, 12, INK if on else DIM)
+		# close box
+		var cx := win.size.x - 16
+		win.draw_string(mono, Vector2(cx, 15), "x",
+			HORIZONTAL_ALIGNMENT_LEFT, -1, 13, INK if on else DIM)
+		# resize grip
+		for i in range(3):
+			var d := 4.0 + i * 4.0
+			win.draw_line(Vector2(win.size.x - d, win.size.y - 2),
+				Vector2(win.size.x - 2, win.size.y - d), WIN_EDGE, 1.0))
 	add_child(win)
 
 	var bar := Control.new()
 	bar.position = Vector2(0, 0)
 	bar.size = Vector2(rect.size.x, 21)
-	bar.gui_input.connect(func(e): _drag(win, bar, e))
+	bar.gui_input.connect(func(e): _drag(win, e))
 	win.add_child(bar)
+	win.set_meta("bar", bar)
+
+	var grip := Control.new()
+	grip.size = Vector2(16, 16)
+	grip.position = Vector2(rect.size.x - 16, rect.size.y - 16)
+	grip.gui_input.connect(func(e): _resize(win, e))
+	win.add_child(grip)
+	win.set_meta("grip", grip)
 
 	content.position = Vector2(4, 24)
 	content.size = Vector2(rect.size.x - 8, rect.size.y - 28)
@@ -185,12 +213,69 @@ func _window(title: String, rect: Rect2, content: Control) -> Control:
 	return win
 
 
+# Keep the pieces in step after a move or a resize.
+func _relayout(win: Control) -> void:
+	var bar: Control = win.get_meta("bar")
+	var grip: Control = win.get_meta("grip")
+	var content: Control = win.get_meta("content")
+	bar.size = Vector2(win.size.x, 21)
+	grip.position = Vector2(win.size.x - 16, win.size.y - 16)
+	content.size = Vector2(win.size.x - 8, win.size.y - 28)
+	win.queue_redraw()
+
+
+func _close(win: Control) -> void:
+	win.visible = false
+	if focused == win.get_meta("content"):
+		for w in windows:
+			if w.visible:
+				_focus(w.get_meta("content"))
+				break
+	_rebuild_tasks()
+
+
+func _show_window(win: Control) -> void:
+	win.visible = true
+	move_child(win, get_child_count() - 1)
+	_focus(win.get_meta("content"))
+	_rebuild_tasks()
+
+
+var task_holder: Control
+var task_x := 0.0
+
+# A closed window has to be reachable again, or closing it is destruction
+# rather than tidying. The panel carries one button per window, and the
+# button says whether it is on screen.
+func _rebuild_tasks() -> void:
+	if task_holder == null:
+		return
+	for c in task_holder.get_children():
+		c.queue_free()
+	var x := task_x
+	for w in windows:
+		var b := Button.new()
+		b.text = str(w.get_meta("title")).split(" ")[0]
+		b.position = Vector2(x, 3)
+		b.custom_minimum_size = Vector2(0, 24)
+		b.add_theme_font_size_override("font_size", 11)
+		if not w.visible:
+			b.add_theme_color_override("font_color", DIM)
+		var target := w
+		b.pressed.connect(func(): _show_window(target))
+		task_holder.add_child(b)
+		x += b.get_minimum_size().x + 10.0
+
+
 var _dragging: Control = null
 var _drag_from := Vector2.ZERO
 
-func _drag(win: Control, bar: Control, e: InputEvent) -> void:
+func _drag(win: Control, e: InputEvent) -> void:
 	if e is InputEventMouseButton and e.button_index == MOUSE_BUTTON_LEFT:
 		if e.pressed:
+			if e.position.x > win.size.x - 20:
+				_close(win)
+				return
 			_dragging = win
 			_drag_from = e.position
 			move_child(win, get_child_count() - 1)
@@ -199,6 +284,23 @@ func _drag(win: Control, bar: Control, e: InputEvent) -> void:
 			_dragging = null
 	elif e is InputEventMouseMotion and _dragging == win:
 		win.position += e.position - _drag_from
+		win.position.y = max(31.0, win.position.y)
+
+
+var _sizing: Control = null
+
+func _resize(win: Control, e: InputEvent) -> void:
+	if e is InputEventMouseButton and e.button_index == MOUSE_BUTTON_LEFT:
+		if e.pressed:
+			_sizing = win
+			move_child(win, get_child_count() - 1)
+			_focus(win.get_meta("content"))
+		else:
+			_sizing = null
+	elif e is InputEventMouseMotion and _sizing == win:
+		win.size.x = max(240.0, win.size.x + e.relative.x)
+		win.size.y = max(120.0, win.size.y + e.relative.y)
+		_relayout(win)
 
 
 func _focus(c: Control) -> void:
