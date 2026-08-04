@@ -78,8 +78,8 @@ or the language. Four checks:
 
 ## D4. The scripting language ("NomScript") is ours, and it is a bytecode VM
 
-Python-flavoured surface syntax, a subset modelled on `hamsh` (see
-`~/Hamnix/docs/HAMSH_SPEC.md`). We own it because we need three things no
+Python-flavoured surface syntax, a subset modelled on `nomsh` (see
+`~/NomnixOS/docs/HAMSH_SPEC.md`). We own it because we need three things no
 embeddable interpreter gives us together: a sandbox by construction (the only
 I/O that exists is the virtual file tree), exact determinism, and a **per-tick
 instruction budget**.

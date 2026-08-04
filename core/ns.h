@@ -6,7 +6,7 @@
  * anyone else's. That is the whole Plan 9 idea and it is the thing that makes
  * `bind` a first-class administrative verb rather than a curiosity.
  *
- * Resolution is LONGEST PREFIX MATCH, which is what Hamnix's own rc.boot
+ * Resolution is LONGEST PREFIX MATCH, which is what NomnixOS's own rc.boot
  * relies on: binding '#c' at /dev and '#b' at /dev/blk works because
  * /dev/blk/nvme0n1 matches the longer of the two.
  *

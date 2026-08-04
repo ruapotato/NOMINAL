@@ -64,7 +64,7 @@ player who only ever ssh's will drown around segment six, which is the lesson.
 
 ## The desktop
 
-MATE-shaped, Hamnix-shaped: a top panel with a menu and a clock, a bottom
+MATE-shaped, NomnixOS-shaped: a top panel with a menu and a clock, a bottom
 taskbar with a window list, real draggable/stackable windows. Apps:
 
 | app | what it is |
@@ -76,7 +76,7 @@ taskbar with a window list, real draggable/stackable windows. Apps:
 | Files | the namespace, including everything you have mounted |
 | Logs | `/var/log`, greppable |
 
-Per Hamnix `de_scene_file_arch.md`, windows publish a text display list to
+Per NomnixOS `de_scene_file_arch.md`, windows publish a text display list to
 `/dev/wsys/<wid>/scene` and the engine is only a compositor and input router.
 That is what lets an in-game program open a window, and it means the desktop is
 inspectable over the socket like everything else.

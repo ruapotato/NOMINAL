@@ -4,9 +4,9 @@ The customer's machine will run on a CPU we build, executing real compiled
 binaries. This supersedes the interpreted-userland approach of D17, which
 stays as the layer above until the CPU can carry it.
 
-## Why not simply run real Hamnix
+## Why not simply run real NomnixOS
 
-I measured it rather than guessing. Real Hamnix boots headless under
+I measured it rather than guessing. Real NomnixOS boots headless under
 QEMU/KVM and reaches its interactive shell in **4.08 s**. It also does this:
 
 ```
@@ -14,7 +14,7 @@ kaslr] offset=0x0000000007200000     <- run 1
 kaslr] offset=0x000000000aa00000     <- run 2
 ```
 
-**Real Hamnix is not deterministic**, and that is KASLR working correctly, not
+**Real NomnixOS is not deterministic**, and that is KASLR working correctly, not
 a defect to fix. Running it directly costs the replay gate, shareable seeds
 ("see if you can fix 4823"), and cross-platform reproducibility. It also costs
 shippability: QEMU cannot be embedded in a Godot export, KVM is Linux-only so
@@ -85,13 +85,13 @@ of results into one FNV hash, so a single wrong byte fails the test.
 - One hart, no interrupts, no timers.
 - Two syscalls (`write`, `exit`). The set is small on purpose: it is the
   machine's entire connection to the world, so the sandbox is structural.
-- Nothing of Hamnix runs on it yet. That needs the Adder backend, which is
-  work in the Hamnix tree and a separate decision.
+- Nothing of NomnixOS runs on it yet. That needs the Adder backend, which is
+  work in the NomnixOS tree and a separate decision.
 
 ## Sequencing
 
 1. the core, validated against a reference  ← this change
 2. syscalls backed by the VFS, so a guest program can read the machine's files
 3. enough of a runtime that a compiled tool (`ls`, `cat`) works
-4. the Adder backend, so real Hamnix userland compiles for this machine
+4. the Adder backend, so real NomnixOS userland compiles for this machine
 5. the boot chain moves from interpreted scripts (D17) onto compiled binaries

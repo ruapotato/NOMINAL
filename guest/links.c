@@ -53,7 +53,7 @@ void _start(void)
     char *v[GARGS];
     if (g_argv(arg, v) < 1) {
         g_putln("usage: links <host>[/path]");
-        g_putln("try:   links wiki.hamnix.org");
+        g_putln("try:   links wiki.nomnix.org");
         g_exit(1);
     }
 

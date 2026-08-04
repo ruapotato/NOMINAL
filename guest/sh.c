@@ -348,7 +348,7 @@ static int run_line(char *cmd0)
         g_putln("           a | b | c               pipelines");
         g_putln("files:     ls cat cp mv rm touch grep head wc stat chmod sed");
         g_putln("system:    ps ns mount umount chroot df uname whoami pkg");
-        g_putln("network:   links <host>[/path]      try links wiki.hamnix.org");
+        g_putln("network:   links <host>[/path]      try links wiki.nomnix.org");
         g_putln("");
         g_putln("the machine's own state is under /proc: try `cat /proc/self/ns`");
         g_putln("what differs from what was shipped: `pkg verify`");

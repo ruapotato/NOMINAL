@@ -63,7 +63,7 @@ That forces three things, all first-class from day one, none bolted on later:
 - **Engine: Godot 4.7.1** (binary is in the repo root). Must export to **Linux
   and Windows**. Do not add dependencies that break either.
 - **The ship scripting language is a Python-syntax language of our own**, a
-  subset modelled on `hamsh`. **Do not embed Lua, Python, or any third-party
+  subset modelled on `nomsh`. **Do not embed Lua, Python, or any third-party
   interpreter.** We own the interpreter because we need: a sandbox by
   construction (the only I/O that exists is the virtual file tree), exact
   determinism, and a **per-tick instruction budget** — otherwise the first
@@ -78,7 +78,7 @@ That forces three things, all first-class from day one, none bolted on later:
 - **An in-game desktop**, diegetic: it is the station's workstation, not a
   menu. Familiar *grammar* (windows, panel, launcher — instantly readable),
   strange *dialect* (unusual affordances, dense instrument-panel typography,
-  but like hamnix). Terminals in it are
+  but like nomnix). Terminals in it are
   sessions into ships.
 - **Home folders are shareable.** A player's scripts live in a home directory
   that exports to a single zip and imports cleanly, so people can swap setups
@@ -86,9 +86,9 @@ That forces three things, all first-class from day one, none bolted on later:
 
 ## Reference material
 
-`~/Hamnix` is a from-scratch operating system with a Plan 9-shape file model,
+`~/NomnixOS` is a from-scratch operating system with a Plan 9-shape file model,
 per-process namespaces, a `/net` file tree, a scene-file desktop, and a
-Python-syntax shell (`user/hamsh.ad`). **Read it for how the OS should be laid
+Python-syntax shell (`user/nomsh.ad`). **Read it for how the OS should be laid
 out and how the file model should behave** — device files, what blocking on a
 dead device does, how a restricted namespace fails, what a shell of this shape
 looks like.
@@ -97,10 +97,10 @@ looks like.
 spec and the reference implementation, not a dependency. NOMINAL reimplements
 the *model* in a few thousand lines inside the game. The player cannot tell
 whether a real kernel is underneath; they can only tell whether it *behaves*
-right, and Hamnix is how you know what right looks like.
+right, and NomnixOS is how you know what right looks like.
 
 Useful specifically: `sys/src/9/port/` (device/file-server shape),
-`user/hamsh.ad` (the language and its interpreter), `docs/architecture.md`,
+`user/nomsh.ad` (the language and its interpreter), `docs/architecture.md`,
 `docs/de_scene_file_arch.md` (windows as display lists in file servers).
 
 ## Build this first — a vertical slice, no combat

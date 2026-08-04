@@ -1,4 +1,4 @@
-/* image.c — the installed system, modelled on Hamnix.
+/* image.c — the installed system, modelled on NomnixOS.
  *
  * Two rules govern this table.
  *
@@ -11,7 +11,7 @@
  *    description of what booting does — it is what booting does. Corrupt it
  *    and the interpreter fails on the damaged line.
  *
- * Layout follows Hamnix: /etc/inittab names what PID 1 runs, /etc/rc.boot is
+ * Layout follows NomnixOS: /etc/inittab names what PID 1 runs, /etc/rc.boot is
  * the bootstrap rc, /etc/rc.d/rc.N are the runlevels, and the .svc files
  * under /etc/services.d are the services.
  */
@@ -65,8 +65,8 @@ static const Package PKG_BOOTLOADER = {
 static const Package PKG_KERNEL = {
     "kernel-default", "6.4.11", "the kernel and its initrd",
     {
-      { "/boot/vmlinuz-6.4.11", "\x7fKRNL 6.4.11 x86_64\n", 0644, NULL },
-      { "/boot/vmlinuz", NULL, 0777, "/boot/vmlinuz-6.4.11" },
+      { "/boot/vmnomuz-6.4.11", "\x7fKRNL 6.4.11 rv64\n", 0644, NULL },
+      { "/boot/vmnomuz", NULL, 0777, "/boot/vmnomuz-6.4.11" },
       { "/boot/initrd-6.4.11",
         "\x7fINITRD 6.4.11\n"
         "module virtio_blk\n"
@@ -108,13 +108,13 @@ static const Package PKG_BASE = {
       { "/etc/fstab",    NULL, 0644, NULL },
       { "/etc/hostname", NULL, 0644, NULL },
       { "/etc/os-release",
-        "NAME=\"Hamnix\"\nVERSION=\"11.4\"\nID=hamnix\n"
-        "PRETTY_NAME=\"Hamnix 11.4\"\n", 0644, NULL },
+        "NAME=\"NomnixOS\"\nVERSION=\"11.4\"\nID=nomnix\n"
+        "PRETTY_NAME=\"NomnixOS 11.4\"\n", 0644, NULL },
       { "/etc/lsb-release",
-        "DISTRIB_ID=Hamnix\nDISTRIB_RELEASE=11.4\n", 0644, NULL },
-      { "/etc/issue", "Hamnix 11.4\n", 0644, NULL },
-      { "/etc/motd",  "Welcome to Hamnix.\n", 0644, NULL },
-      { "/etc/shells", "/bin/hamsh\n", 0644, NULL },
+        "DISTRIB_ID=NomnixOS\nDISTRIB_RELEASE=11.4\n", 0644, NULL },
+      { "/etc/issue", "NomnixOS 11.4\n", 0644, NULL },
+      { "/etc/motd",  "Welcome to NomnixOS.\n", 0644, NULL },
+      { "/etc/shells", "/bin/nomsh\n", 0644, NULL },
       { "/etc/profile", "# login shell profile\nPATH=/bin:/usr/bin:/sbin\n", 0644, NULL },
           { "/run", NULL, 0755, NULL, true },
       { "/tmp", NULL, 0777, NULL, true },
@@ -128,8 +128,8 @@ static const Package PKG_USERS = {
       { "/etc/passwd",
         "root:x:0:0:root:/root:/bin/sh\n"
         "daemon:x:1:1:daemon:/:/bin/false\n"
-        "hamowner:x:1000:1000:host owner:/home/hamowner:/bin/sh\n", 0644, NULL },
-      { "/etc/group", "root:x:0:\ndaemon:x:1:\nhamowner:x:1000:\n", 0644, NULL },
+        "nomowner:x:1000:1000:host owner:/home/nomowner:/bin/sh\n", 0644, NULL },
+      { "/etc/group", "root:x:0:\ndaemon:x:1:\nnomowner:x:1000:\n", 0644, NULL },
       { "/etc/shadow", "root:!:19000:0:99999:7:::\n", 0600, NULL },
       { "/etc/login.defs", "UID_MIN 1000\nUID_MAX 60000\n", 0644, NULL },
     }, 4
@@ -152,10 +152,10 @@ static const Package PKG_NET = {
       { "/etc/net/interfaces", "iface eth0\n  address dhcp\n", 0644, NULL },
       { "/etc/hosts",
         "127.0.0.1       localhost nominal.local\n"
-        "10.0.2.20       wiki.hamnix.org wiki\n"
+        "10.0.2.20       wiki.nomnix.org wiki\n"
         "10.0.2.30       support.internal support\n"
-        "10.0.2.44       bofh.hamnix.org bofh\n", 0644, NULL },
-      { "/etc/resolv.conf", "nameserver 10.0.2.3\nsearch hamnix.org\n", 0644, NULL },
+        "10.0.2.44       bofh.nomnix.org bofh\n", 0644, NULL },
+      { "/etc/resolv.conf", "nameserver 10.0.2.3\nsearch nomnix.org\n", 0644, NULL },
       { "/etc/host.conf", "order hosts,bind\n", 0644, NULL },
       { "/etc/networks", "default 0.0.0.0\n", 0644, NULL },
       { "/etc/protocols", "ip 0 IP\ntcp 6 TCP\nudp 17 UDP\n", 0644, NULL },
@@ -205,9 +205,9 @@ static const Package PKG_UDEV = {
  * better at the job than one who does not, which is the only kind of easter
  * egg worth hiding. */
 static const Package PKG_HOME = {
-    "hamowner-home", "1.0", "the previous admin's home directory",
+    "nomowner-home", "1.0", "the previous admin's home directory",
     {
-      { "/home/hamowner/TODO",
+      { "/home/nomowner/TODO",
         "- rotate the logs, /var/log is getting silly. SERIOUSLY this time,\n"
         "  it filled up in March and syslogd would not start\n"
         "- ask R. why sshd keeps coming back chmod 000. THIRD TIME.\n"
@@ -215,11 +215,11 @@ static const Package PKG_HOME = {
         "- document the initrd thing before I forget it again\n"
         "- holiday\n", 0644, NULL },
 
-      { "/home/hamowner/notes.txt",
+      { "/home/nomowner/notes.txt",
         "Things this box has done to me, so the next person does not have to\n"
         "learn them the hard way. Every one of these actually happened.\n"
         "\n"
-        "1. /boot/vmlinuz is a SYMLINK. When somebody deletes the versioned\n"
+        "1. /boot/vmnomuz is a SYMLINK. When somebody deletes the versioned\n"
         "   image, `ls /boot` looks completely fine. stat it.\n"
         "\n"
         "2. If pkg verify is clean and it still will not boot, check the\n"
@@ -264,12 +264,12 @@ static const Package PKG_HOME = {
         "    stops for a monitoring tool nobody asked for. `pkg owns` it,\n"
         "    see that nothing does, delete it.\n", 0644, NULL },
 
-      { "/home/hamowner/.plan",
+      { "/home/nomowner/.plan",
         "gone fishing. if the machine is on fire, boot the rescue medium and\n"
-        "read wiki.hamnix.org/rescue. if the wiki is also on fire, I am sorry.\n",
+        "read wiki.nomnix.org/rescue. if the wiki is also on fire, I am sorry.\n",
         0644, NULL },
 
-      { "/home/hamowner/fortunes",
+      { "/home/nomowner/fortunes",
         "It is not a bug, it is an undocumented feature of the initrd.\n"
         "Any sufficiently advanced cleanup script is indistinguishable from\n"
         "  an attacker.\n"
@@ -277,9 +277,9 @@ static const Package PKG_HOME = {
         "There is no cloud. There is only somebody else's /dev/sda1.\n"
         "Backups are a theory. Restores are a fact.\n", 0644, NULL },
 
-      { "/home/hamowner/bin/cleanup",
+      { "/home/nomowner/bin/cleanup",
         "# the enthusiastic cleanup script. DO NOT RUN. See TODO.\n"
-        "# It removed /boot/vmlinuz-6.4.11 in March because the name did not\n"
+        "# It removed /boot/vmnomuz-6.4.11 in March because the name did not\n"
         "# match the pattern it expected and it decided that meant stale.\n"
         "echo this script is disabled and is staying disabled\n", 0644, NULL },
 
@@ -306,25 +306,25 @@ static const Package PKG_SSH = {
 };
 
 static const Package PKG_HAMDE = {
-    "hamde", "3.1", "the desktop",
+    "nomde", "3.1", "the desktop",
     {
-      { "/usr/bin/hamde", "#!hamde\n", 0755, NULL },
-      { "/etc/services.d/hamde.svc",
-        "# /etc/services.d/hamde.svc\n"
-        "name: hamde\n"
-        "exec: /usr/bin/hamde\n"
+      { "/usr/bin/nomde", "#!nomde\n", 0755, NULL },
+      { "/etc/services.d/nomde.svc",
+        "# /etc/services.d/nomde.svc\n"
+        "name: nomde\n"
+        "exec: /usr/bin/nomde\n"
         "description: desktop panel\n"
         "after: net\n"
         "restart: on-failure\n"
         "enabled: yes\n"
         "runlevel: 5\n", 0644, NULL },
-      { "/etc/hamde/panel.conf", "position=bottom\nheight=28\n", 0644, NULL },
-      { "/etc/hamde/desktop.icons", "Terminal\nFiles\n", 0644, NULL },
+      { "/etc/nomde/panel.conf", "position=bottom\nheight=28\n", 0644, NULL },
+      { "/etc/nomde/desktop.icons", "Terminal\nFiles\n", 0644, NULL },
     }, 4
 };
 
 static const Package PKG_SHELL = {
-    "hamsh", "1.9", "the shell and the base tools",
+    "nomsh", "1.9", "the shell and the base tools",
     {
       { "/bin/rc",    NULL, 0755, NULL },
       { "/bin/sh",    NULL, 0755, NULL },
@@ -385,7 +385,7 @@ static const Package PKG_PKGCONF = {
         "# channels: stable (11.4) | testing (12.0-pre)\n"
         "name = main\n"
         "channel = stable\n"
-        "url = https://packages.hamnix.org/11.4\n", 0644, NULL },
+        "url = https://packages.nomnix.org/11.4\n", 0644, NULL },
       { "/etc/pkg/pkg.conf",
         "# how aggressive upgrades are allowed to be\n"
         "allow_downgrade = no\n"
@@ -426,7 +426,7 @@ static const Package PKG_CRON = {
       { "/etc/crontab",
         "# m h dom mon dow  command\n"
         "17 *  * * *  /usr/sbin/logrotate /etc/logrotate.conf\n"
-        "0  4  * * *  /home/hamowner/bin/cleanup   # DISABLED, see TODO\n", 0644, NULL },
+        "0  4  * * *  /home/nomowner/bin/cleanup   # DISABLED, see TODO\n", 0644, NULL },
       { "/var/spool/cron/root", "# no personal jobs\n", 0600, NULL },
           { "/var/spool/cron", NULL, 0755, NULL, true },
     }, 5
@@ -518,7 +518,7 @@ static const Package PKG_MAN = {
         "  firmware -> zbl -> kernel -> initrd -> init -> rc -> services\n"
         "\n"
         "  zbl              /boot/zbl/zbl.cfg        pkg zbl\n"
-        "  kernel, initrd   /boot/vmlinuz, /boot/initrd (SYMLINKS)\n"
+        "  kernel, initrd   /boot/vmnomuz, /boot/initrd (SYMLINKS)\n"
         "                                            pkg kernel-default\n"
         "  init             /sbin/init, /etc/inittab pkg sysinit\n"
         "  rc               /etc/rc.boot, /etc/rc.d  pkg sysinit\n"
@@ -567,7 +567,7 @@ static const Package PKG_MAIL = {
       { "/usr/sbin/postfix", NULL, 0755, NULL },
       { "/etc/postfix/main.cf",
         "myhostname = nominal.local\nrelayhost = 10.0.2.30\n", 0644, NULL },
-      { "/etc/aliases", "root: hamowner\npostmaster: root\n", 0644, NULL },
+      { "/etc/aliases", "root: nomowner\npostmaster: root\n", 0644, NULL },
       { "/etc/services.d/postfix.svc",
         "# /etc/services.d/postfix.svc\n"
         "name: postfix\nexec: /usr/sbin/postfix\n"
@@ -655,19 +655,19 @@ static const Package PKG_RESCUE_BASE = {
         "echo   for i in dev sys proc; do mount /$i /mnt/$i; done\n"
         "echo   chroot /mnt\n"
         "echo\n"
-        "echo   links wiki.hamnix.org/rescue   for the full procedure\n"
+        "echo   links wiki.nomnix.org/rescue   for the full procedure\n"
         "echo\n", 0755, NULL },
       { "/etc/hostname", "rescue\n", 0644, NULL },
-      { "/etc/issue",    "Hamnix rescue 3.2 -- live medium\n", 0644, NULL },
+      { "/etc/issue",    "NomnixOS rescue 3.2 -- live medium\n", 0644, NULL },
       { "/etc/os-release",
-        "NAME=\"Hamnix Rescue\"\nVERSION=\"3.2\"\nID=hamnix-rescue\n", 0644, NULL },
+        "NAME=\"NomnixOS Rescue\"\nVERSION=\"3.2\"\nID=nomnix-rescue\n", 0644, NULL },
       { "/etc/fstab", "# nothing is mounted automatically on the rescue medium\n",
         0644, NULL },
       { "/etc/hosts",
         "127.0.0.1       localhost\n"
-        "10.0.2.20       wiki.hamnix.org wiki\n"
+        "10.0.2.20       wiki.nomnix.org wiki\n"
         "10.0.2.30       support.internal support\n"
-        "10.0.2.44       bofh.hamnix.org bofh\n", 0644, NULL },
+        "10.0.2.44       bofh.nomnix.org bofh\n", 0644, NULL },
       { "/etc/resolv.conf", "nameserver 10.0.2.3\n", 0644, NULL },
       /* The live medium has its OWN libc. That is the whole point of it: when
        * the customer's libc is wrong, nothing on their disk runs, including
@@ -676,9 +676,9 @@ static const Package PKG_RESCUE_BASE = {
       { "/lib/libm.so.6",  "stub libm 2.38\n", 0755, NULL },
       { "/etc/ld.so.conf", "/lib\n/usr/lib\n", 0644, NULL },
       { "/etc/motd",
-        "Hamnix rescue medium.\n"
+        "NomnixOS rescue medium.\n"
         "  the customer disk is /dev/sda1 and is not mounted\n"
-        "  links wiki.hamnix.org/rescue    for the procedure\n", 0644, NULL },
+        "  links wiki.nomnix.org/rescue    for the procedure\n", 0644, NULL },
       { "/usr/lib/sysinit/init", NULL, 0755, NULL },
       { "/sbin/init", NULL, 0777, "/usr/lib/sysinit/init" },
     }, 14
@@ -889,8 +889,8 @@ void image_generated(const Machine *m, const char *path, Buf *out)
     else if (strcmp(path, "/etc/rc.d/rc.0") == 0)     buf_puts(out, SRC_RC0);
     else if (strcmp(path, "/boot/zbl/zbl.cfg") == 0) {
         buf_puts(out, "default 0\ntimeout 5\n\n");
-        buf_puts(out, "entry \"Hamnix 11.4\"\n");
-        buf_puts(out, "  kernel /boot/vmlinuz\n");
+        buf_puts(out, "entry \"NomnixOS 11.4\"\n");
+        buf_puts(out, "  kernel /boot/vmnomuz\n");
         buf_puts(out, "  initrd /boot/initrd\n");
         buf_puts(out, "  root UUID=");
         buf_puts(out, m->root_uuid);
@@ -1014,9 +1014,9 @@ void machine_install(Machine *m, uint64_t seed)
     m->bootsector = true;
 
     static const char *DIRS[] = {
-        "/bin", "/boot", "/boot/zbl", "/dev", "/etc", "/etc/hamde",
+        "/bin", "/boot", "/boot/zbl", "/dev", "/etc", "/etc/nomde",
         "/etc/net", "/etc/rc.d", "/etc/services.d", "/etc/ssh", "/etc/udev",
-        "/etc/udev/rules.d", "/home", "/home/hamowner", "/home/hamowner/bin", "/lib", "/lib/modules",
+        "/etc/udev/rules.d", "/home", "/home/nomowner", "/home/nomowner/bin", "/lib", "/lib/modules",
         "/lib/modules/6.4.11", "/proc", "/root", "/sbin", "/sys", "/tmp",
         "/mnt", "/media", "/usr", "/usr/bin", "/usr/lib", "/usr/lib/sysinit",
         "/usr/sbin", "/usr/share", "/usr/share/man", "/usr/share/zoneinfo",
@@ -1074,12 +1074,12 @@ static void install_local_edits(Machine *m, uint64_t seed)
       { "/etc/resolv.conf",
         "# changed 12 March -- the .3 resolver was timing out at peak\n"
         "nameserver 10.0.2.9\n"
-        "search hamnix.org\n" },
+        "search nomnix.org\n" },
       { "/etc/hosts",
         "127.0.0.1       localhost nominal.local\n"
-        "10.0.2.20       wiki.hamnix.org wiki\n"
+        "10.0.2.20       wiki.nomnix.org wiki\n"
         "10.0.2.30       support.internal support\n"
-        "10.0.2.44       bofh.hamnix.org bofh\n"
+        "10.0.2.44       bofh.nomnix.org bofh\n"
         "# added for the migration, remove when dock-2 is retired\n"
         "10.0.2.61       oldbilling.internal oldbilling\n" },
       { "/etc/ssh/sshd_config",
@@ -1099,7 +1099,7 @@ static void install_local_edits(Machine *m, uint64_t seed)
       { "/etc/profile",
         "# login shell profile\n"
         "PATH=/bin:/usr/bin:/sbin\n"
-        "# added by hamowner: I got tired of typing it\n"
+        "# added by nomowner: I got tired of typing it\n"
         "alias v=pkg verify\n" },
     };
     const int NEDITS = (int)(sizeof EDITS / sizeof EDITS[0]);
@@ -1252,7 +1252,7 @@ bool pkg_file_content(const Machine *m, const char *pkgname, const char *path,
              * are RESTORED by pkg_restore_path, never here.
              *
              * This function used to do the restoring itself, which made it a
-             * read that wrote: `pkg diff /boot/vmlinuz` on a dangling symlink
+             * read that wrote: `pkg diff /boot/vmnomuz` on a dangling symlink
              * silently repaired the symlink and solved the machine for the
              * player. A blind playtester hit exactly that, watched `ls` show
              * a healthy link one command after `stat` said the path did not

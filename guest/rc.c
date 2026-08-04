@@ -1,6 +1,6 @@
 /* /bin/rc — the script interpreter that runs the boot.
  *
- * A deliberately small command language, in the spirit of hamsh: one command
+ * A deliberately small command language, in the spirit of nomsh: one command
  * per line, '#' comments, blank lines ignored, and any failure stops the
  * script. That last rule is why a corrupted rc file takes the machine down
  * instead of quietly skipping a step.
@@ -102,7 +102,7 @@ void _start(void)
              * talk over it. */
             if (g_spawn(w[1], n > 2 ? w[2] : "") != 0) g_exit(1);
         } else if (g_streq(w[0], "bind")) {
-            /* Plan 9 bind, in the boot scripts, the way Hamnix's own rc.boot
+            /* Plan 9 bind, in the boot scripts, the way NomnixOS's own rc.boot
              * uses it. Every process started after this inherits the view,
              * which is what makes a bad bind such a quiet fault: nothing is
              * corrupt and everything downstream reads the wrong file. */

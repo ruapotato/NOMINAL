@@ -27,7 +27,7 @@ void _start(void)
         if (!g_streq(dir, "/")) g_cat(full, "/", sizeof full);
         g_cat(full, name, sizeof full);
         /* A symlink is shown with its target. The wiki says the commonest
-         * thing people miss is a dead /boot/vmlinuz, and that `ls` will make
+         * thing people miss is a dead /boot/vmnomuz, and that `ls` will make
          * it look healthy -- which was true and is a bad kind of true when
          * the fix is one character of output away. */
         static char tgt[192];

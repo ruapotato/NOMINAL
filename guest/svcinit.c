@@ -1,7 +1,7 @@
 /* /sbin/svcinit — bring up the services in /etc/services.d.
  *
  * Reads every .svc unit, honours `enabled` and `runlevel`, orders by `after`,
- * and starts what is left. The unit grammar is Hamnix's: `key: value` per
+ * and starts what is left. The unit grammar is NomnixOS's: `key: value` per
  * line, '#' comments.
  *
  * A required unit that will not start takes the boot down. That is the whole

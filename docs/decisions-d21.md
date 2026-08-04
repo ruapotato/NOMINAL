@@ -6,7 +6,7 @@ managing it.
 ## The mistake
 
 D20 briefed the model with **ground truth**: the breaker's own description of
-exactly what it did, down to the path. `/boot/vmlinuz-6.4.11 deleted`. Then it
+exactly what it did, down to the path. `/boot/vmnomuz-6.4.11 deleted`. Then it
 told the model not to say so, and when the model said so anyway — which small
 models do — a leak filter threw the reply away.
 
@@ -22,7 +22,7 @@ words, and what they *saw*.
 
 | what the breaker did | what the customer knows |
 |---|---|
-| deleted `/boot/vmlinuz-6.4.11` | "the disk was nearly full so I deleted some old-looking files" |
+| deleted `/boot/vmnomuz-6.4.11` | "the disk was nearly full so I deleted some old-looking files" |
 | flipped bytes in `zbl.cfg` | "nothing, it was working yesterday and now it isn't" |
 | libc replaced with 2.41 | "I let the updater install something on Friday" |
 | stray vendor `.svc` dropped in | "the monitoring people were on it last week" |

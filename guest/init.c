@@ -1,6 +1,6 @@
 /* /sbin/init — pid 1.
  *
- * Reads /etc/inittab and runs the last non-comment line, exactly as Hamnix's
+ * Reads /etc/inittab and runs the last non-comment line, exactly as NomnixOS's
  * init2 does. It knows nothing else about booting: everything the machine
  * becomes is decided by files it reads at runtime, which is what makes this a
  * boot rather than a description of one.

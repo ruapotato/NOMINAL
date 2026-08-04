@@ -359,7 +359,7 @@ the fault. It is now a deliberate act with a name and a receipt.
 
 ## 14. What the previous administrator's notes say
 
-`/home/hamowner/notes.txt` is ten numbered lessons and **every one of them
+`/home/nomowner/notes.txt` is ten numbered lessons and **every one of them
 describes a fault the breaker really produces**. That is the rule for the
 easter eggs: flavour that is also true. A player who reads the home directory
 is straightforwardly better at the job afterwards, which is the only kind of

@@ -28,8 +28,8 @@ typedef struct {
  * somewhere that is not there. */
 static const Page PAGES[] = {
 
-{ "wiki.hamnix.org", "10.0.2.20", "/",
-"Hamnix wiki\n"
+{ "wiki.nomnix.org", "10.0.2.20", "/",
+"NomnixOS wiki\n"
 "===========\n"
 "\n"
 "  /boot          how this system boots, stage by stage\n"
@@ -40,11 +40,11 @@ static const Page PAGES[] = {
 "  /disk          space, uuids and fsck\n"
 "  /faq           things people ask twice\n"
 "\n"
-"  links wiki.hamnix.org/boot\n"
+"  links wiki.nomnix.org/boot\n"
 },
 
-{ "wiki.hamnix.org", "10.0.2.20", "/boot",
-"How Hamnix boots\n"
+{ "wiki.nomnix.org", "10.0.2.20", "/boot",
+"How NomnixOS boots\n"
 "================\n"
 "\n"
 "Seven stages. Each reads real files, and each fails differently, so the\n"
@@ -52,20 +52,20 @@ static const Page PAGES[] = {
 "\n"
 "  firmware    finds a boot sector on /dev/sda\n"
 "  zbl         reads /boot/zbl/zbl.cfg: kernel, initrd, root UUID\n"
-"  kernel      loads /boot/vmlinuz -- a SYMLINK to the versioned image\n"
+"  kernel      loads /boot/vmnomuz -- a SYMLINK to the versioned image\n"
 "  initrd      loads /boot/initrd, needs virtio_blk and ext4 modules,\n"
 "              then finds the root filesystem by UUID\n"
 "  init        /sbin/init -> /usr/lib/sysinit/init, reads /etc/inittab\n"
 "  rc          /bin/rc runs /etc/rc.boot, then /etc/rc.d/rc.3\n"
 "  services    /sbin/svcinit reads /etc/services.d/*.svc\n"
 "\n"
-"The commonest thing people miss: /boot/vmlinuz and /boot/initrd are\n"
+"The commonest thing people miss: /boot/vmnomuz and /boot/initrd are\n"
 "symlinks. If the file they point at is gone, the loader reports the LINK\n"
 "and the target, and `ls` shows the link looking perfectly healthy.\n"
-"`stat /boot/vmlinuz` will tell you the truth.\n"
+"`stat /boot/vmnomuz` will tell you the truth.\n"
 },
 
-{ "wiki.hamnix.org", "10.0.2.20", "/packages",
+{ "wiki.nomnix.org", "10.0.2.20", "/packages",
 "Packages\n"
 "========\n"
 "\n"
@@ -96,7 +96,7 @@ static const Page PAGES[] = {
 "  MODE               contents are fine, permissions are not\n"
 },
 
-{ "wiki.hamnix.org", "10.0.2.20", "/rescue",
+{ "wiki.nomnix.org", "10.0.2.20", "/rescue",
 "Rescue\n"
 "======\n"
 "\n"
@@ -115,7 +115,7 @@ static const Page PAGES[] = {
 "at the target will refuse, which is usually the mistake.\n"
 },
 
-{ "wiki.hamnix.org", "10.0.2.20", "/namespaces",
+{ "wiki.nomnix.org", "10.0.2.20", "/namespaces",
 "Namespaces\n"
 "==========\n"
 "\n"
@@ -132,7 +132,7 @@ static const Page PAGES[] = {
 "is clean and the machine is still wrong, look at the namespace.\n"
 },
 
-{ "wiki.hamnix.org", "10.0.2.20", "/services",
+{ "wiki.nomnix.org", "10.0.2.20", "/services",
 "Services\n"
 "========\n"
 "\n"
@@ -158,7 +158,7 @@ static const Page PAGES[] = {
 "line scrolled past during boot, and `svc` is where you find it afterwards.\n"
 },
 
-{ "wiki.hamnix.org", "10.0.2.20", "/disk",
+{ "wiki.nomnix.org", "10.0.2.20", "/disk",
 "Disk\n"
 "====\n"
 "\n"
@@ -182,7 +182,7 @@ static const Page PAGES[] = {
 "second repair and usually a `pkg verify` away.\n"
 },
 
-{ "wiki.hamnix.org", "10.0.2.20", "/faq",
+{ "wiki.nomnix.org", "10.0.2.20", "/faq",
 "FAQ\n"
 "===\n"
 "\n"
@@ -221,7 +221,7 @@ static const Page PAGES[] = {
 "   enabled and DEAD, or not meant to run at this runlevel at all. The boot\n"
 "   console scrolls past a service that gave up.\n"
 "\n"
-"Q. Where did /boot/vmlinuz go?\n"
+"Q. Where did /boot/vmnomuz go?\n"
 "A. Somebody ran a cleanup script. It happens more than anyone admits.\n"
 },
 
@@ -237,10 +237,10 @@ static const Page PAGES[] = {
 "  3. `pkg reinstall` is a hammer. Look first.\n"
 "  4. If it boots, you are done. Do not tidy.\n"
 "\n"
-"see also: wiki.hamnix.org\n"
+"see also: wiki.nomnix.org\n"
 },
 
-{ "bofh.hamnix.org", "10.0.2.44", "/",
+{ "bofh.nomnix.org", "10.0.2.44", "/",
 "THE BASTARD OPERATOR FROM HELL\n"
 "==============================\n"
 "\n"

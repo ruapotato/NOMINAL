@@ -351,7 +351,7 @@ static void fault_ldsoconf(Machine *m, Rng *r, char *d, size_t ds)
 static void fault_bad_shell(Machine *m, Rng *r, char *d, size_t ds)
 {
     static const char *SHELLS[] = {
-        "/bin/hamsh",      /* a shell that used to exist                  */
+        "/bin/nomsh",      /* a shell that used to exist                  */
         "/usr/bin/zsh",    /* one that was never installed                */
         "/bin/sh.old",     /* a rename that was meant to be temporary     */
         "",                /* the field left empty entirely               */
@@ -451,7 +451,7 @@ static void fault_wrong_channel(Machine *m, Rng *r, char *d, size_t ds)
         "# channels: stable (11.4) | testing (12.0-pre)\n"
         "name = main\n"
         "channel = testing\n"
-        "url = https://packages.hamnix.org/12.0-pre\n");
+        "url = https://packages.nomnix.org/12.0-pre\n");
     snprintf(m->channel, sizeof m->channel, "testing");
 
     /* and the upgrade that was run afterwards */

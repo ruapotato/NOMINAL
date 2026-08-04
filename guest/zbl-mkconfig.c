@@ -14,9 +14,9 @@ void _start(void)
         g_exit(1);
     }
     NomStat st;
-    const char *kern = "/boot/vmlinuz", *ird = "/boot/initrd";
+    const char *kern = "/boot/vmnomuz", *ird = "/boot/initrd";
     if (g_stat(kern, &st) != 0) {
-        g_putln("zbl-mkconfig: /boot/vmlinuz is not there -- fix the kernel");
+        g_putln("zbl-mkconfig: /boot/vmnomuz is not there -- fix the kernel");
         g_putln("              package first, or the config will point at");
         g_putln("              something that does not exist");
         g_exit(1);
@@ -26,8 +26,8 @@ void _start(void)
         g_exit(1);
     }
 
-    g_copy(out, "default 0\ntimeout 5\n\nentry \"Hamnix 11.4\"\n", sizeof out);
-    g_cat(out, "  kernel /boot/vmlinuz\n", sizeof out);
+    g_copy(out, "default 0\ntimeout 5\n\nentry \"NomnixOS 11.4\"\n", sizeof out);
+    g_cat(out, "  kernel /boot/vmnomuz\n", sizeof out);
     g_cat(out, "  initrd /boot/initrd\n", sizeof out);
     g_cat(out, "  root UUID=", sizeof out);
     g_cat(out, uuid, sizeof out);

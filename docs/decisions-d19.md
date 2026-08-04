@@ -46,7 +46,7 @@ worth more than one more thing that can.
 ## Namespaces
 
 Per-process, inherited at spawn, resolved by **longest prefix match** — which
-is what Hamnix's own `rc.boot` relies on when it binds `#c` at `/dev` and `#b`
+is what NomnixOS's own `rc.boot` relies on when it binds `#c` at `/dev` and `#b`
 at `/dev/blk`.
 
 ```
@@ -90,7 +90,7 @@ openssh         /usr/sbin/sshd
 ## Critical versus degraded
 
 A `.svc` unit may declare `critical: yes`. `udev`, `syslog` and `net` are;
-`sshd` and `hamde` are not. A non-critical service that will not start is
+`sshd` and `nomde` are not. A non-critical service that will not start is
 reported and stepped over.
 
 This was a bug worth fixing rather than a preference: chmod on `sshd` was

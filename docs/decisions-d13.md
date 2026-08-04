@@ -58,7 +58,7 @@ sysadmin reaches for.
 
 ## The DE
 
-Per Hamnix `docs/de_scene_file_arch.md`: **a window publishes a display list as
+Per NomnixOS `docs/de_scene_file_arch.md`: **a window publishes a display list as
 a human-readable file; the compositor reads those files, z-orders them, and one
 rasterizer turns the result into pixels.** `/dev/wsys/<wid>/scene`.
 
