@@ -55,6 +55,7 @@ typedef unsigned long      uint64_t;
 #define SYS_umount   1037   /* (at) -> 0 or -1                              */
 #define SYS_chroot   1038   /* (path) -> 0 or -1                            */
 #define SYS_mounts   1039   /* (buf, len) -> bytes: the mount table         */
+#define SYS_unlink   1043   /* (path) -> 0 or -1                            */
 #define SYS_readlink 1040   /* (path, buf, len) -> length of the target     */
 #define SYS_dns      1041   /* (name, buf, len) -> length of the address, or
                              * -1 if the nameserver does not know it        */

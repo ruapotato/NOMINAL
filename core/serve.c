@@ -119,7 +119,9 @@ static bool client_line(Client *c)
     size_t n = strlen(cmd);
     while (n && (cmd[n-1] == '\r' || cmd[n-1] == ' ')) cmd[--n] = 0;
 
-    if (strcmp(cmd, "quit") == 0 || strcmp(cmd, "exit") == 0) return false;
+    /* `exit` is the shell's: inside a chroot it leaves the chroot, which is
+     * the documented flow. Hanging up on it stranded the player. */
+    if (strcmp(cmd, "quit") == 0) return false;
 
     if (strcmp(cmd, "boot") == 0) {
         c->m.on_rescue = false;
@@ -153,7 +155,7 @@ static bool client_line(Client *c)
             "  boot              try to boot the customer's disk\n"
             "  rescue            boot the rescue medium -- this always works\n"
             "  ticket [seed] [n] take a new ticket (n = how many faults)\n"
-            "  quit              hang up\n"
+            "  quit              hang up (exit leaves a chroot, it does not disconnect)\n"
             "\n"
             "everything else runs on the machine. after `rescue`:\n"
             "  mount /dev/sda1 /mnt\n"

@@ -303,9 +303,18 @@ static const Package PKG_SHELL = {
       { "/bin/chroot", NULL, 0755, NULL },
       { "/usr/bin/pkg", NULL, 0755, NULL },
       { "/usr/bin/links", NULL, 0755, NULL },
+      { "/bin/cp", NULL, 0755, NULL },
+      { "/bin/mv", NULL, 0755, NULL },
+      { "/bin/rm", NULL, 0755, NULL },
+      { "/bin/touch", NULL, 0755, NULL },
+      { "/bin/grep", NULL, 0755, NULL },
+      { "/bin/head", NULL, 0755, NULL },
+      { "/bin/uname", NULL, 0755, NULL },
+      { "/bin/whoami", NULL, 0755, NULL },
+      { "/bin/df", NULL, 0755, NULL },
       { "/bin/false", "#!false\n", 0755, NULL },
       { "/bin/true",  "#!true\n",  0755, NULL },
-    }, 15
+    }, 24
 };
 
 static const Package *IMAGE[] = {
@@ -326,23 +335,28 @@ void image_generated(const Machine *m, const char *path, Buf *out);
  * too -- and so a player who has learned the rescue system has learned the
  * customer's, because they are the same system with different contents.
  */
-static const char *SRC_RESCUE_RC =
-"# /etc/rc.boot on the rescue medium.\n"
-"echo rescue: live system, read-only medium\n"
-"echo rescue: the customer disk is /dev/sda1 and is NOT mounted\n"
-"echo\n"
-"echo   mount /dev/sda1 /mnt\n"
-"echo   for i in dev sys proc; do mount /$i /mnt/$i; done\n"
-"echo   chroot /mnt\n"
-"echo\n";
-
 static const Package PKG_RESCUE_BASE = {
     "rescue-base", "3.2", "the live rescue system",
     {
       { "/etc/inittab",
         "# rescue medium: straight to a shell.\n"
         "/bin/rc /etc/rc.boot\n", 0644, NULL },
-      { "/etc/rc.boot",  NULL, 0755, NULL },
+      /* Literal, not generated. This used to be NULL and image_generated()
+       * decided what to put here by looking at m->on_rescue -- so
+       * `pkg reinstall sysinit` while booted from the rescue medium wrote the
+       * RESCUE's rc.boot onto the CUSTOMER's disk, every single time. Generated
+       * content must never depend on mutable machine state. */
+      { "/etc/rc.boot",
+        "# /etc/rc.boot on the rescue medium.\n"
+        "echo rescue: live system, read-only medium\n"
+        "echo rescue: the customer disk is /dev/sda1 and is NOT mounted\n"
+        "echo\n"
+        "echo   mount /dev/sda1 /mnt\n"
+        "echo   for i in dev sys proc; do mount /$i /mnt/$i; done\n"
+        "echo   chroot /mnt\n"
+        "echo\n"
+        "echo   links wiki.hamnix.org/rescue   for the full procedure\n"
+        "echo\n", 0755, NULL },
       { "/etc/hostname", "rescue\n", 0644, NULL },
       { "/etc/issue",    "Hamnix rescue 3.2 -- live medium\n", 0644, NULL },
       { "/etc/os-release",
@@ -437,9 +451,7 @@ static void install_rescue(Machine *m)
  * there, and `pkg reinstall` restores them from here. */
 void image_generated(const Machine *m, const char *path, Buf *out)
 {
-    if (strcmp(path, "/etc/rc.boot") == 0 && m->on_rescue)
-        buf_puts(out, SRC_RESCUE_RC);
-    else if (strcmp(path, "/usr/lib/sysinit/init") == 0)
+    if (strcmp(path, "/usr/lib/sysinit/init") == 0)
         buf_put(out, (const char *)GUEST_INIT, GUEST_INIT_LEN);
     else if (strcmp(path, "/bin/rc") == 0)
         buf_put(out, (const char *)GUEST_RC, GUEST_RC_LEN);
@@ -463,6 +475,24 @@ void image_generated(const Machine *m, const char *path, Buf *out)
         buf_put(out, (const char *)GUEST_UMOUNT, GUEST_UMOUNT_LEN);
     else if (strcmp(path, "/bin/chroot") == 0)
         buf_put(out, (const char *)GUEST_CHROOT, GUEST_CHROOT_LEN);
+    else if (strcmp(path, "/bin/cp") == 0)
+        buf_put(out, (const char *)GUEST_CP, GUEST_CP_LEN);
+    else if (strcmp(path, "/bin/mv") == 0)
+        buf_put(out, (const char *)GUEST_MV, GUEST_MV_LEN);
+    else if (strcmp(path, "/bin/rm") == 0)
+        buf_put(out, (const char *)GUEST_RM, GUEST_RM_LEN);
+    else if (strcmp(path, "/bin/touch") == 0)
+        buf_put(out, (const char *)GUEST_TOUCH, GUEST_TOUCH_LEN);
+    else if (strcmp(path, "/bin/grep") == 0)
+        buf_put(out, (const char *)GUEST_GREP, GUEST_GREP_LEN);
+    else if (strcmp(path, "/bin/head") == 0)
+        buf_put(out, (const char *)GUEST_HEAD, GUEST_HEAD_LEN);
+    else if (strcmp(path, "/bin/uname") == 0)
+        buf_put(out, (const char *)GUEST_UNAME, GUEST_UNAME_LEN);
+    else if (strcmp(path, "/bin/whoami") == 0)
+        buf_put(out, (const char *)GUEST_WHOAMI, GUEST_WHOAMI_LEN);
+    else if (strcmp(path, "/bin/df") == 0)
+        buf_put(out, (const char *)GUEST_DF, GUEST_DF_LEN);
     else if (strcmp(path, "/usr/bin/pkg") == 0)
         buf_put(out, (const char *)GUEST_PKG, GUEST_PKG_LEN);
     else if (strcmp(path, "/usr/bin/links") == 0)

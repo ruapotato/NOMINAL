@@ -105,6 +105,13 @@ void _start(void)
     g_exit(run_list(cmd));
 }
 
+/* Output redirection. `>` truncates, `>>` appends. Implemented by running the
+ * command with stdout pointed at a file, which is what a shell does -- and it
+ * is the only way to edit a file on this machine, so it is not a luxury:
+ *     echo "nameserver 10.0.2.3" > /etc/resolv.conf
+ */
+static int redirect_fd = -1;
+
 static int run_line(char *cmd0)
 {
     /* A `for` is parsed BEFORE expansion. Expanding first would substitute
@@ -176,6 +183,29 @@ static int run_line(char *cmd0)
         return 0;
     }
 
+    /* pull off a trailing > or >> before the verb is parsed */
+    int append = 0;
+    char *redir = 0;
+    for (char *q = cmd; *q; q++) {
+        if (*q != '>') continue;
+        redir = q;
+        *q = 0;
+        q++;
+        if (*q == '>') { append = 1; q++; }
+        while (*q == ' ') q++;
+        redir = q;
+        break;
+    }
+    if (redir && !*redir) { g_putln("sh: > needs a file"); return 1; }
+    if (redir) {
+        redirect_fd = g_open(redir, O_WRONLY | O_CREAT | (append ? O_APPEND : O_TRUNC));
+        if (redirect_fd < 0) {
+            g_puts("sh: "); g_puts(redir); g_putln(": cannot write");
+            return 1;
+        }
+    }
+    cmd = g_trim(cmd);
+
     /* split verb from the rest, keeping the rest intact for the child */
     char *rest = cmd;
     while (*rest && *rest != ' ' && *rest != '\t') rest++;
@@ -204,6 +234,19 @@ static int run_line(char *cmd0)
         if (g_unbind(v[0]) != 0) { g_putln("unbind: nothing bound there"); return 1; }
         return 0;
     }
+    if (g_streq(cmd, "exit")) {
+        /* Leaving a chroot is what `exit` means when you are in one -- that is
+         * the flow the help text describes, and hanging up the connection
+         * instead (which is what happened before) strands the player. */
+        char cw[8] = "/";
+        if (sysc(SYS_chroot, (i64)"//LEAVE", 0, 0) == 0) {
+            g_putln("exit: left the chroot, back on the rescue medium");
+            (void)cw;
+            return 0;
+        }
+        g_putln("exit: not in a chroot (use `quit` to hang up)");
+        return 0;
+    }
     if (g_streq(cmd, "chroot")) {
         /* A builtin, not /bin/chroot, for the same reason cd is: it changes
          * THIS process's idea of where the root is, and a child that changed
@@ -218,17 +261,40 @@ static int run_line(char *cmd0)
         g_puts("chroot: root is now "); g_putln(v[0]);
         return 0;
     }
-    if (g_streq(cmd, "echo")) { g_putln(rest); return 0; }
+    if (g_streq(cmd, "echo")) {
+        if (redirect_fd >= 0) {
+            sysc(SYS_write, redirect_fd, (i64)rest, (i64)g_strlen(rest));
+            sysc(SYS_write, redirect_fd, (i64)"\n", 1);
+            g_close(redirect_fd);
+            redirect_fd = -1;
+        } else {
+            g_putln(rest);
+        }
+        return 0;
+    }
     if (g_streq(cmd, "help")) {
         g_putln("builtins:  cd  pwd  bind  unbind  echo  help");
         g_putln("           for i in a b c; do ... ; done      $i expands");
-        g_putln("programs:  ls cat ps ns stat chmod pkg mount umount chroot");
+        g_putln("           echo text > file        redirect (append with >>)");
+        g_putln("files:     ls cat cp mv rm touch grep head stat chmod");
+        g_putln("system:    ps ns mount umount chroot df uname whoami pkg");
+        g_putln("network:   links <host>[/path]      try links wiki.hamnix.org");
         g_putln("");
         g_putln("the machine's own state is under /proc: try `cat /proc/self/ns`");
         g_putln("what differs from what was shipped: `pkg verify`");
         return 0;
     }
 
+    if (redirect_fd >= 0) {
+        /* Only echo can redirect for now: a child process writes to the
+         * console through its own stdout and this shell cannot hand it a
+         * file descriptor without a real fork/exec. Saying so is better than
+         * silently dropping the output. */
+        g_close(redirect_fd);
+        redirect_fd = -1;
+        g_putln("sh: only `echo` can redirect at the moment");
+        return 1;
+    }
     int rc = try_exec(cmd, rest);
     if (rc == -2) { g_puts(cmd); g_putln(": command not found"); return 127; }
     return rc == 0 ? 0 : 1;

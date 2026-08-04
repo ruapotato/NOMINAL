@@ -489,6 +489,12 @@ static int64_t kernel_syscall(Cpu *c, int64_t n, int64_t a0, int64_t a1,
         buf_free(&b);
         return r;
     }
+    case SYS_unlink: {
+        char raw[NOM_PATH_MAX], path[NOM_PATH_MAX];
+        if (!guest_str(c, (uint64_t)a0, raw, sizeof raw)) return -1;
+        Vfs *ufs = resolve_fs(p, raw, path, sizeof path);
+        return vfs_remove(ufs, path) ? 0 : -1;
+    }
     case SYS_readlink: {
         char raw[NOM_PATH_MAX], path[NOM_PATH_MAX];
         if (!guest_str(c, (uint64_t)a0, raw, sizeof raw)) return -1;
@@ -518,6 +524,16 @@ static int64_t kernel_syscall(Cpu *c, int64_t n, int64_t a0, int64_t a1,
     case SYS_chroot: {
         char raw[NOM_PATH_MAX], path[NOM_PATH_MAX];
         if (!guest_str(c, (uint64_t)a0, raw, sizeof raw)) return -1;
+        /* The one escape hatch: step back out to the real root. A process
+         * cannot normally leave its chroot, but the session is a person at a
+         * rescue console and they must be able to put the disk down. */
+        if (strcmp(raw, "//LEAVE") == 0) {
+            if (!p->info || !p->info->root[0] ||
+                strcmp(p->info->root, "/") == 0) return -1;
+            p->info->root[0] = '\0';
+            snprintf(p->info->cwd, sizeof p->info->cwd, "/");
+            return 0;
+        }
         Vfs *rfs = resolve_fs(p, raw, path, sizeof path);
         VNode *d = vfs_resolve(rfs, path, NULL);
         if (!d || d->kind != VN_DIR) return -1;

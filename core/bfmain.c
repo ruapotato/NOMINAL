@@ -146,7 +146,9 @@ int main(int argc, char **argv)
             if (!fgets(line, sizeof line, stdin)) break;
             size_t L = strlen(line);
             while (L && (line[L-1] == '\n' || line[L-1] == '\r')) line[--L] = 0;
-            if (strcmp(line, "exit") == 0) break;
+            /* `exit` belongs to the shell: in a chroot it leaves the chroot.
+             * Only `quit` hangs up. */
+            if (strcmp(line, "quit") == 0) break;
             if (strcmp(line, "help") == 0) {
                 printf("boot     boot the customer's disk and watch the console\n"
                        "rescue   boot the rescue medium (always works)\n"

@@ -68,9 +68,8 @@ static int verify_one(const char *pkg, int *bad)
 {
     if (!read_manifest(pkg)) {
         g_puts("pkg: "); g_puts(pkg);
-        g_putln(": manifest missing or unreadable -- cannot verify this package");
-        (*bad)++;
-        return 0;
+        g_putln(": no such package (or its manifest is unreadable)");
+        return -1;          /* not a finding: a bad question */
     }
     char *p = manifest;
     while (*p) {
@@ -170,14 +169,42 @@ void _start(void)
                 if (g_streq(c, v[1])) { g_putln(name); g_exit(0); }
             }
         }
-        g_putln("no package owns that path");
-        g_exit(1);
+        /* Asking about a directory is a reasonable question, so answer it:
+         * which packages own anything underneath. */
+        u64 qlen = g_strlen(v[1]);
+        int found = 0;
+        for (int i = 0; i < 128; i++) {
+            if (g_readdir("/var/lib/pkg", i, name) < 0) break;
+            if (!read_manifest(name)) continue;
+            char *p = manifest;
+            int hit = 0;
+            while (*p && !hit) {
+                char *nl = p; while (*nl && *nl != '\n') nl++;
+                char save = *nl; *nl = 0;
+                static char line[300];
+                g_copy(line, p, sizeof line);
+                *nl = save; p = *nl ? nl + 1 : nl;
+                char *a, *b, *cc;
+                char *t = g_trim(line);
+                if (!*t || !split3(t, &a, &b, &cc)) continue;
+                u64 m2 = 0;
+                while (m2 < qlen && cc[m2] == v[1][m2]) m2++;
+                if (m2 == qlen && (cc[m2] == '/' || qlen == 1)) hit = 1;
+            }
+            if (hit) { g_puts("  "); g_putln(name); found++; }
+        }
+        if (!found) g_putln("no package owns that path");
+        else { g_puts("(packages owning files under "); g_puts(v[1]); g_putln(")"); }
+        g_exit(found ? 0 : 1);
     }
 
     if (g_streq(v[0], "verify")) {
         g_bad = 0;
-        if (n >= 2) verify_one(v[1], &g_bad);
-        else        each_package(verify_cb);
+        if (n >= 2) {
+            if (verify_one(v[1], &g_bad) < 0) g_exit(1);   /* unknown package */
+        } else {
+            each_package(verify_cb);
+        }
         if (!g_bad) g_putln("all files match their packages");
         else { g_puts("\n"); g_putn(g_bad); g_putln(" file(s) differ. `pkg reinstall <package>` puts them back."); }
         g_exit(g_bad ? 1 : 0);
