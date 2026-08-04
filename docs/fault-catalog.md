@@ -173,9 +173,16 @@ Legend: **[done]** built · **[next]** in progress or immediately next ·
 
 ## 11. The system itself
 
-- **[todo]** **long-lived processes.** `spawn` runs children to completion, so
-  there are no daemons, no signals, no scheduler, and "the service crashed and
-  restarted twice" cannot happen. This is the single biggest structural gap.
+- **[done]** **long-lived processes.** A service is no longer a file that gets
+  stat-checked: it is a real program that starts, reads its configuration, and
+  **keeps running** with its cpu and memory intact for the rest of the boot.
+  `ps` is a picture of a live system rather than a history. There is no
+  scheduler and no preemption — a daemon gets a slice of instructions when the
+  system ticks — which is cooperative multitasking and a great deal less than
+  a kernel, and enough.
+- **[todo]** signals, so a daemon can be told to reload or stop.
+- **[todo]** `restart: on-failure` actually restarting, and the "respawning
+  too fast" loop that follows when it cannot.
 - **[todo]** pipes and redirection for child processes in the shell.
 - **[todo]** globbing and quoting.
 - **[todo]** a `logs` surface worth grepping: real `/var/log/messages` written

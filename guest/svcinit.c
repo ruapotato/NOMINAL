@@ -119,11 +119,13 @@ void _start(void)
                 g_putln(": no exec line");
                 g_exit(1);
             }
-            NomStat st;
-            int bad = 0;
-            const char *why = "";
-            if (g_stat(execs[u], &st) != 0)      { bad = 1; why = ": not found"; }
-            else if (!(st.mode & 0111))          { bad = 1; why = ": permission denied"; }
+            /* Actually START it. A service that is merely present and
+             * executable has not started; one that reads a missing config
+             * and exits has started and failed, which is a different fault
+             * with a different fix. */
+            i64 rc = g_svcstart(execs[u], names[u]);
+            int bad = (rc != 0);
+            const char *why = ": failed to start";
             if (bad) {
                 g_puts("svcinit: ");
                 g_puts(names[u]);

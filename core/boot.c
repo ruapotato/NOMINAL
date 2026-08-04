@@ -194,6 +194,15 @@ static bool initrd_has_module(const Buf *b, const char *name)
 
 void machine_boot(Machine *m)
 {
+    /* A reboot kills everything that was running. Without this the daemon
+     * table filled up across successive boots and later services were
+     * refused a slot without ever being run -- so they failed silently, with
+     * no message from the program itself, which is the worst kind of bug to
+     * read. */
+    kernel_stop_daemons(m);
+    m->nproc = 0;
+    m->next_pid = 1;
+
     buf_clear(&m->boot.console);
     m->boot.running   = false;
     m->boot.emergency = 0;
@@ -407,6 +416,11 @@ void machine_boot(Machine *m)
         }
     }
 
+    /* Let the daemons run for a moment before we call it up. A service that
+     * starts cleanly and then falls over ten seconds later is a real and
+     * miserable failure, and it can only exist because they keep running. */
+    kernel_tick(m, 4, &m->boot.console);
+
     m->boot.reached   = BOOT_TARGET;
     m->boot.failed_at = BOOT_TARGET;
     m->boot.running   = true;
@@ -420,6 +434,9 @@ done:
  * when the installed system's boot chain does not. */
 void machine_boot_rescue(Machine *m)
 {
+    kernel_stop_daemons(m);
+    m->nproc = 0;
+    m->next_pid = 1;
     buf_clear(&m->boot.console);
     m->on_rescue = true;
     m->nmount = 0;                 /* a fresh boot has nothing mounted */

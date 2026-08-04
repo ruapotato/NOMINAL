@@ -33,7 +33,11 @@
 /* Guest physical memory is one flat span. There is no MMU yet: a program is
  * loaded where its ELF asks to be loaded and addresses are physical. Paging is
  * a later concern and does not change the ISA. */
-#define CPU_MEM_BYTES  (16u * 1024u * 1024u)
+/* 4 MB. The largest guest program is about 14 KB and the stack is tiny, so
+ * this is generous -- and it has to be, because every LONG-LIVED daemon keeps
+ * its own machine alive for the whole boot. At 16 MB a dozen daemons cost
+ * 192 MB of host memory for nothing. */
+#define CPU_MEM_BYTES  (4u * 1024u * 1024u)
 #define CPU_STACK_TOP  (CPU_MEM_BYTES - 64u)
 
 typedef enum {

@@ -512,12 +512,29 @@ static void fault_fstab(Machine *m, Rng *r, char *d, size_t ds)
     }
 }
 
+/* A daemon's configuration file removed. The binary is present, correct and
+ * executable -- `pkg verify` says the package is fine except for one config,
+ * and the service still will not start, because it reads that config and
+ * gives up. This only became possible when services became real programs. */
+static void fault_daemon_config(Machine *m, Rng *r, char *d, size_t ds)
+{
+    static const char *CONFS[] = {
+        "/etc/net/interfaces", "/etc/udev/rules.d/50-default.rules",
+        "/etc/syslog.conf", "/etc/nftables.conf", "/etc/audit/auditd.conf",
+        "/etc/ntp.conf", "/etc/httpd/httpd.conf",
+    };
+    const char *path = CONFS[rng_next(r) % 7];
+    if (!vfs_lookup(&m->disk, path)) return;
+    vfs_remove(&m->disk, path);
+    snprintf(d, ds, "removed %s, so the daemon that reads it will not start", path);
+}
+
 typedef void (*StructuralFault)(Machine *, Rng *, char *, size_t);
 static const StructuralFault STRUCTURAL[] = {
     fault_bootsector, fault_stray_unit, fault_wrong_uuid, fault_missing_module,
     fault_bad_libc, fault_wrong_arch, fault_ldsoconf,
     fault_bad_shell, fault_no_root, fault_unclean_shutdown,
-    fault_wrong_channel, fault_fstab,
+    fault_wrong_channel, fault_fstab, fault_daemon_config,
 };
 #define NSTRUCT ((int)(sizeof STRUCTURAL / sizeof STRUCTURAL[0]))
 

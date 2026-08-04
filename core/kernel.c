@@ -194,6 +194,10 @@ static const char *PROC_FILES[] = { "status", "cmdline", "cwd", "ns", NULL };
 
 static bool link_check(Machine *m, Vfs *fs, const char *needs,
                        char *err, size_t errsz);
+static int64_t spawn_fail(Buf *console, char *err, size_t errsz, int64_t code,
+                          const char *fmt, ...);
+static int64_t kernel_syscall(Cpu *c, int64_t n, int64_t a0, int64_t a1,
+                              int64_t a2, void *ctx);
 
 /* Read a NUL-terminated string out of guest memory, bounded. */
 static bool guest_str(Cpu *c, uint64_t addr, char *out, size_t outsz)
@@ -492,6 +496,15 @@ static int64_t kernel_syscall(Cpu *c, int64_t n, int64_t a0, int64_t a1,
             r = (int64_t)b.len;
         buf_free(&b);
         return r;
+    }
+    case SYS_svcstart: {
+        char path[NOM_PATH_MAX], name[64] = "";
+        if (!guest_str(c, (uint64_t)a0, path, sizeof path)) return -1;
+        if (a1) guest_str(c, (uint64_t)a1, name, sizeof name);
+        char rp[NOM_PATH_MAX];
+        resolve(p, path, rp, sizeof rp);
+        return kernel_start_daemon(p->m, rp, "", name[0] ? name : path,
+                                   p->console);
     }
     case SYS_fsck: {
         char dev[64];
@@ -834,6 +847,172 @@ int64_t kernel_run(Machine *m, const char *line, Buf *console)
     char err[NOM_ERR_MAX] = "";
     return kernel_spawn_as(m, "/bin/sh", line, console, 0, NULL, ses,
                            err, sizeof err);
+}
+
+/* ------------------------------------------------------------ daemons --
+ *
+ * A service is not a program that runs and exits. It is a program that keeps
+ * running, and everything interesting about services follows from that: it
+ * can be running now and dead in ten minutes, it can be restarted, it can
+ * respawn too fast, and `ps` can tell you which.
+ *
+ * There is no scheduler and no preemption. A daemon gets a slice of
+ * instructions when the system ticks, and between slices its cpu and its
+ * memory sit exactly where it left them. That is cooperative multitasking,
+ * which is what this needs and a great deal less than a kernel.
+ */
+
+/* How much cpu a daemon gets to start up, and per tick afterwards. Starting
+ * is generous because a daemon reads its config; running is not, because a
+ * well-behaved one is mostly waiting. */
+#define DAEMON_START_BUDGET  2000000ull
+#define DAEMON_TICK_BUDGET     50000ull
+
+struct Daemon {
+    Cpu      cpu;
+    Proc     proc;
+    char     name[40];
+    char     path[NOM_PATH_MAX];
+    bool     running;
+    int      restarts;
+    int64_t  exit_code;
+    char     died[NOM_ERR_MAX];
+};
+
+#define DAEMON_MAX 16
+
+static struct Daemon *daemons(Machine *m)
+{
+    if (!m->daemon) {
+        m->daemon = nom_alloc(sizeof(struct Daemon) * DAEMON_MAX);
+        memset(m->daemon, 0, sizeof(struct Daemon) * DAEMON_MAX);
+    }
+    return (struct Daemon *)m->daemon;
+}
+
+void kernel_stop_daemons(Machine *m)
+{
+    if (!m->daemon) return;
+    struct Daemon *d = daemons(m);
+    for (int i = 0; i < m->ndaemon; i++) if (d[i].running) cpu_free(&d[i].cpu);
+    nom_free(m->daemon);
+    m->daemon = NULL;
+    m->ndaemon = 0;
+}
+
+int64_t kernel_start_daemon(Machine *m, const char *path, const char *arg,
+                            const char *name, Buf *console)
+{
+    struct Daemon *ds = daemons(m);
+    if (m->ndaemon >= DAEMON_MAX) return SPAWN_EDEPTH;
+    struct Daemon *d = &ds[m->ndaemon];
+    memset(d, 0, sizeof *d);
+    snprintf(d->name, sizeof d->name, "%s", name ? name : path);
+    snprintf(d->path, sizeof d->path, "%s", path);
+
+    Vfs *fs = m->on_rescue ? &m->rescue : &m->disk;
+    bool dangling = false;
+    VNode *n = vfs_resolve(fs, path, &dangling);
+    char err[NOM_ERR_MAX] = "";
+    if (dangling || !n)
+        return spawn_fail(console, err, sizeof err, SPAWN_ENOENT, "%s: not found", path);
+    if (n->kind != VN_FILE)
+        return spawn_fail(console, err, sizeof err, SPAWN_ENOENT, "%s: not a regular file", path);
+    if (!(n->mode & 0111))
+        return spawn_fail(console, err, sizeof err, SPAWN_EPERM,
+                          "%s: permission denied (mode %04o)", path, n->mode);
+
+    {
+        char needs[512];
+        if (cpu_elf_needs((const uint8_t *)n->data.p, n->data.len, needs, sizeof needs)) {
+            char lderr[NOM_ERR_MAX];
+            if (!link_check(m, fs, needs, lderr, sizeof lderr))
+                return spawn_fail(console, err, sizeof err, SPAWN_ENOEXEC,
+                                  "%s: %s", path, lderr);
+        }
+    }
+
+    cpu_init(&d->cpu);
+    char lerr[128] = "";
+    if (!cpu_load_elf(&d->cpu, (const uint8_t *)n->data.p, n->data.len, lerr, sizeof lerr)) {
+        cpu_free(&d->cpu);
+        return spawn_fail(console, err, sizeof err, SPAWN_ENOEXEC, "%s: %s", path, lerr);
+    }
+
+    /* Register it in the process table like anything else. */
+    ProcInfo *pi = NULL;
+    if (m->nproc < PROC_MAX) {
+        pi = &m->proc[m->nproc++];
+        memset(pi, 0, sizeof *pi);
+        pi->pid = m->next_pid ? m->next_pid++ : (m->next_pid = 2, 1);
+        pi->ppid = 1;
+        pi->alive = true;
+        snprintf(pi->name, sizeof pi->name, "%s", path);
+        snprintf(pi->arg, sizeof pi->arg, "%s", arg ? arg : "");
+        ns_init(&pi->ns);
+        snprintf(pi->cwd, sizeof pi->cwd, "/");
+    }
+
+    memset(&d->proc, 0, sizeof d->proc);
+    d->proc.m = m;
+    d->proc.console = console;
+    d->proc.info = pi;
+    d->proc.pid = pi ? pi->pid : 0;
+    snprintf(d->proc.arg, sizeof d->proc.arg, "%s", arg ? arg : "");
+    d->cpu.syscall = kernel_syscall;
+    d->cpu.ctx = &d->proc;
+
+    CpuTrap t = cpu_run(&d->cpu, DAEMON_START_BUDGET);
+    if (t == TRAP_BUDGET) {
+        /* Still going: that is a daemon. */
+        d->running = true;
+        if (pi) pi->icount = d->cpu.icount;
+        m->ndaemon++;
+        return 0;
+    }
+    /* It finished during startup, which for a service means it fell over. */
+    if (pi) { pi->alive = false; pi->exit_code = d->cpu.exit_code; pi->icount = d->cpu.icount; }
+    d->exit_code = d->cpu.exit_code;
+    if (t == TRAP_EXIT)
+        snprintf(d->died, sizeof d->died, "exited immediately with status %lld",
+                 (long long)d->cpu.exit_code);
+    else
+        snprintf(d->died, sizeof d->died, "%s at pc 0x%llx",
+                 cpu_trap_name(t), (unsigned long long)d->cpu.pc);
+    cpu_free(&d->cpu);
+    m->ndaemon++;
+    return SPAWN_EFAULT;
+}
+
+void kernel_tick(Machine *m, int slices, Buf *console)
+{
+    if (!m->daemon) return;
+    struct Daemon *d = daemons(m);
+    for (int s = 0; s < slices; s++) {
+        for (int i = 0; i < m->ndaemon; i++) {
+            if (!d[i].running) continue;
+            d[i].proc.console = console;
+            CpuTrap t = cpu_run(&d[i].cpu, DAEMON_TICK_BUDGET);
+            if (d[i].proc.info) d[i].proc.info->icount = d[i].cpu.icount;
+            if (t == TRAP_BUDGET) continue;      /* still going, as expected */
+
+            d[i].running = false;
+            d[i].exit_code = d[i].cpu.exit_code;
+            if (t == TRAP_EXIT)
+                snprintf(d[i].died, sizeof d[i].died, "exited with status %lld",
+                         (long long)d[i].cpu.exit_code);
+            else
+                snprintf(d[i].died, sizeof d[i].died, "%s at pc 0x%llx",
+                         cpu_trap_name(t), (unsigned long long)d[i].cpu.pc);
+            if (d[i].proc.info) {
+                d[i].proc.info->alive = false;
+                d[i].proc.info->exit_code = d[i].cpu.exit_code;
+            }
+            if (console)
+                buf_printf(console, "kernel: %s died -- %s\n", d[i].name, d[i].died);
+            cpu_free(&d[i].cpu);
+        }
+    }
 }
 
 /* --------------------------------------------------------- the linker -- */

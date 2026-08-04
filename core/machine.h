@@ -143,6 +143,14 @@ typedef struct {
         int  power_cycles;
     } cust;
 
+    /* Daemons. A service that starts does not run to completion: it runs
+     * until it blocks or its startup budget is spent, and then it STAYS
+     * RUNNING, with its cpu and memory intact, for the rest of the boot.
+     * That is what makes `ps` a picture of a live system rather than a
+     * history, and it is what lets a service crash at 11am. */
+    struct Daemon *daemon;
+    int    ndaemon;
+
     ProcInfo proc[PROC_MAX];
     int      nproc;        /* high-water mark, so exited pids stay visible */
     int      next_pid;
@@ -177,6 +185,15 @@ bool machine_mount(Machine *m, const char *dev, const char *at, int flags);
  * dirty filesystem is usually two repairs, not one. */
 int  machine_fsck(Machine *m, const char *dev, Buf *out);
 void machine_read_channel(Machine *m);
+
+/* Start a program as a long-lived service. Returns 0 if it is now running,
+ * or a negative SPAWN_* if it could not be started at all. */
+int64_t kernel_start_daemon(Machine *m, const char *path, const char *arg,
+                            const char *name, Buf *console);
+/* Let every running daemon have another slice of cpu. A daemon that exits or
+ * faults during its slice has crashed, and says so. */
+void kernel_tick(Machine *m, int slices, Buf *console);
+void kernel_stop_daemons(Machine *m);
 bool machine_umount(Machine *m, const char *at);
 
 /* --- the package database, which is the fix verb ---------------------- */

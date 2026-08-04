@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include "nom.h"
 #include "machine.h"
+#include "kernel.h"
 #include "guestbin.h"
 
 #define ROOT_UUID "8f41-2c07-a19d-5be3"
@@ -134,7 +135,7 @@ static const Package PKG_USERS = {
 static const Package PKG_NET = {
     "netcfg", "11.6", "network configuration and daemon",
     {
-      { "/usr/sbin/netd", "#!netd\n", 0755, NULL },
+      { "/usr/sbin/netd", NULL, 0755, NULL },
       { "/etc/services.d/net.svc",
         "# /etc/services.d/net.svc\n"
         "name: net\n"
@@ -162,7 +163,7 @@ static const Package PKG_NET = {
 static const Package PKG_SYSLOG = {
     "syslog", "2.4", "system logging",
     {
-      { "/usr/sbin/syslogd", "#!syslogd\n", 0755, NULL },
+      { "/usr/sbin/syslogd", NULL, 0755, NULL },
       { "/etc/services.d/syslog.svc",
         "# /etc/services.d/syslog.svc\n"
         "name: syslog\n"
@@ -180,7 +181,7 @@ static const Package PKG_SYSLOG = {
 static const Package PKG_UDEV = {
     "udev", "254", "device node management",
     {
-      { "/usr/sbin/udevd", "#!udevd\n", 0755, NULL },
+      { "/usr/sbin/udevd", NULL, 0755, NULL },
       { "/etc/services.d/udev.svc",
         "# /etc/services.d/udev.svc\n"
         "name: udev\n"
@@ -258,7 +259,7 @@ static const Package PKG_HOME = {
 static const Package PKG_SSH = {
     "openssh", "9.4", "remote login",
     {
-      { "/usr/sbin/sshd", "#!sshd\n", 0755, NULL },
+      { "/usr/sbin/sshd", NULL, 0755, NULL },
       { "/etc/services.d/sshd.svc",
         "# /etc/services.d/sshd.svc\n"
         "name: sshd\n"
@@ -370,7 +371,7 @@ static const Package PKG_ZLIB = {
 static const Package PKG_CRON = {
     "cron", "3.0", "scheduled jobs",
     {
-      { "/usr/sbin/crond", "#!crond\n", 0755, NULL },
+      { "/usr/sbin/crond", NULL, 0755, NULL },
       { "/etc/services.d/cron.svc",
         "# /etc/services.d/cron.svc\n"
         "name: cron\nexec: /usr/sbin/crond\n"
@@ -398,7 +399,7 @@ static const Package PKG_LOGROTATE = {
 static const Package PKG_NTP = {
     "ntp", "4.2", "time synchronisation",
     {
-      { "/usr/sbin/ntpd", "#!ntpd\n", 0755, NULL },
+      { "/usr/sbin/ntpd", NULL, 0755, NULL },
       { "/etc/ntp.conf",
         "server 10.0.2.3 iburst\ndriftfile /var/lib/ntp/drift\n", 0644, NULL },
       { "/etc/services.d/ntp.svc",
@@ -412,7 +413,7 @@ static const Package PKG_NTP = {
 static const Package PKG_HTTPD = {
     "httpd", "2.4", "the web server",
     {
-      { "/usr/sbin/httpd", "#!httpd\n", 0755, NULL },
+      { "/usr/sbin/httpd", NULL, 0755, NULL },
       { "/etc/httpd/httpd.conf",
         "Listen 80\nDocumentRoot /srv/www\nServerName nominal.local\n", 0644, NULL },
       { "/srv/www/index.html",
@@ -430,7 +431,7 @@ static const Package PKG_HTTPD = {
 static const Package PKG_FIREWALL = {
     "nftables", "1.0", "packet filter",
     {
-      { "/usr/sbin/nft", "#!nft\n", 0755, NULL },
+      { "/usr/sbin/nft", NULL, 0755, NULL },
       { "/etc/nftables.conf",
         "table inet filter {\n"
         "  chain input {\n"
@@ -497,7 +498,7 @@ static const Package PKG_MAN = {
 static const Package PKG_MAIL = {
     "postfix", "3.8", "mail transport",
     {
-      { "/usr/sbin/postfix", "#!postfix\n", 0755, NULL },
+      { "/usr/sbin/postfix", NULL, 0755, NULL },
       { "/etc/postfix/main.cf",
         "myhostname = nominal.local\nrelayhost = 10.0.2.30\n", 0644, NULL },
       { "/etc/aliases", "root: hamowner\npostmaster: root\n", 0644, NULL },
@@ -537,7 +538,7 @@ static const Package PKG_TERMINFO = {
 static const Package PKG_AUDIT = {
     "audit", "3.1", "the audit trail",
     {
-      { "/usr/sbin/auditd", "#!auditd\n", 0755, NULL },
+      { "/usr/sbin/auditd", NULL, 0755, NULL },
       { "/etc/audit/auditd.conf", "log_file = /var/log/audit.log\nmax_log_file = 8\n", 0644, NULL },
       { "/etc/services.d/audit.svc",
         "# /etc/services.d/audit.svc\n"
@@ -754,6 +755,26 @@ void image_generated(const Machine *m, const char *path, Buf *out)
         buf_put(out, (const char *)GUEST_WHOAMI, GUEST_WHOAMI_LEN);
     else if (strcmp(path, "/bin/df") == 0)
         buf_put(out, (const char *)GUEST_DF, GUEST_DF_LEN);
+    else if (strcmp(path, "/usr/sbin/syslogd") == 0)
+        buf_put(out, (const char *)GUEST_SYSLOGD, GUEST_SYSLOGD_LEN);
+    else if (strcmp(path, "/usr/sbin/netd") == 0)
+        buf_put(out, (const char *)GUEST_NETD, GUEST_NETD_LEN);
+    else if (strcmp(path, "/usr/sbin/udevd") == 0)
+        buf_put(out, (const char *)GUEST_UDEVD, GUEST_UDEVD_LEN);
+    else if (strcmp(path, "/usr/sbin/crond") == 0)
+        buf_put(out, (const char *)GUEST_CROND, GUEST_CROND_LEN);
+    else if (strcmp(path, "/usr/sbin/ntpd") == 0)
+        buf_put(out, (const char *)GUEST_NTPD, GUEST_NTPD_LEN);
+    else if (strcmp(path, "/usr/sbin/httpd") == 0)
+        buf_put(out, (const char *)GUEST_HTTPD, GUEST_HTTPD_LEN);
+    else if (strcmp(path, "/usr/sbin/nft") == 0)
+        buf_put(out, (const char *)GUEST_NFT, GUEST_NFT_LEN);
+    else if (strcmp(path, "/usr/sbin/auditd") == 0)
+        buf_put(out, (const char *)GUEST_AUDITD, GUEST_AUDITD_LEN);
+    else if (strcmp(path, "/usr/sbin/sshd") == 0)
+        buf_put(out, (const char *)GUEST_SSHD, GUEST_SSHD_LEN);
+    else if (strcmp(path, "/usr/sbin/postfix") == 0)
+        buf_put(out, (const char *)GUEST_POSTFIX, GUEST_POSTFIX_LEN);
     else if (strcmp(path, "/usr/bin/pkg") == 0)
         buf_put(out, (const char *)GUEST_PKG, GUEST_PKG_LEN);
     else if (strcmp(path, "/usr/bin/links") == 0)
@@ -997,6 +1018,7 @@ static void install_local_edits(Machine *m, uint64_t seed)
 
 void machine_free(Machine *m)
 {
+    kernel_stop_daemons(m);
     vfs_free(&m->disk);
     vfs_free(&m->rescue);
     buf_free(&m->boot.console);
