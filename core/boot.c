@@ -202,6 +202,14 @@ void machine_boot(Machine *m)
     kernel_stop_daemons(m);
     m->nproc = 0;
     m->next_pid = 1;
+    /* A reboot unmounts everything. machine_boot_rescue did this and
+     * machine_boot did not, so after any rescue session the old mounts were
+     * still in the table and mountall's `mount none /proc` collided with a
+     * /proc that was already there. The boot then failed at a line of fstab
+     * that was perfectly correct, and `pkg verify` -- rightly -- never
+     * implicated the filesystem package, because nothing was wrong with it.
+     * A playtester called that a fairness bug and was completely right. */
+    m->nmount = 0;
 
     buf_clear(&m->boot.console);
     m->boot.running   = false;

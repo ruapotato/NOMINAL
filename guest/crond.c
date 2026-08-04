@@ -7,7 +7,11 @@
  */
 #include "gsys.h"
 static char conf[2048];
-static const char *KEY = "*";
+/* Empty means "any line that is not a comment". crontab lines start with a
+ * schedule, and requiring a literal "*" matched none of them -- so cron sat
+ * in a respawn loop on every healthy machine, which a playtester spotted and
+ * charitably called cosmetic. It was not. */
+static const char *KEY = "";
 void _start(void)
 {
     static const char *CONF[] = { "/etc/crontab", 0 };
@@ -32,7 +36,7 @@ void _start(void)
             if (*t && *t != '#') {
                 u64 k = 0;
                 while (KEY[k] && t[k] == KEY[k]) k++;
-                if (!KEY[k]) ok = 1;
+                if (!KEY[k]) ok = 1;      /* empty KEY: any real line will do */
             }
             *nl = save; q = *nl ? nl + 1 : nl;
             if (ok) break;

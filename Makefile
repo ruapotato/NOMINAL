@@ -118,6 +118,8 @@ build/bf_asan: $(BF_SRC) core/machine.h core/nom.h core/abi.h core/cpu.h \
 	  -Icore -o $@ $(BF_SRC)
 
 test-break: build/bf build/bf_asan
+	@./build/bf --health 20 | tail -1
+	@echo
 	@./build/bf --survey 300 | tail -9
 	@echo
 	@./build/bf --solve 200 | tail -1

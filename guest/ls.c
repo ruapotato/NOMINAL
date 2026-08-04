@@ -26,6 +26,13 @@ void _start(void)
         g_copy(full, dir, sizeof full);
         if (!g_streq(dir, "/")) g_cat(full, "/", sizeof full);
         g_cat(full, name, sizeof full);
+        /* A symlink is shown with its target. The wiki says the commonest
+         * thing people miss is a dead /boot/vmlinuz, and that `ls` will make
+         * it look healthy -- which was true and is a bad kind of true when
+         * the fix is one character of output away. */
+        static char tgt[192];
+        i64 tl = g_readlink(full, tgt, sizeof tgt);
+
         NomStat s2;
         if (g_stat(full, &s2) == 0) {
             g_puts(s2.kind == NOM_KIND_DIR ? "d" : s2.kind == NOM_KIND_LINK ? "l" : "-");
@@ -36,9 +43,11 @@ void _start(void)
         } else {
             /* stat failing on a name that readdir just returned means a
              * dangling link -- worth showing, not worth hiding. */
-            g_puts("l????     ?\t");
+            g_puts("l????     ?\t");   /* dangling: readlink still works */
         }
-        g_putln(name);
+        g_puts(name);
+        if (tl > 0) { g_puts(" -> "); g_puts(tgt); }
+        g_putln("");
     }
     g_exit(0);
 }

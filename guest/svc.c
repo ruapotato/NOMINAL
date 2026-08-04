@@ -35,6 +35,29 @@ static void get(const char *b, const char *k, char *out, u64 cap, const char *df
     }
 }
 
+/* /proc uses "key value", the unit files use "key: value". Reusing the unit
+ * parser on /proc matched nothing and reported every running service as DEAD
+ * -- a diagnostic tool that lies is worse than no tool. */
+static void proc_field(const char *b, const char *k, char *out, u64 cap)
+{
+    out[0] = 0;
+    u64 kl = g_strlen(k);
+    const char *p = b;
+    while (*p) {
+        const char *nl = p; while (*nl && *nl != '\n') nl++;
+        u64 i = 0;
+        while (i < kl && p + i < nl && p[i] == k[i]) i++;
+        if (i == kl && p + i < nl && p[i] == ' ') {
+            const char *v = p + i + 1;
+            u64 j = 0;
+            while (v + j < nl && j + 1 < cap) { out[j] = v[j]; j++; }
+            out[j] = 0;
+            return;
+        }
+        p = *nl ? nl + 1 : nl;
+    }
+}
+
 /* Is this exec currently a live process? /proc is the truth; the unit file is
  * only an intention. */
 static int is_running(const char *exec)
@@ -47,8 +70,8 @@ static int is_running(const char *exec)
         g_cat(pdir, "/status", sizeof pdir);
         if (g_slurp(pdir, procbuf, sizeof procbuf) < 0) continue;
         static char nm[128], st[32];
-        get(procbuf, "name", nm, sizeof nm, "");
-        get(procbuf, "state", st, sizeof st, "");
+        proc_field(procbuf, "name", nm, sizeof nm);
+        proc_field(procbuf, "state", st, sizeof st);
         if (g_streq(nm, exec) && g_streq(st, "running")) return 1;
     }
     return 0;
@@ -70,8 +93,16 @@ void _start(void)
         get(body, "enabled",  en,   sizeof en,   "yes");
         get(body, "runlevel", rl,   sizeof rl,   "3");
 
+        /* A service that is not meant to run at this runlevel is not dead,
+         * it is simply not here -- calling it DEAD sends the player looking
+         * for a fault that does not exist. */
+        int here = 0;
+        for (const char *q = rl; *q; q++)
+            if (*q == '3') here = 1;
+
         const char *state;
         if (!g_streq(en, "yes"))        state = "disabled";
+        else if (!here)                 state = "not at rl3";
         else if (is_running(exec))      state = "running";
         else                            state = "DEAD";
 

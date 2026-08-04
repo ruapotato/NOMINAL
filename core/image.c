@@ -306,6 +306,8 @@ static const Package PKG_SHELL = {
       { "/bin/umount", NULL, 0755, NULL },
       { "/bin/chroot", NULL, 0755, NULL },
       { "/sbin/fsck", NULL, 0755, NULL },
+      { "/sbin/blkid", NULL, 0755, NULL },
+      { "/usr/bin/svc", NULL, 0755, NULL },
       { "/usr/bin/pkg", NULL, 0755, NULL },
       { "/usr/bin/links", NULL, 0755, NULL },
       { "/bin/cp", NULL, 0755, NULL },
@@ -322,7 +324,7 @@ static const Package PKG_SHELL = {
       { "/bin/df", NULL, 0755, NULL },
       { "/bin/false", "#!false\n", 0755, NULL },
       { "/bin/true",  "#!true\n",  0755, NULL },
-    }, 28
+    }, 30
 };
 
 
@@ -652,13 +654,15 @@ static const Package PKG_RESCUE_TOOLS = {
       { "/bin/whoami", NULL, 0755, NULL },
       { "/bin/df", NULL, 0755, NULL },
       { "/sbin/fsck", NULL, 0755, NULL },
+      { "/sbin/blkid", NULL, 0755, NULL },
+      { "/usr/bin/svc", NULL, 0755, NULL },
       { "/usr/bin/pkg", NULL, 0755, NULL },
       { "/usr/bin/links", NULL, 0755, NULL },
       { "/usr/bin/man", NULL, 0755, NULL },
       { "/usr/sbin/zbl-install", NULL, 0755, NULL },
       { "/usr/sbin/zbl-mkconfig", NULL, 0755, NULL },
       { "/usr/bin/mkinitrd", NULL, 0755, NULL },
-    }, 30
+    }, 32
 };
 
 static const Package *RESCUE_IMAGE[] = { &PKG_RESCUE_BASE, &PKG_RESCUE_TOOLS };
@@ -803,6 +807,10 @@ void image_generated(const Machine *m, const char *path, Buf *out)
         buf_put(out, (const char *)GUEST_GETTY, GUEST_GETTY_LEN);
     else if (strcmp(path, "/sbin/fsck") == 0)
         buf_put(out, (const char *)GUEST_FSCK, GUEST_FSCK_LEN);
+    else if (strcmp(path, "/sbin/blkid") == 0)
+        buf_put(out, (const char *)GUEST_BLKID, GUEST_BLKID_LEN);
+    else if (strcmp(path, "/usr/bin/svc") == 0)
+        buf_put(out, (const char *)GUEST_SVC, GUEST_SVC_LEN);
     else if (strcmp(path, "/sbin/mountall") == 0)
         buf_put(out, (const char *)GUEST_MOUNTALL, GUEST_MOUNTALL_LEN);
     else if (strcmp(path, "/etc/rc.boot") == 0)       buf_puts(out, SRC_RCBOOT);

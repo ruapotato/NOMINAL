@@ -32,7 +32,7 @@ void _start(void)
             if (*t && *t != '#') {
                 u64 k = 0;
                 while (KEY[k] && t[k] == KEY[k]) k++;
-                if (!KEY[k]) ok = 1;
+                if (!KEY[k]) ok = 1;      /* empty KEY: any real line will do */
             }
             *nl = save; q = *nl ? nl + 1 : nl;
             if (ok) break;

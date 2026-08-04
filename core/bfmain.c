@@ -20,6 +20,33 @@
 
 int main(int argc, char **argv)
 {
+    if (argc > 1 && strcmp(argv[1], "--health") == 0) {
+        /* A PRISTINE machine must be healthy: it boots, and every service it
+         * started is still running. Without this, a service could sit in a
+         * respawn loop on every machine in the game and the only thing that
+         * would notice is a playtester. One did. */
+        int n = argc > 2 ? atoi(argv[2]) : 20, bad = 0;
+        for (int i = 0; i < n; i++) {
+            Machine m;
+            machine_install(&m, (uint64_t)(3000 + i));
+            machine_boot(&m);
+            const char *c = m.boot.console.p ? m.boot.console.p : "";
+            bool up = m.boot.running;
+            bool died = strstr(c, "died --") || strstr(c, "respawning too fast")
+                     || strstr(c, "refusing to start");
+            if (!up || died) {
+                bad++;
+                printf("UNHEALTHY seed %d%s%s\n", 3000 + i,
+                       up ? "" : " (did not boot)", died ? " (a service died)" : "");
+                if (bad == 1) fwrite(c, 1, m.boot.console.len, stdout);
+            }
+            machine_free(&m);
+        }
+        printf("\n%d/%d pristine machines boot with every service healthy\n",
+               n - bad, n);
+        return bad ? 1 : 0;
+    }
+
     if (argc > 2 && strcmp(argv[1], "--survey") == 0) {
         int n = atoi(argv[2]);
         int nf = argc > 3 ? atoi(argv[3]) : 1;

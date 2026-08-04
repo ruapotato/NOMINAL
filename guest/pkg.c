@@ -292,9 +292,11 @@ void _start(void)
         if (n < 2) { g_putln("usage: pkg diff <path>"); g_exit(1); }
         static char owner[64];
         owner[0] = 0;
-        static char nm2[64];
+        static char nm2[64], ddir[192];
+        g_copy(ddir, root, sizeof ddir);
+        g_cat(ddir, "/var/lib/pkg", sizeof ddir);
         for (int i = 0; i < 128 && !owner[0]; i++) {
-            if (g_readdir("/var/lib/pkg", i, nm2) < 0) break;
+            if (g_readdir(ddir, i, nm2) < 0) break;
             if (!read_manifest(nm2)) continue;
             char *p = manifest;
             while (*p) {
@@ -317,8 +319,15 @@ void _start(void)
         for (i64 k = 0; k < want; k++) shipped[k] = filebuf[k];
         shipped[want] = 0;
 
-        i64 have = g_slurp(v[1], filebuf, sizeof filebuf);
-        if (have < 0) { g_puts("pkg: "); g_puts(v[1]); g_putln(": cannot read what is installed"); g_exit(1); }
+        /* Read the INSTALLED copy through --root, so this works on a disk
+         * mounted elsewhere. It did not, which meant diff was unusable on
+         * exactly the machines --root exists for: the ones whose own libc is
+         * broken, where chroot is not an option at all. */
+        static char rpath[300];
+        g_copy(rpath, root, sizeof rpath);
+        g_cat(rpath, v[1], sizeof rpath);
+        i64 have = g_slurp(rpath, filebuf, sizeof filebuf);
+        if (have < 0) { g_puts("pkg: "); g_puts(rpath); g_putln(": cannot read what is installed"); g_exit(1); }
 
         g_puts("--- shipped by ");
         g_puts(owner);
