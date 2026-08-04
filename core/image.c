@@ -333,6 +333,10 @@ static const Package PKG_SHELL = {
       { "/bin/mount", NULL, 0755, NULL },
       { "/bin/umount", NULL, 0755, NULL },
       { "/bin/chroot", NULL, 0755, NULL },
+      /* Essential here specifically: when the disk's own libc is wrong,
+       * nothing on that disk runs, so the only ldd you can use is this one --
+       * pointed at the broken binary through /mnt. */
+      { "/usr/bin/ldd", NULL, 0755, NULL },
       { "/sbin/fsck", NULL, 0755, NULL },
       { "/sbin/blkid", NULL, 0755, NULL },
       { "/bin/kill", NULL, 0755, NULL },
@@ -393,7 +397,12 @@ static const Package PKG_LIBC = {
       { "/etc/ld.so.conf", "/lib\n/usr/lib\n", 0644, NULL },
       { "/etc/nsswitch.conf",
         "passwd: files\ngroup: files\nhosts: files dns\n", 0644, NULL },
-    }, 4
+      /* ldd ships with the C library on a real distribution, and for a real
+       * reason: it has to agree with that library's loader about how a
+       * dependency is resolved. Ours reads the same ELF section through the
+       * same code the loader uses. */
+      { "/usr/bin/ldd",    NULL, 0755, NULL },
+    }, 5
 };
 
 static const Package PKG_ZLIB = {
@@ -525,7 +534,25 @@ static const Package PKG_MAN = {
         "\n"
         "A bad bind is a fault where nothing is corrupt: every file passes\n"
         "pkg verify and the machine still reads the wrong one.\n", 0644, NULL },
-    }, 5
+      { "/usr/share/man/ldd",
+        "ldd(1)\n\n"
+        "  ldd <program>      the libraries a program needs, where each one\n"
+        "                     was found, and whether it is new enough\n"
+        "\n"
+        "Resolution follows /etc/ld.so.conf in order, exactly as the loader\n"
+        "does, so ldd cannot disagree with what happens when you run the\n"
+        "program. A library that is installed but sits in a directory nobody\n"
+        "lists reads as `not found`, which is the fault, stated plainly.\n"
+        "\n"
+        "Not every program needs the same libraries. When some services are\n"
+        "dead and others are fine, ldd on one of each is the fastest way to\n"
+        "see what the dead ones have in common.\n"
+        "\n"
+        "From the rescue medium, name the broken binary through the mount:\n"
+        "  ldd /mnt/usr/sbin/httpd\n"
+        "That works even when the disk's own libc is too broken to run\n"
+        "anything at all, which is when you need it most.\n", 0644, NULL },
+    }, 6
 };
 
 static const Package PKG_MAIL = {
@@ -670,6 +697,10 @@ static const Package PKG_RESCUE_TOOLS = {
       { "/bin/mount", NULL, 0755, NULL },
       { "/bin/umount", NULL, 0755, NULL },
       { "/bin/chroot", NULL, 0755, NULL },
+      /* Essential here specifically: when the disk's own libc is wrong,
+       * nothing on that disk runs, so the only ldd you can use is this one --
+       * pointed at the broken binary through /mnt. */
+      { "/usr/bin/ldd", NULL, 0755, NULL },
       { "/bin/cp", NULL, 0755, NULL },
       { "/bin/mv", NULL, 0755, NULL },
       { "/bin/rm", NULL, 0755, NULL },
@@ -692,7 +723,7 @@ static const Package PKG_RESCUE_TOOLS = {
       { "/usr/sbin/zbl-install", NULL, 0755, NULL },
       { "/usr/sbin/zbl-mkconfig", NULL, 0755, NULL },
       { "/usr/bin/mkinitrd", NULL, 0755, NULL },
-    }, 33
+    }, 34
 };
 
 static const Package *RESCUE_IMAGE[] = { &PKG_RESCUE_BASE, &PKG_RESCUE_TOOLS };
@@ -823,6 +854,8 @@ void image_generated(const Machine *m, const char *path, Buf *out)
         buf_put(out, (const char *)GUEST_LINKS, GUEST_LINKS_LEN);
     else if (strcmp(path, "/usr/bin/man") == 0)
         buf_put(out, (const char *)GUEST_MAN, GUEST_MAN_LEN);
+    else if (strcmp(path, "/usr/bin/ldd") == 0)
+        buf_put(out, (const char *)GUEST_LDD, GUEST_LDD_LEN);
     else if (strcmp(path, "/usr/sbin/zbl-install") == 0)
         buf_put(out, (const char *)GUEST_ZBL_INSTALL, GUEST_ZBL_INSTALL_LEN);
     else if (strcmp(path, "/usr/sbin/zbl-mkconfig") == 0)

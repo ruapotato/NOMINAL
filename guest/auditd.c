@@ -5,6 +5,7 @@
  * than a service that was never there -- a different fault with a different
  * fix.
  */
+#define NOM_NEEDS_LIBZ   /* the audit trail is written compressed */
 #include "gsys.h"
 static char conf[2048];
 static const char *CONF[] = { "/etc/audit/auditd.conf", 0 };

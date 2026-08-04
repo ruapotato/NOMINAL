@@ -128,8 +128,24 @@ Legend: **[done]** built · **[next]** in progress or immediately next ·
   medium is the only way back, which is exactly why it exists.
 - **[done]** **a package built for the wrong architecture**: the ELF loads,
   the machine code is not ours, and it faults on execution.
-- **[todo]** a library present but the wrong soname version, so only *some*
-  binaries break — the ones built against the newer one.
+- **[done]** **a library present but the wrong soname version, so only SOME
+  binaries break.** `fault_bad_libz`. Until now every guest binary declared
+  exactly the same dependency, so any library fault broke the whole machine at
+  once and the ticket was over in one step. `libz.so.1` is now needed only by
+  the programs that compress what they write — httpd, postfix, auditd, links —
+  so an old zlib leaves the web server and the audit trail dead while ssh,
+  cron, udev, ntp and the firewall run perfectly.
+
+  That partial pattern is the puzzle. Everything dead points at libc; two
+  unrelated services dead and the rest fine asks what those two have in
+  common. `libz.so.1` was also, before this, a file nothing on the machine
+  ever read.
+- **[done]** **`ldd`**, which is what makes the whole of this section
+  readable. It resolves through `/etc/ld.so.conf` in order and reads the
+  dependency list out of the ELF through the same code the loader uses, so it
+  cannot disagree with what happens when you run the program. It ships with
+  libc, as it does on a real distribution, and on the rescue medium — which is
+  the copy you need when the disk's own libc is too broken to run anything.
 - **[done]** `/etc/ld.so.conf` missing a path, so a library that is installed
   is not found.
 - **[todo]** a dangling symlink in the library path: `libc.so.6 -> libc-2.38.so`

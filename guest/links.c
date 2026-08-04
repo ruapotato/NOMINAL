@@ -5,6 +5,7 @@
  * makes both files load-bearing, so "I can reach it by address but not by
  * name" is a real state of this machine and a real thing to diagnose.
  */
+#define NOM_NEEDS_LIBZ   /* gzips what it writes */
 #include "gsys.h"
 
 static char arg[256], hosts[4096], resolv[256], page[65536], ipbuf[64];

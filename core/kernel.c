@@ -761,6 +761,26 @@ static int64_t kernel_syscall(Cpu *c, int64_t n, int64_t a0, int64_t a1,
         snprintf(p->info->cwd, sizeof p->info->cwd, "/");
         return 0;
     }
+    case SYS_needs: {
+        /* ldd's one job. The dependency list is read out of the ELF the same
+         * way the loader reads it, so ldd cannot disagree with what actually
+         * happens when you run the thing -- which is the only property that
+         * makes ldd worth trusting on a real system too. */
+        char raw[NOM_PATH_MAX], path[NOM_PATH_MAX];
+        if (!guest_str(c, (uint64_t)a0, raw, sizeof raw)) return -1;
+        Vfs *fs = resolve_fs(p, raw, path, sizeof path);
+        VNode *n = vfs_resolve(fs, path, NULL);
+        if (!n || n->kind != VN_FILE) return -1;
+        char needs[512] = "";
+        if (!cpu_elf_needs((const uint8_t *)n->data.p, n->data.len,
+                           needs, sizeof needs))
+            return 0;                      /* a valid file with no needs */
+        size_t nl = strlen(needs);
+        if (nl > (size_t)a2) nl = (size_t)a2;
+        if (!cpu_write(c, (uint64_t)a1, needs, nl)) return -1;
+        return (int64_t)nl;
+    }
+
     case SYS_mounts: {
         Buf b = {0};
         for (int i = 0; i < p->m->nmount; i++) {

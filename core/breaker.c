@@ -692,6 +692,27 @@ static void fault_root_ro(Machine *m, Rng *r, char *d, size_t ds)
                              "/etc/fstab");
 }
 
+/* A support library at the wrong version. Unlike libc, only SOME programs
+ * need libz -- the ones that compress what they write -- so this breaks the
+ * web server, the mailer and the logger and leaves ssh, cron, udev and the
+ * firewall running perfectly.
+ *
+ * That partial pattern is the puzzle. A machine where everything is dead
+ * points straight at libc; a machine where three unrelated services are dead
+ * and the rest are fine asks what those three have in common, and the answer
+ * is in `ldd`-shaped output, not in any config file any of them reads. */
+static void fault_bad_libz(Machine *m, Rng *r, char *d, size_t ds)
+{
+    static const char *VERS[] = { "1.2", "1.1", "0.9", "1.29" };
+    const char *v = VERS[rng_next(r) % 4];
+    VNode *n = vfs_lookup(&m->disk, "/lib/libz.so.1");
+    if (!n || n->kind != VN_FILE) return;
+    buf_clear(&n->data);
+    buf_printf(&n->data, "\x7fELF (stub) zlib %s\n", v);
+    snprintf(d, ds, "installed zlib %s, older than the 1.3 some programs are "
+                    "built against", v);
+}
+
 static void fault_dir_mode(Machine *m, Rng *r, char *d, size_t ds)
 {
     static const char *VICTIMS[] = {
@@ -749,7 +770,7 @@ static const StructuralFault STRUCTURAL[] = {
     fault_bad_shell, fault_no_root, fault_unclean_shutdown,
     fault_wrong_channel, fault_fstab, fault_daemon_config,
     fault_daemon_directive, fault_disk_full, fault_bad_bind,
-    fault_dir_mode, fault_root_ro,
+    fault_dir_mode, fault_root_ro, fault_bad_libz,
 };
 #define NSTRUCT ((int)(sizeof STRUCTURAL / sizeof STRUCTURAL[0]))
 

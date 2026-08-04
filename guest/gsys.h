@@ -176,8 +176,20 @@ static inline char *g_trim(char *s)
  * actually installed on the machine, by code that was trying to run the
  * program. */
 #ifndef NOM_NO_NEEDS
+/* A program that compresses defines NOM_NEEDS_LIBZ before including this, and
+ * its dependency list grows a second line. That matters for more than
+ * realism: when EVERY binary needs exactly the same libraries, a bad library
+ * breaks the whole machine at once and the ticket is over in one step. A
+ * library only some programs need breaks only those programs, and a machine
+ * where the web server and the mailer are dead while ssh, cron and the
+ * firewall are perfectly happy is a much better question to be asked. */
+#ifdef NOM_NEEDS_LIBZ
+__attribute__((section(".nomneed"), used))
+static const char _nomneed[] = "libc.so.6 2.38\nlibz.so.1 1.3\n";
+#else
 __attribute__((section(".nomneed"), used))
 static const char _nomneed[] = "libc.so.6 2.38\n";
+#endif
 #endif
 
 #endif /* GSYS_H */
