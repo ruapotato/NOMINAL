@@ -341,6 +341,9 @@ static const Package PKG_SHELL = {
        * nothing on that disk runs, so the only ldd you can use is this one --
        * pointed at the broken binary through /mnt. */
       { "/usr/bin/ldd", NULL, 0755, NULL },
+      /* Essential on the live medium: the whole point is reading the log of a
+       * boot that failed, from a system that did not. */
+      { "/bin/dmesg", NULL, 0755, NULL },
       { "/sbin/fsck", NULL, 0755, NULL },
       { "/sbin/blkid", NULL, 0755, NULL },
       { "/bin/kill", NULL, 0755, NULL },
@@ -361,7 +364,7 @@ static const Package PKG_SHELL = {
       { "/bin/df", NULL, 0755, NULL },
       { "/bin/false", "#!false\n", 0755, NULL },
       { "/bin/true",  "#!true\n",  0755, NULL },
-    }, 31
+    }, 32
 };
 
 
@@ -707,6 +710,9 @@ static const Package PKG_RESCUE_TOOLS = {
        * nothing on that disk runs, so the only ldd you can use is this one --
        * pointed at the broken binary through /mnt. */
       { "/usr/bin/ldd", NULL, 0755, NULL },
+      /* Essential on the live medium: the whole point is reading the log of a
+       * boot that failed, from a system that did not. */
+      { "/bin/dmesg", NULL, 0755, NULL },
       { "/bin/cp", NULL, 0755, NULL },
       { "/bin/mv", NULL, 0755, NULL },
       { "/bin/rm", NULL, 0755, NULL },
@@ -729,7 +735,7 @@ static const Package PKG_RESCUE_TOOLS = {
       { "/usr/sbin/zbl-install", NULL, 0755, NULL },
       { "/usr/sbin/zbl-mkconfig", NULL, 0755, NULL },
       { "/usr/bin/mkinitrd", NULL, 0755, NULL },
-    }, 34
+    }, 35
 };
 
 static const Package *RESCUE_IMAGE[] = { &PKG_RESCUE_BASE, &PKG_RESCUE_TOOLS };
@@ -862,6 +868,8 @@ void image_generated(const Machine *m, const char *path, Buf *out)
         buf_put(out, (const char *)GUEST_MAN, GUEST_MAN_LEN);
     else if (strcmp(path, "/usr/bin/ldd") == 0)
         buf_put(out, (const char *)GUEST_LDD, GUEST_LDD_LEN);
+    else if (strcmp(path, "/bin/dmesg") == 0)
+        buf_put(out, (const char *)GUEST_DMESG, GUEST_DMESG_LEN);
     else if (strcmp(path, "/usr/sbin/zbl-install") == 0)
         buf_put(out, (const char *)GUEST_ZBL_INSTALL, GUEST_ZBL_INSTALL_LEN);
     else if (strcmp(path, "/usr/sbin/zbl-mkconfig") == 0)

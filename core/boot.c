@@ -192,6 +192,78 @@ static bool initrd_has_module(const Buf *b, const char *name)
 
 /* --- the chain --------------------------------------------------------- */
 
+/* Persist what the machine said while it was booting.
+ *
+ * THE PRIMARY INSTRUMENT. A real administrator's first move on a machine that
+ * will not come up is not to checksum the filesystem, it is to read what it
+ * said on the way down. We never had that: the console scrolled past and was
+ * gone, so `pkg verify` became the first thing anyone reached for, and three
+ * playtests in a row reported the same thing -- that verify hands you the
+ * answer before you have thought about anything.
+ *
+ * boot.log.1 is the one that matters. The customer rebooted before they rang,
+ * so the boot worth reading is the one that already scrolled away, and
+ * keeping exactly one generation is what makes that recoverable.
+ *
+ * Written to the DISK, so it is there at /mnt/var/log/boot.log when you are
+ * standing on the rescue medium, which is where you will actually be. Failing
+ * to write it is not an error worth reporting: a machine whose root is
+ * read-only or whose /var/log is missing genuinely cannot keep a log, and
+ * noticing that the log stops is itself a diagnosis. */
+static void persist_boot_log(Machine *m)
+{
+    VNode *d = vfs_lookup(&m->disk, "/var/log");
+    if (!d || d->kind != VN_DIR || !(d->mode & 0111) || !(d->mode & 0222))
+        return;                         /* nowhere to put it, and that is fine */
+    if (m->root_ro) return;             /* a read-only root keeps no logs */
+
+    /* A FULL DISK HAS NO ROOM FOR A LOG, and this write goes straight at the
+     * vfs, underneath the capacity check the syscall layer enforces -- so
+     * without this it could push the disk past full and then the repair had
+     * nowhere to write zbl.cfg. One seed of sixty went unfixable exactly that
+     * way. Losing the log when the disk is full is correct behaviour and is
+     * itself a diagnosis: the log stops, and where it stops tells you when. */
+    uint64_t used = machine_disk_used(m);
+    if (used >= m->fs_capacity) return;
+    uint64_t room = m->fs_capacity - used;
+    VNode *old = vfs_lookup(&m->disk, "/var/log/boot.log");
+    if (old && old->kind == VN_FILE) room += old->data.len;   /* we overwrite it */
+    if (room < 4096) return;            /* not worth the space we would take */
+
+    /* Rotate: this boot's predecessor becomes .1, one generation only. */
+    VNode *cur = vfs_lookup(&m->disk, "/var/log/boot.log");
+    if (cur && cur->kind == VN_FILE) {
+        VNode *prev = vfs_mkfile(&m->disk, "/var/log/boot.log.1", "");
+        if (prev) {
+            buf_clear(&prev->data);
+            buf_put(&prev->data, cur->data.p, cur->data.len);
+            prev->mode = 0644;
+        }
+    }
+
+    VNode *n = vfs_mkfile(&m->disk, "/var/log/boot.log", "");
+    if (!n) return;
+    buf_clear(&n->data);
+    /* Capped: a respawn loop can produce a great deal of output, and the log
+     * must not be the thing that fills the disk. The tail is what matters
+     * anyway -- the end of the log is where the boot stopped. */
+    const char *p = m->boot.console.p;
+    size_t len = m->boot.console.len;
+    size_t CAP = 16u * 1024u;
+    /* Never take more than a quarter of what is left. */
+    if (CAP > room / 4) CAP = room / 4;
+    if (len > CAP) {
+        size_t skip = len - CAP;
+        while (skip < len && p[skip] != '\n') skip++;
+        if (skip < len) skip++;
+        buf_puts(&n->data, "[earlier output dropped: this log is capped]\n");
+        buf_put(&n->data, p + skip, len - skip);
+    } else {
+        buf_put(&n->data, p, len);
+    }
+    n->mode = 0644;
+}
+
 void machine_boot(Machine *m)
 {
     /* A reboot kills everything that was running. Without this the daemon
@@ -434,6 +506,7 @@ void machine_boot(Machine *m)
     m->boot.running   = true;
 
 done:
+    persist_boot_log(m);
     buf_free(&f);
 }
 

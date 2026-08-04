@@ -286,7 +286,7 @@ void _start(void)
 
     if (g_streq(v[0], "list")) { each_package(list_cb); g_exit(0); }
 
-    if (g_streq(v[0], "owns")) {
+    if (g_streq(v[0], "owns") || g_streq(v[0], "owner")) {
         if (n < 2) { g_putln("usage: pkg owns <path>"); g_exit(1); }
         static char name[64];
         for (int i = 0; i < 128; i++) {
