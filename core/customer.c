@@ -153,7 +153,8 @@ typedef enum { MOOD_WARY, MOOD_OK, MOOD_HELPFUL } Mood;
  * a person does -- they hear a word they recognise and answer that. */
 typedef enum {
     T_NONE = 0, T_WHATCHANGED, T_WHEN, T_UPGRADE, T_DELETE, T_DISK,
-    T_POWER, T_NETWORK, T_PASSWORD, T_BACKUP, T_WHOELSE, T_HELLO, T_COUNT
+    T_POWER, T_NETWORK, T_PASSWORD, T_BACKUP, T_WHOELSE, T_HELLO,
+    T_SCREEN, T_COUNT
 } Topic;
 
 static Topic topic_of(const char *q)
@@ -165,7 +166,18 @@ static Topic topic_of(const char *q)
      * braces is cheaper than a third time. */
     struct { Topic t; const char *words[12]; } MAP[] = {
       { T_HELLO,       { "hello", "hi ", "morning", "afternoon", 0 } },
-      { T_WHATCHANGED, { "change", "different", "do you", "did you do",
+      /* THE QUESTION THE HELP TEXT ITSELF SUGGESTS, and it had no topic of
+       * its own -- so "what do you see on the screen" was captured by the
+       * generic "do you" and answered as though it were "what changed". The
+       * follow-up then got "I already told you about that", about something
+       * they had never been asked. */
+      { T_SCREEN,      { "on the screen", "screen say", "screen show",
+                         "on the monitor", "on the display", "showing",
+                         "screen", "monitor", "display", 0 } },
+      /* "do you" was in here and it is not a topic, it is how half of all
+       * questions begin. It captured "do you have a backup", "do you know the
+       * root password" and "what do you see on the screen". */
+      { T_WHATCHANGED, { "change", "different", "did you do",
                          "what happened", "setting", "config", "edit", 0 } },
       { T_WHEN,        { "when", "last work", "yesterday", "how long",
                          "start", 0 } },
@@ -570,6 +582,12 @@ void customer_ask(Machine *m, const char *question, Buf *out)
     if (t != T_NONE && t < T_COUNT) m->cust.told[t] = 1;
 
     switch (t) {
+    case T_SCREEN:
+        buf_puts(out, "  \"");
+        buf_puts(out, saw_of(m));
+        buf_puts(out, "\"\n");
+        return;
+
     case T_HELLO:
         buf_puts(out, "  \"Hello. Look, I really need this back today.\"\n");
         return;

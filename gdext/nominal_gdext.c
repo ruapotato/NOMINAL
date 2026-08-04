@@ -314,6 +314,23 @@ static void m_sh(Station *st, const GDExtensionConstTypePtr *args, void *ret)
     buf_free(&out);
 }
 
+/* ask(String question) -> String
+ *
+ * The customer, on the phone. This was reachable from the TCP bench and not
+ * from the desktop at all, so the entire language-model side of the game --
+ * the persona, the memory of the call, the fact that they can tell you what
+ * is on their screen -- was invisible to anyone playing through the front
+ * end. A view that cannot see half the game is not a view of the game. */
+static void m_ask(Station *st, const GDExtensionConstTypePtr *args, void *ret)
+{
+    char q[1024];
+    gdstring_to_c(args[0], q, sizeof q);
+    Buf out; buf_init(&out);
+    customer_ask(&st->m, q, &out);
+    c_to_gdstring(ret, out.p ? out.p : "");
+    buf_free(&out);
+}
+
 /* chmod(String path, int mode) -> bool */
 static void m_chmod(Station *st, const GDExtensionConstTypePtr *args, void *ret)
 {
@@ -353,6 +370,7 @@ static const MethodDef METHODS[] = {
     { "boot_rescue", m_boot_rescue, 0, { 0 },                              GDEXTENSION_VARIANT_TYPE_STRING },
     { "on_rescue",   m_on_rescue,   0, { 0 },                              GDEXTENSION_VARIANT_TYPE_BOOL },
     { "sh",          m_sh,          1, { GDEXTENSION_VARIANT_TYPE_STRING }, GDEXTENSION_VARIANT_TYPE_STRING },
+    { "ask",         m_ask,         1, { GDEXTENSION_VARIANT_TYPE_STRING }, GDEXTENSION_VARIANT_TYPE_STRING },
 };
 #define NMETHODS ((int)(sizeof METHODS / sizeof METHODS[0]))
 

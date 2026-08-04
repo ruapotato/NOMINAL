@@ -38,8 +38,26 @@ var tree_box: RichTextLabel
 var detail_box: RichTextLabel
 var status_bar: Label
 var cmd_in: LineEdit
+var phone_box: RichTextLabel
+var ask_in: LineEdit
+const PHONE_HINT := "[color=#5b646d]They are not technical, and they are the only pair of hands in the room. Ask what they see, what changed, whether there was a power cut -- or ask them to power cycle it, or to put the rescue disc in.[/color]"
+
+var phone := ""
 var cwd := "/"
 var term := ""
+
+
+# The customer, on the phone. Everything the model side of this game does was
+# reachable only from the TCP bench, so a player at the desktop never met the
+# person whose machine it is.
+func _on_ask(text: String) -> void:
+	ask_in.clear()
+	if text.strip_edges() == "":
+		return
+	phone += "[color=#2a5fa8]you:[/color] " + _esc(text) + "\n"
+	var reply: String = machine.ask(text)
+	phone += "[color=#1b1b1b]" + _esc(reply.strip_edges()) + "[/color]\n\n"
+	phone_box.text = phone
 
 
 # Every command goes through the machine's own /bin/sh, via the same
@@ -106,6 +124,8 @@ func _parse_args() -> void:
 		elif a.begins_with("--faults="):
 			faults = int(a.substr(9))
 			_new_ticket()
+		elif a.begins_with("--ask="):
+			_on_ask(a.substr(6))
 		elif a.begins_with("--show="):
 			_show_file(a.substr(7))
 		elif a.begins_with("--cd="):
@@ -216,7 +236,7 @@ func _build_ui() -> void:
 		bx += 148
 
 	# --- the machine's console ---
-	var cc := _panel("console - customer machine", Rect2(14, 40, 700, 700))
+	var cc := _panel("console - customer machine", Rect2(14, 40, 700, 470))
 	console_box = RichTextLabel.new()
 	console_box.bbcode_enabled = true
 	console_box.scroll_following = true
@@ -227,6 +247,34 @@ func _build_ui() -> void:
 	csb.set_content_margin_all(8)
 	console_box.add_theme_stylebox_override("normal", csb)
 	cc.add_child(console_box)
+
+	# --- the customer, on the phone ---
+	var pc := _panel("the customer - on the line", Rect2(14, 522, 700, 218))
+	var pv := VBoxContainer.new()
+	pc.add_child(pv)
+	phone_box = RichTextLabel.new()
+	phone_box.bbcode_enabled = true
+	phone_box.scroll_following = true
+	phone_box.custom_minimum_size = Vector2(0, 146)
+	phone_box.add_theme_font_size_override("normal_font_size", 13)
+	var psb := StyleBoxFlat.new()
+	psb.bg_color = BODY
+	psb.set_content_margin_all(8)
+	phone_box.add_theme_stylebox_override("normal", psb)
+	phone_box.text = PHONE_HINT
+	pv.add_child(phone_box)
+
+	var arow := HBoxContainer.new()
+	pv.add_child(arow)
+	var al := Label.new()
+	al.text = "ask"
+	al.add_theme_color_override("font_color", DIM)
+	arow.add_child(al)
+	ask_in = LineEdit.new()
+	ask_in.placeholder_text = "what do you see on the screen?"
+	ask_in.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	ask_in.text_submitted.connect(_on_ask)
+	arow.add_child(ask_in)
 
 	# --- the rescue environment ---
 	var rc := _panel("rescue - the broken disk, mounted", Rect2(726, 40, 540, 380))
@@ -293,6 +341,9 @@ func _esc(s: String) -> String:
 
 
 func _new_ticket() -> void:
+	phone = ""
+	if phone_box:
+		phone_box.text = PHONE_HINT
 	seed_no += 1
 	machine.take_ticket(seed_no, faults)
 	cwd = "/"
