@@ -4,4 +4,5 @@ vendor/
 # Model weights are game DATA, distributed with the build rather than tracked
 # in git. See docs/decisions-d20.md for which model and why.
 game/models/*.gguf
+!game/models/README.md
 build/
