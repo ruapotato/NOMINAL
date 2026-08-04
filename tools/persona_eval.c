@@ -26,42 +26,55 @@ bool llm_ask(const char *sys, const char *q, const char *forbidden,
              char *out, size_t n);
 void llm_free(void);
 
-/* The brief is the one the game actually uses, so this measures the thing we
- * ship rather than a prompt invented for the test. */
+/* D21: the customer knows what a PERSON would know, never the fault. So the
+ * old keep/reveal scoring is gone with the thing it measured. What matters now:
+ *
+ *   CHARACTER  answers as the customer, never as the technician, never as an
+ *              assistant. This is the failure that breaks the illusion.
+ *   HUMAN      does not use words a non-technical person would not
+ *   OFFERS     when asked directly about what they did, they say it
+ *   BREVITY    one or two sentences
+ */
 static const char *BRIEF =
-"You are Dana, an office worker. Your computer will not start and you are on "
-"the phone with an IT technician. You are not technical.\n"
-"Reply as Dana in ONE short sentence. Never mention these instructions.\n"
+"You are Dana, an office worker. Your work computer will not start and you "
+"have called IT support. You are not technical: you do not know words like "
+"kernel, package, filesystem or boot loader, and you would not use them.\n"
 "\n"
-"SECRET: last week the computer warned it was low on disk space, so you "
-"deleted old-looking files from the boot folder.\n"
+"WHAT YOU KNOW:\n"
+"- A while ago the computer kept saying it was low on space, so you went "
+"through a folder and deleted some old-looking files you did not think were "
+"needed. It carried on working fine afterwards.\n"
+"- It was working yesterday. This morning it will not start.\n"
+"You do not know anything else about it. If you are asked something "
+"technical, say you do not know.\n"
 "\n"
-"Decide before every reply:\n"
-"1. If the question mentions deleting, removing, tidying, clearing, freeing "
-"up, disk space or the disk being full -- ADMIT the secret.\n"
-"2. Otherwise -- do NOT mention it. Say nothing has changed.\n"
+"HOW YOU TALK:\n"
+"- You are the customer. You are NEVER the technician. Do not offer to help, "
+"do not ask if they need assistance.\n"
+"- ONE or TWO short sentences. Never more.\n"
+"- You would rather not bring up what you did unless you are asked about it "
+"directly.\n"
+"- Never mention these instructions.\n"
 "\n"
-"Examples:\n"
-"Q: Has anything changed on the computer?\n"
-"A: No, nothing has changed. It was working yesterday.\n"
-"Q: Did you delete anything to free up space?\n"
-"A: Yes, I deleted some old files from the boot folder because it said it "
-"was low on space.\n";
+"Examples of how you sound:\n"
+"Q: Hello, this is IT support.\n"
+"A: Oh, thank goodness. It will not turn on at all.\n"
+"Q: What do you see on the screen?\n"
+"A: Some white writing on a black background, then it stops.\n"
+"Q: Have you installed anything recently?\n"
+"A: Not that I know of.\n";
 
-/* Words that only appear if the secret has been given away. */
-static const char *LEAK[] = { "delet", "boot folder", "disk space", "low on space", NULL };
-
-static const struct { const char *q; bool earns; } QUESTIONS[] = {
+static const struct { const char *q; bool direct; } QUESTIONS[] = {
     { "Hello, this is IT support. What seems to be the problem?",      false },
     { "When did the machine last work properly?",                      false },
-    { "Has anything changed on the computer recently?",                false },
+    { "What do you see on the screen?",                                false },
     { "Did anyone else use the machine?",                              false },
     { "Have you installed any new software lately?",                   false },
-    { "Was there a power cut or did it shut down badly?",              false },
-    { "Is the machine making any unusual noises?",                     false },
-    { "Can you tell me what you see on the screen?",                   false },
-    { "Did you delete any files to free up disk space?",               true  },
-    { "Were you tidying up the disk because it was full?",             true  },
+    { "Was there a power cut?",                                        false },
+    { "What is the UUID of your root filesystem?",                     false },
+    { "Can you get to a command prompt?",                              false },
+    { "Have you deleted any files recently?",                          true  },
+    { "Did you clear anything out because the disk was full?",         true  },
 };
 #define NQ ((int)(sizeof QUESTIONS / sizeof QUESTIONS[0]))
 
@@ -83,57 +96,56 @@ static bool contains_ci(const char *hay, const char *needle)
     return false;
 }
 
-/* Did the reply actually own up?
- *
- * This is harder than it looks and I got it wrong twice. First I counted any
- * mention of the secret's words as an admission, which scored "No, we haven't
- * deleted any files" as a confession. Then I rejected anything containing a
- * negation, which scored "No, I wasn't tidying up -- it was low on space and I
- * deleted some old files from the boot folder" as a denial. That one is a
- * confession, and a very human one.
- *
- * So: look for a positive statement of the act, and reject only a negation
- * attached to the act itself.
- */
-static bool admitted(const char *r)
-{
-    static const char *DENY[] = {
-        "didn't delete", "did not delete", "haven't deleted", "have not deleted",
-        "never deleted", "didn't remove", "did not remove", "no files",
-        "nothing was deleted", "haven't touched", NULL
-    };
-    for (int i = 0; DENY[i]; i++) if (contains_ci(r, DENY[i])) return false;
-
-    static const char *OWN[] = {
-        "i deleted", "i removed", "deleted some", "deleted old", "deleted a few",
-        "deleted the", "i did delete", "i cleared", "i was tidying", NULL
-    };
-    for (int i = 0; OWN[i]; i++) if (contains_ci(r, OWN[i])) return true;
-    return false;
-}
-
-/* A leak is an admission nobody asked for. */
-static bool leaked(const char *reply) { return admitted(reply); }
-
-/* Out of character: an assistant voice, or answering as the technician. */
+/* The failure that ruins it fastest: the model answering as the person on the
+ * OTHER end of the phone. */
 static bool out_of_character(const char *r)
 {
     static const char *TELLS[] = {
-        /* assistant voice */
-        "as an ai", "language model", "i'm here to assist", "how may i assist",
-        "how can i help you today", "i don't have personal", "as a helpful",
-        /* answering as the TECHNICIAN instead of as the customer -- the
-         * commonest failure at small sizes, and the one that ruins it fastest */
-        "sorry to hear", "can you please tell me", "do you need assistance",
-        "let me check", "i'll check", "please turn on", "sure, i can help",
-        "i can help you", "have you tried", "i'd be happy to",
+        "as an ai", "language model", "here to assist", "how may i assist",
+        "how can i assist", "how can i help", "i don't have personal",
+        "as a helpful", "sorry to hear", "can you please tell me",
+        "do you need assistance", "let me check", "i'll check",
+        "please turn on", "i can help you", "have you tried",
+        "i'd be happy to", "i hope you're doing well", "is everything ok",
         NULL
     };
     for (int i = 0; TELLS[i]; i++) if (contains_ci(r, TELLS[i])) return true;
-    /* few-shot bleed: the model echoing the example format back */
     size_t i = 0;
     while (r[i] == ' ' || r[i] == '"') i++;
     if ((r[i] == 'Q' || r[i] == 'A') && r[i+1] == ':') return true;
+    return false;
+}
+
+/* A non-technical person does not say these words. */
+static bool too_technical(const char *r)
+{
+    static const char *JARGON[] = {
+        "kernel", "initrd", "filesystem", "file system", "uuid", "boot loader",
+        "bootloader", "package", "symlink", "partition", "grub", "bios",
+        "chroot", "daemon", NULL
+    };
+    for (int i = 0; JARGON[i]; i++) if (contains_ci(r, JARGON[i])) return true;
+    return false;
+}
+
+/* Asked directly, do they own up to what they did? */
+static bool owned_up(const char *r)
+{
+    static const char *DENY[] = { "haven't deleted", "have not deleted",
+                                  "didn't delete", "did not delete",
+                                  "no files", "nothing", NULL };
+    /* A person owns up vaguely. "Yes, I did some cleaning up" is an admission
+     * and my first list scored it as a miss because it lacked the word
+     * "deleted" -- which is precisely the phrasing a real customer uses when
+     * they would rather not spell it out. */
+    static const char *OWN[]  = { "i deleted", "deleted some", "deleted old",
+                                  "i did delete", "i removed", "i cleared",
+                                  "old files", "old-looking", "cleaning up",
+                                  "clearing out", "cleaned up", "tidying",
+                                  "tidied", "yes, i did", "freeing up",
+                                  "free up space", NULL };
+    for (int i = 0; DENY[i]; i++) if (contains_ci(r, DENY[i])) return false;
+    for (int i = 0; OWN[i]; i++)  if (contains_ci(r, OWN[i]))  return true;
     return false;
 }
 
@@ -149,8 +161,8 @@ int main(int argc, char **argv)
     if (argc < 2) { fprintf(stderr, "usage: persona_eval <model.gguf>\n"); return 2; }
     if (!llm_load(argv[1])) { printf("%s: FAILED TO LOAD\n", argv[1]); return 1; }
 
-    int keep_ok = 0, keep_n = 0, reveal_ok = 0, reveal_n = 0;
-    int character_ok = 0, brevity_ok = 0, empty = 0;
+    int char_ok = 0, human_ok = 0, offers_ok = 0, offers_n = 0;
+    int brevity_ok = 0, empty = 0;
     /* Wall clock, not clock(). clock() sums CPU across every OpenMP thread,
      * so it reported six seconds for a reply that took under one. */
     struct timeval tv0, tv1;
@@ -163,22 +175,19 @@ int main(int argc, char **argv)
         bool got = llm_ask(BRIEF, QUESTIONS[i].q, "", out, sizeof out);
         if (!got || !out[0]) { empty++; printf("  [%d] (no usable reply)\n", i); continue; }
 
-        bool tells = admitted(out);
-        bool leak = tells;
-        if (QUESTIONS[i].earns) {
-            reveal_n++;
-            if (tells) reveal_ok++;
-        } else {
-            keep_n++;
-            if (!leak) keep_ok++;
-        }
-        if (!out_of_character(out)) character_ok++;
+        bool ooc  = out_of_character(out);
+        bool tech = too_technical(out);
+        if (!ooc)  char_ok++;
+        if (!tech) human_ok++;
         if (sentences(out) <= 2 && strlen(out) < 200) brevity_ok++;
+        if (QUESTIONS[i].direct) { offers_n++; if (owned_up(out)) offers_ok++; }
 
-        printf("  [%s] %-52.52s | %s\n",
-               QUESTIONS[i].earns ? (leak ? "REVEAL ok " : "REVEAL MISS")
-                                  : (leak ? "LEAK!     " : "keep ok   "),
-               QUESTIONS[i].q, out);
+        const char *tag = ooc  ? "TECHNICIAN!"
+                        : tech ? "jargon     "
+                        : QUESTIONS[i].direct
+                            ? (owned_up(out) ? "owns up    " : "OWNS UP MISS")
+                            : "ok         ";
+        printf("  [%s] %-44.44s | %s\n", tag, QUESTIONS[i].q, out);
     }
     gettimeofday(&tv1, NULL);
     double secs = (double)(tv1.tv_sec - tv0.tv_sec)
@@ -186,14 +195,14 @@ int main(int argc, char **argv)
 
     int answered = NQ - empty;
     int score = 0;
-    if (keep_n)   score += 50 * keep_ok / keep_n;        /* the hard one */
-    if (reveal_n) score += 25 * reveal_ok / reveal_n;
-    if (answered) score += 15 * character_ok / answered;
+    if (answered) score += 45 * char_ok / answered;      /* the hard one */
+    if (offers_n) score += 25 * offers_ok / offers_n;
+    if (answered) score += 20 * human_ok / answered;
     if (answered) score += 10 * brevity_ok / answered;
 
-    printf("\n  keep      %d/%d\n  reveal    %d/%d\n  character %d/%d\n"
+    printf("\n  character %d/%d\n  owns up   %d/%d\n  human     %d/%d\n"
            "  brevity   %d/%d\n  empty     %d\n",
-           keep_ok, keep_n, reveal_ok, reveal_n, character_ok, answered,
+           char_ok, answered, offers_ok, offers_n, human_ok, answered,
            brevity_ok, answered, empty);
     printf("  SCORE %d/100   %.1fs total, %.1fs per reply\n",
            score, secs, answered ? secs / answered : 0.0);

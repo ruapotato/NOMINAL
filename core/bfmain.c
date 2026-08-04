@@ -13,6 +13,11 @@
 #include "machine.h"
 #include "kernel.h"
 
+/* D21: locked in. Qwen2.5-3B-Instruct scores 100/100 on tools/persona_eval
+ * at 5.2s a reply, which reads as a person thinking rather than a machine
+ * being slow. Apache-2.0, so it is sellable. */
+#define NOM_DEFAULT_MODEL "game/models/Qwen2.5-3B-Instruct-Q4_K_M.gguf"
+
 int main(int argc, char **argv)
 {
     if (argc > 2 && strcmp(argv[1], "--survey") == 0) {
@@ -175,7 +180,7 @@ int main(int argc, char **argv)
     {
         bool llm_load(const char *);
         const char *mp = getenv("NOM_MODEL");
-        llm_load(mp ? mp : "game/models/Qwen2.5-0.5B-Instruct-Q4_K_M.gguf");
+        llm_load(mp ? mp : NOM_DEFAULT_MODEL);
     }
 #endif
 

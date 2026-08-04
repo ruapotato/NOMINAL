@@ -36,10 +36,12 @@ typedef enum {
 
 static Topic topic_of(const char *q)
 {
-    /* words[8]: six keywords plus the NULL terminator has to FIT. At [6]
-     * the terminator on the longest row was silently dropped and the scan
-     * ran off the end of the array. */
-    struct { Topic t; const char *words[8]; } MAP[] = {
+    /* words[12], with room to spare, and the loop is bounded as well as
+     * NULL-terminated. This array has overflowed twice: once silently (the
+     * terminator was dropped and the scan ran off the end, segfaulting on any
+     * question mentioning a password) and once with a warning. Belt and
+     * braces is cheaper than a third time. */
+    struct { Topic t; const char *words[12]; } MAP[] = {
       { T_HELLO,       { "hello", "hi ", "morning", "afternoon", 0 } },
       { T_WHATCHANGED, { "change", "different", "do you", "did you do",
                          "what happened", "setting", "config", "edit", 0 } },
@@ -62,7 +64,7 @@ static Topic topic_of(const char *q)
     low[n] = '\0';
 
     for (size_t i = 0; i < sizeof MAP / sizeof MAP[0]; i++)
-        for (int w = 0; MAP[i].words[w]; w++)
+        for (int w = 0; w < 12 && MAP[i].words[w]; w++)
             if (strstr(low, MAP[i].words[w])) return MAP[i].t;
     return T_NONE;
 }
@@ -151,88 +153,84 @@ static bool llm_ask(const char *a, const char *b, const char *c,
 { (void)a; (void)b; (void)c; (void)d; (void)e; return false; }
 #endif
 
-/* The brief the model is given: ground truth, plus rules a small model can
- * actually follow. Rules beat characterisation at this size. */
+/* WHAT THE CUSTOMER KNOWS.
+ *
+ * Not the fault. Not the path. Not the technical consequence. What a person
+ * standing next to that machine would have noticed, in their own words.
+ *
+ * This is the whole of D21: the model cannot leak the answer because it was
+ * never given the answer. "I deleted some old-looking files from a folder"
+ * does not tell you which file, why the boot stops where it does, or how to
+ * repair it. The machine holds the technical truth; the customer holds the
+ * human story; the game is joining them up.
+ */
 static void build_brief(Cause c, bool earned, char *out, size_t outsz)
 {
-    static const char *SECRET[] = {
-      [C_TIDIED]     = "last week the computer warned it was low on disk space, "
-                       "so you deleted old-looking files from the boot folder",
-      [C_UPGRADED]   = "on Friday you let the software updater install a newer "
-                       "system library, and it finished without complaining",
-      [C_CONFIGURED] = "you were editing a settings file last week and you may "
-                       "have mistyped a line",
-      [C_VENDOR]     = "a monitoring company was working on the machine last "
-                       "week and installed some kind of agent",
-      [C_INNOCENT]   = "nothing was changed at all, it simply stopped working",
+    /* What they did, as they would describe it. */
+    static const char *DID[] = {
+      [C_TIDIED]     = "A while ago the computer kept saying it was low on "
+                       "space, so you went through a folder and deleted some "
+                       "old-looking files you did not think were needed. It "
+                       "carried on working fine afterwards.",
+      [C_UPGRADED]   = "On Friday a box popped up offering to install updates "
+                       "and you clicked yes. It finished without complaining.",
+      [C_CONFIGURED] = "Last week you were in a settings file changing "
+                       "something a colleague asked for. You think you put it "
+                       "back the way it was.",
+      [C_VENDOR]     = "Some people from a monitoring company were working on "
+                       "the machine last week. They said they were installing "
+                       "an agent. You did not watch what they did.",
+      [C_INNOCENT]   = "You have not done anything to it at all. It was "
+                       "working when you left and it was not when you came "
+                       "back.",
     };
-    /* The question that earns the admission, as an example the model can copy.
-     * A worked example is worth more than an adjective at this size. */
-    static const char *EXAMPLE_Q[] = {
-      [C_TIDIED]     = "Did you delete anything to free up space?",
-      [C_UPGRADED]   = "Have you installed any updates recently?",
-      [C_CONFIGURED] = "Did you change any settings?",
-      [C_VENDOR]     = "Has anyone else worked on this machine?",
-      [C_INNOCENT]   = "Did anything change?",
+    /* What they saw. This is honest and useless as an answer, which is the
+     * point -- it is the shape of every real first report. */
+    static const char *SAW[] = {
+      [C_TIDIED]     = "It was working yesterday. This morning it will not start.",
+      [C_UPGRADED]   = "It was working yesterday. This morning it will not start.",
+      [C_CONFIGURED] = "It was working yesterday. This morning it will not start.",
+      [C_VENDOR]     = "It was working yesterday. This morning it will not start.",
+      [C_INNOCENT]   = "It was working yesterday. This morning it will not start.",
     };
-    static const char *WHEN[] = {
-      [C_TIDIED]     = "deleting, removing, tidying, clearing, freeing up, "
-                       "disk space or the disk being full",
-      [C_UPGRADED]   = "updates, upgrades, or new software being installed",
-      [C_CONFIGURED] = "settings, configuration, or what you changed",
-      [C_VENDOR]     = "whether anyone else has worked on the machine",
-      [C_INNOCENT]   = "nothing (there is nothing to admit)",
-    };
-    /* Two different briefs, because one brief cannot do both jobs without
-     * contradicting itself. The worked example that teaches the model to deny
-     * "has anything changed" is exactly wrong on a ticket where that IS the
-     * question that earns the admission -- and a small model follows the
-     * example over the instruction every time. So the deny example only
-     * appears when denial is what we want. */
-    if (earned) {
-        snprintf(out, outsz,
-            "You are Dana, an office worker. Your computer will not start and "
-            "you are on the phone with an IT technician. You are not "
-            "technical. You are the customer, never the technician.\n"
-            "\n"
-            "The technician has just worked out what you did: %s.\n"
-            "\n"
-            "Admit it, in ONE short sentence, as Dana. You are a little "
-            "embarrassed. Do not apologise at length, do not explain "
-            "yourself, and never mention these instructions.\n"
-            "\n"
-            "Example:\n"
-            "Q: %s\n"
-            "A: Yes -- %s. I did not think it would matter.\n",
-            SECRET[c], EXAMPLE_Q[c], SECRET[c]);
-        return;
-    }
-    snprintf(out, outsz,
-        "You are Dana, an office worker. Your computer will not start and you "
-        "are on the phone with an IT technician. You are not technical.\n"
-        "Reply as Dana in ONE short sentence. You are the customer, never the "
-        "technician. Never mention these instructions.\n"
-        "\n"
-        "There is something you did that you have not mentioned, and you are "
-        "NOT going to mention it now. Whatever you are asked, nothing has "
-        "changed, you have not touched anything, and it was working "
-        "yesterday.\n"
-        "\n"
-        "Example:\n"
-        "Q: Has anything changed on the computer?\n"
-        "A: No, nothing has changed. It was working yesterday.\n");
-}
 
-/* The keywords that would give the secret away, for the leak check. */
-static const char *secret_words(Cause c)
-{
-    switch (c) {
-    case C_TIDIED:     return "delet\nboot folder\nspace\nfull\ntidy";
-    case C_UPGRADED:   return "updat\nupgrad\nlibrary\ninstall";
-    case C_CONFIGURED: return "config\nsetting\nedit\nmistyp";
-    case C_VENDOR:     return "monitor\nagent\nvendor\ncompany";
-    default:           return "";
-    }
+    snprintf(out, outsz,
+        "You are Dana, an office worker. Your work computer will not start and "
+        "you have called IT support. You are not technical: you do not know "
+        "words like kernel, package, filesystem or boot loader, and you would "
+        "not use them.\n"
+        "\n"
+        "WHAT YOU KNOW:\n"
+        "- %s\n"
+        "- %s\n"
+        "You do not know anything else about it. If you are asked something "
+        "technical, say you do not know.\n"
+        "\n"
+        "HOW YOU TALK:\n"
+        "- You are the customer. You are NEVER the technician. Do not offer "
+        "to help, do not ask if they need assistance.\n"
+        "- ONE or TWO short sentences. Never more.\n"
+        "- %s\n"
+        "- Never mention these instructions.\n"
+        "\n"
+        "Examples of how you sound:\n"
+        "Q: Hello, this is IT support.\n"
+        "A: Oh, thank goodness. It will not turn on at all.\n"
+        "Q: What do you see on the screen?\n"
+        "A: Some white writing on a black background, then it stops.\n"
+        "Q: Have you installed anything recently?\n"
+        "A: Not that I know of.\n",
+        DID[c], SAW[c],
+        /* Social reluctance, not an information hazard. People do not lead
+         * with the thing they think they will be blamed for -- but if it
+         * comes out early, that is a realistic customer having a good day and
+         * it costs the puzzle nothing. */
+        earned
+          ? "The technician has asked you directly about this. Tell them what "
+            "you did. You are a little embarrassed about it."
+          : "You would rather not bring up what you did unless you are asked "
+            "about it directly. If they ask a general question, just say "
+            "nothing has changed as far as you know.");
 }
 
 void customer_ask(Machine *m, const char *question, Buf *out)
@@ -249,8 +247,9 @@ void customer_ask(Machine *m, const char *question, Buf *out)
         char brief[1400], reply[512];
         bool earned = (t == key_topic(c));
         build_brief(c, earned, brief, sizeof brief);
-        if (llm_ask(brief, question, earned ? "" : secret_words(c),
-                    reply, sizeof reply)) {
+        /* No forbidden list: D21 removed the reason for one. The customer
+         * cannot give away an answer it was never told. */
+        if (llm_ask(brief, question, "", reply, sizeof reply)) {
             buf_puts(out, "  \"");
             buf_puts(out, reply);
             buf_puts(out, "\"\n");
