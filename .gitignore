@@ -1,6 +1,7 @@
+# Vendored third-party source and build output. llama.cpp is fetched by
+# tools/fetch-llm.sh at a pinned revision; it is not our source to carry.
+vendor/
+# Model weights are game DATA, distributed with the build rather than tracked
+# in git. See docs/decisions-d20.md for which model and why.
+game/models/*.gguf
 build/
-game/bin/
-game/.godot/
-runs/
-*.o
-*.d
