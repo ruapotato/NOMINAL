@@ -1,3 +1,4 @@
+#define _GNU_SOURCE 1
 /* nominal_gdext.c — the Godot binding.
  *
  * Plain C against gdextension_interface.h, which the engine binary in this
@@ -86,22 +87,62 @@ static void c_to_gdstring(void *dest, const char *s)
  * The path is relative to where Godot was started, which for a played build
  * is the project directory. NOM_MODEL overrides it. */
 #ifdef NOM_LLM
+#include <dlfcn.h>
 bool llm_load(const char *path);
+const char *llm_why(void);
+
+/* FIND THE WEIGHTS RELATIVE TO THIS LIBRARY, not to the working directory.
+ *
+ * cwd-relative paths worked from a terminal and not from the editor, because
+ * Godot's idea of the current directory depends on how it was started -- so
+ * the model silently failed to load in the one case that matters, and the
+ * customer answered every question with the scripted "I'm not sure what
+ * you're asking me". A shipped game finds its data next to itself. */
 static void nominal_load_model(void)
 {
     static bool tried = false;
     if (tried) return;
     tried = true;
+
     const char *env = getenv("NOM_MODEL");
     if (env && *env) { llm_load(env); return; }
-    static const char *TRY[] = {
-        "game/models/Qwen2.5-3B-Instruct-Q4_K_M.gguf",
-        "models/Qwen2.5-3B-Instruct-Q4_K_M.gguf",
-        "../models/Qwen2.5-3B-Instruct-Q4_K_M.gguf",
+
+    static const char *NAMES[] = {
+        "Qwen2.5-3B-Instruct-Q4_K_M.gguf",
+        "Qwen2.5-1.5B-Instruct-Q4_K_M.gguf",
+        "Qwen2.5-0.5B-Instruct-Q4_K_M.gguf",
         NULL
     };
-    for (int i = 0; TRY[i]; i++) if (llm_load(TRY[i])) return;
+
+    /* Where is this .so? game/bin/libnominal... -> game/models/... */
+    char base[1024] = "";
+    Dl_info info;
+    if (dladdr((void *)(uintptr_t)&nominal_load_model, &info) && info.dli_fname) {
+        snprintf(base, sizeof base, "%s", info.dli_fname);
+        char *slash = strrchr(base, '/');
+        if (slash) *slash = '\0';            /* .../game/bin */
+        slash = strrchr(base, '/');
+        if (slash) *slash = '\0';            /* .../game     */
+    }
+
+    char path[1200];
+    for (int i = 0; NAMES[i]; i++) {
+        if (base[0]) {
+            snprintf(path, sizeof path, "%s/models/%s", base, NAMES[i]);
+            if (llm_load(path)) {
+                fprintf(stderr, "nominal: model %s\n", path);
+                return;
+            }
+        }
+        snprintf(path, sizeof path, "models/%s", NAMES[i]);
+        if (llm_load(path)) { fprintf(stderr, "nominal: model %s\n", path); return; }
+        snprintf(path, sizeof path, "game/models/%s", NAMES[i]);
+        if (llm_load(path)) { fprintf(stderr, "nominal: model %s\n", path); return; }
+    }
+    fprintf(stderr, "nominal: NO MODEL (%s) -- scripted persona will answer\n",
+            llm_why ? llm_why() : "?");
 }
+
 #else
 static void nominal_load_model(void) { }
 #endif

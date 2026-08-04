@@ -176,7 +176,15 @@ gdext: $(GDEXT_OUT)
 #
 # Linked whenever the vendored llama build is present, which on a checkout
 # meant for playing it always is.
-GDEXT_LLM = $(wildcard $(LLAMA_BUILD)/src/libllama.a)
+# A SHARED LIBRARY NEEDS POSITION-INDEPENDENT CODE. The static llama built for
+# the standalone bench is not PIC, so linking it into the GDExtension failed
+# with "final link failed: bad value" -- which is the linker's way of saying
+# the objects cannot be relocated. There is a second build for this, and the
+# two coexist because the bench genuinely does not need the PIC penalty.
+LLAMA_PIC  = $(LLAMA_DIR)/build-pic
+LLAMA_PIC_LIBS = $(LLAMA_PIC)/src/libllama.a $(LLAMA_PIC)/ggml/src/libggml.a \
+                 $(LLAMA_PIC)/ggml/src/libggml-cpu.a $(LLAMA_PIC)/ggml/src/libggml-base.a
+GDEXT_LLM = $(wildcard $(LLAMA_PIC)/src/libllama.a)
 
 ifeq ($(GDEXT_LLM),)
 $(GDEXT_OUT): $(BF_SRC_LIB) gdext/nominal_gdext.c | build
@@ -184,12 +192,29 @@ $(GDEXT_OUT): $(BF_SRC_LIB) gdext/nominal_gdext.c | build
 	@echo "gdext: NO MODEL (vendor/llama.cpp not built) -- scripted persona only"
 	$(CC) $(CFLAGS) -Igdext -fPIC -shared $(BF_SRC_LIB) gdext/nominal_gdext.c -o $@
 else
-$(GDEXT_OUT): $(BF_SRC_LIB) gdext/nominal_gdext.c core/llm.cpp | build
+# Per-object, for the same reason the Windows build is: compiling the whole
+# core plus a static llama in ONE command takes so long it gets killed, and
+# every retry starts from nothing because there is no intermediate to keep.
+GD_OBJDIR  = build/gd
+GD_C_OBJ   = $(BF_SRC_LIB:core/%.c=$(GD_OBJDIR)/%.o) $(GD_OBJDIR)/nominal_gdext.o
+GD_INC     = -Icore -Igdext -I$(LLAMA_DIR)/include -I$(LLAMA_DIR)/ggml/include
+
+$(GD_OBJDIR):
+	@mkdir -p $(GD_OBJDIR)
+
+$(GD_OBJDIR)/%.o: core/%.c | $(GD_OBJDIR)
+	$(CC) $(CFLAGS) -DNOM_LLM $(GD_INC) -fPIC -c $< -o $@
+
+$(GD_OBJDIR)/nominal_gdext.o: gdext/nominal_gdext.c | $(GD_OBJDIR)
+	$(CC) $(CFLAGS) -DNOM_LLM $(GD_INC) -fPIC -c $< -o $@
+
+$(GD_OBJDIR)/llm.o: core/llm.cpp | $(GD_OBJDIR)
+	$(CXX) $(WARN) $(FPFLAGS) $(OPT) -DNOM_LLM $(GD_INC) -fPIC -c $< -o $@
+
+$(GDEXT_OUT): $(GD_C_OBJ) $(GD_OBJDIR)/llm.o $(LLAMA_PIC_LIBS)
 	@mkdir -p game/bin
-	$(CXX) $(CFLAGS) -DNOM_LLM -Igdext -I$(LLAMA_DIR)/include \
-	  -I$(LLAMA_DIR)/ggml/include -fPIC -shared \
-	  -x c $(BF_SRC_LIB) gdext/nominal_gdext.c -x c++ core/llm.cpp \
-	  -o $@ $(LLAMA_LIBS) -fopenmp -lstdc++ -lm -lpthread -ldl
+	$(CXX) -shared -o $@ $(GD_C_OBJ) $(GD_OBJDIR)/llm.o \
+	  $(LLAMA_PIC_LIBS) -fopenmp -lstdc++ -lm -lpthread -ldl
 endif
 
 # ------------------------------------------------------------------ Windows
