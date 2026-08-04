@@ -1,0 +1,21 @@
+# 02-patient.nom — the other answer to 01: wait for the optics to warm.
+#
+# `calibrated` only goes to 1 because the flight computer has been heating the
+# compartment its optical bench lives in. Slower than closing the loop, but it
+# flies a straight line and it shows the deduction working.
+write("/dev/reactor/ctl", "prime")
+waitfor("/dev/reactor/state", "idle")
+write("/dev/reactor/ctl", "start")
+write("/dev/bus/ctl", "compute 2.0")
+waitfor("/dev/reactor/state", "online")
+
+write("/dev/bus/ctl", "sensor 1.5")
+waitfor("/dev/sensor/calibrated", 1)
+
+bearing = get("/dev/sensor/bearing")
+write("/dev/log", "optics warm, bearing " + str(round(bearing)))
+write("/dev/bus/ctl", "helm 3.0")
+write("/dev/helm/heading", bearing)
+write("/dev/helm/thrust", 1.0)
+while true:
+    sleep(50)

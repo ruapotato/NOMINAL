@@ -1,0 +1,32 @@
+# 01-openloop.nom — a cautionary tale. This one LOSES, on purpose.
+#
+# It powers everything in the right order and waits for the sensor to come
+# online before reading it. Then it takes ONE bearing, commits, and burns.
+# It misses by thousands of units.
+#
+# Post-mortem: `log` shows the bearing it committed to. Compare it with what
+# the sensor reports later — ten or twenty degrees apart, and the sensor never
+# reported an error. `cat /dev/sensor/calibrated` says 0.
+#
+# A cold optical bench is not noisy, it is MISALIGNED. It will report the same
+# wrong bearing all day with total confidence, so averaging more samples buys
+# nothing. The bench is warmed by the flight computer's waste heat, so the fix
+# for a bad bearing is power on the COMPUTE channel — a system away from the
+# number you distrusted.
+write("/dev/reactor/ctl", "prime")
+waitfor("/dev/reactor/state", "idle")
+write("/dev/reactor/ctl", "start")
+write("/dev/bus/ctl", "compute 2.0")
+waitfor("/dev/reactor/state", "online")
+
+write("/dev/bus/ctl", "sensor 1.5")
+waitfor("/dev/sensor/online", 1)
+
+bearing = get("/dev/sensor/bearing")
+write("/dev/log", "committing to bearing " + str(round(bearing)))
+
+write("/dev/bus/ctl", "helm 3.0")
+write("/dev/helm/heading", bearing)
+write("/dev/helm/thrust", 1.0)
+while true:
+    sleep(50)

@@ -1,0 +1,62 @@
+# 04-watchdog.nom — a diagnostic, not a lookup table.
+#
+# /dev/alarm reports a SYMPTOM. It does not tell you the cause, because the
+# ship does not know it either. Each symptom has several possible causes and
+# telling them apart means reading other files. That is the game.
+#
+#   bearing_unstable  the bench is cold, OR it has been knocked out of
+#                     alignment, OR the sensor channel is starved
+#   bay_overheating   the radiator is fouled, OR its breaker tripped, OR your
+#                     own code is simply too hot for the cooling you bought
+#   power_shortfall   a breaker tripped, OR the reactor has worn down, OR you
+#                     are asking for more than the ship can make
+#
+# Order matters below: check the cheap, specific causes before the expensive,
+# general ones. Recalibrating costs 20 ticks blind — do not do it because the
+# bay merely happens to be cold.
+
+write("/dev/log", "watchdog: armed")
+
+while true:
+    symptom = get("/dev/alarm")
+    write("/dev/log", "watchdog: " + symptom + " — diagnosing")
+
+    if symptom == "bearing_unstable":
+        if get("/dev/sensor/fault") == 1:
+            write("/dev/log", "  bench is misaligned")
+            write("/dev/sensor/ctl", "calibrate")
+        elif get("/dev/bus/breaker") == "sensor":
+            write("/dev/log", "  sensor breaker")
+            write("/dev/bus/ctl", "reset sensor")
+        elif get("/dev/cpu/bay_temp") < 12:
+            # not broken: too cold. back the cooling off and let the
+            # computer's own waste heat bring the bench up.
+            write("/dev/log", "  bench is merely cold, easing off the radiator")
+            write("/dev/bus/radiator", 0.0)
+
+    elif symptom == "bay_overheating":
+        if get("/dev/cpu/radiator_fault") == 1:
+            write("/dev/log", "  radiator fouled")
+            write("/dev/radiator/ctl", "purge")
+        elif get("/dev/bus/breaker") == "radiator":
+            write("/dev/log", "  radiator breaker")
+            write("/dev/bus/ctl", "reset radiator")
+        else:
+            # nothing is broken. we are just running hotter than we bought
+            # cooling for — buy more, and pay for it in thrust.
+            write("/dev/log", "  no fault: buying more cooling")
+            write("/dev/bus/radiator", min(get("/dev/bus/radiator") + 0.5, 1.5))
+            write("/dev/bus/helm", max(3.0 - get("/dev/bus/radiator"), 0.5))
+
+    elif symptom == "power_shortfall":
+        breaker = get("/dev/bus/breaker")
+        if breaker != "none":
+            write("/dev/log", "  " + breaker + " breaker")
+            write("/dev/bus/ctl", "reset " + breaker)
+        else:
+            # the reactor has worn down and cannot meet what we ask any more.
+            # give the helm whatever is left after the essentials.
+            write("/dev/log", "  reactor sagging, trimming the helm")
+            spare = get("/dev/bus/supply") - 2.0 - 1.5 - get("/dev/bus/radiator")
+            write("/dev/bus/helm", max(spare, 0.5))
+    sleep(2)

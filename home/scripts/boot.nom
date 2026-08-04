@@ -1,0 +1,21 @@
+# boot.nom — bring the plant up and feed the cards. Runs once at launch.
+#
+# Note the order. Priming the reactor runs off the battery, so it happens
+# alone: ask the bus for anything during those twenty ticks and the prime
+# starves and nothing else in your shift ever happens.
+write("/dev/log", "boot: cold start")
+write("/dev/reactor/ctl", "prime")
+waitfor("/dev/reactor/state", "idle")
+
+write("/dev/reactor/ctl", "start")
+waitfor("/dev/reactor/state", "online")
+
+# life support first. You are aboard.
+write("/dev/bus/scrub0", 1.4)
+write("/dev/bus/cpu0", 2.0)
+write("/dev/bus/rad0", 1.5)
+write("/dev/bus/sen0", 1.5)
+write("/dev/log", "boot: plant online")
+
+while true:
+    sleep(60)

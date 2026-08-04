@@ -1,0 +1,6 @@
+build/
+game/bin/
+game/.godot/
+runs/
+*.o
+*.d

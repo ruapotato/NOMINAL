@@ -1,0 +1,19 @@
+; NOMINAL — the station workstation.
+config_version=5
+
+[application]
+config/name="NOMINAL"
+run/main_scene="res://scenes/desktop.tscn"
+config/features=PackedStringArray("4.4", "GL Compatibility")
+boot_splash/show_image=false
+
+[display]
+window/size/viewport_width=1280
+window/size/viewport_height=800
+window/stretch/mode="canvas_items"
+
+[rendering]
+renderer/rendering_method="gl_compatibility"
+environment/defaults/default_clear_color=Color(0.023, 0.031, 0.039, 1)
+
+[input]

@@ -1,0 +1,18 @@
+# serve.nom — ops. This is the script the tenants are paying for.
+#
+# Every segment needs somebody looking after it: write its heartbeat at
+# /srv/<name>/heartbeat and it counts as served. Miss the window for 40 ticks
+# and its service starts sliding; miss it for 140 and it pays nothing at all.
+#
+# The sleep is not politeness. Instructions are one shared pool: whatever this
+# script uses is taken from the other scripts AND from the tenants, who need
+# their own share to be served at all. A loop with no sleep in it will eat
+# everything and earn you nothing —
+#     cat /dev/cpu/spare
+# is what the tenants have left after your scripts have had their turn.
+write("/dev/log", "ops: on duty")
+
+while true:
+    for seg in ls("/srv"):
+        write("/srv/" + seg + "/heartbeat", "ok")
+    sleep(10)

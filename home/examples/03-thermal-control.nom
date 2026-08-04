@@ -1,0 +1,24 @@
+# 05-thermal.nom — hold the bay in the band where the ship works.
+#
+# Too cold and the optical bench drifts, so your bearings are confident lies.
+# Too hot and the computer throttles, so your scripts get fewer instructions.
+# Cooling is bought with power that would otherwise be thrust, so this is a
+# real decision every tick, not a switch.
+#
+#   bay ~65C, no radiator   -> throttled to about half your instructions
+#   bay ~20C, radiator 1.0  -> full budget, honest optics, less thrust
+#   bay  ~0C, radiator 1.5  -> full budget, and a bench that lies to you
+#
+# compute (2.0) + sensor (1.5) leaves 3.0 MW to split between helm and radiator.
+rad = 0.0
+waitfor("/dev/reactor/state", "online")
+
+while true:
+    bay = get("/dev/cpu/bay_temp")
+    if bay > 28:
+        rad = min(rad + 0.1, 1.5)
+    elif bay < 18:
+        rad = max(rad - 0.1, 0.0)
+    write("/dev/bus/radiator", rad)
+    write("/dev/bus/helm", 3.0 - rad)
+    sleep(10)
