@@ -14,6 +14,14 @@
 static char names[UNITS][64];
 static char execs[UNITS][160];
 static char afters[UNITS][64];
+/* Units we did NOT load, and why. A unit that is disabled or belongs to
+ * another runlevel is skipped entirely, which is right -- but anything
+ * ordered AFTER it then waits for a name that is simply not in the list, and
+ * "waiting for net" with no explanation is the single most confusing thing an
+ * init system can print. Keeping the reason costs two small arrays. */
+static char skipname[UNITS][64];
+static char skipwhy[UNITS][40];
+static int  nskip = 0;
 static char descs[UNITS][96];
 static char unitname[UNITS][64];
 static int  started[UNITS];
@@ -85,11 +93,26 @@ void _start(void)
             g_exit(1);
         }
 
-        static char en[16], rl[32];
+        static char en[16], rl[32], nm0[64];
+        get(body, "name", nm0, sizeof nm0, name);
         get(body, "enabled", en, sizeof en, "yes");
-        if (!g_streq(en, "yes")) continue;
+        if (!g_streq(en, "yes")) {
+            if (nskip < UNITS) {
+                g_copy(skipname[nskip], nm0, sizeof skipname[0]);
+                g_copy(skipwhy[nskip], "it is disabled", sizeof skipwhy[0]);
+                nskip++;
+            }
+            continue;
+        }
         get(body, "runlevel", rl, sizeof rl, "3");
-        if (!wanted_at_level(rl)) continue;
+        if (!wanted_at_level(rl)) {
+            if (nskip < UNITS) {
+                g_copy(skipname[nskip], nm0, sizeof skipname[0]);
+                g_copy(skipwhy[nskip], "it is not in this runlevel", sizeof skipwhy[0]);
+                nskip++;
+            }
+            continue;
+        }
 
         int u = nunits++;
         g_copy(unitname[u], name, sizeof unitname[u]);
@@ -161,10 +184,30 @@ void _start(void)
 
     for (int u = 0; u < nunits; u++) {
         if (started[u]) continue;
+        const char *dep = afters[u][0] ? afters[u] : "?";
         g_puts("svcinit: ");
         g_puts(names[u]);
         g_puts(": waiting for ");
-        g_putln(afters[u][0] ? afters[u] : "?");
+        g_puts(dep);
+        /* SAY WHY IT IS NEVER COMING. Waiting forever for a name is the
+         * confusing half of this fault; the useful half is that the thing
+         * being waited on was skipped on purpose, and this is where that is
+         * known. */
+        int said = 0;
+        for (int k = 0; k < nskip && !said; k++)
+            if (g_streq(skipname[k], dep)) {
+                g_puts(" -- which never starts because ");
+                g_puts(skipwhy[k]);
+                said = 1;
+            }
+        if (!said) {
+            int exists = 0;
+            for (int v = 0; v < nunits; v++)
+                if (g_streq(names[v], dep)) exists = 1;
+            if (!exists) g_puts(" -- and no unit by that name is installed");
+            else         g_puts(" -- which did not start either");
+        }
+        g_putln("");
         if (g_streq(crit[u], "yes")) g_exit(1);
     }
     g_exit(failed_critical ? 1 : 0);

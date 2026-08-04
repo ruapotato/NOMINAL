@@ -188,6 +188,41 @@ $(WIN_BIN): $(CORE_SRC) core/main.c
 	@mkdir -p build/win
 	$(WINCC) $(WINFLAGS) $(CORE_SRC) core/main.c -o $@ -lws2_32
 
+# --- the Windows bench, WITH the model (D20 step 4) --------------------
+# The whole point of D20 is that the customer ships inside the game on both
+# platforms. Linux having a model and Windows not having one is not "mostly
+# done", it is a Linux feature.
+#
+# llama.cpp cross-compiles cleanly with the mingw toolchain, but only the
+# LIBRARIES do -- its `llama-app` target wants generated headers (build-info.h,
+# arg.h) that its own build does not produce under cross-compilation, and we
+# do not need a chat binary anyway. Hence the explicit target list:
+#
+#   cmake -B build-win -DCMAKE_TOOLCHAIN_FILE=cmake/mingw.cmake \
+#         -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
+#         -DLLAMA_CURL=OFF -DGGML_NATIVE=OFF
+#   cmake --build build-win --target llama ggml ggml-base ggml-cpu
+#
+# GGML_NATIVE=OFF matters: the host's -march would be baked into code meant
+# for someone else's machine.
+WIN_LLAMA_BUILD = $(LLAMA_DIR)/build-win
+WIN_LLAMA_LIBS  = $(WIN_LLAMA_BUILD)/src/libllama.a \
+                  $(WIN_LLAMA_BUILD)/ggml/src/ggml.a \
+                  $(WIN_LLAMA_BUILD)/ggml/src/ggml-cpu.a \
+                  $(WIN_LLAMA_BUILD)/ggml/src/ggml-base.a
+WIN_BIN_LLM = build/win/nominal-bench.exe
+
+.PHONY: windows-llm
+windows-llm: $(WIN_BIN_LLM)
+
+$(WIN_BIN_LLM): $(BF_SRC) core/llm.cpp $(WIN_LLAMA_LIBS)
+	@mkdir -p build/win
+	x86_64-w64-mingw32-g++ $(CSTD:-std=%=) $(WARN) $(FPFLAGS) $(OPT) \
+	  -Icore -I$(LLAMA_DIR)/include -I$(LLAMA_DIR)/ggml/include -DNOM_LLM \
+	  -x c $(BF_SRC) -x c++ core/llm.cpp \
+	  -o $@ $(WIN_LLAMA_LIBS) -static -static-libgcc -static-libstdc++ \
+	  -fopenmp -lws2_32
+
 $(WIN_GDEXT): $(BF_SRC_LIB) gdext/nominal_gdext.c
 	@mkdir -p game/bin
 	$(WINCC) $(WINFLAGS) -Igdext -shared $(BF_SRC_LIB) gdext/nominal_gdext.c -o $@ -lws2_32

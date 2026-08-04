@@ -865,6 +865,52 @@ static void fault_wellmeant(Machine *m, Rng *r, char *d, size_t ds)
     snprintf(d, ds, "%s", FIX[i].what);
 }
 
+/* A service ordered after one that is switched off.
+ *
+ * Nothing is corrupt, nothing is missing, and `pkg verify` names one file
+ * whose only change is `enabled: yes` becoming `enabled: no` -- which reads
+ * exactly like an administrator turning something off on purpose, because
+ * that is what it looks like on a real machine too. The damage is somewhere
+ * else entirely: every unit ordered AFTER it now waits for something that is
+ * never coming.
+ *
+ * This is the fault the boot log was built for. The dependents announce
+ * themselves in the log and nowhere else -- `svc` shows them as DEAD with no
+ * reason, and verify points at the wrong service. */
+static void fault_dep_disabled(Machine *m, Rng *r, char *d, size_t ds)
+{
+    /* Only services other units are ordered after are worth switching off. */
+    static const char *HUBS[] = { "net", "udev", "syslog" };
+    const char *hub = HUBS[rng_next(r) % 3];
+    char path[NOM_PATH_MAX];
+    snprintf(path, sizeof path, "/etc/services.d/%s.svc", hub);
+    VNode *n = vfs_lookup(&m->disk, path);
+    if (!n || n->kind != VN_FILE) return;
+
+    Buf out = {0};
+    bool hit = false;
+    const char *p = n->data.p ? n->data.p : "";
+    size_t len = n->data.len, i = 0;
+    while (i < len) {
+        size_t e = i; while (e < len && p[e] != '\n') e++;
+        char line[512];
+        size_t ll = e - i < sizeof line - 1 ? e - i : sizeof line - 1;
+        memcpy(line, p + i, ll); line[ll] = 0;
+        if (!hit && strncmp(line, "enabled:", 8) == 0) {
+            buf_puts(&out, "enabled: no\n");
+            hit = true;
+        } else {
+            buf_put(&out, line, strlen(line));
+            buf_puts(&out, "\n");
+        }
+        i = e < len ? e + 1 : len;
+    }
+    if (hit) { buf_clear(&n->data); buf_put(&n->data, out.p, out.len); }
+    buf_free(&out);
+    if (hit) snprintf(d, ds, "switched off the %s service that other units are "
+                             "ordered after", hub);
+}
+
 static void fault_missing_dir(Machine *m, Rng *r, char *d, size_t ds)
 {
     static const char *VICTIMS[] = {
@@ -935,7 +981,7 @@ static const StructuralFault STRUCTURAL[] = {
     fault_wrong_channel, fault_fstab, fault_daemon_config,
     fault_daemon_directive, fault_disk_full, fault_bad_bind,
     fault_dir_mode, fault_root_ro, fault_bad_libz, fault_fstype,
-    fault_missing_dir, fault_wellmeant,
+    fault_missing_dir, fault_wellmeant, fault_dep_disabled,
 };
 #define NSTRUCT ((int)(sizeof STRUCTURAL / sizeof STRUCTURAL[0]))
 

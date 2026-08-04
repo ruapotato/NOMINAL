@@ -193,8 +193,16 @@ Legend: **[done]** built · **[next]** in progress or immediately next ·
   logged into is a different problem from one that would not start.
 - **[todo]** a service enabled in the wrong runlevel, so it is missing without
   anything reporting an error.
-- **[todo]** a unit ordered after something that is disabled, so it waits
-  forever for a thing that is never coming.
+- **[done]** **a unit ordered after something that is disabled**, so it waits
+  forever for a thing that is never coming. `fault_dep_disabled`. Nothing is
+  corrupt: one file changed `enabled: yes` to `enabled: no`, which reads
+  exactly like an administrator switching something off on purpose, and the
+  damage is in every unit ordered after it. `svc` shows the dependents DEAD
+  with no reason and `pkg verify` points at the wrong service; the boot log is
+  the only place the truth appears, which is what the boot log is for.
+  svcinit now says WHY the thing being waited on never came -- disabled, wrong
+  runlevel, not installed, or failed -- because "waiting for net" on its own
+  is the most confusing line an init system can print.
 - **[todo]** `/etc/inittab` respawning something that exits immediately —
   the "respawning too fast" loop.
 
