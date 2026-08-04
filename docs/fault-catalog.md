@@ -118,9 +118,12 @@ Legend: **[done]** built · **[next]** in progress or immediately next ·
   boot still stops. The fix is realising nothing owns it and deleting it.
 - **[done]** required service whose exec is missing or not executable.
 - **[done]** dependency that never comes up; dependency cycle.
-- **[next]** **broken or misconfigured getty/login: the machine boots
-  perfectly and there is no way to log in.** A whole class where "it booted"
-  is not the same as "it works".
+- **[done]** **broken or misconfigured getty/login: the machine boots
+  perfectly and there is no way to log in.** `/sbin/getty` validates the
+  account it is about to hand the machine to — the entry has to be in
+  `/etc/passwd`, and the login shell has to exist and be executable. `login`
+  is now its own boot stage, because a machine that is *running* and cannot be
+  logged into is a different problem from one that would not start.
 - **[todo]** a service enabled in the wrong runlevel, so it is missing without
   anything reporting an error.
 - **[todo]** a unit ordered after something that is disabled, so it waits
@@ -130,8 +133,9 @@ Legend: **[done]** built · **[next]** in progress or immediately next ·
 
 ## 9. Accounts and permissions
 
-- **[todo]** wrong shell in `/etc/passwd`: login succeeds and immediately
-  ends. Fix by editing passwd from the rescue medium.
+- **[done]** wrong shell in `/etc/passwd` — a shell that used to exist, one
+  that never did, a rename meant to be temporary, or the field left empty.
+- **[done]** the root account missing from `/etc/passwd` entirely.
 - **[todo]** `/etc/passwd` and `/etc/shadow` out of step.
 - **[todo]** a directory whose mode stops traversal, so everything under a
   perfectly healthy tree is unreachable.

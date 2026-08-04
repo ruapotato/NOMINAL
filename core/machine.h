@@ -61,6 +61,7 @@ typedef enum {
     BOOT_INITRD,     /* load initrd, find and mount the root fs    */
     BOOT_INIT,       /* hand over to /sbin/init                    */
     BOOT_SERVICES,   /* bring up units in dependency order         */
+    BOOT_LOGIN,      /* getty: is there an account to hand it to?  */
     BOOT_TARGET,     /* login prompt: the machine is up            */
     BOOT_STAGE_COUNT
 } BootStage;

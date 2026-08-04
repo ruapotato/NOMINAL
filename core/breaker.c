@@ -339,10 +339,72 @@ static void fault_ldsoconf(Machine *m, Rng *r, char *d, size_t ds)
     snprintf(d, ds, "dropped /lib from ld.so.conf");
 }
 
+/* The machine comes all the way up, starts every service, and there is no way
+ * to log in. "It booted" and "it works" are not the same sentence, and a whole
+ * class of real tickets lives in the gap. */
+static void fault_bad_shell(Machine *m, Rng *r, char *d, size_t ds)
+{
+    static const char *SHELLS[] = {
+        "/bin/hamsh",      /* a shell that used to exist                  */
+        "/usr/bin/zsh",    /* one that was never installed                */
+        "/bin/sh.old",     /* a rename that was meant to be temporary     */
+        "",                /* the field left empty entirely               */
+    };
+    const char *sh = SHELLS[rng_next(r) % 4];
+    VNode *n = vfs_lookup(&m->disk, "/etc/passwd");
+    if (!n || n->kind != VN_FILE) return;
+    Buf out = {0};
+    const char *p = n->data.p, *end = n->data.p + n->data.len;
+    while (p && p < end) {
+        const char *nl = memchr(p, '\n', (size_t)(end - p));
+        size_t len = nl ? (size_t)(nl - p) : (size_t)(end - p);
+        if (len > 5 && strncmp(p, "root:", 5) == 0) {
+            /* rewrite only the last field, so the line still parses */
+            size_t last = len;
+            while (last && p[last - 1] != ':') last--;
+            buf_put(&out, p, last);
+            buf_puts(&out, sh);
+        } else {
+            buf_put(&out, p, len);
+        }
+        buf_putc(&out, '\n');
+        p = nl ? nl + 1 : NULL;
+    }
+    buf_clear(&n->data);
+    buf_put(&n->data, out.p, out.len);
+    buf_free(&out);
+    snprintf(d, ds, "set root's login shell to %s", sh[0] ? sh : "(nothing)");
+}
+
+/* The root account gone from passwd entirely. */
+static void fault_no_root(Machine *m, Rng *r, char *d, size_t ds)
+{
+    (void)r;
+    VNode *n = vfs_lookup(&m->disk, "/etc/passwd");
+    if (!n || n->kind != VN_FILE) return;
+    Buf out = {0};
+    const char *p = n->data.p, *end = n->data.p + n->data.len;
+    bool dropped = false;
+    while (p && p < end) {
+        const char *nl = memchr(p, '\n', (size_t)(end - p));
+        size_t len = nl ? (size_t)(nl - p) : (size_t)(end - p);
+        if (len > 5 && strncmp(p, "root:", 5) == 0) { dropped = true; }
+        else { buf_put(&out, p, len); buf_putc(&out, '\n'); }
+        p = nl ? nl + 1 : NULL;
+    }
+    if (dropped) {
+        buf_clear(&n->data);
+        buf_put(&n->data, out.p, out.len);
+        snprintf(d, ds, "removed the root account from /etc/passwd");
+    }
+    buf_free(&out);
+}
+
 typedef void (*StructuralFault)(Machine *, Rng *, char *, size_t);
 static const StructuralFault STRUCTURAL[] = {
     fault_bootsector, fault_stray_unit, fault_wrong_uuid, fault_missing_module,
     fault_bad_libc, fault_wrong_arch, fault_ldsoconf,
+    fault_bad_shell, fault_no_root,
 };
 #define NSTRUCT ((int)(sizeof STRUCTURAL / sizeof STRUCTURAL[0]))
 

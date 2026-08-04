@@ -43,7 +43,7 @@ static const char *SRC_RC3 =
 "# /etc/rc.d/rc.3 -- multi-user runlevel.\n"
 "echo rc.3: entering multi-user\n"
 "exec /sbin/svcinit 3\n"
-"exec /sbin/login\n";
+"exec /sbin/getty root\n";
 
 static const char *SRC_RC0 =
 "# /etc/rc.d/rc.0 -- halt.\n"
@@ -88,6 +88,7 @@ static const Package PKG_SYSINIT = {
       { "/sbin/init", NULL, 0777, "/usr/lib/sysinit/init" },
       { "/sbin/svcinit", NULL, 0755, NULL },           /* GUEST_SVCINIT */
       { "/sbin/login",   NULL, 0755, NULL },           /* GUEST_LOGIN   */
+      { "/sbin/getty",   NULL, 0755, NULL },           /* GUEST_GETTY   */
       { "/etc/inittab",
         "# /etc/inittab -- the last non-comment line is run by /sbin/init.\n"
         "/bin/rc /etc/rc.boot\n", 0644, NULL },
@@ -95,7 +96,7 @@ static const Package PKG_SYSINIT = {
       { "/etc/rc.d/rc.3", NULL, 0755, NULL },          /* SRC_RC3 */
       { "/etc/rc.d/rc.0", NULL, 0755, NULL },          /* SRC_RC0 */
       { "/etc/rc.conf", "3\n", 0644, NULL },
-    }, 9
+    }, 10
 };
 
 static const Package PKG_BASE = {
@@ -119,9 +120,9 @@ static const Package PKG_USERS = {
     "shadow", "4.13", "accounts",
     {
       { "/etc/passwd",
-        "root:x:0:0:root:/root:/bin/hamsh\n"
+        "root:x:0:0:root:/root:/bin/sh\n"
         "daemon:x:1:1:daemon:/:/bin/false\n"
-        "hamowner:x:1000:1000:host owner:/home/hamowner:/bin/hamsh\n", 0644, NULL },
+        "hamowner:x:1000:1000:host owner:/home/hamowner:/bin/sh\n", 0644, NULL },
       { "/etc/group", "root:x:0:\ndaemon:x:1:\nhamowner:x:1000:\n", 0644, NULL },
       { "/etc/shadow", "root:!:19000:0:99999:7:::\n", 0600, NULL },
       { "/etc/login.defs", "UID_MIN 1000\nUID_MAX 60000\n", 0644, NULL },
@@ -723,6 +724,8 @@ void image_generated(const Machine *m, const char *path, Buf *out)
         buf_put(out, (const char *)GUEST_SVCINIT, GUEST_SVCINIT_LEN);
     else if (strcmp(path, "/sbin/login") == 0)
         buf_put(out, (const char *)GUEST_LOGIN, GUEST_LOGIN_LEN);
+    else if (strcmp(path, "/sbin/getty") == 0)
+        buf_put(out, (const char *)GUEST_GETTY, GUEST_GETTY_LEN);
     else if (strcmp(path, "/etc/rc.boot") == 0)       buf_puts(out, SRC_RCBOOT);
     else if (strcmp(path, "/etc/rc.d/rc.3") == 0)     buf_puts(out, SRC_RC3);
     else if (strcmp(path, "/etc/rc.d/rc.0") == 0)     buf_puts(out, SRC_RC0);

@@ -57,6 +57,7 @@ const char *boot_stage_name(BootStage s)
     case BOOT_INITRD:   return "initrd";
     case BOOT_INIT:     return "init";
     case BOOT_SERVICES: return "services";
+    case BOOT_LOGIN:    return "login";
     case BOOT_TARGET:   return "target";
     default:            return "?";
     }
@@ -376,6 +377,10 @@ void machine_boot(Machine *m)
             if (buf_contains(&m->boot.console, "rc.boot:")) at = BOOT_SERVICES;
             if (buf_contains(&m->boot.console, "rc.3:") ||
                 buf_contains(&m->boot.console, "entering runlevel")) at = BOOT_SERVICES;
+            /* getty runs after every service is up, so a failure there is a
+             * different problem from a service that would not start: the
+             * machine is running and simply cannot be logged into. */
+            if (buf_contains(&m->boot.console, "getty:")) at = BOOT_LOGIN;
             /* The reason was taken FROM the console, so echoing it back would
              * print it twice. Record it without re-saying it. */
             if (from_console) {
