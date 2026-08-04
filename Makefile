@@ -32,7 +32,7 @@ BIN = build/nominal
 # determinism gate compare a binary it had not rebuilt).
 .DEFAULT_GOAL := all
 
-.PHONY: all check clean gdext test-lang test-scenario bf test-break
+.PHONY: all check clean gdext test-lang test-scenario bf test-break cpu test-cpu
 
 # --- break-fix (D17) ---------------------------------------------------
 # The new core. `make test-break` is the gate: random corruption must always
@@ -41,6 +41,19 @@ BIN = build/nominal
 BF_SRC = core/util.c core/value.c core/vfs.c core/lex.c core/compile.c \
          core/vm.c core/natives.c core/image.c core/boot.c core/bootrt.c \
          core/breaker.c core/bfstub.c core/bfmain.c
+
+# --- the cpu (D18) -----------------------------------------------------
+# Our machine, RV64IM instruction set. `make test-cpu` is the gate: it
+# differential-tests against qemu-riscv64 and then checks the three
+# determinism claims (same build twice, -O0 vs -O2, Linux vs Windows).
+CPU_SRC = core/util.c core/cpu.c core/cpumain.c
+
+cpu: build/cpu
+build/cpu: $(CPU_SRC) core/cpu.h core/nom.h | build
+	$(CC) $(CFLAGS) -o $@ $(CPU_SRC)
+
+test-cpu: build/cpu
+	@./tools/test_cpu.sh 40
 
 bf: build/bf
 build/bf: $(BF_SRC) core/machine.h core/nom.h | build
