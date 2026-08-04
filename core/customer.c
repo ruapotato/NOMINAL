@@ -978,37 +978,6 @@ typedef enum {
     A_RUN
 } Action;
 
-static Action action_of(const char *q)
-{
-    struct { Action a; const char *words[10]; } MAP[] = {
-      { A_POWER,   { "turn it off", "power cycle", "reboot it", "restart it",
-                     "switch it off", "press the power", "turn it on", 0 } },
-      { A_SCREEN,  { "read out", "what does it say", "read me", "what is on the screen",
-                     "what's on the screen", "look at the screen", 0 } },
-      { A_DISC,    { "put the disc", "insert the disc", "rescue disc",
-                     "boot from the disc", "put the cd", "recovery disc", 0 } },
-      { A_CABLE,   { "check the cable", "is it plugged", "power lead",
-                     "unplug", "plugged in", 0 } },
-      { A_TYPEPW,  { "type the password", "type in the password",
-                     "enter the password", "type your password", 0 } },
-      /* DICTATION. On an air-gapped box this is the only terminal you have.
-       * Listed before the others because "type ls /boot" must not be caught
-       * by the password matcher. */
-      { A_RUN,     { "type ", "run ", "could you type", "please type",
-                     "enter the command", "at the prompt type", 0 } },
-      { A_SITDOWN, { "are you at the machine", "go to the machine",
-                     "sit down at", "in front of it", 0 } },
-    };
-    char low[512];
-    size_t n = 0;
-    for (; q[n] && n < sizeof low - 1; n++)
-        low[n] = (q[n] >= 'A' && q[n] <= 'Z') ? (char)(q[n] + 32) : q[n];
-    low[n] = 0;
-    for (size_t i = 0; i < sizeof MAP / sizeof MAP[0]; i++)
-        for (int w = 0; w < 10 && MAP[i].words[w]; w++)
-            if (strstr(low, MAP[i].words[w])) return MAP[i].a;
-    return A_NONE;
-}
 
 
 /* ---------------------------------------------------------- the tool call --
@@ -1149,16 +1118,16 @@ void customer_tool_probe(const char *request, char *out, size_t outsz)
 
 bool customer_do(Machine *m, const char *request, Buf *out)
 {
-    /* THE MODEL FIRST. The keyword table is the fallback for a build with no
-     * model in it, not the primary route -- a table only matches the
-     * phrasings its author imagined, and "Can I have you enter: 'ls /' and
-     * read back what you see" is not one of mine. */
+    /* THE MODEL, AND ONLY THE MODEL.
+     *
+     * A keyword table sat behind this as a fallback and David wanted it gone:
+     * "No lookup table, not model, not chat at all." He is right that keeping
+     * it invited the failure it was meant to prevent -- two code paths that
+     * disagree about what a sentence means, with the worse one silently
+     * winning whenever the better one hesitated. One mechanism, measured at
+     * 22/22, or none. */
     static char toolcmd[256];
     Action a = tool_call(request, toolcmd, sizeof toolcmd);
-    if (a == A_NONE) {
-        toolcmd[0] = 0;
-        a = action_of(request);
-    }
     if (a == A_NONE) return false;
 
     switch (a) {
@@ -1190,6 +1159,9 @@ bool customer_do(Machine *m, const char *request, Buf *out)
         m->cust.at_machine = true;
         if (m->cust.disc_inserted) machine_boot_rescue(m);
         else                       machine_boot(m);
+        /* The boot itself replaced the console, so the note goes after. */
+        buf_puts(&m->boot.console,
+                 "\n[power button pressed at the machine]\n");
 
         if (m->cust.disc_inserted)
             buf_puts(out, "  \"Right, holding the button... it is coming back "
@@ -1246,18 +1218,6 @@ bool customer_do(Machine *m, const char *request, Buf *out)
          * back is a character the machine printed. They are a slow, narrow
          * pipe, not an unreliable one. */
         const char *cmd = toolcmd[0] ? toolcmd : NULL;
-        static const char *LEAD[] = { "type ", "run ", "enter the command ",
-                                      "at the prompt type ", NULL };
-        char low[512];
-        size_t n2 = 0;
-        for (; request[n2] && n2 < sizeof low - 1; n2++)
-            low[n2] = (request[n2] >= 'A' && request[n2] <= 'Z')
-                    ? (char)(request[n2] + 32) : request[n2];
-        low[n2] = 0;
-        for (int i = 0; LEAD[i] && !cmd; i++) {   /* fallback only */
-            const char *at = strstr(low, LEAD[i]);
-            if (at) cmd = request + (at - low) + strlen(LEAD[i]);
-        }
         if (!cmd || !*cmd) {
             buf_puts(out, "  \"Type what, sorry? Tell me exactly what to put "
                           "in and I will read out whatever it says.\"\n");
@@ -1290,6 +1250,21 @@ bool customer_do(Machine *m, const char *request, Buf *out)
 
         Buf o = {0};
         kernel_run(m, clean, &o);
+
+        /* IT GOES ON THE CONSOLE, because that is what a console is.
+         *
+         * David: "if you are remoted into the box and ask the client to run
+         * ls, you should see that in your connect terminal." Of course you
+         * should -- a service processor shows the machine's screen, and the
+         * machine's screen is where the person standing at it is typing.
+         * Anything else would mean the console lies by omission whenever a
+         * human touches the keyboard.
+         *
+         * It is appended whether or not anyone is attached, for the same
+         * reason a real screen keeps displaying with nobody watching. */
+        buf_printf(&m->boot.console, "%s@%s:~# %s\n",
+                   "user", m->id, clean);
+        if (o.len) buf_put(&m->boot.console, o.p, o.len);
 
         buf_printf(out, "  \"Alright... I have typed %s.\"\n", clean);
         if (!o.len) {
@@ -1332,6 +1307,7 @@ bool customer_do(Machine *m, const char *request, Buf *out)
         }
         m->cust.disc_inserted = true;
         m->cust.at_machine = true;
+        buf_puts(&m->boot.console, "[rescue medium inserted at the machine]\n");
         buf_puts(out, "  \"Found it in the drawer. It is in.\"\n"
                       "  \"Do you want me to turn it off and on again?\"\n");
         return true;
