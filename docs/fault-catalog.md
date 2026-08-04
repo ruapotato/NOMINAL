@@ -308,6 +308,19 @@ Two answers, both of them what a real system does:
 The sloppy path still exists, because it must — sometimes the config really is
 the fault. It is now a deliberate act with a name and a receipt.
 
+## 14. What the previous administrator's notes say
+
+`/home/hamowner/notes.txt` is ten numbered lessons and **every one of them
+describes a fault the breaker really produces**. That is the rule for the
+easter eggs: flavour that is also true. A player who reads the home directory
+is straightforwardly better at the job afterwards, which is the only kind of
+hidden content worth hiding.
+
+The notes are therefore a checklist for this catalogue in reverse — if a note
+describes something the breaker cannot do, either the fault is missing or the
+note is a lie. Note 9 (a directory bound over `/etc`) was a lie for several
+sessions and a playtester followed it into a dead end. It is a real fault now.
+
 ## What makes a fault good
 
 1. **The evidence is on the machine.** The console says what it tried and what

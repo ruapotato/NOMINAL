@@ -625,13 +625,60 @@ static void fault_disk_full(Machine *m, Rng *r, char *d, size_t ds)
              (unsigned long long)before, (unsigned long long)n->data.len);
 }
 
+/* Somebody took a backup of /etc before making a change, and then bound it
+ * over the top "just while I test something".
+ *
+ * NOTHING IS CORRUPT. Every file passes pkg verify -- including the ones the
+ * machine is now not reading. The boot reads a month-old copy of the config
+ * and behaves accordingly, and the only way to see it is to look at what the
+ * namespace actually says: `cat /proc/<pid>/ns`, or the line in rc.boot that
+ * put it there. This is the fault the wiki has been promising and could not
+ * deliver. */
+static void fault_bad_bind(Machine *m, Rng *r, char *d, size_t ds)
+{
+    (void)r;
+    if (vfs_lookup(&m->disk, "/etc.bak")) return;
+    vfs_mkdir(&m->disk, "/etc.bak");
+
+    /* A copy of everything the boot needs, as it was BEFORE the last change:
+     * an old runlevel and a services.d without the newer units. */
+    vfs_mkdir(&m->disk, "/etc.bak/rc.d");
+    vfs_mkdir(&m->disk, "/etc.bak/services.d");
+    static const char *COPY[] = { "/etc/inittab", "/etc/rc.boot", "/etc/fstab",
+                                  "/etc/hostname", "/etc/issue", NULL };
+    for (int i = 0; COPY[i]; i++) {
+        VNode *src = vfs_lookup(&m->disk, COPY[i]);
+        if (!src || src->kind != VN_FILE) continue;
+        char dst[NOM_PATH_MAX];
+        snprintf(dst, sizeof dst, "/etc.bak%s", COPY[i] + 4);
+        VNode *n = vfs_mkfile(&m->disk, dst, "");
+        if (n) { buf_put(&n->data, src->data.p, src->data.len); n->mode = src->mode; }
+    }
+    /* the old runlevel file names a runlevel the backup has no script for */
+    VNode *rc = vfs_mkfile(&m->disk, "/etc.bak/rc.conf", "5\n");
+    if (rc) rc->mode = 0644;
+
+    /* and the line that does it, left in rc.boot */
+    VNode *b = vfs_lookup(&m->disk, "/etc/rc.boot");
+    if (!b || b->kind != VN_FILE) return;
+    Buf out = {0};
+    buf_puts(&out, "# bind the backup while I test something -- REMOVE THIS\n");
+    buf_puts(&out, "bind /etc.bak /etc\n");
+    buf_put(&out, b->data.p, b->data.len);
+    buf_clear(&b->data);
+    buf_put(&b->data, out.p, out.len);
+    buf_free(&out);
+    snprintf(d, ds, "left `bind /etc.bak /etc` in rc.boot: the machine reads a "
+                    "month-old copy of its configuration");
+}
+
 typedef void (*StructuralFault)(Machine *, Rng *, char *, size_t);
 static const StructuralFault STRUCTURAL[] = {
     fault_bootsector, fault_stray_unit, fault_wrong_uuid, fault_missing_module,
     fault_bad_libc, fault_wrong_arch, fault_ldsoconf,
     fault_bad_shell, fault_no_root, fault_unclean_shutdown,
     fault_wrong_channel, fault_fstab, fault_daemon_config,
-    fault_daemon_directive, fault_disk_full,
+    fault_daemon_directive, fault_disk_full, fault_bad_bind,
 };
 #define NSTRUCT ((int)(sizeof STRUCTURAL / sizeof STRUCTURAL[0]))
 

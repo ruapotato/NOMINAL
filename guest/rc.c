@@ -101,6 +101,24 @@ void _start(void)
             /* Same rule as init: the program reported its own failure. Do not
              * talk over it. */
             if (g_spawn(w[1], n > 2 ? w[2] : "") != 0) g_exit(1);
+        } else if (g_streq(w[0], "bind")) {
+            /* Plan 9 bind, in the boot scripts, the way Hamnix's own rc.boot
+             * uses it. Every process started after this inherits the view,
+             * which is what makes a bad bind such a quiet fault: nothing is
+             * corrupt and everything downstream reads the wrong file. */
+            if (n < 3) die(path, "bind needs a target and a mount point");
+            if (g_bind(w[1], w[2]) != 0) {
+                g_puts("rc: bind ");
+                g_puts(w[1]);
+                g_puts(" ");
+                g_puts(w[2]);
+                g_putln(": failed");
+                g_exit(1);
+            }
+            g_puts("rc: bound ");
+            g_puts(w[1]);
+            g_puts(" over ");
+            g_putln(w[2]);
         } else if (g_streq(w[0], "need")) {
             if (n < 2) die(path, "need needs a path");
             NomStat st;
