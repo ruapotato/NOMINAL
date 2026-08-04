@@ -1,189 +1,258 @@
-/* breaker.c — the script that breaks the installation.
+/* breaker.c — corrupt the customer's machine at random until it won't boot.
  *
- * This is the whole content pipeline, and it has exactly one power: it edits
- * the disk. It cannot set a flag, raise a fault, or tell the boot chain
- * anything. If a break is not visible as a difference in a file, it does not
- * exist. That constraint is what stops this game from being a symptom table,
- * so it is enforced by the signature: machine_break() takes a Machine and a
- * seed and touches nothing but m->disk (and m->bootsector, which is media).
+ * There is no list of faults here and there must never be one. The previous
+ * version of this file had twenty hand-written breaks, which is a fault table
+ * wearing a costume: a player who meets it twice has learned a lookup.
  *
- * The `what` string it fills in is FOR THE AUTHOR. It exists so the test
- * harness can report which break it was solving. The player never sees it.
+ * What happens instead: pick a file at random, damage it at random, boot the
+ * machine, and keep going until it stops booting. The engine validates its own
+ * content by running it. Every ticket is a fresh failure nobody authored, and
+ * solvability is structural — any difference from what the package shipped is
+ * visible to `pkg verify`, whatever the difference is.
+ *
+ * The only power this file has is to edit the disk. It cannot raise a flag or
+ * tell the boot chain anything, because there is nothing to tell.
  */
 #include <string.h>
 #include <stdio.h>
 #include "nom.h"
 #include "machine.h"
 
-/* Corrupt a file in place: keep it present and plausible, change what it says.
- * Truncation, a mangled magic number and a garbled line are the three ways a
- * real file goes wrong, and they fail at visibly different places. */
-static void truncate_file(Machine *m, const char *path, size_t keep)
-{
-    VNode *n = vfs_lookup(&m->disk, path);
-    if (!n || n->kind != VN_FILE) return;
-    if (n->data.len > keep) n->data.len = keep;
-}
+#define PATHS_MAX 128
 
-static void smash_byte(Machine *m, const char *path, size_t at, char to)
-{
-    VNode *n = vfs_lookup(&m->disk, path);
-    if (!n || n->kind != VN_FILE || n->data.len <= at) return;
-    n->data.p[at] = to;
-}
+/* Collect every file and symlink on the disk. Directories are excluded: the
+ * interesting damage is to contents, and a game that randomly deletes /etc is
+ * not a puzzle, it is a coin flip. */
+typedef struct {
+    char  path[PATHS_MAX][NOM_PATH_MAX];
+    int   n;
+} PathSet;
 
-/* Replace the first line starting with `prefix` (after indentation). Passing
- * NULL for `with` deletes the line. This is how a config gets a wrong value or
- * loses one, which is what an admin's bad afternoon actually looks like. */
-static void rewrite_line(Machine *m, const char *path, const char *prefix,
-                         const char *with)
+static void collect(VNode *n, const char *prefix, PathSet *ps)
 {
-    VNode *n = vfs_lookup(&m->disk, path);
-    if (!n || n->kind != VN_FILE) return;
-    Buf out = {0};
-    const char *p = n->data.p, *end = n->data.p + n->data.len;
-    size_t plen = strlen(prefix);
-    bool done = false;
-    while (p && p < end) {
-        const char *nl = memchr(p, '\n', (size_t)(end - p));
-        size_t len = nl ? (size_t)(nl - p) : (size_t)(end - p);
-        const char *s = p; size_t sl = len;
-        while (sl && (*s == ' ' || *s == '\t')) { s++; sl--; }
-        if (!done && sl >= plen && strncmp(s, prefix, plen) == 0) {
-            done = true;
-            if (with) { buf_puts(&out, with); buf_putc(&out, '\n'); }
-        } else {
-            buf_put(&out, p, len);
-            buf_putc(&out, '\n');
+    for (VNode *k = n->child; k; k = k->next) {
+        char p[NOM_PATH_MAX];
+        snprintf(p, sizeof p, "%s/%s", prefix, k->name);
+        if (k->kind == VN_DIR) {
+            collect(k, p, ps);
+        } else if (ps->n < PATHS_MAX) {
+            snprintf(ps->path[ps->n++], NOM_PATH_MAX, "%s", p);
         }
-        p = nl ? nl + 1 : NULL;
     }
+}
+
+/* --- the mutations ----------------------------------------------------
+ * Each is a thing that genuinely happens to a file: a disk truncates a
+ * write, a bad block flips bytes, an admin fat-fingers a config, a package
+ * script deletes the wrong path, a chmod goes wide. None of them knows or
+ * cares what the file is for.
+ */
+
+static void mut_delete(Vfs *fs, const char *path, Rng *r, char *d, size_t ds)
+{
+    (void)r;
+    vfs_remove(fs, path);
+    snprintf(d, ds, "deleted %s", path);
+}
+
+static void mut_truncate(Vfs *fs, const char *path, Rng *r, char *d, size_t ds)
+{
+    VNode *n = vfs_lookup(fs, path);
+    if (!n || n->kind != VN_FILE || n->data.len == 0) return;
+    size_t keep = (size_t)(rng_next(r) % n->data.len);
+    n->data.len = keep;
+    snprintf(d, ds, "truncated %s to %d bytes", path, (int)keep);
+}
+
+static void mut_flip(Vfs *fs, const char *path, Rng *r, char *d, size_t ds)
+{
+    VNode *n = vfs_lookup(fs, path);
+    if (!n || n->kind != VN_FILE || n->data.len == 0) return;
+    int runs = 1 + (int)(rng_next(r) % 4);
+    for (int i = 0; i < runs; i++) {
+        size_t at = (size_t)(rng_next(r) % n->data.len);
+        n->data.p[at] = (char)(0x20 + (rng_next(r) % 0x5f));
+    }
+    snprintf(d, ds, "corrupted %d bytes of %s", runs, path);
+}
+
+static void mut_zero(Vfs *fs, const char *path, Rng *r, char *d, size_t ds)
+{
+    VNode *n = vfs_lookup(fs, path);
+    if (!n || n->kind != VN_FILE) return;
+    int len = (int)n->data.len;
+    size_t at = n->data.len ? (size_t)(rng_next(r) % n->data.len) : 0;
+    for (size_t i = at; i < n->data.len; i++) n->data.p[i] = '\0';
+    snprintf(d, ds, "nulled %s from byte %d of %d", path, (int)at, len);
+}
+
+/* Line surgery: the shape of damage that config files actually suffer. */
+typedef enum { L_DROP, L_DUP, L_SWAP, L_TYPO, L_JUNK } LineOp;
+
+static void mut_line(Vfs *fs, const char *path, Rng *r, char *d, size_t ds)
+{
+    VNode *n = vfs_lookup(fs, path);
+    if (!n || n->kind != VN_FILE || n->data.len == 0) return;
+
+    /* split into lines */
+    char line[64][160];
+    int nl = 0;
+    const char *p = n->data.p, *end = n->data.p + n->data.len;
+    while (p < end && nl < 64) {
+        const char *e = memchr(p, '\n', (size_t)(end - p));
+        size_t len = e ? (size_t)(e - p) : (size_t)(end - p);
+        if (len > 159) len = 159;
+        memcpy(line[nl], p, len);
+        line[nl][len] = '\0';
+        nl++;
+        p = e ? e + 1 : end;
+    }
+    if (nl == 0) return;
+
+    LineOp op = (LineOp)(rng_next(r) % 5);
+    int i = (int)(rng_next(r) % (uint64_t)nl);
+    const char *opname = "?";
+    switch (op) {
+    case L_DROP:
+        for (int k = i; k < nl - 1; k++) memcpy(line[k], line[k+1], 160);
+        nl--;
+        opname = "deleted line";
+        break;
+    case L_DUP:
+        if (nl >= 64) return;
+        for (int k = nl; k > i; k--) memcpy(line[k], line[k-1], 160);
+        nl++;
+        opname = "duplicated line";
+        break;
+    case L_SWAP: {
+        if (nl < 2) return;
+        int j = (int)(rng_next(r) % (uint64_t)nl);
+        if (j == i) j = (i + 1) % nl;
+        char t[160];
+        memcpy(t, line[i], 160);
+        memcpy(line[i], line[j], 160);
+        memcpy(line[j], t, 160);
+        opname = "swapped lines";
+        break;
+    }
+    case L_TYPO: {
+        /* One character, in place. The most human failure there is, and the
+         * hardest to see, because the file still looks completely normal. */
+        size_t len = strlen(line[i]);
+        if (len == 0) return;
+        size_t at = (size_t)(rng_next(r) % len);
+        static const char POOL[] = "abcdefghijklmnopqrstuvwxyz0123456789-_/.";
+        line[i][at] = POOL[rng_next(r) % (sizeof POOL - 1)];
+        opname = "typo in line";
+        break;
+    }
+    case L_JUNK: {
+        if (nl >= 64) return;
+        for (int k = nl; k > i; k--) memcpy(line[k], line[k-1], 160);
+        int len = 3 + (int)(rng_next(r) % 12);
+        for (int k = 0; k < len; k++)
+            line[i][k] = (char)(0x21 + (rng_next(r) % 0x5e));
+        line[i][len] = '\0';
+        nl++;
+        opname = "inserted junk line";
+        break;
+    }
+    }
+
     buf_clear(&n->data);
-    buf_put(&n->data, out.p, out.len);
-    buf_free(&out);
+    for (int k = 0; k < nl; k++) {
+        buf_puts(&n->data, line[k]);
+        buf_putc(&n->data, '\n');
+    }
+    snprintf(d, ds, "%s %d of %s", opname, i + 1, path);
 }
 
-static void set_mode(Machine *m, const char *path, unsigned mode)
+static void mut_mode(Vfs *fs, const char *path, Rng *r, char *d, size_t ds)
 {
-    VNode *n = vfs_lookup(&m->disk, path);
-    if (n) n->mode = mode;
+    VNode *n = vfs_lookup(fs, path);
+    if (!n) return;
+    static const unsigned MODES[] = { 0644, 0600, 0000, 0444, 0755 };
+    unsigned mode = MODES[rng_next(r) % (sizeof MODES / sizeof MODES[0])];
+    if (mode == n->mode) return;
+    n->mode = mode;
+    snprintf(d, ds, "chmod %04o %s", mode, path);
 }
 
-/* Every break is a real edit to a real file. Each one names the stage it will
- * surface at, but only as a comment: the boot chain is never told. */
-typedef void (*BreakFn)(Machine *m, Rng *r);
-
-/* -- bootloader ------------------------------------------------------- */
-static void br_cfg_gone(Machine *m, Rng *r)
-{ (void)r; vfs_remove(&m->disk, "/boot/zbl/zbl.cfg"); }
-
-static void br_cfg_no_kernel(Machine *m, Rng *r)
-{ (void)r; rewrite_line(m, "/boot/zbl/zbl.cfg", "kernel", NULL); }
-
-static void br_cfg_wrong_uuid(Machine *m, Rng *r)
+static void mut_relink(Vfs *fs, const char *path, Rng *r, char *d, size_t ds)
 {
-    char line[96];
-    snprintf(line, sizeof line, "  root UUID=%04llx-%04llx-a19d-5be3",
-             (unsigned long long)(rng_next(r) % 0xffff),
-             (unsigned long long)(rng_next(r) % 0xffff));
-    rewrite_line(m, "/boot/zbl/zbl.cfg", "root", line);
+    VNode *n = vfs_lookup(fs, path);
+    if (!n || n->kind != VN_LINK) return;
+    char t[NOM_PATH_MAX];
+    int room = (int)sizeof t - 8;
+    snprintf(t, sizeof t, "%.*s.%llu", room, n->target,
+             (unsigned long long)(rng_next(r) % 100));
+    snprintf(n->target, sizeof n->target, "%s", t);
+    snprintf(d, ds, "repointed %s -> %s", path, t);
 }
 
-static void br_cfg_wrong_kernel(Machine *m, Rng *r)
-{ (void)r; rewrite_line(m, "/boot/zbl/zbl.cfg", "kernel", "  kernel /boot/vmlinuz-6.4.9"); }
-
-/* -- kernel ------------------------------------------------------------ */
-static void br_kernel_gone(Machine *m, Rng *r)
-{ (void)r; vfs_remove(&m->disk, "/boot/vmlinuz-6.4.11"); }
-
-static void br_kernel_truncated(Machine *m, Rng *r)
-{ (void)r; truncate_file(m, "/boot/vmlinuz-6.4.11", 2); }
-
-static void br_kernel_smashed(Machine *m, Rng *r)
-{ smash_byte(m, "/boot/vmlinuz-6.4.11", 1 + (size_t)(rng_next(r) % 3), 'x'); }
-
-/* -- initrd ------------------------------------------------------------ */
-static void br_initrd_no_driver(Machine *m, Rng *r)
-{ (void)r; rewrite_line(m, "/boot/initrd-6.4.11", "module virtio_blk", NULL); }
-
-static void br_initrd_no_fs(Machine *m, Rng *r)
-{ (void)r; rewrite_line(m, "/boot/initrd-6.4.11", "module ext4", NULL); }
-
-static void br_initrd_gone(Machine *m, Rng *r)
-{ (void)r; vfs_remove(&m->disk, "/boot/initrd-6.4.11"); }
-
-static void br_initrd_truncated(Machine *m, Rng *r)
-{ (void)r; truncate_file(m, "/boot/initrd-6.4.11", 3); }
-
-/* -- init -------------------------------------------------------------- */
-static void br_init_gone(Machine *m, Rng *r)
-{ (void)r; vfs_remove(&m->disk, "/usr/lib/sysinit/sysinit"); }
-
-static void br_init_not_exec(Machine *m, Rng *r)
-{ (void)r; set_mode(m, "/usr/lib/sysinit/sysinit", 0644); }
-
-static void br_fstab_bad_uuid(Machine *m, Rng *r)
-{
-    char line[96];
-    snprintf(line, sizeof line, "UUID=%04llx-2c07-a19d-5be3  /var   ext4  defaults",
-             (unsigned long long)(rng_next(r) % 0xffff));
-    rewrite_line(m, "/etc/fstab", "/dev/sda2", line);
-}
-
-static void br_fstab_gone(Machine *m, Rng *r)
-{ (void)r; vfs_remove(&m->disk, "/etc/fstab"); }
-
-/* -- services ---------------------------------------------------------- */
-static void br_svc_exec_gone(Machine *m, Rng *r)
-{ (void)r; vfs_remove(&m->disk, "/usr/sbin/syslogd"); }
-
-static void br_svc_not_exec(Machine *m, Rng *r)
-{ (void)r; set_mode(m, "/usr/sbin/netd", 0644); }
-
-static void br_svc_dangling_dep(Machine *m, Rng *r)
-{ (void)r; rewrite_line(m, "/etc/init/network.service", "after", "after=sysloggd"); }
-
-static void br_svc_cycle(Machine *m, Rng *r)
-{ (void)r; rewrite_line(m, "/etc/init/mount-local.service", "exec",
-                        "exec=/usr/sbin/mount-all\nafter=network"); }
-
-/* -- media ------------------------------------------------------------- */
-static void br_no_bootsector(Machine *m, Rng *r)
-{ (void)r; m->bootsector = false; }
-
-static const struct { BreakFn fn; const char *desc; } BREAKS[] = {
-    { br_cfg_gone,          "bootloader config deleted" },
-    { br_cfg_no_kernel,     "bootloader config lost its kernel line" },
-    { br_cfg_wrong_uuid,    "bootloader points at a root uuid that does not exist" },
-    { br_cfg_wrong_kernel,  "bootloader points at a kernel version not installed" },
-    { br_kernel_gone,       "kernel image deleted" },
-    { br_kernel_truncated,  "kernel image truncated" },
-    { br_kernel_smashed,    "kernel image magic corrupted" },
-    { br_initrd_no_driver,  "initrd rebuilt without the root device driver" },
-    { br_initrd_no_fs,      "initrd rebuilt without the ext4 module" },
-    { br_initrd_gone,       "initrd deleted" },
-    { br_initrd_truncated,  "initrd truncated" },
-    { br_init_gone,         "sysinit binary deleted" },
-    { br_init_not_exec,     "sysinit binary lost its execute bit" },
-    { br_fstab_bad_uuid,    "fstab names a uuid that does not exist" },
-    { br_fstab_gone,        "fstab deleted" },
-    { br_svc_exec_gone,     "syslogd binary deleted" },
-    { br_svc_not_exec,      "netd lost its execute bit" },
-    { br_svc_dangling_dep,  "network.service depends on a unit that does not exist" },
-    { br_svc_cycle,         "mount-local and network depend on each other" },
-    { br_no_bootsector,     "boot sector wiped" },
+typedef void (*Mutation)(Vfs *, const char *, Rng *, char *, size_t);
+static const Mutation MUTATION[] = {
+    mut_delete, mut_truncate, mut_flip, mut_zero,
+    mut_line, mut_line, mut_line,     /* line surgery is the commonest, so
+                                       * weight it: config damage should be
+                                       * more likely than a bad block */
+    mut_mode, mut_relink,
 };
-#define NBREAKS ((int)(sizeof BREAKS / sizeof BREAKS[0]))
+#define NMUT ((int)(sizeof MUTATION / sizeof MUTATION[0]))
 
-bool machine_break(Machine *m, uint64_t seed, char *what, size_t whatsz)
+/* Damage one random file one random way. Returns false if the mutation was a
+ * no-op (wrong kind of file for it, empty file), which the caller retries. */
+bool machine_corrupt(Machine *m, Rng *r, char *what, size_t whatsz)
 {
-    Rng r; rng_seed(&r, seed ^ 0x9e3779b97f4a7c15ULL);
-    int pick = (int)(rng_next(&r) % (uint64_t)NBREAKS);
-    BREAKS[pick].fn(m, &r);
-    if (what) snprintf(what, whatsz, "%s", BREAKS[pick].desc);
+    PathSet ps = { .n = 0 };
+    collect(m->disk.root, "", &ps);
+    if (ps.n == 0) return false;
+    const char *path = ps.path[rng_next(r) % (uint64_t)ps.n];
+    Mutation mut = MUTATION[rng_next(r) % (uint64_t)NMUT];
+    char d[200] = "";
+    mut(&m->disk, path, r, d, sizeof d);
+    if (!d[0]) return false;
+    snprintf(what, whatsz, "%s", d);
     return true;
 }
 
-int machine_break_count(void) { return NBREAKS; }
-const char *machine_break_desc(int i)
-{ return (i >= 0 && i < NBREAKS) ? BREAKS[i].desc : "?"; }
+/* Break the machine for real: keep damaging a fresh copy until it stops
+ * booting. This is generate-and-test — the engine proves the ticket is a
+ * ticket by trying to boot it — and it is why the corruption can be totally
+ * random without producing machines that are fine.
+ *
+ * `nfaults` is how many independent corruptions to leave on the disk. More
+ * than one means faults that mask each other: you fix the boot, and the next
+ * one is waiting underneath.
+ */
+bool machine_break(Machine *m, uint64_t seed, int nfaults, char *what, size_t whatsz)
+{
+    if (nfaults < 1) nfaults = 1;
+    if (what && whatsz) what[0] = '\0';
+
+    for (int attempt = 0; attempt < 400; attempt++) {
+        machine_free(m);
+        machine_install(m, seed);
+        Rng r;
+        rng_seed(&r, (seed ^ 0x9e3779b97f4a7c15ULL) + (uint64_t)attempt * 0x2545f491ULL);
+
+        char all[512] = "";
+        int applied = 0;
+        for (int guard = 0; guard < 64 && applied < nfaults; guard++) {
+            char d[200];
+            if (!machine_corrupt(m, &r, d, sizeof d)) continue;
+            if (applied) strncat(all, "; ", sizeof all - strlen(all) - 1);
+            strncat(all, d, sizeof all - strlen(all) - 1);
+            applied++;
+        }
+        if (applied < nfaults) continue;
+
+        machine_boot(m);
+        if (!m->boot.running) {
+            if (what) snprintf(what, whatsz, "%s", all);
+            return true;
+        }
+        /* It still boots. That is not a ticket — try again. */
+    }
+    return false;
+}

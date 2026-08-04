@@ -89,9 +89,16 @@ void pkg_verify(Machine *m, const char *name_or_null, Buf *out);
 int  pkg_reinstall(Machine *m, const char *name, Buf *out);
 
 /* --- the breaker, which is the content generator ---------------------- */
-/* Corrupt the installation in exactly one way, chosen from the seed. Writes a
- * one-line human description into `what` FOR THE AUTHOR ONLY — the player
- * never sees it. Returns false if the seed produced no viable break. */
-bool machine_break(Machine *m, uint64_t seed, char *what, size_t whatsz);
+/* Damage one random file one random way. Returns false if the mutation was a
+ * no-op for that file, which the caller simply retries. */
+bool machine_corrupt(Machine *m, Rng *r, char *what, size_t whatsz);
+
+/* Break the machine: corrupt a fresh copy at random until it stops booting.
+ * `nfaults` independent corruptions are left on the disk, so >1 gives faults
+ * that mask each other. `what` is filled in FOR THE AUTHOR ONLY — it is how
+ * the test harness reports what it was solving. The player never sees it, and
+ * nothing in the boot chain is told. Returns false if no break was found in
+ * the attempt budget, which should not happen. */
+bool machine_break(Machine *m, uint64_t seed, int nfaults, char *what, size_t whatsz);
 
 #endif /* NOM_MACHINE_H */

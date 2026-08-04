@@ -27,7 +27,36 @@ CORE_OBJ = $(CORE_SRC:core/%.c=build/%.o)
 
 BIN = build/nominal
 
-.PHONY: all check clean gdext test-lang test-scenario
+.PHONY: all check clean gdext test-lang test-scenario bf test-break
+
+# --- break-fix (D17) ---------------------------------------------------
+# The new core. `make test-break` is the gate: random corruption must always
+# produce a ticket, that ticket must always be visible to pkg verify, and
+# repairing it must always get the machine booting again.
+BF_SRC = core/util.c core/value.c core/vfs.c core/image.c core/boot.c \
+         core/breaker.c core/bfmain.c
+
+bf: build/bf
+build/bf: $(BF_SRC) core/machine.h core/nom.h | build
+	$(CC) $(CFLAGS) -o $@ $(BF_SRC)
+
+build/bf_asan: $(BF_SRC) core/machine.h core/nom.h | build
+	$(CC) $(CSTD) $(WARN) $(FPFLAGS) -O1 -g -fsanitize=address,undefined \
+	  -Icore -o $@ $(BF_SRC)
+
+test-break: build/bf build/bf_asan
+	@./build/bf --survey 400 | tail -9
+	@echo
+	@./build/bf --solve 300 | tail -1
+	@echo
+	@./build/bf --peel 150 3 | tail -2
+	@echo
+	@echo "--- under asan/ubsan, 1 to 5 simultaneous faults:"
+	@for n in 1 2 3 5; do \
+	  ./build/bf_asan --survey 120 $$n 2>&1 | grep -E 'ERROR|SUMMARY|seeds produced' \
+	    | sed "s/^/  $$n faults: /"; \
+	done
+
 
 all: $(BIN)
 

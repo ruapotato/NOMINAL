@@ -57,6 +57,39 @@ static bool fail(Machine *m, BootCtx *c, BootStage at, const char *fmt, ...)
     return false;
 }
 
+/* Anything read off a damaged disk can be arbitrary bytes, and it gets echoed
+ * into console messages. Real consoles show you the mess without becoming
+ * unreadable, so: printable ASCII passes, everything else becomes a dot, and
+ * the whole thing is clipped. The player still sees that a file is garbage —
+ * that is evidence — without the output turning into control codes. */
+static const char *clean(const char *src, size_t len, char *out, size_t outsz)
+{
+    size_t j = 0;
+    for (size_t i = 0; i < len && j + 4 < outsz; i++) {
+        unsigned char ch = (unsigned char)src[i];
+        if (ch == '\n' || ch == '\t') out[j++] = ' ';
+        else if (ch >= 0x20 && ch < 0x7f) out[j++] = (char)ch;
+        else out[j++] = '.';
+    }
+    if (j + 4 >= outsz && len > j) { out[j++] = '.'; out[j++] = '.'; out[j++] = '.'; }
+    out[j] = '\0';
+    return out;
+}
+
+/* Copy one line out of a raw buffer into a NUL-terminated scratch string.
+ * Parsing straight out of a Buf with sscanf reads past the end when the file
+ * has no trailing newline, which is exactly what a truncating corruption
+ * produces. */
+static size_t line_at(const char *p, const char *end, char *out, size_t outsz)
+{
+    const char *nl = memchr(p, '\n', (size_t)(end - p));
+    size_t len = nl ? (size_t)(nl - p) : (size_t)(end - p);
+    size_t n = len < outsz - 1 ? len : outsz - 1;
+    memcpy(out, p, n);
+    out[n] = '\0';
+    return len;
+}
+
 /* Read a whole file, following symlinks. Distinguishes the three states that
  * matter to a boot: present, absent, and present-but-pointing-at-nothing. */
 typedef enum { F_OK, F_MISSING, F_DANGLING, F_NOTFILE } FileState;
@@ -204,6 +237,36 @@ void machine_boot(Machine *m)
     }
     say(c, "zbl 2.06  loading configuration");
 
+    /* Validate the whole file before using any of it, the way a real loader
+     * does. Random damage inside a config should say WHICH LINE it choked on;
+     * silently losing a key and failing later is a worse game and a worse
+     * bootloader. */
+    {
+        static const char *DIRECTIVE[] = { "default", "timeout", "entry",
+                                           "kernel", "initrd", "root", NULL };
+        const char *p = f.p, *end = f.p + f.len;
+        int lineno = 0;
+        while (p && p < end) {
+            char raw[256], scrub[256], word[64] = {0};
+            size_t len = line_at(p, end, raw, sizeof raw);
+            lineno++;
+            const char *s2 = raw;
+            while (*s2 == ' ' || *s2 == '\t') s2++;
+            if (*s2 && *s2 != '#') {
+                sscanf(s2, "%63s", word);
+                bool known = false;
+                for (int i = 0; DIRECTIVE[i]; i++)
+                    if (strcmp(word, DIRECTIVE[i]) == 0) known = true;
+                if (!known) {
+                    fail(m, c, BOOT_LOADER, "zbl: zbl.cfg:%d: unrecognised directive: %s",
+                         lineno, clean(word, strlen(word), scrub, sizeof scrub));
+                    goto done;
+                }
+            }
+            p = (p + len < end) ? p + len + 1 : NULL;
+        }
+    }
+
     char kpath[NOM_PATH_MAX], ipath[NOM_PATH_MAX], rootspec[64];
     if (!cfg_get(&f, "kernel", kpath, sizeof kpath)) {
         fail(m, c, BOOT_LOADER, "zbl: no kernel line in configuration");
@@ -228,7 +291,9 @@ void machine_boot(Machine *m)
         goto done;
     }
     if (st != F_OK) {
-        fail(m, c, BOOT_KERNEL, "zbl: %s: not found", kpath);
+        char scrub[256];
+        fail(m, c, BOOT_KERNEL, "zbl: %s: not found",
+             clean(kpath, strlen(kpath), scrub, sizeof scrub));
         goto done;
     }
     if (f.len < 5 || memcmp(f.p, "\x7fKRNL", 5) != 0) {
@@ -247,7 +312,9 @@ void machine_boot(Machine *m)
         goto done;
     }
     if (st != F_OK) {
-        fail(m, c, BOOT_INITRD, "zbl: %s: not found", ipath);
+        char scrub[256];
+        fail(m, c, BOOT_INITRD, "zbl: %s: not found",
+             clean(ipath, strlen(ipath), scrub, sizeof scrub));
         goto done;
     }
     if (f.len < 7 || memcmp(f.p, "\x7fINITRD", 7) != 0) {
@@ -278,12 +345,14 @@ void machine_boot(Machine *m)
 
     /* The root the bootloader named has to be the root that exists. */
     const char *want = rootspec;
+    char scrubu[256];
     if (strncmp(want, "UUID=", 5) == 0) want += 5;
     if (strcmp(want, m->root_uuid) != 0) {
         m->boot.emergency = 1;
         fail(m, c, BOOT_INITRD,
              "initrd: waiting for /dev/disk/by-uuid/%s ... timed out (30s), "
-             "entering emergency shell", want);
+             "entering emergency shell",
+             clean(want, strlen(want), scrubu, sizeof scrubu));
         goto done;
     }
     say(c, "initrd: mounted %s on /", rootspec);
@@ -319,22 +388,37 @@ void machine_boot(Machine *m)
     }
     {
         const char *p = f.p, *end = f.p + f.len;
+        int lineno = 0;
         while (p && p < end) {
-            const char *nl = memchr(p, '\n', (size_t)(end - p));
-            size_t len = nl ? (size_t)(nl - p) : (size_t)(end - p);
-            if (len && *p != '#') {
-                char dev[64] = {0}, mnt[64] = {0};
-                if (sscanf(p, "%63s %63s", dev, mnt) == 2) {
-                    if (strncmp(dev, "UUID=", 5) == 0 &&
-                        strcmp(dev + 5, m->root_uuid) != 0) {
-                        fail(m, c, BOOT_INIT,
-                             "sysinit: %s: no device with that uuid -- "
-                             "dependency failed for %s", dev, mnt);
-                        goto done;
-                    }
+            char raw[256], scrub[256];
+            size_t len = line_at(p, end, raw, sizeof raw);
+            lineno++;
+            const char *s2 = raw;
+            while (*s2 == ' ' || *s2 == '\t') s2++;
+            if (*s2 && *s2 != '#') {
+                char dev[80] = {0}, mnt[80] = {0}, type[40] = {0};
+                int got = sscanf(s2, "%79s %79s %39s", dev, mnt, type);
+                if (got < 3) {
+                    fail(m, c, BOOT_INIT, "sysinit: /etc/fstab:%d: bad entry: %s",
+                         lineno, clean(raw, strlen(raw), scrub, sizeof scrub));
+                    goto done;
+                }
+                if (mnt[0] != '/') {
+                    fail(m, c, BOOT_INIT,
+                         "sysinit: /etc/fstab:%d: mount point is not an absolute path: %s",
+                         lineno, clean(mnt, strlen(mnt), scrub, sizeof scrub));
+                    goto done;
+                }
+                if (strncmp(dev, "UUID=", 5) == 0 &&
+                    strcmp(dev + 5, m->root_uuid) != 0) {
+                    fail(m, c, BOOT_INIT,
+                         "sysinit: %s: no device with that uuid -- "
+                         "dependency failed for %s",
+                         clean(dev, strlen(dev), scrub, sizeof scrub), mnt);
+                    goto done;
                 }
             }
-            p = nl ? nl + 1 : NULL;
+            p = (p + len < end) ? p + len + 1 : NULL;
         }
     }
     say(c, "sysinit: local filesystems mounted");
