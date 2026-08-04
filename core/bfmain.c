@@ -166,6 +166,16 @@ int main(int argc, char **argv)
         return 0;
     }
 
+#ifdef NOM_LLM
+    /* Load the customer's voice if the weights are there. Failure is silent
+     * and harmless: the scripted persona answers instead. */
+    {
+        bool llm_load(const char *);
+        const char *mp = getenv("NOM_MODEL");
+        llm_load(mp ? mp : "game/models/Qwen2.5-0.5B-Instruct-Q4_K_M.gguf");
+    }
+#endif
+
     if (argc > 1 && strcmp(argv[1], "--serve") == 0) {
         int port = argc > 2 ? atoi(argv[2]) : 7777;
         return bench_serve(port, true, argc > 3 ? strtoull(argv[3], NULL, 10) : 4800);

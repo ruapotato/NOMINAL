@@ -43,6 +43,7 @@ BIN = build/nominal
 BF_SRC_LIB = core/util.c core/value.c core/vfs.c core/ns.c core/cpu.c \
              core/kernel.c core/image.c core/net_sites.c core/customer.c core/boot.c core/breaker.c
 BF_SRC = $(BF_SRC_LIB) core/serve.c core/bfmain.c
+BF_OBJ = $(BF_SRC:core/%.c=build/%.o)
 
 # Regenerate the embedded guest userland. Needs clang+lld for riscv; the
 # generated header is committed so nobody else does.
@@ -63,12 +64,40 @@ build/cpu: $(CPU_SRC) core/cpu.h core/nom.h | build
 test-cpu: build/cpu
 	@./tools/test_cpu.sh 40
 
+# --- the language model (D20) -----------------------------------------
+# Optional: `make bf NOM_LLM=1` links llama.cpp and the customer is played by
+# a model. Without it the scripted persona answers and nothing else changes,
+# so a checkout with no vendor/ still builds and still plays.
+LLAMA_DIR = vendor/llama.cpp
+LLAMA_BUILD = $(LLAMA_DIR)/build-linux
+LLAMA_LIBS = $(LLAMA_BUILD)/src/libllama.a $(LLAMA_BUILD)/ggml/src/libggml.a \
+             $(LLAMA_BUILD)/ggml/src/libggml-cpu.a $(LLAMA_BUILD)/ggml/src/libggml-base.a
+
+ifdef NOM_LLM
+CFLAGS  += -DNOM_LLM
+LLM_OBJ  = build/llm.o
+LLM_LINK = $(LLAMA_LIBS) -fopenmp -lstdc++ -lm -lpthread -ldl
+LINKER   = $(CXX)
+else
+LLM_OBJ  =
+LLM_LINK =
+LINKER   = $(CC)
+endif
+
+build/llm.o: core/llm.cpp | build
+	$(CXX) -std=c++17 -O2 -I$(LLAMA_DIR)/include -I$(LLAMA_DIR)/ggml/include \
+	  -c $< -o $@
+
 bf: build/bf
 # guestbin.h must be a prerequisite: it is generated, and without it here
 # make keeps a binary with a stale guest userland embedded in it.
-build/bf: $(BF_SRC) core/machine.h core/nom.h core/abi.h core/cpu.h \
-          core/kernel.h core/guestbin.h | build
-	$(CC) $(CFLAGS) -o $@ $(BF_SRC)
+build/bf: $(BF_OBJ) $(LLM_OBJ) | build
+	@# Compile the C with the C compiler and LINK with the C++ one: handing C
+	@# sources to g++ fails on void*->T* conversions, which C allows. This uses
+	@# the ordinary build/%.o pattern rule -- an earlier version compiled into
+	@# the working directory and moved the objects, which left stale mismatched
+	@# ones behind and produced a segfault that looked like a bug in llama.
+	$(LINKER) -o $@ $(BF_OBJ) $(LLM_OBJ) $(LLM_LINK)
 
 build/bf_asan: $(BF_SRC) core/machine.h core/nom.h core/abi.h core/cpu.h \
                core/kernel.h core/guestbin.h | build

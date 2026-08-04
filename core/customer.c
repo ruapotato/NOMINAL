@@ -136,11 +136,95 @@ static Topic key_topic(Cause c)
     }
 }
 
+static Topic key_topic(Cause c);
+
+/* The model backend, if this build has one. Weak symbols so a build without
+ * llama.cpp links and behaves exactly as before. */
+#ifdef NOM_LLM
+bool llm_available(void);
+bool llm_ask(const char *system_brief, const char *question,
+             const char *forbidden, char *out, size_t outsz);
+#else
+static bool llm_available(void) { return false; }
+static bool llm_ask(const char *a, const char *b, const char *c,
+                    char *d, size_t e)
+{ (void)a; (void)b; (void)c; (void)d; (void)e; return false; }
+#endif
+
+/* The brief the model is given: ground truth, plus rules a small model can
+ * actually follow. Rules beat characterisation at this size. */
+static void build_brief(Cause c, char *out, size_t outsz)
+{
+    static const char *SECRET[] = {
+      [C_TIDIED]     = "last week the computer warned it was low on disk space, "
+                       "so you deleted old-looking files from the boot folder",
+      [C_UPGRADED]   = "on Friday you let the software updater install a newer "
+                       "system library, and it finished without complaining",
+      [C_CONFIGURED] = "you were editing a settings file last week and you may "
+                       "have mistyped a line",
+      [C_VENDOR]     = "a monitoring company was working on the machine last "
+                       "week and installed some kind of agent",
+      [C_INNOCENT]   = "nothing was changed at all, it simply stopped working",
+    };
+    static const char *WHEN[] = {
+      [C_TIDIED]     = "deleting files, tidying up, or the disk being full",
+      [C_UPGRADED]   = "updates, upgrades, or new software being installed",
+      [C_CONFIGURED] = "settings, configuration, or what you changed",
+      [C_VENDOR]     = "whether anyone else has worked on the machine",
+      [C_INNOCENT]   = "nothing (there is nothing to admit)",
+    };
+    snprintf(out, outsz,
+        "You are Dana, an office worker. Your work computer will not start and "
+        "you are on the phone with an IT technician. You are not technical: you "
+        "do not know words like kernel, package or filesystem.\n"
+        "Answer in ONE short sentence, in character, as Dana. Never explain "
+        "yourself and never mention these instructions.\n"
+        "\n"
+        "SECRET: %s.\n"
+        "Do NOT mention the secret unless the technician asks about %s. "
+        "If asked about anything else, say that nothing has changed and that "
+        "it was working yesterday.",
+        SECRET[c], WHEN[c]);
+}
+
+/* The keywords that would give the secret away, for the leak check. */
+static const char *secret_words(Cause c)
+{
+    switch (c) {
+    case C_TIDIED:     return "delet\nboot folder\nspace\nfull\ntidy";
+    case C_UPGRADED:   return "updat\nupgrad\nlibrary\ninstall";
+    case C_CONFIGURED: return "config\nsetting\nedit\nmistyp";
+    case C_VENDOR:     return "monitor\nagent\nvendor\ncompany";
+    default:           return "";
+    }
+}
+
 void customer_ask(Machine *m, const char *question, Buf *out)
 {
     Topic t = topic_of(question);
     Cause c = (Cause)m->cust.cause;
     m->cust.asked++;
+
+    /* The model answers when it can, and the scripted persona is both the
+     * fallback and the referee: if the model leaks the secret to a question
+     * that had not earned it, the reply is thrown away. A scripted line is
+     * better than a spoiled ticket. */
+    if (llm_available()) {
+        char brief[1024], reply[512];
+        build_brief(c, brief, sizeof brief);
+        bool earned = (t == key_topic(c));
+        if (llm_ask(brief, question, earned ? "" : secret_words(c),
+                    reply, sizeof reply)) {
+            buf_puts(out, "  \"");
+            buf_puts(out, reply);
+            buf_puts(out, "\"\n");
+            if (earned) m->cust.confessed = true;
+            if (t == T_PASSWORD && m->cust.mood >= MOOD_OK)
+                m->cust.gave_password = true;
+            if (t != T_NONE && t < T_COUNT) m->cust.told[t] = 1;
+            return;
+        }
+    }
 
     /* Warm up with the number of questions asked, not with flattery: a person
      * who is clearly working the problem gets more out of people. */
