@@ -143,8 +143,12 @@ static const Package PKG_NET = {
         "enabled: yes\n"
         "runlevel: 3\n", 0644, NULL },
       { "/etc/net/interfaces", "iface eth0\n  address dhcp\n", 0644, NULL },
-      { "/etc/hosts", "127.0.0.1 localhost\n", 0644, NULL },
-      { "/etc/resolv.conf", "nameserver 10.0.2.3\n", 0644, NULL },
+      { "/etc/hosts",
+        "127.0.0.1       localhost nominal.local\n"
+        "10.0.2.20       wiki.hamnix.org wiki\n"
+        "10.0.2.30       support.internal support\n"
+        "10.0.2.44       bofh.hamnix.org bofh\n", 0644, NULL },
+      { "/etc/resolv.conf", "nameserver 10.0.2.3\nsearch hamnix.org\n", 0644, NULL },
       { "/etc/host.conf", "order hosts,bind\n", 0644, NULL },
       { "/etc/networks", "default 0.0.0.0\n", 0644, NULL },
       { "/etc/protocols", "ip 0 IP\ntcp 6 TCP\nudp 17 UDP\n", 0644, NULL },
@@ -185,6 +189,67 @@ static const Package PKG_UDEV = {
         "runlevel: 3\n", 0644, NULL },
       { "/etc/udev/rules.d/50-default.rules", "SUBSYSTEM==\"block\", MODE=\"0660\"\n", 0644, NULL },
     }, 3
+};
+
+/* The previous administrator. Everything here is flavour EXCEPT that some of
+ * it is true and useful -- the notes describe faults this machine really has
+ * had, in the voice of someone who was tired. A player who reads them is
+ * better at the job than one who does not, which is the only kind of easter
+ * egg worth hiding. */
+static const Package PKG_HOME = {
+    "hamowner-home", "1.0", "the previous admin's home directory",
+    {
+      { "/home/hamowner/TODO",
+        "- rotate the logs, /var/log is getting silly\n"
+        "- ask R. why sshd keeps coming back chmod 000. THIRD TIME.\n"
+        "- the cleanup script in ~/bin is too enthusiastic, fix or delete\n"
+        "- document the initrd thing before I forget it again\n"
+        "- holiday\n", 0644, NULL },
+
+      { "/home/hamowner/notes.txt",
+        "Things this box has done to me, so the next person does not have to\n"
+        "learn them the hard way:\n"
+        "\n"
+        "1. /boot/vmlinuz is a SYMLINK. When somebody deletes the versioned\n"
+        "   image, `ls /boot` looks completely fine. stat it.\n"
+        "\n"
+        "2. If pkg verify is clean and it still will not boot, check the\n"
+        "   things no package owns. The boot sector is not a file.\n"
+        "\n"
+        "3. A UUID can be perfectly well-formed and still be the wrong disk.\n"
+        "   zbl.cfg and /etc/fstab have to agree with reality, not just with\n"
+        "   each other.\n"
+        "\n"
+        "4. I once spent a whole afternoon on a machine where nothing was\n"
+        "   corrupt. Somebody had bound a directory over /etc. `ns` would\n"
+        "   have shown me in four seconds.\n"
+        "\n"
+        "5. Do not reinstall a package to fix a file you have not looked at.\n"
+        "   You will lose whatever was legitimately edited in it and now you\n"
+        "   have two problems.\n", 0644, NULL },
+
+      { "/home/hamowner/.plan",
+        "gone fishing. if the machine is on fire, boot the rescue medium and\n"
+        "read wiki.hamnix.org/rescue. if the wiki is also on fire, I am sorry.\n",
+        0644, NULL },
+
+      { "/home/hamowner/fortunes",
+        "It is not a bug, it is an undocumented feature of the initrd.\n"
+        "Any sufficiently advanced cleanup script is indistinguishable from\n"
+        "  an attacker.\n"
+        "The machine is always right. The machine is describing what you did.\n"
+        "There is no cloud. There is only somebody else's /dev/sda1.\n"
+        "Backups are a theory. Restores are a fact.\n", 0644, NULL },
+
+      { "/home/hamowner/bin/cleanup",
+        "# the enthusiastic cleanup script. DO NOT RUN. See TODO.\n"
+        "# It removed /boot/vmlinuz-6.4.11 in March because the name did not\n"
+        "# match the pattern it expected and it decided that meant stale.\n"
+        "echo this script is disabled and is staying disabled\n", 0644, NULL },
+
+      { "/root/.plan",
+        "root is not for reading mail.\n", 0644, NULL },
+    }, 6
 };
 
 static const Package PKG_SSH = {
@@ -237,14 +302,16 @@ static const Package PKG_SHELL = {
       { "/bin/umount", NULL, 0755, NULL },
       { "/bin/chroot", NULL, 0755, NULL },
       { "/usr/bin/pkg", NULL, 0755, NULL },
+      { "/usr/bin/links", NULL, 0755, NULL },
       { "/bin/false", "#!false\n", 0755, NULL },
       { "/bin/true",  "#!true\n",  0755, NULL },
-    }, 14
+    }, 15
 };
 
 static const Package *IMAGE[] = {
     &PKG_BASE, &PKG_USERS, &PKG_BOOTLOADER, &PKG_KERNEL, &PKG_SYSINIT,
     &PKG_SHELL, &PKG_UDEV, &PKG_SYSLOG, &PKG_NET, &PKG_SSH, &PKG_HAMDE,
+    &PKG_HOME,
 };
 #define IMAGE_N ((int)(sizeof IMAGE / sizeof IMAGE[0]))
 
@@ -282,9 +349,19 @@ static const Package PKG_RESCUE_BASE = {
         "NAME=\"Hamnix Rescue\"\nVERSION=\"3.2\"\nID=hamnix-rescue\n", 0644, NULL },
       { "/etc/fstab", "# nothing is mounted automatically on the rescue medium\n",
         0644, NULL },
+      { "/etc/hosts",
+        "127.0.0.1       localhost\n"
+        "10.0.2.20       wiki.hamnix.org wiki\n"
+        "10.0.2.30       support.internal support\n"
+        "10.0.2.44       bofh.hamnix.org bofh\n", 0644, NULL },
+      { "/etc/resolv.conf", "nameserver 10.0.2.3\n", 0644, NULL },
+      { "/etc/motd",
+        "Hamnix rescue medium.\n"
+        "  the customer disk is /dev/sda1 and is not mounted\n"
+        "  links wiki.hamnix.org/rescue    for the procedure\n", 0644, NULL },
       { "/usr/lib/sysinit/init", NULL, 0755, NULL },
       { "/sbin/init", NULL, 0777, "/usr/lib/sysinit/init" },
-    }, 8
+    }, 11
 };
 
 static const Package PKG_RESCUE_TOOLS = {
@@ -302,6 +379,7 @@ static const Package PKG_RESCUE_TOOLS = {
       { "/bin/umount",  NULL, 0755, NULL },
       { "/bin/chroot",  NULL, 0755, NULL },
       { "/usr/bin/pkg", NULL, 0755, NULL },
+      { "/usr/bin/links", NULL, 0755, NULL },
     }, 12
 };
 
@@ -350,6 +428,7 @@ static void install_rescue(Machine *m)
             buf_free(&b);
         }
     }
+    m->on_rescue = was;
 }
 
 /* Content that belongs to a package but names THIS installation, plus the
@@ -386,6 +465,8 @@ void image_generated(const Machine *m, const char *path, Buf *out)
         buf_put(out, (const char *)GUEST_CHROOT, GUEST_CHROOT_LEN);
     else if (strcmp(path, "/usr/bin/pkg") == 0)
         buf_put(out, (const char *)GUEST_PKG, GUEST_PKG_LEN);
+    else if (strcmp(path, "/usr/bin/links") == 0)
+        buf_put(out, (const char *)GUEST_LINKS, GUEST_LINKS_LEN);
     else if (strcmp(path, "/sbin/svcinit") == 0)
         buf_put(out, (const char *)GUEST_SVCINIT, GUEST_SVCINIT_LEN);
     else if (strcmp(path, "/sbin/login") == 0)
@@ -509,10 +590,11 @@ void machine_install(Machine *m, uint64_t seed)
     static const char *DIRS[] = {
         "/bin", "/boot", "/boot/zbl", "/dev", "/etc", "/etc/hamde",
         "/etc/net", "/etc/rc.d", "/etc/services.d", "/etc/ssh", "/etc/udev",
-        "/etc/udev/rules.d", "/home", "/home/hamowner", "/lib", "/lib/modules",
+        "/etc/udev/rules.d", "/home", "/home/hamowner", "/home/hamowner/bin", "/lib", "/lib/modules",
         "/lib/modules/6.4.11", "/proc", "/root", "/sbin", "/sys", "/tmp",
         "/mnt", "/media", "/usr", "/usr/bin", "/usr/lib", "/usr/lib/sysinit",
-        "/usr/sbin", "/usr/share", "/var", "/var/log", NULL
+        "/usr/sbin", "/usr/share", "/var", "/var/log", "/var/lib",
+        "/var/lib/pkg", "/var/cache", NULL
     };
     for (int i = 0; DIRS[i]; i++) vfs_mkdir(&m->disk, DIRS[i]);
 

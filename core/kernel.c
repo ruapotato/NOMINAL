@@ -22,6 +22,9 @@
 #include "ns.h"
 #include "kernel.h"
 
+const char *net_dns(const char *host);
+bool net_fetch(const char *ip, const char *path, Buf *out);
+
 #define FD_MAX      16
 #define SPAWN_DEPTH  8
 /* A boot that never finishes is a real failure, and a real one to diagnose.
@@ -236,6 +239,13 @@ static int64_t sys_open(Proc *p, Cpu *c, uint64_t pathp, int64_t flags)
     }
     if (!n || dangling) return -1;
     if (n->kind == VN_DIR) return -1;
+    /* Mode is enforced for read and write, not just execute. There is no uid
+     * model yet, so there is no root override -- which means `chmod 000` on a
+     * config file really does break the thing that reads it, and that is a
+     * fault worth being able to have. */
+    bool want_write = (flags & (O_WRONLY | O_RDWR | O_CREAT | O_TRUNC)) != 0;
+    if (!want_write && !(n->mode & 0444)) return -1;
+    if (want_write  && !(n->mode & 0222) && !(flags & O_CREAT)) return -1;
 
     int fd = alloc_fd(p);
     if (fd < 0) return -1;
@@ -457,6 +467,27 @@ static int64_t kernel_syscall(Cpu *c, int64_t n, int64_t a0, int64_t a1,
         if (!n) return -1;
         n->mode = (unsigned)(a1 & 0777);
         return 0;
+    }
+    case SYS_dns: {
+        char name[128];
+        if (!guest_str(c, (uint64_t)a0, name, sizeof name)) return -1;
+        const char *ip = net_dns(name);
+        if (!ip) return -1;
+        size_t n = strlen(ip);
+        if ((int64_t)n + 1 > a2) return -1;
+        return cpu_write(c, (uint64_t)a1, ip, n + 1) ? (int64_t)n : -1;
+    }
+    case SYS_http: {
+        char ip[64], path[NOM_PATH_MAX];
+        if (!guest_str(c, (uint64_t)a0, ip, sizeof ip)) return -1;
+        if (!guest_str(c, (uint64_t)a1, path, sizeof path)) return -1;
+        Buf b = {0};
+        int64_t r = -1;
+        if (net_fetch(ip, path, &b) && b.len < (1u << 16) &&
+            cpu_write(c, (uint64_t)a2, b.p, b.len + 1))
+            r = (int64_t)b.len;
+        buf_free(&b);
+        return r;
     }
     case SYS_readlink: {
         char raw[NOM_PATH_MAX], path[NOM_PATH_MAX];

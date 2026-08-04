@@ -56,6 +56,13 @@ typedef unsigned long      uint64_t;
 #define SYS_chroot   1038   /* (path) -> 0 or -1                            */
 #define SYS_mounts   1039   /* (buf, len) -> bytes: the mount table         */
 #define SYS_readlink 1040   /* (path, buf, len) -> length of the target     */
+#define SYS_dns      1041   /* (name, buf, len) -> length of the address, or
+                             * -1 if the nameserver does not know it        */
+#define SYS_http     1042   /* (ip, path, buf) -> bytes, or -1 if nothing is
+                             * listening at that address. Takes an ADDRESS,
+                             * never a name: resolution is the browser's job,
+                             * which is what makes "works by ip, not by name"
+                             * a diagnosis you can actually reach.          */
 
 #define MNT_BIND  1         /* `at` is another path, not a device           */
 
