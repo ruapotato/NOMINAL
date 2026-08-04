@@ -659,6 +659,40 @@ static void fault_disk_full(Machine *m, Rng *r, char *d, size_t ds)
  * way while they investigated, and never put it back. The failure is a
  * cascade of unrelated-looking errors from whichever daemon writes first,
  * which is exactly how it reads on a real machine. */
+/* Replace ONE whitespace-separated field of a line, in place, touching no
+ * other byte. Rewriting the whole line with printf padding was a fairness
+ * bug: a player who corrected the wrong word with `sed` fixed the machine and
+ * `pkg verify` still reported the file as CHANGED, because the injected line
+ * had different column spacing from the one the package ships. The machine
+ * booted and the tools said it was still broken. A playtester hit exactly
+ * that and was right to call it out.
+ *
+ * Field indices are 0-based over whitespace-separated tokens. Returns false
+ * if the line does not have that many. */
+static bool line_set_field(const char *line, int idx, const char *val,
+                           char *out, size_t outsz)
+{
+    const char *p = line;
+    int f = 0;
+    while (*p) {
+        while (*p == ' ' || *p == '\t') p++;
+        if (!*p) break;
+        const char *start = p;
+        while (*p && *p != ' ' && *p != '\t') p++;
+        if (f == idx) {
+            size_t pre = (size_t)(start - line);
+            size_t taillen = strlen(p);
+            if (pre + strlen(val) + taillen + 1 > outsz) return false;
+            memcpy(out, line, pre);
+            memcpy(out + pre, val, strlen(val));
+            memcpy(out + pre + strlen(val), p, taillen + 1);
+            return true;
+        }
+        f++;
+    }
+    return false;
+}
+
 static void fault_root_ro(Machine *m, Rng *r, char *d, size_t ds)
 {
     (void)r;
@@ -678,7 +712,13 @@ static void fault_root_ro(Machine *m, Rng *r, char *d, size_t ds)
         char a[128] = "", b[128] = "", c[64] = "", o[64] = "";
         int got = sscanf(line, "%127s %127s %63s %63s", a, b, c, o);
         if (!hit && got >= 3 && line[0] != '#' && strcmp(b, "/") == 0) {
-            buf_printf(&out, "%-31s %-6s %-5s %s\n", a, b, c, "ro");
+            /* Field 3 is the options; a line with only three fields grows
+             * one, spaced the way the shipped file spaces them. */
+            char edited[512];
+            if (got >= 4 && line_set_field(line, 3, "ro", edited, sizeof edited))
+                buf_printf(&out, "%s\n", edited);
+            else
+                buf_printf(&out, "%s ro\n", line);
             hit = true;
         } else {
             buf_put(&out, line, strlen(line));
@@ -742,7 +782,12 @@ static void fault_fstype(Machine *m, Rng *r, char *d, size_t ds)
         if (!hit && got >= 3 && line[0] != '#' &&
             (a[0] == '/' || strncmp(a, "UUID=", 5) == 0) &&
             strcmp(c, "iso9660") != 0) {
-            buf_printf(&out, "%-31s %-6s %-5s %s\n", a, b, bad, o);
+            char edited[512];
+            if (!line_set_field(line, 2, bad, edited, sizeof edited)) {
+                buf_put(&out, line, strlen(line)); buf_puts(&out, "\n");
+                i = e < len ? e + 1 : len; continue;
+            }
+            buf_printf(&out, "%s\n", edited);
             hit = true;
         } else {
             buf_put(&out, line, strlen(line));

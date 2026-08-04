@@ -111,17 +111,41 @@ static inline void g_puthex(unsigned long v)
     g_write(1, o, 16);
 }
 
-/* argv, split from the single argument string the ABI hands us. */
+/* argv, split from the single argument string the ABI hands us.
+ *
+ * QUOTING. Splitting on whitespace and nothing else meant no argument
+ * containing a space could be expressed anywhere on this system -- a
+ * playtester found that `sed -i s/enabled: yes/enabled: no/ f` was not merely
+ * awkward but IMPOSSIBLE, in either quoting style, and had to reinstall a
+ * whole package to change one word. Single and double quotes both group, a
+ * backslash escapes the next character, and the quotes are removed as the
+ * shell removes them. Done here rather than in sh.c so that every program
+ * gets it, since every program splits its arguments through this one
+ * function. */
 #define GARGS 8
 static inline int g_argv(char *arg, char **v)
 {
     int n = 0;
+    char *w = arg;                    /* write cursor: we rewrite in place */
     while (*arg && n < GARGS) {
         while (*arg == ' ' || *arg == '\t') arg++;
         if (!*arg) break;
-        v[n++] = arg;
-        while (*arg && *arg != ' ' && *arg != '\t') arg++;
-        if (*arg) *arg++ = 0;
+        v[n++] = w;
+        while (*arg && *arg != ' ' && *arg != '\t') {
+            if (*arg == '\\' && arg[1]) { arg++; *w++ = *arg++; continue; }
+            if (*arg == '"' || *arg == '\'') {
+                char q = *arg++;
+                while (*arg && *arg != q) {
+                    if (q == '"' && *arg == '\\' && arg[1]) arg++;
+                    *w++ = *arg++;
+                }
+                if (*arg) arg++;      /* closing quote */
+                continue;
+            }
+            *w++ = *arg++;
+        }
+        if (*arg) arg++;
+        *w++ = 0;
     }
     return n;
 }

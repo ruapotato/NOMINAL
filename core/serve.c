@@ -209,7 +209,23 @@ static bool client_line(Client *c)
             "  chroot /mnt\n"
             "  pkg verify\n"
             "\n"
-            "  ls /etc   ps   ns   stat <path>   pkg owns <path>   mount\n");
+            "  ls /etc   ps   ns   stat <path>   mount   df   blkid   svc\n"
+            "  grep   sed   wc   head   cat   cp   mv   rm   touch   chmod\n"
+            "\n"
+            "  ldd <program>     which libraries it needs, where each was\n"
+            "                    found, and whether it is new enough. The way\n"
+            "                    to answer \"why is THIS service dead and not\n"
+            "                    that one\". Works on a mounted disk too:\n"
+            "                    ldd /mnt/usr/sbin/httpd\n"
+            "  pkg owns <path>   which package a file belongs to\n"
+            "  pkg diff <path>|<package>   what changed, against what shipped\n"
+            "  pkg --root /mnt <verb>      work on the disk WITHOUT chrooting,\n"
+            "                    which is the only way in when its libc is\n"
+            "                    broken and nothing on it will run\n"
+            "  man <topic>       pkg, ldd, ns, sh ... `man` alone lists them\n"
+            "\n"
+            "editing: sed -i s/old/new/ <file>   sed -i /text/d <file>\n"
+            "         quotes work: sed -i \"s/enabled: yes/enabled: no/\" f\n");
         return true;
     }
 

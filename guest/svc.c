@@ -77,8 +77,76 @@ static int is_running(const char *exec)
     return 0;
 }
 
+/* Rewrite one `key: value` line of a unit file, in place. */
+static int set_field(const char *unit, const char *key, const char *val)
+{
+    static char up[192], nb[4096];
+    g_copy(up, "/etc/services.d/", sizeof up);
+    g_cat(up, unit, sizeof up);
+    g_cat(up, ".svc", sizeof up);
+    i64 n = g_slurp(up, body, sizeof body);
+    if (n < 0) return 0;
+    u64 o = 0, kl = g_strlen(key);
+    int hit = 0;
+    u64 i = 0;
+    while (i < (u64)n) {
+        u64 e = i; while (e < (u64)n && body[e] != '\n') e++;
+        u64 k = 0;
+        while (k < kl && i + k < e && body[i + k] == key[k]) k++;
+        if (k == kl && i + kl < e && body[i + kl] == ':') {
+            for (u64 q = 0; q < kl && o + 1 < sizeof nb; q++) nb[o++] = key[q];
+            if (o + 2 < sizeof nb) { nb[o++] = ':'; nb[o++] = ' '; }
+            for (const char *q = val; *q && o + 1 < sizeof nb; q++) nb[o++] = *q;
+            hit = 1;
+        } else {
+            for (u64 q = i; q < e && o + 1 < sizeof nb; q++) nb[o++] = body[q];
+        }
+        if (o + 1 < sizeof nb) nb[o++] = '\n';
+        i = e < (u64)n ? e + 1 : (u64)n;
+    }
+    if (!hit) return 0;
+    int fd = g_open(up, O_WRONLY | O_CREAT | O_TRUNC);
+    if (fd < 0) return 0;
+    sysc(SYS_write, fd, (i64)nb, (i64)o);
+    g_close(fd);
+    return 1;
+}
+
 void _start(void)
 {
+    /* `svc disable <name>` used to ignore its argument entirely, print the
+     * whole table, and exit clean -- a silent no-op that a playtester
+     * reasonably read as a broken command. Either it does the thing or it
+     * says it cannot; doing neither is the one unacceptable answer. */
+    static char arg[192];
+    g_getarg(arg, sizeof arg);
+    char *v[GARGS];
+    int argn = g_argv(arg, v);
+    if (argn >= 1) {
+        int off = g_streq(v[0], "disable");
+        if (off || g_streq(v[0], "enable")) {
+            if (argn < 2) {
+                g_puts("usage: svc "); g_puts(v[0]); g_putln(" <name>");
+                g_exit(1);
+            }
+            if (!set_field(v[1], "enabled", off ? "no" : "yes")) {
+                g_puts("svc: "); g_puts(v[1]);
+                g_putln(": no such unit in /etc/services.d");
+                g_exit(1);
+            }
+            g_puts("svc: "); g_puts(v[1]);
+            g_putln(off ? " disabled -- it will not start at the next boot"
+                        : " enabled -- it will start at the next boot");
+            g_putln("(the unit file is a package file: `pkg verify` will now");
+            g_putln(" report it as CHANGED, which is correct -- you changed it)");
+            g_exit(0);
+        }
+        g_puts("svc: unknown command: "); g_putln(v[0]);
+        g_putln("usage: svc  |  svc enable <name>  |  svc disable <name>");
+        g_exit(1);
+    }
+
+    int any_dead = 0;
     g_putln("SERVICE          STATE      EXEC");
     for (int i = 0; i < 256; i++) {
         if (g_readdir("/etc/services.d", i, name) < 0) break;
@@ -104,7 +172,7 @@ void _start(void)
         if (!g_streq(en, "yes"))        state = "disabled";
         else if (!here)                 state = "not at rl3";
         else if (is_running(exec))      state = "running";
-        else                            state = "DEAD";
+        else                          { state = "DEAD"; any_dead = 1; }
 
         g_puts(nm);
         for (u64 k = g_strlen(nm); k < 17; k++) g_puts(" ");
@@ -112,7 +180,11 @@ void _start(void)
         for (u64 k = g_strlen(state); k < 11; k++) g_puts(" ");
         g_putln(exec);
     }
-    g_putln("");
-    g_putln("DEAD means the unit is enabled and nothing is running it.");
+    /* Only explain DEAD when something is. The legend on every healthy
+     * machine is furniture the eye stops seeing. */
+    if (any_dead) {
+        g_putln("");
+        g_putln("DEAD means the unit is enabled and nothing is running it.");
+    }
     g_exit(0);
 }
