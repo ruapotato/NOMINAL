@@ -63,7 +63,14 @@ static bool net_platform_init(void)
 
 typedef struct {
     sock_t   fd;
-    Machine  m;
+    Machine  m;          /* the CUSTOMER's machine                          */
+    /* YOUR WORKSTATION. The socket serves the same game the desktop does --
+     * you are at your own healthy box and reach theirs through its service
+     * processor -- because a bench that plays a different game from the one
+     * being shipped tests the wrong thing, and every playtest so far has run
+     * through this socket. */
+    Machine  desk;
+    bool     desk_up;
     bool     live;
     char     line[LINE_CAP];
     size_t   len;
@@ -140,17 +147,41 @@ static void new_ticket(Client *c, uint64_t seed, int faults)
         char what[512];
         machine_break(&c->m, seed, faults, what, sizeof what);
     }
-    char hdr[256];
-    snprintf(hdr, sizeof hdr,
-             "\n--- ticket %s: this machine will not boot ---\n", c->m.id);
-    send_str(c->fd, hdr);
-    {
-        Buf i = {0};
-        customer_intro(&c->m, &i);
-        send_all(c->fd, i.p, i.len);
-        buf_free(&i);
+    /* One ticket in five is air-gapped: no service processor, no route, and
+     * the only terminal you have is the person in front of it. */
+    c->m.airgapped = ((seed / 7) % 5) == 0;
+
+    if (!c->desk_up) {
+        machine_install(&c->desk, 1);
+        machine_boot(&c->desk);
+        c->desk_up = true;
     }
-    send_boot(c);
+    c->desk.peer = &c->m;
+    snprintf(c->desk.peer_addr, sizeof c->desk.peer_addr,
+             "10.0.2.%d", 60 + (int)(seed % 40));
+
+    char hdr[512];
+    snprintf(hdr, sizeof hdr,
+             "\n--- ticket %s ---\n"
+             "  %s is on the line. Their machine is not coming up.\n",
+             c->m.id, customer_name(&c->m));
+    send_str(c->fd, hdr);
+
+    if (c->m.airgapped) {
+        send_str(c->fd,
+            "  it is not on any network -- there is no address to give you.\n"
+            "  your only terminal on their machine is the person in front of\n"
+            "  it. `ask type <command>` and they read back what they see.\n");
+    } else {
+        snprintf(hdr, sizeof hdr,
+            "  they read you the address on the sticker: %s\n"
+            "  `rcon connect %s` to reach it.\n",
+            c->desk.peer_addr, c->desk.peer_addr);
+        send_str(c->fd, hdr);
+    }
+    send_str(c->fd,
+        "  you are at YOUR OWN workstation. everything you type runs HERE\n"
+        "  unless you are on their console. `help` for the rest.\n\n");
 }
 
 /* One line from a client. Returns false to hang up. */
@@ -237,6 +268,21 @@ static bool client_line(Client *c)
             "                    disc in / have you deleted anything\n"
             "  quit              hang up (exit leaves a chroot, it does not disconnect)\n"
             "\n"
+            "YOU ARE AT YOUR OWN WORKSTATION -- a healthy install of the same\n"
+            "system. The customer's machine is somewhere else.\n"
+            "  rcon connect <address>   attach to their service processor\n"
+            "  rcon power off|on|cycle  their power button, remotely\n"
+            "  rcon media insert|eject  put the rescue medium in their drive\n"
+            "  rcon boot disk|media     what they boot from next time\n"
+            "  rcon console             everything their machine has said\n"
+            "once attached, what you type runs on THEIR machine.\n"
+            "compare against your own box: it is the same system, working.\n"
+            "\n"
+            "IF THEY ARE AIR-GAPPED there is no route at all, and the person in\n"
+            "front of the machine is your only terminal:\n"
+            "  ask type <command>       they type it and read back the screen\n"
+            "  ask put the rescue disc in / ask turn it off and on again\n"
+            "\n"
             "START HERE. read what the machine said while it was failing:\n"
             "  dmesg             this boot\n"
             "  dmesg -1          the previous boot. Often the same as this\n"
@@ -277,7 +323,9 @@ static bool client_line(Client *c)
     if (!*cmd) return true;
 
     Buf out = {0};
-    kernel_run(&c->m, cmd, &out);
+    /* On YOUR machine, unless you have attached to theirs -- in which case
+     * you are typing at their console, which is what a console is. */
+    kernel_run(c->desk.sp_connected ? &c->m : &c->desk, cmd, &out);
     if (out.len) send_all(c->fd, out.p, out.len);
     buf_free(&out);
     return true;

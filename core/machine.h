@@ -252,6 +252,8 @@ void customer_ask(Machine *m, const char *question, Buf *out);
 const char *customer_name(const Machine *m);
 /* The colleague and the boss. `who` is "coworker" or "manager". */
 void colleague_ask(Machine *m, const char *who, const char *question, Buf *out);
+/* What the model decided a request was asking for. For measurement. */
+void customer_tool_probe(const char *request, char *out, size_t outsz);
 void customer_intro(Machine *m, Buf *out);
 /* Which local configuration decisions no longer survive. Returns how many. */
 int machine_collateral(Machine *m, Buf *out);

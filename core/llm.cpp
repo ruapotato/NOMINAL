@@ -40,6 +40,11 @@ bool llm_ask_hist(const char *system_brief, const char **hist, int nhist,
  * cutting her off mid-sentence made her look broken rather than terse. */
 bool llm_ask_long(const char *system_brief, const char **hist, int nhist,
                   const char *question, char *out, size_t outsz);
+/* A CLASSIFIER, not a conversationalist. Near-zero temperature, because
+ * "which of these seven things did the technician ask for" has one right
+ * answer and sampling variety is nothing but a source of wrong ones. */
+bool llm_classify(const char *system_brief, const char *question,
+                  char *out, size_t outsz);
 }
 
 namespace {
@@ -78,7 +83,7 @@ std::string piece(llama_token tok)
 
 static bool llm_ask_n(const char *system_brief, const char **hist, int nhist,
                       const char *question, char *out, size_t outsz,
-                      int maxtok, int maxstops);
+                      int maxtok, int maxstops, float temp);
 
 bool llm_available(void) { return g_model != nullptr && g_ctx != nullptr; }
 
@@ -135,18 +140,26 @@ bool llm_ask(const char *system_brief, const char *question,
 bool llm_ask_hist(const char *system_brief, const char **hist, int nhist,
                   const char *question, char *out, size_t outsz)
 {
-    return llm_ask_n(system_brief, hist, nhist, question, out, outsz, MAX_REPLY, 2);
+    return llm_ask_n(system_brief, hist, nhist, question, out, outsz,
+                     MAX_REPLY, 2, 0.7f);
 }
 
 bool llm_ask_long(const char *system_brief, const char **hist, int nhist,
                   const char *question, char *out, size_t outsz)
 {
-    return llm_ask_n(system_brief, hist, nhist, question, out, outsz, 220, 6);
+    return llm_ask_n(system_brief, hist, nhist, question, out, outsz,
+                     220, 6, 0.7f);
+}
+
+bool llm_classify(const char *system_brief, const char *question,
+                  char *out, size_t outsz)
+{
+    return llm_ask_n(system_brief, nullptr, 0, question, out, outsz, 40, 1, 0.05f);
 }
 
 static bool llm_ask_n(const char *system_brief, const char **hist, int nhist,
                       const char *question, char *out, size_t outsz,
-                      int maxtok, int maxstops)
+                      int maxtok, int maxstops, float temp)
 {
     const char *forbidden = "";
     if (!llm_available() || !out || outsz < 2) return false;
@@ -190,7 +203,7 @@ static bool llm_ask_n(const char *system_brief, const char **hist, int nhist,
     auto sp = llama_sampler_chain_default_params();
     llama_sampler *chain = llama_sampler_chain_init(sp);
     llama_sampler_chain_add(chain, llama_sampler_init_top_k(40));
-    llama_sampler_chain_add(chain, llama_sampler_init_temp(0.7f));
+    llama_sampler_chain_add(chain, llama_sampler_init_temp(temp));
     llama_sampler_chain_add(chain, llama_sampler_init_dist(0));
 
     const llama_vocab *vocab = llama_model_get_vocab(g_model);

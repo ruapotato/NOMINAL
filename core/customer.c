@@ -480,6 +480,8 @@ bool llm_ask_hist(const char *system_brief, const char **hist, int nhist,
                   const char *question, char *out, size_t outsz);
 bool llm_ask_long(const char *system_brief, const char **hist, int nhist,
                   const char *question, char *out, size_t outsz);
+bool llm_classify(const char *system_brief, const char *question,
+                  char *out, size_t outsz);
 #else
 static bool llm_available(void) { return false; }
 static bool llm_ask(const char *a, const char *b, const char *c,
@@ -491,6 +493,8 @@ static bool llm_ask_hist(const char *a, const char **b, int c,
 static bool llm_ask_long(const char *a, const char **b, int c,
                          const char *d, char *e, size_t f)
 { (void)a; (void)b; (void)c; (void)d; (void)e; (void)f; return false; }
+static bool llm_classify(const char *a, const char *b, char *c, size_t d)
+{ (void)a; (void)b; (void)c; (void)d; return false; }
 #endif
 
 /* WHAT THE CUSTOMER KNOWS.
@@ -1006,9 +1010,155 @@ static Action action_of(const char *q)
     return A_NONE;
 }
 
+
+/* ---------------------------------------------------------- the tool call --
+ *
+ * THE MODEL DECIDES WHAT THE TECHNICIAN ASKED FOR, not a keyword table.
+ *
+ * David, on the table I had here first: "Uhm... that seems brittle. Like what
+ * if I say 'Can I have you enter: ls / and read back what you see.' the lm
+ * should tool call 'ls /'. A lookup table is a mess." He is right, and it is
+ * the same brittleness this project criticises everywhere else -- a table only
+ * matches the phrasings I happened to imagine.
+ *
+ * So this is a genuine tool call. One model call whose ONLY job is to decide
+ * which of a small set of actions the technician is asking for, and to extract
+ * the command if there is one. It is deliberately not the same call that
+ * writes the dialogue: classification wants a short, constrained answer and
+ * conversation wants a long, free one, and asking a 3B model to do both at
+ * once gets you neither.
+ *
+ * The reply is one line, from a closed set:
+ *
+ *   RUN <command>   type this at the keyboard and read back what appears
+ *   POWER           turn it off and on again
+ *   DISC            put the rescue medium in
+ *   CABLE           check it is plugged in
+ *   PASSWORD        type the root password
+ *   SCREEN          read out what is on the screen
+ *   NONE            it was a question, not an instruction
+ *
+ * The keyword table remains ONLY as the fallback when there is no model at
+ * all, because a build without llama must still play.
+ */
+static const char *TOOL_BRIEF =
+"You decide what a computer technician is asking you to DO. You are not "
+"having a conversation: you output one line and nothing else.\n"
+"\n"
+"Answer with exactly one of:\n"
+"  RUN <command>   they want you to type something at the keyboard\n"
+"  POWER           they want the machine turned off and on again\n"
+"  DISC            they want the rescue/recovery disc put in the drive\n"
+"  CABLE           they want you to check a cable or plug\n"
+"  PASSWORD        they want the password typed in\n"
+"  SCREEN          they want to know what is on the screen right now\n"
+"  NONE            they are asking a question, not asking you to do anything\n"
+"\n"
+"For RUN, give the command EXACTLY as they said it, with no quotes, no\n"
+"backticks and no explanation.\n"
+"\n"
+"Examples:\n"
+"Q: could you type ls /boot for me\n"
+"A: RUN ls /boot\n"
+"Q: Can I have you enter: 'ls /' and read back what you see.\n"
+"A: RUN ls /\n"
+"Q: at the prompt, put in df -h and tell me the numbers\n"
+"A: RUN df -h\n"
+"Q: reboot the computer\n"
+"A: POWER\n"
+"Q: turn it off and on again please\n"
+"A: POWER\n"
+"Q: can you power cycle the box\n"
+"A: POWER\n"
+"Q: pop the recovery disc in the drive\n"
+"A: DISC\n"
+"Q: is it plugged in at the wall?\n"
+"A: CABLE\n"
+"Q: what does the screen say\n"
+"A: SCREEN\n"
+"Q: when did it last work properly?\n"
+"A: NONE\n"
+"Q: have you deleted anything recently\n"
+"A: NONE\n"
+/* A question that CONTAINS an action word is still a question. "was there a
+ * power cut" was being answered SCREEN, which is the one failure mode that
+ * matters: mistaking a question for an instruction makes the customer do
+ * something nobody asked for. */
+"Q: was there a power cut on Tuesday\n"
+"A: NONE\n"
+"Q: did anyone reboot it before you called?\n"
+"A: NONE\n"
+"Q: is the screen broken?\n"
+"A: NONE\n"
+"\n"
+"If they are asking ABOUT something rather than asking you to DO it, the\n"
+"answer is NONE, however many action words the sentence contains.\n";
+
+/* Ask the model what was being asked for. Returns the action, and copies the
+ * command into `cmd` for RUN. */
+static Action tool_call(const char *request, char *cmd, size_t cmdsz)
+{
+    cmd[0] = 0;
+    if (!llm_available()) return A_NONE;
+
+    char reply[256];
+    if (!llm_classify(TOOL_BRIEF, request, reply, sizeof reply))
+        return A_NONE;
+
+    /* The model sometimes wraps the line in quotes or prefixes "A:". Strip
+     * what a small model actually does rather than what it was told to do. */
+    char *r = reply;
+    while (*r == ' ' || *r == '"' || *r == '`') r++;
+    if ((r[0] == 'A' || r[0] == 'a') && r[1] == ':') { r += 2; while (*r == ' ') r++; }
+
+    if (strncmp(r, "RUN", 3) == 0 && (r[3] == ' ' || r[3] == ':')) {
+        const char *q = r + 4;
+        while (*q == ' ' || *q == '"' || *q == '`' || *q == ':') q++;
+        size_t k = 0;
+        while (*q && *q != '\n' && k < cmdsz - 1) {
+            if (*q == '"' || *q == '`') { q++; continue; }
+            cmd[k++] = *q++;
+        }
+        while (k && (cmd[k-1] == ' ' || cmd[k-1] == '.')) k--;
+        cmd[k] = 0;
+        return cmd[0] ? A_RUN : A_NONE;
+    }
+    if (strncmp(r, "POWER", 5) == 0)    return A_POWER;
+    if (strncmp(r, "DISC", 4) == 0)     return A_DISC;
+    if (strncmp(r, "CABLE", 5) == 0)    return A_CABLE;
+    if (strncmp(r, "PASSWORD", 8) == 0) return A_TYPEPW;
+    if (strncmp(r, "SCREEN", 6) == 0)   return A_SCREEN;
+    return A_NONE;
+}
+
+/* For the measurement harness: what did the model decide, as a string. */
+void customer_tool_probe(const char *request, char *out, size_t outsz)
+{
+    char cmd[256];
+    Action a = tool_call(request, cmd, sizeof cmd);
+    switch (a) {
+    case A_RUN:    snprintf(out, outsz, "RUN %s", cmd); break;
+    case A_POWER:  snprintf(out, outsz, "POWER");    break;
+    case A_DISC:   snprintf(out, outsz, "DISC");     break;
+    case A_CABLE:  snprintf(out, outsz, "CABLE");    break;
+    case A_TYPEPW: snprintf(out, outsz, "PASSWORD"); break;
+    case A_SCREEN: snprintf(out, outsz, "SCREEN");   break;
+    default:       snprintf(out, outsz, "NONE");     break;
+    }
+}
+
 bool customer_do(Machine *m, const char *request, Buf *out)
 {
-    Action a = action_of(request);
+    /* THE MODEL FIRST. The keyword table is the fallback for a build with no
+     * model in it, not the primary route -- a table only matches the
+     * phrasings its author imagined, and "Can I have you enter: 'ls /' and
+     * read back what you see" is not one of mine. */
+    static char toolcmd[256];
+    Action a = tool_call(request, toolcmd, sizeof toolcmd);
+    if (a == A_NONE) {
+        toolcmd[0] = 0;
+        a = action_of(request);
+    }
     if (a == A_NONE) return false;
 
     switch (a) {
@@ -1095,7 +1245,7 @@ bool customer_do(Machine *m, const char *request, Buf *out)
          * It stays FAIR because the output is real. Every character they read
          * back is a character the machine printed. They are a slow, narrow
          * pipe, not an unreliable one. */
-        const char *cmd = NULL;
+        const char *cmd = toolcmd[0] ? toolcmd : NULL;
         static const char *LEAD[] = { "type ", "run ", "enter the command ",
                                       "at the prompt type ", NULL };
         char low[512];
@@ -1104,7 +1254,7 @@ bool customer_do(Machine *m, const char *request, Buf *out)
             low[n2] = (request[n2] >= 'A' && request[n2] <= 'Z')
                     ? (char)(request[n2] + 32) : request[n2];
         low[n2] = 0;
-        for (int i = 0; LEAD[i] && !cmd; i++) {
+        for (int i = 0; LEAD[i] && !cmd; i++) {   /* fallback only */
             const char *at = strstr(low, LEAD[i]);
             if (at) cmd = request + (at - low) + strlen(LEAD[i]);
         }

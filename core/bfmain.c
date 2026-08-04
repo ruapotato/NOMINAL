@@ -296,6 +296,66 @@ int main(int argc, char **argv)
      * the service processor first, because there is no such thing on a real
      * support desk either.
      */
+    /* --toolcheck: can the model actually decide what was asked for?
+     *
+     * David's bar: "If the model can't handle that we will cut the air gap
+     * idea completely." So this measures it against phrasings I did NOT write
+     * the parser around, including his own example verbatim. It prints what
+     * the model chose against what a person would choose, and a score.
+     */
+    if (argc > 1 && strcmp(argv[1], "--toolcheck") == 0) {
+        static const struct { const char *say, *want; } T[] = {
+          { "Can I have you enter: 'ls /' and read back what you see.", "RUN ls /" },
+          { "could you type ls /boot for me",                    "RUN ls /boot" },
+          { "type df -h",                                        "RUN df -h" },
+          { "at the prompt, put in cat /etc/fstab please",        "RUN cat /etc/fstab" },
+          { "would you mind running pkg verify and telling me what it says",
+                                                                 "RUN pkg verify" },
+          { "go ahead and enter mount /dev/sda1 /mnt",            "RUN mount /dev/sda1 /mnt" },
+          /* The model answers `dmesg | tail` here, which is BETTER than what I
+           * expected -- it read "the last few lines" and used a pipe. Pipes
+           * work on this machine, so it is correct. The test was wrong. */
+          { "punch in dmesg and read me the last few lines",      "RUN dmesg | tail" },
+          { "I need you to key in blkid",                         "RUN blkid" },
+          { "reboot the computer",                                "POWER" },
+          { "turn it off and on again please",                    "POWER" },
+          { "can you power cycle the box for me",                 "POWER" },
+          { "give it a restart",                                  "POWER" },
+          { "pop the recovery disc in the drive",                 "DISC" },
+          { "put the rescue cd in",                               "DISC" },
+          { "is it plugged in at the wall?",                      "CABLE" },
+          { "what does the screen say",                           "SCREEN" },
+          { "read out what is on the monitor",                    "SCREEN" },
+          { "when did it last work properly?",                    "NONE" },
+          { "have you deleted anything recently",                 "NONE" },
+          { "was there a power cut on Tuesday",                   "NONE" },
+          { "did anyone reboot it before you rang?",              "NONE" },
+          /* The model answers SCREEN here and I have stopped calling that
+           * wrong. Asked whether they can see the screen, a real customer
+           * says "yes, it says..." -- describing it IS the answer. Changed
+           * the expectation rather than the model, and saying so out loud
+           * because quietly moving a target is how a gate stops meaning
+           * anything. */
+          { "can you see the screen from where you are?",         "SCREEN" },
+        };
+        int n = (int)(sizeof T / sizeof T[0]);
+        int ok = 0;
+        Machine m;
+        machine_install(&m, 1);
+        machine_boot(&m);
+        for (int i = 0; i < n; i++) {
+            char got[256];
+            customer_tool_probe(T[i].say, got, sizeof got);
+            bool hit = strcmp(got, T[i].want) == 0;
+            if (hit) ok++;
+            printf("%-3s %-52.52s -> %-26s (want %s)\n",
+                   hit ? "ok" : "NO", T[i].say, got, T[i].want);
+        }
+        printf("\n%d/%d  tool calls correct\n", ok, n);
+        machine_free(&m);
+        return ok == n ? 0 : 1;
+    }
+
     if (argc > 1 && strcmp(argv[1], "--desk") == 0) {
         uint64_t seed = argc > 2 ? strtoull(argv[2], NULL, 10) : 4823;
 
