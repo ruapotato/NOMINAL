@@ -70,6 +70,9 @@ int main(int argc, char **argv)
              * was injected. Every step is something you would try anyway. */
             Buf o = {0};
             machine_boot_rescue(&m);
+            /* Nothing will mount a dirty filesystem, so this has to come
+             * first -- which is exactly the order a real repair happens in. */
+            kernel_run(&m, "fsck /dev/sda1", &o);
             kernel_run(&m, "mount /dev/sda1 /mnt", &o);
             kernel_run(&m, "for i in dev sys proc; do mount /$i /mnt/$i; done", &o);
             /* Repair from OUTSIDE first. If the disk's libc is the wrong

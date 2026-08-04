@@ -346,6 +346,19 @@ void machine_boot(Machine *m)
              clean(want, strlen(want), scrubu, sizeof scrubu));
         goto done;
     }
+    /* The filesystem is checked before it is mounted, by the initrd, which is
+     * the only thing running at this point. A machine that stops here has a
+     * smaller toolbox than one that stops later -- there is no /bin yet,
+     * because /bin is on the filesystem that will not mount. */
+    if (m->fs_dirty) {
+        say(c, "initrd: %s contains a file system with errors, check forced", rootspec);
+        say(c, "initrd: UNEXPECTED INCONSISTENCY; RUN fsck MANUALLY");
+        m->boot.emergency = 1;
+        fail(m, c, BOOT_INITRD,
+             "initrd: cannot mount root -- boot the rescue medium and run "
+             "`fsck /dev/sda1`");
+        goto done;
+    }
     say(c, "initrd: mounted %s on /", rootspec);
 
     /* ---- PID 1: from here it is real, executed userland ----

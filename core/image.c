@@ -17,6 +17,7 @@
  */
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include "nom.h"
 #include "machine.h"
 #include "guestbin.h"
@@ -302,6 +303,7 @@ static const Package PKG_SHELL = {
       { "/bin/mount", NULL, 0755, NULL },
       { "/bin/umount", NULL, 0755, NULL },
       { "/bin/chroot", NULL, 0755, NULL },
+      { "/sbin/fsck", NULL, 0755, NULL },
       { "/usr/bin/pkg", NULL, 0755, NULL },
       { "/usr/bin/links", NULL, 0755, NULL },
       { "/bin/cp", NULL, 0755, NULL },
@@ -315,7 +317,7 @@ static const Package PKG_SHELL = {
       { "/bin/df", NULL, 0755, NULL },
       { "/bin/false", "#!false\n", 0755, NULL },
       { "/bin/true",  "#!true\n",  0755, NULL },
-    }, 24
+    }, 25
 };
 
 
@@ -607,9 +609,10 @@ static const Package PKG_RESCUE_TOOLS = {
       { "/bin/mount",   NULL, 0755, NULL },
       { "/bin/umount",  NULL, 0755, NULL },
       { "/bin/chroot",  NULL, 0755, NULL },
+      { "/sbin/fsck",   NULL, 0755, NULL },
       { "/usr/bin/pkg", NULL, 0755, NULL },
       { "/usr/bin/links", NULL, 0755, NULL },
-    }, 12
+    }, 14
 };
 
 static const Package *RESCUE_IMAGE[] = { &PKG_RESCUE_BASE, &PKG_RESCUE_TOOLS };
@@ -726,6 +729,8 @@ void image_generated(const Machine *m, const char *path, Buf *out)
         buf_put(out, (const char *)GUEST_LOGIN, GUEST_LOGIN_LEN);
     else if (strcmp(path, "/sbin/getty") == 0)
         buf_put(out, (const char *)GUEST_GETTY, GUEST_GETTY_LEN);
+    else if (strcmp(path, "/sbin/fsck") == 0)
+        buf_put(out, (const char *)GUEST_FSCK, GUEST_FSCK_LEN);
     else if (strcmp(path, "/etc/rc.boot") == 0)       buf_puts(out, SRC_RCBOOT);
     else if (strcmp(path, "/etc/rc.d/rc.3") == 0)     buf_puts(out, SRC_RC3);
     else if (strcmp(path, "/etc/rc.d/rc.0") == 0)     buf_puts(out, SRC_RC0);
@@ -857,6 +862,17 @@ void machine_install(Machine *m, uint64_t seed)
     for (int i = 0; DIRS[i]; i++) vfs_mkdir(&m->disk, DIRS[i]);
 
     for (int i = 0; i < IMAGE_N && i < PKG_MAX; i++) {
+        /* A package whose nfiles does not match its initialiser list either
+         * silently drops files (invisible to pkg verify, unrepairable by
+         * reinstall) or reads past the end of the array. Both have happened.
+         * Neither is worth debugging twice. */
+        for (int j = 0; j < IMAGE[i]->nfiles; j++) {
+            if (IMAGE[i]->file[j].path) continue;
+            fprintf(stderr, "image: package %s declares %d files but entry %d "
+                            "is empty -- fix its count\n",
+                    IMAGE[i]->name, IMAGE[i]->nfiles, j);
+            abort();
+        }
         m->pkg[m->npkg++] = IMAGE[i];
         for (int j = 0; j < IMAGE[i]->nfiles; j++)
             install_file(m, &IMAGE[i]->file[j]);

@@ -492,6 +492,15 @@ static int64_t kernel_syscall(Cpu *c, int64_t n, int64_t a0, int64_t a1,
         buf_free(&b);
         return r;
     }
+    case SYS_fsck: {
+        char dev[64];
+        if (!guest_str(c, (uint64_t)a0, dev, sizeof dev)) return -1;
+        Buf b = {0};
+        int r = machine_fsck(p->m, dev, &b);
+        if (b.len < (size_t)a2 && !cpu_write(c, (uint64_t)a1, b.p, b.len + 1)) r = -1;
+        buf_free(&b);
+        return r;
+    }
     case SYS_bootsec:
         /* a0 != 0 writes one, which is what zbl-install does */
         if (a0) p->m->bootsector = true;
@@ -953,6 +962,10 @@ bool machine_mount(Machine *m, const char *dev, const char *at, int flags)
     } else {
         fs = device_fs(m, dev);
         if (!fs) return false;
+        /* A dirty filesystem will not mount. That is not us being awkward: it
+         * is the whole reason fsck exists, and it forces the repair to happen
+         * in the right order. */
+        if (fs == &m->disk && m->fs_dirty) return false;
     }
 
     /* The mountpoint has to exist, as on any real system -- and it is looked
@@ -983,6 +996,35 @@ bool machine_mount(Machine *m, const char *dev, const char *at, int flags)
     snprintf(mt->dev, sizeof mt->dev, "%s", dev);
     snprintf(mt->sub, sizeof mt->sub, "%s", sub);
     return true;
+}
+
+/* fsck. A filesystem marked dirty was interrupted mid-write; the metadata can
+ * be rebuilt and the contents of whatever was being written cannot. So this
+ * clears the flag and tells you what it could not save -- and the files it
+ * lost then show up in `pkg verify`, which is the second repair. */
+int machine_fsck(Machine *m, const char *dev, Buf *out)
+{
+    if (strcmp(dev, "/dev/sda1") != 0 && strcmp(dev, "/dev/sda") != 0) {
+        buf_printf(out, "fsck: %s: not a filesystem this tool understands\n", dev);
+        return -1;
+    }
+    if (!m->fs_dirty) {
+        buf_printf(out, "%s: clean\n", dev);
+        return 0;
+    }
+    buf_printf(out, "%s: recovering journal\n", dev);
+    buf_puts(out, "Pass 1: checking inodes, blocks, and sizes\n");
+    buf_puts(out, "Pass 2: checking directory structure\n");
+    if (m->fs_lost > 0)
+        buf_printf(out, "Pass 4: %d inode(s) with bad content, cleared\n",
+                   m->fs_lost);
+    buf_puts(out, "Pass 5: checking group summary information\n");
+    buf_printf(out, "%s: FILE SYSTEM WAS MODIFIED\n", dev);
+    if (m->fs_lost > 0)
+        buf_puts(out, "\nfsck repaired the filesystem. It could not repair the\n"
+                      "CONTENTS of what was being written -- check the packages.\n");
+    m->fs_dirty = false;
+    return 1;
 }
 
 bool machine_umount(Machine *m, const char *at)

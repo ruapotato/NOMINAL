@@ -13,7 +13,7 @@
 #include "ns.h"
 
 #define PKG_MAX        64
-#define PKGFILE_MAX    24
+#define PKGFILE_MAX    48
 #define UNIT_MAX       32
 #define CONSOLE_MAX    120
 #define PROC_MAX        32
@@ -97,6 +97,11 @@ typedef struct {
      * disk cannot produce one -- which is the whole point of a live image. */
     Vfs   rescue;
     bool  on_rescue;         /* which medium did we boot                    */
+    /* An unclean shutdown leaves the filesystem marked dirty. Nothing will
+     * mount it until fsck has been run, which is the point: the repair has to
+     * happen BEFORE you can even look at the disk. */
+    bool  fs_dirty;
+    int   fs_lost;           /* files fsck could not save                   */
     Mount mount[MOUNT_MAX];
     int   nmount;
     char  root_uuid[40];     /* what the root partition actually IS        */
@@ -154,6 +159,10 @@ void customer_ask(Machine *m, const char *question, Buf *out);
 void customer_intro(Machine *m, Buf *out);
 
 bool machine_mount(Machine *m, const char *dev, const char *at, int flags);
+/* Check and repair the filesystem. Clears the dirty flag; reports what it
+ * could not save. Metadata is repairable, contents are not -- which is why a
+ * dirty filesystem is usually two repairs, not one. */
+int  machine_fsck(Machine *m, const char *dev, Buf *out);
 bool machine_umount(Machine *m, const char *at);
 
 /* --- the package database, which is the fix verb ---------------------- */

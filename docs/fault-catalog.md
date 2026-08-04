@@ -59,10 +59,16 @@ Legend: **[done]** built · **[next]** in progress or immediately next ·
 
 ## 4. Root filesystem
 
-- **[next]** **dirty filesystem needing `fsck` from the initrd.** A clean/dirty
-  flag, real damage, an emergency shell with limited tools, and an `fsck` that
-  actually repairs. Being stranded in the initrd with a smaller toolbox is a
-  whole different feeling and worth building properly.
+- **[done]** **dirty filesystem needing `fsck`.** An unclean shutdown marks the
+  filesystem dirty and leaves whatever was mid-write half-written. The initrd
+  refuses to mount it; so does `mount` from the rescue medium. `fsck /dev/sda1`
+  rebuilds the metadata and says plainly that it could *not* repair the
+  contents — so the ticket is TWO repairs in order, and the first has to happen
+  before the player can even look at the disk.
+- **[todo]** an emergency shell that actually runs *inside* the initrd, with a
+  smaller toolbox than the rescue medium. Currently the initrd reports and the
+  player goes to the live image; being stranded with fewer tools is a different
+  feeling and still worth building.
 - **[todo]** filesystem type wrong in fstab (`ext4` vs something else), so the
   mount fails with "unknown filesystem type".
 - **[todo]** root mounted read-only and stuck that way, so everything that
@@ -85,16 +91,16 @@ Legend: **[done]** built · **[next]** in progress or immediately next ·
 
 ## 6. Libraries and ABI — the biggest missing layer
 
-- **[next]** **binaries declare NEEDED libraries with versions and the loader
+- **[done]** **binaries declare NEEDED libraries with versions and the loader
   checks them.** This one addition unlocks the next four.
-- **[next]** **a bad libc upgrade.** Everything dynamically linked stops
+- **[done]** **a bad libc upgrade.** Everything dynamically linked stops
   working at once, including the tools you would use to fix it. The rescue
   medium is the only way back, which is exactly why it exists.
-- **[next]** **a package built for the wrong architecture**: the ELF loads,
+- **[done]** **a package built for the wrong architecture**: the ELF loads,
   the machine code is not ours, and it faults on execution.
 - **[todo]** a library present but the wrong soname version, so only *some*
   binaries break — the ones built against the newer one.
-- **[todo]** `/etc/ld.so.conf` missing a path, so a library that is installed
+- **[done]** `/etc/ld.so.conf` missing a path, so a library that is installed
   is not found.
 - **[todo]** a dangling symlink in the library path: `libc.so.6 -> libc-2.38.so`
   where the target was removed by a failed upgrade.

@@ -55,6 +55,7 @@ typedef unsigned long      uint64_t;
 #define SYS_umount   1037   /* (at) -> 0 or -1                              */
 #define SYS_chroot   1038   /* (path) -> 0 or -1                            */
 #define SYS_mounts   1039   /* (buf, len) -> bytes: the mount table         */
+#define SYS_fsck     1046   /* (dev, buf, len) -> 0 clean, 1 repaired, -1 no  */
 #define SYS_bootsec  1044   /* (write?) -> 1 if a boot sector is present.
                              * Not a file, so no package owns it and no
                              * amount of reinstalling will bring it back.  */

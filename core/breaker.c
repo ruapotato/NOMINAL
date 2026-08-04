@@ -400,11 +400,39 @@ static void fault_no_root(Machine *m, Rng *r, char *d, size_t ds)
     buf_free(&out);
 }
 
+/* An unclean shutdown. The filesystem is marked dirty and whatever was being
+ * written at the time is damaged. Nothing will mount it until fsck has run --
+ * so the repair happens in two stages, in order, and the first one has to
+ * happen before the player can even look at the disk. */
+static void fault_unclean_shutdown(Machine *m, Rng *r, char *d, size_t ds)
+{
+    m->fs_dirty = true;
+
+    /* The file that was mid-write when the power went. Config files are the
+     * realistic casualty: they are what gets rewritten. */
+    static const char *INFLIGHT[] = {
+        "/etc/services.d/syslog.svc", "/etc/fstab", "/etc/passwd",
+        "/var/lib/pkg/sysinit/files", "/etc/rc.conf", "/etc/ld.so.conf",
+    };
+    const char *path = INFLIGHT[rng_next(r) % 6];
+    VNode *n = vfs_lookup(&m->disk, path);
+    if (n && n->kind == VN_FILE && n->data.len > 4) {
+        size_t keep = (size_t)(rng_next(r) % (n->data.len / 2));
+        n->data.len = keep;              /* a half-written file */
+        m->fs_lost = 1;
+        snprintf(d, ds, "unclean shutdown: fs marked dirty, %s left half-written",
+                 path);
+    } else {
+        m->fs_lost = 0;
+        snprintf(d, ds, "unclean shutdown: filesystem marked dirty");
+    }
+}
+
 typedef void (*StructuralFault)(Machine *, Rng *, char *, size_t);
 static const StructuralFault STRUCTURAL[] = {
     fault_bootsector, fault_stray_unit, fault_wrong_uuid, fault_missing_module,
     fault_bad_libc, fault_wrong_arch, fault_ldsoconf,
-    fault_bad_shell, fault_no_root,
+    fault_bad_shell, fault_no_root, fault_unclean_shutdown,
 };
 #define NSTRUCT ((int)(sizeof STRUCTURAL / sizeof STRUCTURAL[0]))
 
