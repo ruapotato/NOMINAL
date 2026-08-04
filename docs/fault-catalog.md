@@ -214,18 +214,14 @@ Legend: **[done]** built · **[next]** in progress or immediately next ·
   now enforces traversal, which it did not before.
 - **[todo]** ownership wrong on a spool or state directory, so one daemon —
   and only that one — cannot start.
-- **[rejected]** a state directory deleted outright. Tried and removed. The
-  fault worked and no repair existed: `/run`, `/tmp` and `/var/log` are owned
-  by no package, so `pkg reinstall` cannot put them back and the auto-solver
-  scored 0/10. A fault the solver cannot fix is a fault a player cannot fix.
-  Doing it properly means package manifests that list directories, the way
-  rpm and dpkg really do — which is a change to the manifest format, the
-  installer, `pkg verify` and the guest tool, and is worth doing on its own
-  rather than as a rider. Two real bugs fell out of the attempt and those
-  stayed: daemons that could not write their state file returned quietly
-  instead of failing, and `open(O_CREAT)` was creating missing parent
-  directories, so deleting `/var/log` did nothing at all because syslogd's
-  first write silently put it back.
+- **[done]** **a state directory deleted outright.** `fault_missing_dir`.
+  Rejected once for a good reason — no package owned `/run` or `/var/log`, so
+  `pkg reinstall` could not put back something nothing had shipped, and the
+  solver scored 0/10. **Packages now record the directories they own**, the
+  way rpm and dpkg both really do: a `dir` line in the manifest, checked by
+  `pkg verify` for existence and mode, restored by `pkg reinstall`. syslog
+  owns `/var/log`, cron owns `/var/spool/cron`, ntp owns `/var/lib/ntp`, base
+  owns `/run`, `/tmp` and `/var/cache`. The solver now scores 10/10 on it.
 
 ## 10. Network
 

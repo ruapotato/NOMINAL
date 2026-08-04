@@ -34,8 +34,24 @@ void _start(void)
         i64 tl = g_readlink(full, tgt, sizeof tgt);
 
         NomStat s2;
-        if (g_stat(full, &s2) == 0) {
-            g_puts(s2.kind == NOM_KIND_DIR ? "d" : s2.kind == NOM_KIND_LINK ? "l" : "-");
+        if (tl > 0) {
+            /* A LINK, and readlink is the only thing that knows it. stat
+             * follows the link, so its kind is the TARGET's kind and a
+             * healthy symlink rendered as a plain file showing the target's
+             * size -- while a dangling one rendered as `l`. The type column
+             * therefore told you `l` exactly when the link was broken, which
+             * is precisely backwards. Real ls shows `l` for both, and the
+             * link's own size, which is the length of its target. */
+            NomStat st2;
+            int alive = g_stat(full, &st2) == 0;
+            g_puts("l");
+            if (alive) g_putoct((unsigned)st2.mode, 4);
+            else       g_puts("????");
+            g_puts("  ");
+            g_putn(tl);
+            g_puts("\t");
+        } else if (g_stat(full, &s2) == 0) {
+            g_puts(s2.kind == NOM_KIND_DIR ? "d" : "-");
             g_putoct((unsigned)s2.mode, 4);
             g_puts("  ");
             g_putn(s2.size);
@@ -46,7 +62,11 @@ void _start(void)
             g_puts("l????     ?\t");   /* dangling: readlink still works */
         }
         g_puts(name);
-        if (tl > 0) { g_puts(" -> "); g_puts(tgt); }
+        if (tl > 0) {
+            g_puts(" -> "); g_puts(tgt);
+            NomStat st3;
+            if (g_stat(full, &st3) != 0) g_puts("   (DANGLING)");
+        }
         g_putln("");
     }
     g_exit(0);

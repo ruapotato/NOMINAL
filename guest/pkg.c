@@ -84,8 +84,39 @@ static void finding(const char *pkg, const char *path, const char *what)
 
 /* Print one file's shipped bytes against its installed bytes. Reachable two
  * ways -- by path, and by package name, which diffs every file that moved. */
+/* Is this content something a person can read? A package file may be an ELF
+ * image, and dumping thirty kilobytes of NULs and control characters at the
+ * terminal is not a diff, it is an accident. */
+static int is_text(const char *b, i64 n)
+{
+    if (n > 4 && b[0] == 0x7f && b[1] == 'E' && b[2] == 'L' && b[3] == 'F') return 0;
+    i64 lim = n < 400 ? n : 400;
+    for (i64 i = 0; i < lim; i++) {
+        unsigned char ch = (unsigned char)b[i];
+        if (ch == 0) return 0;
+        if (ch < 9 || (ch > 13 && ch < 32)) return 0;
+    }
+    return 1;
+}
+
 static void diff_path(const char *owner, const char *path)
 {
+    /* A symlink has no contents to compare, and pretending otherwise produced
+     * output that flatly contradicted `stat`: "shipped 0 bytes, installed 20
+     * bytes" for a link whose target did not exist. Say what it actually is. */
+    static char tgt[256], rp0[300];
+    g_copy(rp0, root, sizeof rp0);
+    g_cat(rp0, path, sizeof rp0);
+    i64 tl = g_readlink(rp0, tgt, sizeof tgt - 1);
+    if (tl >= 0) {
+        tgt[tl] = 0;
+        g_puts("--- "); g_puts(path); g_puts("  is a symlink -> "); g_putln(tgt);
+        NomStat st0;
+        if (g_stat(rp0, &st0) != 0)
+            g_putln("    and the target does not exist: this link is DANGLING");
+        return;
+    }
+
     i64 want = g_repo(owner, path, filebuf);
     if (want < 0) {
         g_puts("pkg: "); g_puts(path);
@@ -110,12 +141,30 @@ static void diff_path(const char *owner, const char *path)
         return;
     }
 
+    /* Binary content is summarised, never dumped. A playtester ran
+     * `pkg diff sysinit` and got pages of raw ELF; the useful facts are the
+     * two sizes and the fact that they differ. */
+    if (!is_text(shipped, want) || !is_text(filebuf, have)) {
+        g_puts("--- "); g_puts(path); g_puts("  shipped by "); g_puts(owner);
+        g_puts(" ("); g_putn(want); g_putln(" bytes, binary)");
+        g_puts("+++ "); g_puts(path); g_puts("  installed now (");
+        g_putn(have); g_putln(" bytes, binary)");
+        if (want == have) g_putln("    same size, contents differ");
+        else if (have < want) g_putln("    SHORTER than it shipped -- truncated?");
+        else g_putln("    LONGER than it shipped");
+        return;
+    }
+
     g_puts("--- "); g_puts(path); g_puts("  shipped by ");
     g_puts(owner); g_puts(" ("); g_putn(want); g_putln(" bytes)");
     g_write(1, shipped, (u64)want);
+    if (want && shipped[want - 1] != '\n') g_puts("\n");
     g_puts("+++ "); g_puts(path); g_puts("  installed now (");
     g_putn(have); g_putln(" bytes)");
     g_write(1, filebuf, (u64)have);
+    /* A file with no trailing newline used to glue the next prompt onto the
+     * end of its last line. */
+    if (have && filebuf[have - 1] != '\n') g_puts("\n");
 }
 
 static int verify_one(const char *pkg, int *bad)
@@ -155,6 +204,21 @@ static int verify_one(const char *pkg, int *bad)
         NomStat st;
         if (g_stat(real, &st) != 0) {
             finding(pkg, fp, "MISSING"); (*bad)++;
+            continue;
+        }
+        /* A DIRECTORY the package owns. There are no contents to compare, so
+         * the questions are: is it still there, is it still a directory, and
+         * can anything still get into it. That last one is the fault that
+         * used to be invisible -- a directory with its execute bit off hides
+         * a tree of perfectly good files and no manifest line mentioned it. */
+        if (g_streq(mode, "dir")) {
+            if (st.kind != NOM_KIND_DIR) { finding(pkg, fp, "NOT A DIRECTORY"); (*bad)++; }
+            else if ((unsigned)st.mode != parse_oct(hash)) {
+                finding(pkg, fp, "MODE");
+                g_puts("                 mode is "); g_putoct((unsigned)st.mode, 4);
+                g_puts(", package shipped "); g_putoct(parse_oct(hash), 4); g_puts("\n");
+                (*bad)++;
+            }
             continue;
         }
         i64 n = g_slurp(real, filebuf, sizeof filebuf);
@@ -305,7 +369,7 @@ void _start(void)
                 char *mode, *hash, *fp;
                 char *t = g_trim(line);
                 if (!*t || !split3(t, &mode, &hash, &fp)) continue;
-                if (g_streq(mode, "link")) continue;
+                if (g_streq(mode, "link") || g_streq(mode, "dir")) continue;
                 i64 got = g_repo(nm3, fp, filebuf);
                 if (got < 0) continue;
                 g_copy(rp, root, sizeof rp);
@@ -359,7 +423,7 @@ void _start(void)
                 char *mode, *hash, *fp;
                 char *t = g_trim(line);
                 if (!*t || *t == '#' || !split3(t, &mode, &hash, &fp)) continue;
-                if (g_streq(mode, "link")) continue;
+                if (g_streq(mode, "link") || g_streq(mode, "dir")) continue;
                 static char rp[300];
                 g_copy(rp, root, sizeof rp);
                 g_cat(rp, fp, sizeof rp);
@@ -466,11 +530,12 @@ void _start(void)
                     continue;
                 }
             }
-            if (g_streq(mode, "link")) {
-                /* the repo restores links through the same call; the host
-                 * knows it is a link and recreates it */
-                if (g_repo(v[1], fp, filebuf) < 0) {
-                    g_puts("  cannot restore link "); g_putln(fp); failed++;
+            if (g_streq(mode, "link") || g_streq(mode, "dir")) {
+                /* Restored explicitly, through the call whose whole job is to
+                 * write. Fetching used to do this as a side effect, which
+                 * meant `pkg diff` on a dangling symlink repaired it. */
+                if (sysc(SYS_restore, (i64)v[1], (i64)fp, 0) != 0) {
+                    g_puts("  cannot restore "); g_putln(fp); failed++;
                 } else done++;
                 continue;
             }

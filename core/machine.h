@@ -42,6 +42,12 @@ typedef struct {
     const char *content;   /* NULL for a directory */
     unsigned    mode;
     const char *link;      /* non-NULL: this entry is a symlink to `link` */
+    /* A DIRECTORY owned by the package. rpm and dpkg both record these, and
+     * for the reason we found the hard way: a directory that goes missing, or
+     * loses its execute bit, is a real fault with no file to blame, and a
+     * package manager that cannot see it also cannot put it back. Appended
+     * last so every existing positional initialiser keeps working. */
+    bool        isdir;
 } PkgFile;
 
 typedef struct {
@@ -225,6 +231,9 @@ const Package *pkg_owns(const Machine *m, const char *path);
 void pkg_verify(Machine *m, const char *name_or_null, Buf *out);
 /* Put a package's files back exactly as shipped. Returns files restored. */
 int  pkg_reinstall(Machine *m, const char *name, Buf *out);
+/* Put ONE path back. Mutating; kept apart from pkg_file_content so that a
+ * fetch can never change the machine. */
+bool pkg_restore_path(Machine *m, const char *pkgname, const char *path);
 /* The pristine bytes of one file, as its package shipped it. This is the
  * repository, and it deliberately lives OFF the machine: it is how a disk
  * with nothing good left on it can still be repaired. */

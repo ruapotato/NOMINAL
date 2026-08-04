@@ -116,7 +116,10 @@ static const Package PKG_BASE = {
       { "/etc/motd",  "Welcome to Hamnix.\n", 0644, NULL },
       { "/etc/shells", "/bin/hamsh\n", 0644, NULL },
       { "/etc/profile", "# login shell profile\nPATH=/bin:/usr/bin:/sbin\n", 0644, NULL },
-    }, 8
+          { "/run", NULL, 0755, NULL, true },
+      { "/tmp", NULL, 0777, NULL, true },
+      { "/var/cache", NULL, 0755, NULL, true },
+    }, 11
 };
 
 static const Package PKG_USERS = {
@@ -175,7 +178,8 @@ static const Package PKG_SYSLOG = {
         "enabled: yes\n"
         "runlevel: 3\n", 0644, NULL },
       { "/etc/syslog.conf", "*.info /var/log/messages\n", 0644, NULL },
-    }, 3
+          { "/var/log", NULL, 0755, NULL, true },
+    }, 4
 };
 
 static const Package PKG_UDEV = {
@@ -424,7 +428,8 @@ static const Package PKG_CRON = {
         "17 *  * * *  /usr/sbin/logrotate /etc/logrotate.conf\n"
         "0  4  * * *  /home/hamowner/bin/cleanup   # DISABLED, see TODO\n", 0644, NULL },
       { "/var/spool/cron/root", "# no personal jobs\n", 0600, NULL },
-    }, 4
+          { "/var/spool/cron", NULL, 0755, NULL, true },
+    }, 5
 };
 
 static const Package PKG_LOGROTATE = {
@@ -449,7 +454,8 @@ static const Package PKG_NTP = {
         "name: ntp\nexec: /usr/sbin/ntpd\n"
         "description: time synchronisation\nafter: net\n"
         "restart: on-failure\nenabled: yes\nrunlevel: 3 5\n", 0644, NULL },
-    }, 3
+          { "/var/lib/ntp", NULL, 0755, NULL, true },
+    }, 4
 };
 
 static const Package PKG_HTTPD = {
@@ -908,6 +914,11 @@ static void pristine(const Machine *m, const PkgFile *f, Buf *out);
 
 static void install_file(Machine *m, const PkgFile *f)
 {
+    if (f->isdir) {
+        VNode *n = vfs_mkdir(&m->disk, f->path);
+        if (n) n->mode = f->mode;
+        return;
+    }
     if (f->link) { vfs_symlink(&m->disk, f->link, f->path); return; }
     if (f->content) {
         VNode *n = vfs_mkfile(&m->disk, f->path, f->content);
@@ -968,6 +979,13 @@ static void install_pkgdb(Machine *m)
                 buf_printf(&man, "link %016llx %s\n",
                            (unsigned long long)fnv1a(f->link, strlen(f->link)),
                            f->path);
+                continue;
+            }
+            if (f->isdir) {
+                /* Three fields like every other line; the mode goes where a
+                 * file's hash would, because a directory has no contents to
+                 * hash and its mode is the thing worth checking. */
+                buf_printf(&man, "dir %04o %s\n", f->mode, f->path);
                 continue;
             }
             Buf c = {0};
@@ -1170,6 +1188,11 @@ static void verify_pkg(Machine *m, const Package *p, Buf *out, int *bad)
         const PkgFile *f = &p->file[j];
         VNode *n = vfs_lookup(&m->disk, f->path);
         if (!n) { buf_printf(out, "%s missing\n", f->path); (*bad)++; continue; }
+        if (f->isdir) {
+            if (n->kind != VN_DIR)       { buf_printf(out, "%s changed\n", f->path); (*bad)++; }
+            else if (n->mode != f->mode) { buf_printf(out, "%s mode\n",    f->path); (*bad)++; }
+            continue;
+        }
         if (f->link) {
             if (n->kind != VN_LINK || strcmp(n->target, f->link) != 0) {
                 buf_printf(out, "%s changed\n", f->path); (*bad)++;
@@ -1224,16 +1247,46 @@ bool pkg_file_content(const Machine *m, const char *pkgname, const char *path,
     }
     for (int j = 0; j < p->nfiles; j++) {
         if (strcmp(p->file[j].path, path) != 0) continue;
-        if (p->file[j].link) {
-            /* Restoring a link is not a copy of bytes -- recreate it here and
-             * report success with no content, which is what the guest expects
-             * for a `link` manifest entry. */
-            Machine *mm = (Machine *)(void *)(uintptr_t)m;
-            vfs_remove(&mm->disk, path);
-            vfs_symlink(&mm->disk, p->file[j].link, path);
+        if (p->file[j].isdir || p->file[j].link) {
+            /* A directory and a symlink both have no bytes to hand back. They
+             * are RESTORED by pkg_restore_path, never here.
+             *
+             * This function used to do the restoring itself, which made it a
+             * read that wrote: `pkg diff /boot/vmlinuz` on a dangling symlink
+             * silently repaired the symlink and solved the machine for the
+             * player. A blind playtester hit exactly that, watched `ls` show
+             * a healthy link one command after `stat` said the path did not
+             * exist, and reasonably called it the worst bug in the game. */
             return true;
         }
         pristine(m, &p->file[j], out);
+        return true;
+    }
+    return false;
+}
+
+/* Put one path back the way the package ships it. The MUTATING counterpart of
+ * pkg_file_content, kept separate so that fetching a file can never change the
+ * machine -- `pkg diff` reads, `pkg reinstall` writes, and the two must not
+ * share a code path that does both. */
+bool pkg_restore_path(Machine *m, const char *pkgname, const char *path)
+{
+    const Package *p = pkg_find(m, pkgname);
+    if (!p) return false;
+    for (int j = 0; j < p->nfiles; j++) {
+        if (strcmp(p->file[j].path, path) != 0) continue;
+        if (p->file[j].isdir) {
+            VNode *d = vfs_mkdir(&m->disk, path);
+            if (d) d->mode = p->file[j].mode;
+            return true;
+        }
+        if (p->file[j].link) {
+            vfs_remove(&m->disk, path);
+            vfs_symlink(&m->disk, p->file[j].link, path);
+            return true;
+        }
+        vfs_remove(&m->disk, path);
+        install_file(m, &p->file[j]);
         return true;
     }
     return false;

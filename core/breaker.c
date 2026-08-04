@@ -755,6 +755,27 @@ static void fault_fstype(Machine *m, Rng *r, char *d, size_t ds)
     if (hit) snprintf(d, ds, "changed a filesystem type in /etc/fstab to %s", bad);
 }
 
+/* A directory a daemon needs, deleted. This was tried once and withdrawn,
+ * because no package owned /run or /var/log and so `pkg reinstall` could not
+ * put back something no package had ever shipped -- the auto-solver scored
+ * 0/10 and a fault the solver cannot repair is one a player cannot repair.
+ *
+ * Packages now record the directories they own, the way rpm and dpkg both
+ * really do, so verify reports the directory MISSING by name and reinstall
+ * recreates it. The fault is back, and it is the same fault a careless
+ * cleanup script produces on a real machine. */
+static void fault_missing_dir(Machine *m, Rng *r, char *d, size_t ds)
+{
+    static const char *VICTIMS[] = {
+        "/run", "/var/log", "/tmp", "/var/spool/cron", "/var/lib/ntp",
+    };
+    const char *path = VICTIMS[rng_next(r) % 5];
+    VNode *n = vfs_lookup(&m->disk, path);
+    if (!n || n->kind != VN_DIR) return;
+    if (!vfs_remove(&m->disk, path)) return;
+    snprintf(d, ds, "deleted the directory %s and everything in it", path);
+}
+
 static void fault_dir_mode(Machine *m, Rng *r, char *d, size_t ds)
 {
     static const char *VICTIMS[] = {
@@ -813,6 +834,7 @@ static const StructuralFault STRUCTURAL[] = {
     fault_wrong_channel, fault_fstab, fault_daemon_config,
     fault_daemon_directive, fault_disk_full, fault_bad_bind,
     fault_dir_mode, fault_root_ro, fault_bad_libz, fault_fstype,
+    fault_missing_dir,
 };
 #define NSTRUCT ((int)(sizeof STRUCTURAL / sizeof STRUCTURAL[0]))
 

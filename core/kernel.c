@@ -759,10 +759,49 @@ static int64_t kernel_syscall(Cpu *c, int64_t n, int64_t a0, int64_t a1,
         const char *cur = p->info->root[0] ? p->info->root : "/";
         if (strcmp(cur, "/") == 0) snprintf(newroot, sizeof newroot, "%s", abs);
         else snprintf(newroot, sizeof newroot, "%s%s", cur, abs);
+        /* Can a shell actually RUN in there? On a real machine chroot execs
+         * the target's shell, so a disk whose libc is broken refuses at the
+         * door and you are never trapped. Here the session respawns /bin/sh
+         * for every command, so entering such a chroot left the player unable
+         * to run anything at all -- including `exit`, which is a builtin but
+         * never got the chance to be one. A playtester was stuck until they
+         * guessed `rescue`.
+         *
+         * Checking up front keeps the good half of that discovery: you still
+         * learn that this disk is too broken to chroot into, which is exactly
+         * why `pkg --root` exists. You just learn it as an error instead of a
+         * dead end. */
+        {
+            /* Resolve the way every other path is resolved -- cwd, chroot,
+             * namespace and MOUNT TABLE. Reaching straight into the raw Vfs
+             * looked equivalent and was not: /mnt/bin/sh does not exist in
+             * the rescue medium's own tree, it exists in the disk mounted at
+             * /mnt, so the check refused every chroot on every machine and
+             * quietly cost three of sixty solves. */
+            char shraw[NOM_PATH_MAX * 2], shpath[NOM_PATH_MAX * 2];
+            snprintf(shraw, sizeof shraw, "%s/bin/sh", raw);
+            Vfs *sfs = resolve_fs(p, shraw, shpath, sizeof shpath);
+            VNode *sh = vfs_resolve(sfs, shpath, NULL);
+            if (!sh || sh->kind != VN_FILE) return -2;
+            char lerr[NOM_ERR_MAX] = "", shneeds[512] = "";
+            if (cpu_elf_needs((const uint8_t *)sh->data.p, sh->data.len,
+                              shneeds, sizeof shneeds) &&
+                !link_check(p->m, sfs, shneeds, lerr, sizeof lerr))
+                return -2;
+        }
         snprintf(p->info->root, sizeof p->info->root, "%s", newroot);
         snprintf(p->info->cwd, sizeof p->info->cwd, "/");
         return 0;
     }
+    case SYS_restore: {
+        char pkg[64], raw[NOM_PATH_MAX], path[NOM_PATH_MAX];
+        if (!guest_str(c, (uint64_t)a0, pkg, sizeof pkg)) return -1;
+        if (!guest_str(c, (uint64_t)a1, raw, sizeof raw)) return -1;
+        /* Through --root, so a rescue session repairs the mounted disk. */
+        resolve_fs(p, raw, path, sizeof path);
+        return pkg_restore_path(p->m, pkg, path) ? 0 : -1;
+    }
+
     case SYS_fstype: {
         char dev[64];
         if (!guest_str(c, (uint64_t)a0, dev, sizeof dev)) return -1;

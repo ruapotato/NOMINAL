@@ -307,7 +307,22 @@ static int run_line(char *cmd0)
          * its own and then exited would have accomplished nothing. */
         char *v[GARGS];
         if (g_argv(rest, v) < 1) { g_putln("usage: chroot <dir>"); return 1; }
-        if (sysc(SYS_chroot, (i64)v[0], 0, 0) != 0) {
+        i64 crc = sysc(SYS_chroot, (i64)v[0], 0, 0);
+        if (crc == -2) {
+            /* The shell in there cannot run. Refusing is the whole point:
+             * entering anyway leaves you unable to run even `exit`. */
+            g_puts("chroot: "); g_puts(v[0]);
+            g_putln(": there is a /bin/sh in there, and it cannot run --");
+            g_putln("  its libraries are missing or the wrong version, so every");
+            g_putln("  command inside would fail, including the one to get out.");
+            g_putln("  Work on the disk from OUT HERE instead:");
+            g_puts("      pkg --root "); g_puts(v[0]); g_putln(" verify");
+            g_putln("  takes the same verbs (verify, owns, diff, reinstall) and");
+            g_putln("  never runs anything off the broken disk. `ldd` on a binary");
+            g_putln("  under the mount point will tell you which library it is.");
+            return 1;
+        }
+        if (crc != 0) {
             g_puts("chroot: "); g_puts(v[0]);
             g_putln(": not a directory (is anything mounted there?)");
             return 1;

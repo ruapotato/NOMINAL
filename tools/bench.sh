@@ -10,7 +10,7 @@ SEED=${2:-12000}
 LOG=${3:-/tmp/nominal-bench.log}
 while true; do
     echo "=== bench starting on $PORT" >> "$LOG"
-    ./build/bf --serve "$PORT" "$SEED" >> "$LOG" 2>&1
+    ${BIN:-./build/bf} --serve "$PORT" "$SEED" >> "$LOG" 2>&1
     echo "=== bench exited with $? -- restarting" >> "$LOG"
     SEED=$((SEED + 100))
     sleep 1

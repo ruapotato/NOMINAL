@@ -68,6 +68,9 @@ typedef unsigned long      uint64_t;
                              * captures its stdout back into it, which is all
                              * a pipeline is.                              */
 #define SYS_pipeout  1049   /* () -> flush the pipe buffer to the console  */
+#define SYS_restore  1057   /* (pkg, path) -> 0 or -1. Puts one path back the
+                             * way the package ships it. Separate from
+                             * SYS_repo because a FETCH must never write.  */
 #define SYS_fstype   1056   /* (dev, buf, len) -> the type the DEVICE actually
                              * carries, which is what mount probes for and
                              * what fstab is only claiming.               */
