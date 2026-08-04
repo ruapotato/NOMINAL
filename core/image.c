@@ -195,7 +195,15 @@ static const Package PKG_UDEV = {
         "restart: on-failure\n"
         "enabled: yes\n"
         "runlevel: 3\n", 0644, NULL },
-      { "/etc/udev/rules.d/50-default.rules", "SUBSYSTEM==\"block\", MODE=\"0660\"\n", 0644, NULL },
+      /* The rule that NAMES the network device. udev is what decides an
+       * interface is called eth0, and netd configures whatever udev named --
+       * so these two files have to agree, and a rename in one of them is a
+       * real and thoroughly confusing fault. Before this the rules file was
+       * read by udevd and consulted by nothing, which is exactly the
+       * "file nothing reads" this project is not supposed to have. */
+      { "/etc/udev/rules.d/50-default.rules",
+        "SUBSYSTEM==\"block\", MODE=\"0660\"\n"
+        "SUBSYSTEM==\"net\", NAME=\"eth0\"\n", 0644, NULL },
     }, 3
 };
 

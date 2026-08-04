@@ -156,6 +156,17 @@ static inline int g_argv(char *arg, char **v)
     return n;
 }
 
+/* Does `hay` contain `needle`? */
+static inline int g_contains(const char *hay, const char *needle)
+{
+    for (u64 i = 0; hay[i]; i++) {
+        u64 k = 0;
+        while (needle[k] && hay[i + k] == needle[k]) k++;
+        if (!needle[k]) return 1;
+    }
+    return 0;
+}
+
 /* Read a whole file into a caller-supplied buffer. Returns length, or -1.
  * Guests own their buffers: there is no allocator on this machine. */
 static inline i64 g_slurp(const char *path, char *buf, u64 cap)

@@ -83,6 +83,77 @@ void _start(void)
         }
     }
 
+    /* DOES THE DEVICE EXIST? The config names an interface; udev is what
+     * decides what interfaces are called. Configuring eth0 on a machine where
+     * udev has named the device something else fails in a way that looks like
+     * nothing at all is wrong -- both files are valid, both are what somebody
+     * intended, and they disagree. */
+    {
+        static char rules[2048], want[64];
+        want[0] = 0;
+        /* the name from our own config: "iface eth0" */
+        {
+            char *q = conf;
+            while (*q) {
+                char *nl = q; while (*nl && *nl != '\n') nl++;
+                char save = *nl; *nl = 0;
+                char *t = g_trim(q);
+                if (t[0] == 'i' && t[1] == 'f' && t[2] == 'a' && t[3] == 'c' &&
+                    t[4] == 'e' && (t[5] == ' ' || t[5] == '\t')) {
+                    char *w = t + 5;
+                    while (*w == ' ' || *w == '\t') w++;
+                    u64 k = 0;
+                    while (w[k] && w[k] != ' ' && w[k] != '\t' && k < sizeof want - 1) {
+                        want[k] = w[k]; k++;
+                    }
+                    want[k] = 0;
+                }
+                *nl = save; q = *nl ? nl + 1 : nl;
+                if (want[0]) break;
+            }
+        }
+        if (want[0] &&
+            g_slurp("/etc/udev/rules.d/50-default.rules", rules, sizeof rules) >= 0) {
+            /* NAME="..." on the net rule */
+            static char named[64];
+            named[0] = 0;
+            char *q = rules;
+            while (*q) {
+                char *nl = q; while (*nl && *nl != '\n') nl++;
+                char save = *nl; *nl = 0;
+                char *t = g_trim(q);
+                if (g_contains(t, "net") && g_contains(t, "NAME=")) {
+                    char *n2 = t;
+                    while (*n2 && !(n2[0] == 'N' && n2[1] == 'A' && n2[2] == 'M' &&
+                                    n2[3] == 'E' && n2[4] == '=')) n2++;
+                    if (*n2) {
+                        n2 += 5;
+                        if (*n2 == '"') n2++;
+                        u64 k = 0;
+                        while (n2[k] && n2[k] != '"' && k < sizeof named - 1) {
+                            named[k] = n2[k]; k++;
+                        }
+                        named[k] = 0;
+                    }
+                }
+                *nl = save; q = *nl ? nl + 1 : nl;
+                if (named[0]) break;
+            }
+            if (named[0] && !g_streq(named, want)) {
+                g_puts("netd: ");
+                g_puts(CONF[0]);
+                g_puts(": configures ");
+                g_puts(want);
+                g_puts(", but udev names this machine's network device ");
+                g_puts(named);
+                g_putln("");
+                g_putln("  (see /etc/udev/rules.d/50-default.rules)");
+                g_putln("  refusing to start: there is no such interface");
+                g_exit(1);
+            }
+        }
+    }
+
     /* Publish what was actually loaded. The file on disk says what the
      * machine is SUPPOSED to do; this says what the running process is
      * actually doing, and the two drift the moment somebody edits a config

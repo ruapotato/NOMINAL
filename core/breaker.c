@@ -948,6 +948,49 @@ static void fault_inodes(Machine *m, Rng *r, char *d, size_t ds)
              (unsigned long long)room, dir);
 }
 
+/* udev renamed the network interface.
+ *
+ * BOTH FILES ARE VALID AND BOTH ARE WHAT SOMEBODY INTENDED. The udev rule
+ * names the device; the network config configures a device by name; a rename
+ * in one of them and they no longer agree. Nothing is corrupt, no version is
+ * wrong, and `pkg verify` flags the rules file as CHANGED -- which looks
+ * exactly like the legitimate local edits on every machine.
+ *
+ * This is the "predictable interface names" migration that broke half the
+ * world's servers, and the debugging is genuinely its own shape: the answer
+ * is in a file nobody thinks about until they have to. */
+static void fault_iface_rename(Machine *m, Rng *r, char *d, size_t ds)
+{
+    static const char *NAMES[] = { "enp0s3", "eno1", "ens18", "eth1" };
+    const char *nm = NAMES[rng_next(r) % 4];
+    VNode *n = vfs_lookup(&m->disk, "/etc/udev/rules.d/50-default.rules");
+    if (!n || n->kind != VN_FILE) return;
+
+    Buf out = {0};
+    bool hit = false;
+    const char *p = n->data.p ? n->data.p : "";
+    size_t len = n->data.len, i = 0;
+    while (i < len) {
+        size_t e = i; while (e < len && p[e] != '\n') e++;
+        char line[512];
+        size_t ll = e - i < sizeof line - 1 ? e - i : sizeof line - 1;
+        memcpy(line, p + i, ll); line[ll] = 0;
+        if (!hit && strstr(line, "NAME=") && strstr(line, "net")) {
+            buf_printf(&out, "# renamed to the predictable scheme, 3 June\n");
+            buf_printf(&out, "SUBSYSTEM==\"net\", NAME=\"%s\"\n", nm);
+            hit = true;
+        } else {
+            buf_put(&out, line, strlen(line));
+            buf_puts(&out, "\n");
+        }
+        i = e < len ? e + 1 : len;
+    }
+    if (hit) { buf_clear(&n->data); buf_put(&n->data, out.p, out.len); }
+    buf_free(&out);
+    if (hit) snprintf(d, ds, "a udev rule renames the network device to %s, "
+                             "which /etc/net/interfaces does not configure", nm);
+}
+
 static void fault_missing_dir(Machine *m, Rng *r, char *d, size_t ds)
 {
     static const char *VICTIMS[] = {
@@ -1019,7 +1062,7 @@ static const StructuralFault STRUCTURAL[] = {
     fault_daemon_directive, fault_disk_full, fault_bad_bind,
     fault_dir_mode, fault_root_ro, fault_bad_libz, fault_fstype,
     fault_missing_dir, fault_wellmeant, fault_dep_disabled,
-    fault_inodes,
+    fault_inodes, fault_iface_rename,
 };
 #define NSTRUCT ((int)(sizeof STRUCTURAL / sizeof STRUCTURAL[0]))
 
