@@ -241,8 +241,18 @@ int main(int argc, char **argv)
         if (nf > 0) machine_break(&m, sd, nf, what, sizeof what);
         machine_boot(&m);
         fwrite(m.boot.console.p, 1, m.boot.console.len, stdout);
-        printf("\n[%s at %s]\n", m.boot.running ? "UP" : "DOWN",
-               boot_stage_name(m.boot.failed_at));
+        {
+            Buf sick = {0};
+            int dead = kernel_health(&m, &sick);
+            if (m.boot.running && dead) {
+                printf("\n[UP at target, but %d service(s) are not right]\n", dead);
+                fwrite(sick.p, 1, sick.len, stdout);
+            } else {
+                printf("\n[%s at %s]\n", m.boot.running ? "UP" : "DOWN",
+                       boot_stage_name(m.boot.failed_at));
+            }
+            buf_free(&sick);
+        }
         if (getenv("NOM_SPOIL")) printf("[break: %s]\n", what);
 
         /* One long-lived process owns the session, so cd and bind persist. */
@@ -317,8 +327,18 @@ int main(int argc, char **argv)
     if (nfaults > 0) machine_break(&m, seed, nfaults, what, sizeof what);
     else machine_boot(&m);
     fwrite(m.boot.console.p, 1, m.boot.console.len, stdout);
-    printf("\n[%s at %s]\n", m.boot.running ? "UP" : "DOWN",
-           boot_stage_name(m.boot.failed_at));
+    {
+        Buf sick = {0};
+        int dead = kernel_health(&m, &sick);
+        if (m.boot.running && dead) {
+            printf("\n[UP at target, but %d service(s) are not right]\n", dead);
+            fwrite(sick.p, 1, sick.len, stdout);
+        } else {
+            printf("\n[%s at %s]\n", m.boot.running ? "UP" : "DOWN",
+                   boot_stage_name(m.boot.failed_at));
+        }
+        buf_free(&sick);
+    }
     if (getenv("NOM_SPOIL")) printf("[break: %s]\n", what);
     machine_free(&m);
     return 0;

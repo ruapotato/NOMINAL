@@ -61,6 +61,23 @@ struct Proc {
     Buf     *capture_into;
 };
 
+/* A long-lived service. Declared up here rather than beside its own code
+ * because the syscall handler needs to see it: kill() has to find the
+ * target, and the target is a daemon. */
+struct Daemon {
+    Cpu      cpu;
+    Proc     proc;
+    char     name[40];
+    char     path[NOM_PATH_MAX];
+    bool     running;
+    int      restart_policy;   /* 0 never, 1 on-failure, 2 always */
+    int      restarts;
+    bool     gave_up;
+    int      pending_sig;      /* delivered when the daemon next asks */
+    int64_t  exit_code;
+    char     died[NOM_ERR_MAX];
+};
+
 /* Which filesystem is a path actually on, and where on it?
  *
  * Four transforms, in the order a real kernel applies them:
@@ -522,6 +539,33 @@ static int64_t kernel_syscall(Cpu *c, int64_t n, int64_t a0, int64_t a1,
         buf_free(&b);
         return r;
     }
+    case SYS_kill: {
+        /* Leave the signal pending on the target. Nothing is interrupted --
+         * there is no preemption here -- so a daemon sees it the next time it
+         * looks, which is exactly what a cooperative system can promise and
+         * exactly enough for "re-read your configuration". */
+        struct Daemon *ds = (struct Daemon *)p->m->daemon;
+        if (!ds) return -1;
+        for (int i = 0; i < p->m->ndaemon; i++) {
+            if (!ds[i].running) continue;
+            if (ds[i].proc.info && ds[i].proc.info->pid == (int)a0) {
+                ds[i].pending_sig = (int)a1;
+                return 0;
+            }
+        }
+        return -1;
+    }
+    case SYS_sigpend: {
+        struct Daemon *ds = (struct Daemon *)p->m->daemon;
+        if (!ds) return 0;
+        for (int i = 0; i < p->m->ndaemon; i++) {
+            if (&ds[i].proc != p) continue;
+            int sig = ds[i].pending_sig;
+            ds[i].pending_sig = 0;
+            return sig;
+        }
+        return 0;
+    }
     case SYS_pipe: {
         /* One stage of a pipeline. The child reads what this process's pipe
          * currently holds and writes into a fresh buffer, which then becomes
@@ -916,8 +960,13 @@ int64_t kernel_run(Machine *m, const char *line, Buf *console)
 {
     ProcInfo *ses = kernel_session(m);
     char err[NOM_ERR_MAX] = "";
-    return kernel_spawn_as(m, "/bin/sh", line, console, 0, NULL, ses,
-                           err, sizeof err);
+    int64_t rc = kernel_spawn_as(m, "/bin/sh", line, console, 0, NULL, ses,
+                                 err, sizeof err);
+    /* Time passes while you work. Without this the daemons are frozen between
+     * commands, so a signal sent with `kill -HUP` would sit pending forever
+     * and a service could never die while you were looking at it. */
+    kernel_tick(m, 2, console);
+    return rc;
 }
 
 /* ------------------------------------------------------------ daemons --
@@ -939,18 +988,6 @@ int64_t kernel_run(Machine *m, const char *line, Buf *console)
 #define DAEMON_START_BUDGET  2000000ull
 #define DAEMON_TICK_BUDGET     50000ull
 
-struct Daemon {
-    Cpu      cpu;
-    Proc     proc;
-    char     name[40];
-    char     path[NOM_PATH_MAX];
-    bool     running;
-    int      restart_policy;   /* 0 never, 1 on-failure, 2 always */
-    int      restarts;
-    bool     gave_up;
-    int64_t  exit_code;
-    char     died[NOM_ERR_MAX];
-};
 
 /* How many times a service may come back before the system decides it is
  * never going to work. Real init systems all have a number like this and
@@ -977,11 +1014,67 @@ static struct Daemon *daemons(Machine *m)
  * and the boot console scrolled past it twenty lines ago. Widening a ticket
  * from "will not boot" to "is not healthy" is what lets that be a ticket at
  * all -- and it is the commoner kind of call. */
+/* The first line of a file that is not blank and not a comment. */
+static bool first_real_line(Vfs *fs, const char *path, char *out, size_t outsz)
+{
+    VNode *n = vfs_resolve(fs, path, NULL);
+    if (!n || n->kind != VN_FILE) return false;
+    const char *p = n->data.p, *end = n->data.p + n->data.len;
+    while (p && p < end) {
+        const char *nl = memchr(p, '\n', (size_t)(end - p));
+        size_t len = nl ? (size_t)(nl - p) : (size_t)(end - p);
+        const char *t = p; size_t tl = len;
+        while (tl && (*t == ' ' || *t == '\t')) { t++; tl--; }
+        while (tl && (t[tl-1] == ' ' || t[tl-1] == '\r')) tl--;
+        if (tl && *t != '#') {
+            if (tl >= outsz) tl = outsz - 1;
+            memcpy(out, t, tl);
+            out[tl] = '\0';
+            return true;
+        }
+        p = nl ? nl + 1 : NULL;
+    }
+    return false;
+}
+
 int kernel_health(Machine *m, Buf *out)
 {
     if (!m->daemon) return 0;
     struct Daemon *d = daemons(m);
+    Vfs *fs = m->on_rescue ? &m->rescue : &m->disk;
     int dead = 0;
+    /* A daemon can be running and still wrong: the file on disk says one
+     * thing and the process loaded another, because somebody edited it and
+     * never reloaded. Nothing is corrupt, `pkg verify` is clean, and the
+     * machine does not do what its configuration says it does. */
+    for (int i = 0; i < m->ndaemon; i++) {
+        if (!d[i].running) continue;
+        char statepath[NOM_PATH_MAX];
+        snprintf(statepath, sizeof statepath, "/run/%s.state", d[i].name);
+        VNode *sn = vfs_resolve(fs, statepath, NULL);
+        if (!sn || sn->kind != VN_FILE || !sn->data.len) continue;
+        char confpath[NOM_PATH_MAX] = "", loaded[256] = "";
+        const char *nl = memchr(sn->data.p, '\n', sn->data.len);
+        if (!nl) continue;
+        size_t l1 = (size_t)(nl - sn->data.p);
+        if (l1 >= sizeof confpath) continue;
+        memcpy(confpath, sn->data.p, l1); confpath[l1] = 0;
+        const char *v = nl + 1;
+        size_t vlen = sn->data.len - l1 - 1;
+        while (vlen && (v[vlen-1] == '\n' || v[vlen-1] == '\r')) vlen--;
+        if (vlen >= sizeof loaded) continue;
+        memcpy(loaded, v, vlen); loaded[vlen] = 0;
+
+        char ondisk[256];
+        if (!first_real_line(fs, confpath, ondisk, sizeof ondisk)) continue;
+        if (strcmp(ondisk, loaded) == 0) continue;
+        if (!dead) buf_puts(out, "services that are not doing what they are configured to do:\n");
+        buf_printf(out, "  %-14s running with a stale %s\n", d[i].name, confpath);
+        buf_printf(out, "  %-14s   on disk:  %s\n", "", ondisk);
+        buf_printf(out, "  %-14s   running: %s\n", "", loaded);
+        dead++;
+    }
+
     for (int i = 0; i < m->ndaemon; i++) {
         if (d[i].running) continue;
         if (!dead) buf_puts(out, "services that should be running and are not:\n");

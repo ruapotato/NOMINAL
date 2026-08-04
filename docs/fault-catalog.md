@@ -180,7 +180,10 @@ Legend: **[done]** built · **[next]** in progress or immediately next ·
   scheduler and no preemption — a daemon gets a slice of instructions when the
   system ticks — which is cooperative multitasking and a great deal less than
   a kernel, and enough.
-- **[todo]** signals, so a daemon can be told to reload or stop.
+- **[done]** signals. `kill -HUP` and `-TERM`, delivered by being left pending
+  until the daemon next looks — there is no preemption here, so that is the
+  honest promise, and it is enough for "re-read your configuration". Time
+  passes between shell commands so the signal is actually seen.
 - **[done]** `restart: on-failure` honoured, with the respawn loop that
   follows. A daemon that dies is brought back; five failures in a row and the
   system says so and stops trying, which is what every real init does and for
@@ -239,10 +242,24 @@ boot, so a repair that leaves a service dead is not a repair.
   console is clean and `ps` is the only evidence.
 - **[todo]** two services that both start, where one silently depends on the
   other having finished, and the order is wrong only sometimes.
-- **[todo]** a daemon running with a stale config because nothing reloaded it
-  — the file on disk is right and the running process disagrees. `ps` says
-  running, the config says correct, and the behaviour is wrong. This is the
-  best argument for signals.
+- **[done]** **a daemon running with a stale config because nothing reloaded
+  it.** Nothing is corrupt, `pkg verify` is clean, `svc` says running, and the
+  machine does not do what its configuration plainly says it does:
+
+  ```
+  [UP at target, but 1 service(s) are not right]
+  services that are not doing what they are configured to do:
+    httpd          running with a stale /etc/httpd/httpd.conf
+                     on disk:  Listen 8080
+                     running: Listen 80
+  ```
+
+  Every daemon publishes what it actually loaded to `/run/<name>.state`, so
+  the gap between intention and behaviour is a thing the machine can notice
+  rather than something only a person could spot. **The fix is a signal, not
+  a file:** `kill -HUP <pid>`. The fault has to be applied *after* boot by
+  construction — reboot and the daemon reads the new file and it evaporates,
+  which is exactly why it is so miserable to diagnose in real life.
 - **[todo]** a log filling the disk, so the machine boots today and will not
   next week.
 

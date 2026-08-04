@@ -7,10 +7,37 @@
  */
 #include "gsys.h"
 static char conf[2048];
+static const char *CONF[] = { "/etc/nftables.conf", 0 };
+
+static void publish(void)
+{
+    /* the first non-comment line of the config, as loaded */
+    static char state[256];
+    state[0] = 0;
+    char *q = conf;
+    while (*q) {
+        char *nl = q; while (*nl && *nl != '\n') nl++;
+        char save = *nl; *nl = 0;
+        char *t = g_trim(q);
+        if (*t && *t != '#') { g_copy(state, t, sizeof state); *nl = save; break; }
+        *nl = save; q = *nl ? nl + 1 : nl;
+    }
+    /* Two lines: which file was loaded, and what it said. The kernel compares
+     * the second against the file named by the first, which is how "running
+     * with a stale configuration" becomes a state the machine can notice
+     * rather than a thing only a person could spot. */
+    int fd = g_open("/run/nft.state", O_WRONLY | O_CREAT | O_TRUNC);
+    if (fd < 0) return;
+    sysc(SYS_write, fd, (i64)CONF[0], (i64)g_strlen(CONF[0]));
+    sysc(SYS_write, fd, (i64)"\n", 1);
+    sysc(SYS_write, fd, (i64)state, (i64)g_strlen(state));
+    sysc(SYS_write, fd, (i64)"\n", 1);
+    g_close(fd);
+}
+
 static const char *KEY = "table";
 void _start(void)
 {
-    static const char *CONF[] = { "/etc/nftables.conf", 0 };
     for (int i = 0; CONF[i]; i++) {
         if (g_slurp(CONF[i], conf, sizeof conf) < 0) {
             g_puts("nft: ");
@@ -45,5 +72,17 @@ void _start(void)
         }
     }
 
-    for (;;) { }
+    /* Publish what was actually loaded. The file on disk says what the
+     * machine is SUPPOSED to do; this says what the running process is
+     * actually doing, and the two drift the moment somebody edits a config
+     * and does not reload. That gap is invisible without this. */
+    publish();
+
+    /* Up. A daemon spends its life here, looking occasionally to see whether
+     * anyone has asked it to re-read its configuration. */
+    for (;;) {
+        if (g_sigpend() == SIG_HUP) {
+            if (g_slurp(CONF[0], conf, sizeof conf) >= 0) publish();
+        }
+    }
 }

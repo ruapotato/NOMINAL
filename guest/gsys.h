@@ -45,6 +45,8 @@ static inline int  g_bootsec(int write) { return (int)sysc(SYS_bootsec, write, 0
 static inline i64  g_rootuuid(char *b, u64 n) { return sysc(SYS_rootuuid, (i64)b, (i64)n, 0); }
 static inline i64  g_dns(const char *n, char *b, u64 c) { return sysc(SYS_dns, (i64)n, (i64)b, (i64)c); }
 static inline i64  g_http(const char *ip, const char *p, char *b) { return sysc(SYS_http, (i64)ip, (i64)p, (i64)b); }
+static inline int  g_kill(int pid, int sig) { return (int)sysc(SYS_kill, pid, sig, 0); }
+static inline int  g_sigpend(void) { return (int)sysc(SYS_sigpend, 0, 0, 0); }
 static inline i64  g_pipe(const char *p, const char *a) { return sysc(SYS_pipe, (i64)p, (i64)a, 0); }
 static inline void g_pipeout(void) { sysc(SYS_pipeout, 0, 0, 0); }
 

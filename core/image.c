@@ -307,6 +307,7 @@ static const Package PKG_SHELL = {
       { "/bin/chroot", NULL, 0755, NULL },
       { "/sbin/fsck", NULL, 0755, NULL },
       { "/sbin/blkid", NULL, 0755, NULL },
+      { "/bin/kill", NULL, 0755, NULL },
       { "/usr/bin/svc", NULL, 0755, NULL },
       { "/usr/bin/pkg", NULL, 0755, NULL },
       { "/usr/bin/links", NULL, 0755, NULL },
@@ -324,7 +325,7 @@ static const Package PKG_SHELL = {
       { "/bin/df", NULL, 0755, NULL },
       { "/bin/false", "#!false\n", 0755, NULL },
       { "/bin/true",  "#!true\n",  0755, NULL },
-    }, 30
+    }, 31
 };
 
 
@@ -655,6 +656,7 @@ static const Package PKG_RESCUE_TOOLS = {
       { "/bin/df", NULL, 0755, NULL },
       { "/sbin/fsck", NULL, 0755, NULL },
       { "/sbin/blkid", NULL, 0755, NULL },
+      { "/bin/kill", NULL, 0755, NULL },
       { "/usr/bin/svc", NULL, 0755, NULL },
       { "/usr/bin/pkg", NULL, 0755, NULL },
       { "/usr/bin/links", NULL, 0755, NULL },
@@ -662,7 +664,7 @@ static const Package PKG_RESCUE_TOOLS = {
       { "/usr/sbin/zbl-install", NULL, 0755, NULL },
       { "/usr/sbin/zbl-mkconfig", NULL, 0755, NULL },
       { "/usr/bin/mkinitrd", NULL, 0755, NULL },
-    }, 32
+    }, 33
 };
 
 static const Package *RESCUE_IMAGE[] = { &PKG_RESCUE_BASE, &PKG_RESCUE_TOOLS };
@@ -809,6 +811,8 @@ void image_generated(const Machine *m, const char *path, Buf *out)
         buf_put(out, (const char *)GUEST_FSCK, GUEST_FSCK_LEN);
     else if (strcmp(path, "/sbin/blkid") == 0)
         buf_put(out, (const char *)GUEST_BLKID, GUEST_BLKID_LEN);
+    else if (strcmp(path, "/bin/kill") == 0)
+        buf_put(out, (const char *)GUEST_KILL, GUEST_KILL_LEN);
     else if (strcmp(path, "/usr/bin/svc") == 0)
         buf_put(out, (const char *)GUEST_SVC, GUEST_SVC_LEN);
     else if (strcmp(path, "/sbin/mountall") == 0)
@@ -940,7 +944,8 @@ void machine_install(Machine *m, uint64_t seed)
         "/usr/share/terminfo", "/var", "/var/log", "/var/lib", "/var/lib/ntp",
         "/var/lib/pkg", "/var/cache", "/var/spool", "/var/spool/cron",
         "/etc/audit", "/etc/default", "/etc/httpd", "/etc/logrotate.d",
-        "/etc/postfix", "/srv", "/srv/www", "/etc/pkg", "/etc/pkg/repos.d", NULL
+        "/etc/postfix", "/srv", "/srv/www", "/etc/pkg", "/etc/pkg/repos.d",
+        "/run", NULL
     };
     for (int i = 0; DIRS[i]; i++) vfs_mkdir(&m->disk, DIRS[i]);
 

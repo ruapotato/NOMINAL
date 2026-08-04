@@ -55,6 +55,13 @@ typedef unsigned long      uint64_t;
 #define SYS_umount   1037   /* (at) -> 0 or -1                              */
 #define SYS_chroot   1038   /* (path) -> 0 or -1                            */
 #define SYS_mounts   1039   /* (buf, len) -> bytes: the mount table         */
+#define SYS_kill     1050   /* (pid, sig) -> 0 or -1. Signals are DELIVERED by
+                             * being left pending; a cooperative daemon polls
+                             * for them, which is all this machine can offer
+                             * without preemption and is enough for HUP.    */
+#define SYS_sigpend  1051   /* () -> the pending signal, and clears it      */
+#define SIG_HUP  1
+#define SIG_TERM 15
 #define SYS_pipe     1048   /* (path, arg) -> exit code. Runs the program with
                              * this process's pipe buffer as its stdin and
                              * captures its stdout back into it, which is all

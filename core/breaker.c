@@ -598,6 +598,45 @@ static const Mutation MUTATION[] = {
 };
 #define NMUT ((int)(sizeof MUTATION / sizeof MUTATION[0]))
 
+/* A configuration edited AFTER the machine came up, and never reloaded.
+ *
+ * This one has to happen post-boot by construction: reboot the machine and the
+ * daemon reads the new file and the fault evaporates, which is exactly why it
+ * is such a miserable thing to diagnose in real life. Nothing is corrupt,
+ * `pkg verify` is clean, `svc` says running, and the machine does not do what
+ * its configuration plainly says it does. The fix is a signal, not a file.
+ */
+static bool fault_stale_config(Machine *m, Rng *r)
+{
+    static const struct { const char *path, *from, *to; } EDITS[] = {
+        { "/etc/nftables.conf",   "inet",       "ip"        },
+        { "/etc/ntp.conf",        "10.0.2.3",   "10.0.2.7"  },
+        { "/etc/httpd/httpd.conf","Listen 80",  "Listen 8080" },
+        { "/etc/net/interfaces",  "eth0",       "eth1"      },
+    };
+    int i = (int)(rng_next(r) % 4);
+    VNode *n = vfs_lookup(&m->disk, EDITS[i].path);
+    if (!n || n->kind != VN_FILE) return false;
+
+    /* rewrite the first occurrence, leaving a file that is entirely valid */
+    Buf out = {0};
+    const char *p = n->data.p, *end = n->data.p + n->data.len;
+    size_t fl = strlen(EDITS[i].from);
+    bool hit = false;
+    while (p < end) {
+        if (!hit && (size_t)(end - p) >= fl && memcmp(p, EDITS[i].from, fl) == 0) {
+            buf_puts(&out, EDITS[i].to);
+            p += fl;
+            hit = true;
+            continue;
+        }
+        buf_putc(&out, *p++);
+    }
+    if (hit) { buf_clear(&n->data); buf_put(&n->data, out.p, out.len); }
+    buf_free(&out);
+    return hit;
+}
+
 /* Damage one random file one random way. Returns false if the mutation was a
  * no-op (wrong kind of file for it, empty file), which the caller retries. */
 bool machine_corrupt(Machine *m, Rng *r, char *what, size_t whatsz)
@@ -656,6 +695,24 @@ bool machine_break(Machine *m, uint64_t seed, int nfaults, char *what, size_t wh
         if (applied < nfaults) continue;
 
         machine_boot(m);
+
+        /* One ticket in twelve is an edit made after the machine came up. It
+         * has to be applied here, AFTER the boot, or the daemon simply reads
+         * the new file and there is no fault at all. */
+        if (m->boot.running && (rng_next(&r) % 12) == 0) {
+            if (fault_stale_config(m, &r)) {
+                Buf sick2 = {0};
+                int d2 = kernel_health(m, &sick2);
+                buf_free(&sick2);
+                if (d2 > 0) {
+                    if (what) snprintf(what, whatsz,
+                        "a config was edited after boot and never reloaded");
+                    customer_brief(m, "changed a setting and did not restart it");
+                    return true;
+                }
+            }
+        }
+
         /* A ticket is a machine that is NOT HEALTHY, which is a wider and
          * truer thing than a machine that will not boot. "It comes up and the
          * firewall is not running" is a real call, and a nastier one, because
