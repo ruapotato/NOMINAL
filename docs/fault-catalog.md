@@ -181,8 +181,26 @@ Legend: **[done]** built · **[next]** in progress or immediately next ·
   system ticks — which is cooperative multitasking and a great deal less than
   a kernel, and enough.
 - **[todo]** signals, so a daemon can be told to reload or stop.
-- **[todo]** `restart: on-failure` actually restarting, and the "respawning
-  too fast" loop that follows when it cannot.
+- **[done]** `restart: on-failure` honoured, with the respawn loop that
+  follows. A daemon that dies is brought back; five failures in a row and the
+  system says so and stops trying, which is what every real init does and for
+  the same reason.
+
+  ```
+  nft: /etc/nftables.conf: no ruleset -- refusing to start
+  kernel: nftables died -- exited immediately with status 1, restarting (4)
+  kernel: nftables respawning too fast, giving up on it
+  ```
+- **[done]** a config that EXISTS and does not say the one thing its daemon
+  needs. Every daemon validates a required directive, so a half-finished edit
+  — the line commented out and never restored — starts the service, fails it,
+  and loops.
+- **[todo]** **"it boots, the firewall is just not running."** A NON-critical
+  daemon in a respawn loop leaves the machine UP, which is a nastier ticket
+  than one that will not boot and one the breaker cannot currently express,
+  because a ticket here is defined as a machine that fails to boot. Needs the
+  ticket contract widening to "the machine is not healthy", with `svc status`
+  as the way to see it.
 - **[done]** pipes. `a | b | c` runs each stage to completion with its output
   as the next one's input — no concurrency, which is right, because these are
   filters and a filter that has not finished has nothing to say. `pkg verify |

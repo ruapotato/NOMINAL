@@ -547,7 +547,7 @@ static int64_t kernel_syscall(Cpu *c, int64_t n, int64_t a0, int64_t a1,
         char rp[NOM_PATH_MAX];
         resolve(p, path, rp, sizeof rp);
         return kernel_start_daemon(p->m, rp, "", name[0] ? name : path,
-                                   p->console);
+                                   (int)a2, p->console);
     }
     case SYS_fsck: {
         char dev[64];
@@ -945,10 +945,19 @@ struct Daemon {
     char     name[40];
     char     path[NOM_PATH_MAX];
     bool     running;
+    int      restart_policy;   /* 0 never, 1 on-failure, 2 always */
     int      restarts;
+    bool     gave_up;
     int64_t  exit_code;
     char     died[NOM_ERR_MAX];
 };
+
+/* How many times a service may come back before the system decides it is
+ * never going to work. Real init systems all have a number like this and
+ * they all print something close to the same sentence, because a daemon
+ * that dies instantly and is restarted instantly is a machine that does
+ * nothing else forever. */
+#define RESPAWN_LIMIT 5
 
 #define DAEMON_MAX 16
 
@@ -971,8 +980,10 @@ void kernel_stop_daemons(Machine *m)
     m->ndaemon = 0;
 }
 
+static int64_t daemon_launch(Machine *m, struct Daemon *d, Buf *console);
+
 int64_t kernel_start_daemon(Machine *m, const char *path, const char *arg,
-                            const char *name, Buf *console)
+                            const char *name, int restart, Buf *console)
 {
     struct Daemon *ds = daemons(m);
     if (m->ndaemon >= DAEMON_MAX) return SPAWN_EDEPTH;
@@ -980,6 +991,18 @@ int64_t kernel_start_daemon(Machine *m, const char *path, const char *arg,
     memset(d, 0, sizeof *d);
     snprintf(d->name, sizeof d->name, "%s", name ? name : path);
     snprintf(d->path, sizeof d->path, "%s", path);
+    d->restart_policy = restart;
+    snprintf(d->proc.arg, sizeof d->proc.arg, "%s", arg ? arg : "");
+    m->ndaemon++;
+    return daemon_launch(m, d, console);
+}
+
+/* Start, or restart, one daemon. Everything about loading and running it
+ * lives here so that a restart is genuinely the same operation as a start --
+ * a restart that took a different path would eventually diverge from it. */
+static int64_t daemon_launch(Machine *m, struct Daemon *d, Buf *console)
+{
+    const char *path = d->path;
 
     Vfs *fs = m->on_rescue ? &m->rescue : &m->disk;
     bool dangling = false;
@@ -1005,6 +1028,7 @@ int64_t kernel_start_daemon(Machine *m, const char *path, const char *arg,
 
     cpu_init(&d->cpu);
     char lerr[128] = "";
+    d->died[0] = '\0';
     if (!cpu_load_elf(&d->cpu, (const uint8_t *)n->data.p, n->data.len, lerr, sizeof lerr)) {
         cpu_free(&d->cpu);
         return spawn_fail(console, err, sizeof err, SPAWN_ENOEXEC, "%s: %s", path, lerr);
@@ -1019,17 +1043,19 @@ int64_t kernel_start_daemon(Machine *m, const char *path, const char *arg,
         pi->ppid = 1;
         pi->alive = true;
         snprintf(pi->name, sizeof pi->name, "%s", path);
-        snprintf(pi->arg, sizeof pi->arg, "%s", arg ? arg : "");
+        snprintf(pi->arg, sizeof pi->arg, "%s", d->proc.arg);
         ns_init(&pi->ns);
         snprintf(pi->cwd, sizeof pi->cwd, "/");
     }
 
+    char savearg[NOM_PATH_MAX];
+    snprintf(savearg, sizeof savearg, "%s", d->proc.arg);
     memset(&d->proc, 0, sizeof d->proc);
     d->proc.m = m;
     d->proc.console = console;
     d->proc.info = pi;
     d->proc.pid = pi ? pi->pid : 0;
-    snprintf(d->proc.arg, sizeof d->proc.arg, "%s", arg ? arg : "");
+    snprintf(d->proc.arg, sizeof d->proc.arg, "%s", savearg);
     d->cpu.syscall = kernel_syscall;
     d->cpu.ctx = &d->proc;
 
@@ -1038,7 +1064,6 @@ int64_t kernel_start_daemon(Machine *m, const char *path, const char *arg,
         /* Still going: that is a daemon. */
         d->running = true;
         if (pi) pi->icount = d->cpu.icount;
-        m->ndaemon++;
         return 0;
     }
     /* It finished during startup, which for a service means it fell over. */
@@ -1051,7 +1076,23 @@ int64_t kernel_start_daemon(Machine *m, const char *path, const char *arg,
         snprintf(d->died, sizeof d->died, "%s at pc 0x%llx",
                  cpu_trap_name(t), (unsigned long long)d->cpu.pc);
     cpu_free(&d->cpu);
-    m->ndaemon++;
+
+    /* It fell over on startup. Bring it back if it is allowed to come back,
+     * and give up out loud once it is obviously never going to work. */
+    if (d->restart_policy != 0) {
+        if (++d->restarts >= RESPAWN_LIMIT) {
+            d->gave_up = true;
+            if (console)
+                buf_printf(console,
+                           "kernel: %s respawning too fast, giving up on it\n",
+                           d->name);
+            return SPAWN_EFAULT;
+        }
+        if (console)
+            buf_printf(console, "kernel: %s died -- %s, restarting (%d)\n",
+                       d->name, d->died, d->restarts);
+        return daemon_launch(m, d, console);
+    }
     return SPAWN_EFAULT;
 }
 
@@ -1079,9 +1120,22 @@ void kernel_tick(Machine *m, int slices, Buf *console)
                 d[i].proc.info->alive = false;
                 d[i].proc.info->exit_code = d[i].cpu.exit_code;
             }
-            if (console)
-                buf_printf(console, "kernel: %s died -- %s\n", d[i].name, d[i].died);
             cpu_free(&d[i].cpu);
+            if (d[i].restart_policy != 0 && !d[i].gave_up) {
+                if (++d[i].restarts >= RESPAWN_LIMIT) {
+                    d[i].gave_up = true;
+                    if (console)
+                        buf_printf(console, "kernel: %s respawning too fast, "
+                                            "giving up on it\n", d[i].name);
+                } else {
+                    if (console)
+                        buf_printf(console, "kernel: %s died -- %s, restarting (%d)\n",
+                                   d[i].name, d[i].died, d[i].restarts);
+                    daemon_launch(m, &d[i], console);
+                }
+            } else if (console) {
+                buf_printf(console, "kernel: %s died -- %s\n", d[i].name, d[i].died);
+            }
         }
     }
 }

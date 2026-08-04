@@ -22,6 +22,7 @@ static int  nunits;
 static char body[4096];
 static char level[16];
 static char crit[UNITS][8];
+static char restart[UNITS][16];
 static int  failed_critical;
 
 /* Pull `key` out of a `key: value` config body into `out`. */
@@ -98,6 +99,7 @@ void _start(void)
          * different (and lesser) problem than a box that will not boot, and
          * conflating them would be wrong. */
         get(body, "critical",    crit[u],   sizeof crit[u],   "no");
+        get(body, "restart",     restart[u], sizeof restart[u], "no");
         get(body, "exec",        execs[u],  sizeof execs[u],  "");
         get(body, "after",       afters[u], sizeof afters[u], "");
         get(body, "description", descs[u],  sizeof descs[u],  "");
@@ -123,7 +125,12 @@ void _start(void)
              * executable has not started; one that reads a missing config
              * and exits has started and failed, which is a different fault
              * with a different fix. */
-            i64 rc = g_svcstart(execs[u], names[u]);
+            /* on-failure is the usual policy; a service that says nothing
+             * gets no restart, which is the safe reading. */
+            int pol = 0;
+            if (g_streq(restart[u], "on-failure")) pol = 1;
+            else if (g_streq(restart[u], "always")) pol = 2;
+            i64 rc = g_svcstart(execs[u], names[u], pol);
             int bad = (rc != 0);
             const char *why = ": failed to start";
             if (bad) {

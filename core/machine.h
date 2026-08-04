@@ -189,7 +189,7 @@ void machine_read_channel(Machine *m);
 /* Start a program as a long-lived service. Returns 0 if it is now running,
  * or a negative SPAWN_* if it could not be started at all. */
 int64_t kernel_start_daemon(Machine *m, const char *path, const char *arg,
-                            const char *name, Buf *console);
+                            const char *name, int restart, Buf *console);
 /* Let every running daemon have another slice of cpu. A daemon that exits or
  * faults during its slice has crashed, and says so. */
 void kernel_tick(Machine *m, int slices, Buf *console);

@@ -529,12 +529,62 @@ static void fault_daemon_config(Machine *m, Rng *r, char *d, size_t ds)
     snprintf(d, ds, "removed %s, so the daemon that reads it will not start", path);
 }
 
+/* A config that EXISTS and does not say the one thing its daemon needs. The
+ * file is there, `pkg verify` flags it as changed among the usual config
+ * drift, and the service starts, reads it, and gives up -- over and over,
+ * until the system stops trying.
+ *
+ * Aimed at the critical daemons on purpose: a non-critical service dying in
+ * a respawn loop leaves the machine UP, which is a real and nastier ticket
+ * ("it boots, the firewall is just not running") and one the breaker cannot
+ * currently express, because a ticket here means a machine that will not
+ * boot. Noted in the catalogue as its own item. */
+static void fault_daemon_directive(Machine *m, Rng *r, char *d, size_t ds)
+{
+    static const struct { const char *path, *key; } C[] = {
+        { "/etc/net/interfaces",                "iface" },
+        { "/etc/udev/rules.d/50-default.rules", "SUBSYSTEM" },
+        { "/etc/syslog.conf",                   "*.info" },
+        { "/etc/nftables.conf",                 "table" },
+    };
+    int i = (int)(rng_next(r) % 4);
+    VNode *n = vfs_lookup(&m->disk, C[i].path);
+    if (!n || n->kind != VN_FILE) return;
+
+    /* Comment the line out, which is what a person does and what a
+     * half-finished edit leaves behind. */
+    Buf out = {0};
+    const char *p = n->data.p, *end = n->data.p + n->data.len;
+    size_t klen = strlen(C[i].key);
+    bool hit = false;
+    while (p && p < end) {
+        const char *nl = memchr(p, '\n', (size_t)(end - p));
+        size_t len = nl ? (size_t)(nl - p) : (size_t)(end - p);
+        const char *t = p; size_t tl = len;
+        while (tl && (*t == ' ' || *t == '\t')) { t++; tl--; }
+        if (!hit && tl >= klen && strncmp(t, C[i].key, klen) == 0) {
+            buf_puts(&out, "# ");
+            hit = true;
+        }
+        buf_put(&out, p, len);
+        buf_putc(&out, '\n');
+        p = nl ? nl + 1 : NULL;
+    }
+    if (hit) {
+        buf_clear(&n->data);
+        buf_put(&n->data, out.p, out.len);
+        snprintf(d, ds, "commented out the %s line in %s", C[i].key, C[i].path);
+    }
+    buf_free(&out);
+}
+
 typedef void (*StructuralFault)(Machine *, Rng *, char *, size_t);
 static const StructuralFault STRUCTURAL[] = {
     fault_bootsector, fault_stray_unit, fault_wrong_uuid, fault_missing_module,
     fault_bad_libc, fault_wrong_arch, fault_ldsoconf,
     fault_bad_shell, fault_no_root, fault_unclean_shutdown,
     fault_wrong_channel, fault_fstab, fault_daemon_config,
+    fault_daemon_directive,
 };
 #define NSTRUCT ((int)(sizeof STRUCTURAL / sizeof STRUCTURAL[0]))
 
