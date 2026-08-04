@@ -35,6 +35,11 @@ bool llm_ask(const char *system_brief, const char *question,
  * outlive the machine's actual state. */
 bool llm_ask_hist(const char *system_brief, const char **hist, int nhist,
                   const char *question, char *out, size_t outsz);
+/* Same, but allowed to run longer. The customer answers in one or two
+ * sentences; the engineer who wrote the runbook needs a paragraph, and
+ * cutting her off mid-sentence made her look broken rather than terse. */
+bool llm_ask_long(const char *system_brief, const char **hist, int nhist,
+                  const char *question, char *out, size_t outsz);
 }
 
 namespace {
@@ -70,6 +75,10 @@ std::string piece(llama_token tok)
 }
 
 } // namespace
+
+static bool llm_ask_n(const char *system_brief, const char **hist, int nhist,
+                      const char *question, char *out, size_t outsz,
+                      int maxtok, int maxstops);
 
 bool llm_available(void) { return g_model != nullptr && g_ctx != nullptr; }
 
@@ -126,6 +135,19 @@ bool llm_ask(const char *system_brief, const char *question,
 bool llm_ask_hist(const char *system_brief, const char **hist, int nhist,
                   const char *question, char *out, size_t outsz)
 {
+    return llm_ask_n(system_brief, hist, nhist, question, out, outsz, MAX_REPLY, 2);
+}
+
+bool llm_ask_long(const char *system_brief, const char **hist, int nhist,
+                  const char *question, char *out, size_t outsz)
+{
+    return llm_ask_n(system_brief, hist, nhist, question, out, outsz, 220, 6);
+}
+
+static bool llm_ask_n(const char *system_brief, const char **hist, int nhist,
+                      const char *question, char *out, size_t outsz,
+                      int maxtok, int maxstops)
+{
     const char *forbidden = "";
     if (!llm_available() || !out || outsz < 2) return false;
     out[0] = '\0';
@@ -155,7 +177,7 @@ bool llm_ask_hist(const char *system_brief, const char **hist, int nhist,
     std::string prompt(promptbuf.data(), (size_t)plen);
 
     auto toks = tokenize(prompt, true);
-    if (toks.empty() || (int)toks.size() >= CTX_TOKENS - MAX_REPLY) return false;
+    if (toks.empty() || (int)toks.size() >= CTX_TOKENS - maxtok) return false;
 
     /* Fresh state every question: a support call is short and the brief
      * carries the context, so there is nothing worth keeping between turns
@@ -173,7 +195,7 @@ bool llm_ask_hist(const char *system_brief, const char **hist, int nhist,
 
     const llama_vocab *vocab = llama_model_get_vocab(g_model);
     std::string reply;
-    for (int i = 0; i < MAX_REPLY; i++) {
+    for (int i = 0; i < maxtok; i++) {
         llama_token tok = llama_sampler_sample(chain, g_ctx, -1);
         if (llama_vocab_is_eog(vocab, tok)) break;
         reply += piece(tok);
@@ -182,7 +204,7 @@ bool llm_ask_hist(const char *system_brief, const char **hist, int nhist,
         if (reply.size() > 40) {
             size_t stops = 0;
             for (char ch : reply) if (ch == '.' || ch == '!' || ch == '?') stops++;
-            if (stops >= 2) break;
+            if (stops >= (size_t)maxstops) break;
         }
         llama_batch nb = llama_batch_get_one(&tok, 1);
         if (llama_decode(g_ctx, nb) != 0) break;

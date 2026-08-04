@@ -183,6 +183,12 @@ typedef struct {
         char hq[CUST_TURNS][200];   /* what the technician asked */
         char ha[CUST_TURNS][240];   /* what the customer said    */
         int  nturns;
+        /* The other two people you can talk to. Separate transcripts,
+         * because they are separate conversations with separate knowledge. */
+        char cq[CUST_TURNS][200], ca[CUST_TURNS][280];   /* the coworker */
+        int  ncow;
+        char mq[CUST_TURNS][200], ma[CUST_TURNS][320];   /* the manager  */
+        int  nmgr;
     } cust;
 
     /* Daemons. A service that starts does not run to completion: it runs
@@ -216,6 +222,10 @@ void machine_boot_rescue(Machine *m);
  * is exactly the brief an LLM backend would receive. */
 void customer_brief(Machine *m, const char *what);
 void customer_ask(Machine *m, const char *question, Buf *out);
+/* The customer's name. Bound to the persona, so a name is a person. */
+const char *customer_name(const Machine *m);
+/* The colleague and the boss. `who` is "coworker" or "manager". */
+void colleague_ask(Machine *m, const char *who, const char *question, Buf *out);
 void customer_intro(Machine *m, Buf *out);
 /* Which local configuration decisions no longer survive. Returns how many. */
 int machine_collateral(Machine *m, Buf *out);

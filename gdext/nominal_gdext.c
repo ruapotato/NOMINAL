@@ -76,6 +76,36 @@ static void c_to_gdstring(void *dest, const char *s)
 }
 
 /* ------------------------------------------------------------- the class */
+/* THE MODEL, LOADED ONCE FOR THE WHOLE GAME.
+ *
+ * The weights ship as game data. Loading is best-effort and silent: if the
+ * file is missing, or the build has no llama in it, llm_available() stays
+ * false and customer.c falls back to the scripted persona -- which is the
+ * D20 contract, "the player never sees a hang".
+ *
+ * The path is relative to where Godot was started, which for a played build
+ * is the project directory. NOM_MODEL overrides it. */
+#ifdef NOM_LLM
+bool llm_load(const char *path);
+static void nominal_load_model(void)
+{
+    static bool tried = false;
+    if (tried) return;
+    tried = true;
+    const char *env = getenv("NOM_MODEL");
+    if (env && *env) { llm_load(env); return; }
+    static const char *TRY[] = {
+        "game/models/Qwen2.5-3B-Instruct-Q4_K_M.gguf",
+        "models/Qwen2.5-3B-Instruct-Q4_K_M.gguf",
+        "../models/Qwen2.5-3B-Instruct-Q4_K_M.gguf",
+        NULL
+    };
+    for (int i = 0; TRY[i]; i++) if (llm_load(TRY[i])) return;
+}
+#else
+static void nominal_load_model(void) { }
+#endif
+
 /* One Godot object == one customer machine: a disk, a package database and a
  * boot chain that really runs the programs on that disk. */
 typedef struct {
@@ -93,6 +123,7 @@ static GDExtensionObjectPtr station_create(void *userdata,
     GDExtensionObjectPtr obj = classdb_construct(&sn_parent);
     Station *st = nom_alloc(sizeof(Station));
     memset(st, 0, sizeof *st);
+    nominal_load_model();     /* once, before anyone can ask a question */
     machine_install(&st->m, 1);
     st->installed = true;
     buf_init(&st->scratch);

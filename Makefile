@@ -167,9 +167,30 @@ GDEXT_OUT = game/bin/libnominal.linux.x86_64.so
 
 gdext: $(GDEXT_OUT)
 
+# THE GAME'S OWN BINARY SHIPS THE MODEL. It did not, and that is why the
+# customer in the Godot build answered every question -- "hi", "what do you
+# see", "poop" -- with the same "I'm not sure what you're asking me". Without
+# NOM_LLM, llm_available() is false and the scripted persona answers
+# everything, and the scripted persona has no reply for an unrecognised topic.
+# The whole of D20 was invisible to anyone actually playing the game.
+#
+# Linked whenever the vendored llama build is present, which on a checkout
+# meant for playing it always is.
+GDEXT_LLM = $(wildcard $(LLAMA_BUILD)/src/libllama.a)
+
+ifeq ($(GDEXT_LLM),)
 $(GDEXT_OUT): $(BF_SRC_LIB) gdext/nominal_gdext.c | build
 	@mkdir -p game/bin
+	@echo "gdext: NO MODEL (vendor/llama.cpp not built) -- scripted persona only"
 	$(CC) $(CFLAGS) -Igdext -fPIC -shared $(BF_SRC_LIB) gdext/nominal_gdext.c -o $@
+else
+$(GDEXT_OUT): $(BF_SRC_LIB) gdext/nominal_gdext.c core/llm.cpp | build
+	@mkdir -p game/bin
+	$(CXX) $(CFLAGS) -DNOM_LLM -Igdext -I$(LLAMA_DIR)/include \
+	  -I$(LLAMA_DIR)/ggml/include -fPIC -shared \
+	  -x c $(BF_SRC_LIB) gdext/nominal_gdext.c -x c++ core/llm.cpp \
+	  -o $@ $(LLAMA_LIBS) -fopenmp -lstdc++ -lm -lpthread -ldl
+endif
 
 # ------------------------------------------------------------------ Windows
 # Cross-compiled with mingw-w64. KICKOFF requires exporting to Linux AND

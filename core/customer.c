@@ -38,6 +38,125 @@
  * deliberate: personality must not make a ticket harder or easier, only
  * different.
  */
+/* A NAME PER PERSONA, and the pairing never moves.
+ *
+ * David: "The personas should all be tied to names so that if you get a
+ * particular name, the persona's the same. That way you can kind of strike in
+ * a feeling of I really don't like customer X or customer Y is really
+ * pleasant."
+ *
+ * That only works if the binding is stable, so the arrays are parallel and
+ * index i is always the same person: Marcus is always in a hurry, Eileen is
+ * always apologetic. Over a few dozen tickets you start to recognise them
+ * before they have finished their first sentence, which is exactly how it
+ * feels to work a support queue.
+ */
+static const char *CUSTNAME[] = {
+  "Dana",
+  "Marcus",
+  "Priya",
+  "Eileen",
+  "Tomasz",
+  "Nadia",
+  "Colin",
+  "Beatriz",
+  "Ravi",
+  "Hilde",
+  "Otto",
+  "Saoirse",
+  "Gareth",
+  "Anouk",
+  "Yusuf",
+  "Marta",
+  "Declan",
+  "Ingrid",
+  "Femi",
+  "Lucia",
+  "Bjorn",
+  "Rosa",
+  "Malik",
+  "Greta",
+  "Sanjay",
+  "Elke",
+  "Rory",
+  "Chiara",
+  "Idris",
+  "Annika",
+  "Pavel",
+  "Noor",
+  "Duncan",
+  "Sofia",
+  "Kwame",
+  "Lena",
+  "Angus",
+  "Valentina",
+  "Tariq",
+  "Karin",
+  "Emeka",
+  "Milena",
+  "Fergus",
+  "Aiko",
+  "Hassan",
+  "Bridget",
+  "Nikolai",
+  "Camila",
+  "Ade",
+  "Solveig",
+  "Rhys",
+  "Zofia",
+  "Kofi",
+  "Marion",
+  "Vikram",
+  "Astrid",
+  "Callum",
+  "Renata",
+  "Bilal",
+  "Ilse",
+  "Eamon",
+  "Paloma",
+  "Ismail",
+  "Ulrike",
+  "Niamh",
+  "Dmitri",
+  "Aisha",
+  "Struan",
+  "Carmen",
+  "Levi",
+  "Freya",
+  "Osman",
+  "Roisin",
+  "Piotr",
+  "Yara",
+  "Hamish",
+  "Ines",
+  "Zaid",
+  "Britta",
+  "Tadhg",
+  "Luz",
+  "Arjun",
+  "Signe",
+  "Padraig",
+  "Ewa",
+  "Nabil",
+  "Fiona",
+  "Andrei",
+  "Rania",
+  "Iona",
+  "Sami",
+  "Verena",
+  "Cormac",
+  "Delphine",
+  "Emre",
+  "Maeve",
+  "Janusz",
+  "Adaeze",
+  "Ruaridh",
+  "Katja",
+  "Faisal",
+  "Lorna",
+  "Bo",
+};
+
 static const char *PERSONA[] = {
   "grumpy, and you would rather be using Windows; you say so",
   "cheerful and chatty, and you wander off the subject",
@@ -358,12 +477,17 @@ bool llm_ask(const char *system_brief, const char *question,
              const char *forbidden, char *out, size_t outsz);
 bool llm_ask_hist(const char *system_brief, const char **hist, int nhist,
                   const char *question, char *out, size_t outsz);
+bool llm_ask_long(const char *system_brief, const char **hist, int nhist,
+                  const char *question, char *out, size_t outsz);
 #else
 static bool llm_available(void) { return false; }
 static bool llm_ask(const char *a, const char *b, const char *c,
                     char *d, size_t e)
 { (void)a; (void)b; (void)c; (void)d; (void)e; return false; }
 static bool llm_ask_hist(const char *a, const char **b, int c,
+                         const char *d, char *e, size_t f)
+{ (void)a; (void)b; (void)c; (void)d; (void)e; (void)f; return false; }
+static bool llm_ask_long(const char *a, const char **b, int c,
                          const char *d, char *e, size_t f)
 { (void)a; (void)b; (void)c; (void)d; (void)e; (void)f; return false; }
 #endif
@@ -453,7 +577,7 @@ static void build_brief(Machine *m, Cause c, bool earned, char *out, size_t outs
      * point -- it is the shape of every real first report. */
 
     snprintf(out, outsz,
-        "You are Dana, an office worker. Your work computer is not working "
+        "You are %s, an office worker. Your work computer is not working "
         "properly and you have called IT support. You are not technical: you "
         "do not know words like kernel, package, filesystem or boot loader, "
         "and you would not use them.\n"
@@ -488,6 +612,7 @@ static void build_brief(Machine *m, Cause c, bool earned, char *out, size_t outs
         "Q: Have you moved the machine recently?\n"
         "A: No, it has been under the same desk for years.\n"
         "%s",
+        CUSTNAME[m ? m->cust.persona % NPERSONA : 0],
         PERSONA[m ? m->cust.persona % NPERSONA : 0], DID[c], saw_of(m),
         /* Social reluctance, not an information hazard. People do not lead
          * with the thing they think they will be blamed for -- but if it
@@ -512,6 +637,151 @@ static void build_brief(Machine *m, Cause c, bool earned, char *out, size_t outs
             : "You would rather not bring up what you did unless you are "
               "asked about it directly. If they ask a general question, just "
               "say nothing has changed as far as you know.");
+}
+
+/* Who is on the phone. Stable for a given persona, so the same name is
+ * always the same person. */
+const char *customer_name(const Machine *m)
+{
+    return CUSTNAME[m ? m->cust.persona % NPERSONA : 0];
+}
+
+
+/* ------------------------------------------------------- the other two --
+ *
+ * David wants a chat app with three contacts, not one: the customer, a
+ * COWORKER who knows only what you tell them, and a MANAGER who has the whole
+ * architecture and is the most knowledgeable thing you can talk to.
+ *
+ * The three differ in exactly one thing, and it is the interesting thing:
+ * WHAT THEY ARE TOLD.
+ *
+ *   customer  what a non-technical person at the machine can see. Never the
+ *             fault, never a path -- D21, and it is why nothing can leak.
+ *   coworker  nothing at all about this machine. They are a competent
+ *             technician on the next desk who has not seen it, so they can
+ *             only reason about what YOU describe. Useful for exactly the
+ *             thing a colleague is useful for: you explain it out loud and
+ *             they ask the obvious question you skipped.
+ *   manager   how the SYSTEM works -- the boot chain, the tools, where things
+ *             live. Not what is wrong with this machine. They are the person
+ *             who wrote the runbook, not the person looking at the box.
+ *
+ * The manager knowing the architecture and not the answer is the whole
+ * design. Give them the fault and the game is over; give them the shape of
+ * the system and they are a senior colleague worth asking.
+ */
+static const char *COWORKER_BRIEF =
+"You are Sam, a support technician at the next desk. You are competent, "
+"friendly, and slightly overworked.\n"
+"\n"
+"CRITICAL: you have NOT seen this machine. You have no access to it, no logs "
+"from it, and no idea what the fault is. You know ONLY what your colleague "
+"has just told you in this conversation.\n"
+"\n"
+"So: reason out loud about what they describe, ask the obvious question they "
+"might have skipped, suggest what you would check next. If they have not told "
+"you enough, say so and ask for the specific thing you would need -- what the "
+"boot log said, what `pkg verify` printed, which service is down.\n"
+"\n"
+"Never invent a detail about their machine. If you catch yourself about to "
+"say what the fault is, stop and ask them for evidence instead.\n"
+"\n"
+"Two or three sentences. Talk like a colleague, not a manual.\n";
+
+static const char *MANAGER_BRIEF =
+"You are Rebecca, the senior engineer who wrote this system's runbook. Your "
+"colleague is working a break-fix ticket and has come to you for advice.\n"
+"\n"
+"YOU KNOW HOW THE SYSTEM WORKS. You do NOT know what is wrong with their "
+"particular machine -- you have not seen it. Explain the architecture, tell "
+"them where to look, tell them which tool answers which question.\n"
+"\n"
+"THE MACHINE, as you know it:\n"
+"- It is NomnixOS on a small rv64 box. Boot order: firmware (zbios) -> boot "
+"loader (zbl, config /boot/zbl/zbl.cfg) -> kernel /boot/vmnomuz (a SYMLINK to "
+"the versioned image) -> initrd, which finds the root by UUID and mounts it "
+"-> /sbin/init -> /bin/rc /etc/rc.boot -> /sbin/mountall reads /etc/fstab -> "
+"/etc/rc.d/rc.3 -> /sbin/svcinit starts the units in /etc/services.d -> "
+"/sbin/getty and login.\n"
+"- Services are .svc unit files: name, exec, enabled, runlevel, after, "
+"critical, restart. `svc` lists them, `svc status <name>` says why one is "
+"unhappy, `svc disable <name>` turns one off.\n"
+"- Everything is packaged. `pkg verify` compares files to what the package "
+"shipped, `pkg owns <path>` says who owns a file, `pkg diff <path>` shows "
+"what changed, `pkg reinstall` restores but LEAVES edited config alone unless "
+"you add --force (which writes a .pkgsave first). `pkg --root /mnt` works on "
+"a mounted disk without chrooting -- essential when the disk's own libc is "
+"broken.\n"
+"- Binaries declare the libraries and versions they need; `ldd` shows them, "
+"resolved through /etc/ld.so.conf. A newer library satisfies an older "
+"requirement; an older one does not.\n"
+"- The boot log is /var/log/boot.log, previous boot /var/log/boot.log.1, read "
+"with `dmesg` (and `dmesg -r /mnt` from the rescue medium). READ IT FIRST: it "
+"tells you which layer failed.\n"
+"- A filesystem runs out of bytes and inodes independently: `df` and `df -i`.\n"
+"- The rescue medium is /dev/sr0 and is never damaged. `rescue`, then "
+"`mount /dev/sda1 /mnt`.\n"
+"\n"
+"Answer the question they actually asked, concretely, naming the command you "
+"would run. Three or four sentences at most. If they have not said enough for "
+"you to be useful, tell them what to go and look at.\n";
+
+/* Ask somebody who is not the customer. `who` is "coworker" or "manager". */
+void colleague_ask(Machine *m, const char *who, const char *question, Buf *out)
+{
+    bool boss = who && who[0] == 'm';
+    const char *name = boss ? "Rebecca" : "Sam";
+
+    if (llm_available()) {
+        char reply[600];
+        int n = boss ? m->cust.nmgr : m->cust.ncow;
+        const char *hist[CUST_TURNS * 2];
+        int nh = n < CUST_TURNS ? n : CUST_TURNS;
+        for (int i = 0; i < nh; i++) {
+            hist[i * 2]     = boss ? m->cust.mq[i] : m->cust.cq[i];
+            hist[i * 2 + 1] = boss ? m->cust.ma[i] : m->cust.ca[i];
+        }
+        /* The manager is allowed a paragraph; the colleague stays brief. */
+        bool got = boss
+            ? llm_ask_long(MANAGER_BRIEF, hist, nh, question, reply, sizeof reply)
+            : llm_ask_hist(COWORKER_BRIEF, hist, nh, question, reply, sizeof reply);
+        if (got && reply[0]) {
+            if (n >= CUST_TURNS) {
+                for (int i = 1; i < CUST_TURNS; i++) {
+                    if (boss) {
+                        snprintf(m->cust.mq[i-1], sizeof m->cust.mq[0], "%s", m->cust.mq[i]);
+                        snprintf(m->cust.ma[i-1], sizeof m->cust.ma[0], "%s", m->cust.ma[i]);
+                    } else {
+                        snprintf(m->cust.cq[i-1], sizeof m->cust.cq[0], "%s", m->cust.cq[i]);
+                        snprintf(m->cust.ca[i-1], sizeof m->cust.ca[0], "%s", m->cust.ca[i]);
+                    }
+                }
+                n = CUST_TURNS - 1;
+            }
+            if (boss) {
+                snprintf(m->cust.mq[n], sizeof m->cust.mq[0], "%s", question);
+                snprintf(m->cust.ma[n], sizeof m->cust.ma[0], "%s", reply);
+                m->cust.nmgr = n + 1;
+            } else {
+                snprintf(m->cust.cq[n], sizeof m->cust.cq[0], "%s", question);
+                snprintf(m->cust.ca[n], sizeof m->cust.ca[0], "%s", reply);
+                m->cust.ncow = n + 1;
+            }
+            buf_printf(out, "  %s: \"%s\"\n", name, reply);
+            return;
+        }
+    }
+
+    /* No model: say so plainly rather than inventing advice. */
+    if (boss)
+        buf_printf(out, "  %s: \"Read the boot log first -- `dmesg`, or "
+                        "`dmesg -r /mnt` from the rescue medium. It tells you "
+                        "which layer failed, and that decides which package to "
+                        "suspect.\"\n", name);
+    else
+        buf_printf(out, "  %s: \"I have not seen it. What did the boot log "
+                        "say?\"\n", name);
 }
 
 void customer_ask(Machine *m, const char *question, Buf *out)

@@ -198,6 +198,22 @@ static bool client_line(Client *c)
         return true;
     }
 
+    /* Three people, not one. */
+    if (strncmp(cmd, "sam ", 4) == 0 || strncmp(cmd, "ask sam ", 8) == 0) {
+        Buf o = {0};
+        colleague_ask(&c->m, "coworker", cmd + (cmd[0] == 's' ? 4 : 8), &o);
+        if (o.len) send_all(c->fd, o.p, o.len);
+        buf_free(&o);
+        return true;
+    }
+    if (strncmp(cmd, "boss ", 5) == 0 || strncmp(cmd, "ask boss ", 9) == 0) {
+        Buf o = {0};
+        colleague_ask(&c->m, "manager", cmd + (cmd[0] == 'b' ? 5 : 9), &o);
+        if (o.len) send_all(c->fd, o.p, o.len);
+        buf_free(&o);
+        return true;
+    }
+
     if (strcmp(cmd, "help") == 0) {
         send_str(c->fd,
             "you are at a rescue shell with the customer's disk mounted.\n"
@@ -205,6 +221,15 @@ static bool client_line(Client *c)
             "  boot              try to boot the customer's disk\n"
             "  rescue            boot the rescue medium -- this always works\n"
             "  ticket [seed] [n] take a new ticket (n = how many faults)\n"
+            "  sam <question>    a technician at the next desk. They have NOT\n"
+            "                    seen this machine and know only what you tell\n"
+            "                    them -- useful for exactly what a colleague is\n"
+            "                    useful for: say it out loud and they ask the\n"
+            "                    obvious question you skipped\n"
+            "  boss <question>   the engineer who wrote the runbook. Knows how\n"
+            "                    the whole system works -- boot order, tools,\n"
+            "                    where things live -- but has not seen your\n"
+            "                    machine either. Ask about the SYSTEM\n"
             "  ask <question>    talk to the customer. They are not technical\n"
             "                    and they are the only pair of hands in the\n"
             "                    room. Try: what do you see on the screen /\n"

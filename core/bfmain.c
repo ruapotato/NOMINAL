@@ -325,6 +325,22 @@ int main(int argc, char **argv)
                        "anything else runs on the machine; try `help` there too\n");
                 continue;
             }
+            /* Three people. Same routing as the socket, so the two front
+             * ends cannot offer different games. */
+            if (strncmp(line, "sam ", 4) == 0) {
+                Buf a = {0};
+                colleague_ask(&m, "coworker", line + 4, &a);
+                fwrite(a.p, 1, a.len, stdout);
+                buf_free(&a);
+                continue;
+            }
+            if (strncmp(line, "boss ", 5) == 0) {
+                Buf a = {0};
+                colleague_ask(&m, "manager", line + 5, &a);
+                fwrite(a.p, 1, a.len, stdout);
+                buf_free(&a);
+                continue;
+            }
             if (strncmp(line, "ask", 3) == 0 && (line[3] == ' ' || !line[3])) {
                 Buf a = {0};
                 customer_ask(&m, line[3] ? line + 4 : "", &a);

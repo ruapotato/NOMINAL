@@ -1,12 +1,14 @@
-game/bin/libnominal.linux.x86_64.so: gdext/nominal_gdext.c \
- gdext/gdextension_interface.h core/nom.h core/parts.h core/sim.h \
- core/station.h core/cpu.h core/machine.h core/ns.h core/kernel.h
-gdext/gdextension_interface.h:
-core/nom.h:
-core/parts.h:
-core/sim.h:
-core/station.h:
-core/cpu.h:
-core/machine.h:
-core/ns.h:
-core/kernel.h:
+game/bin/libnominal.linux.x86_64.so: core/llm.cpp \
+ vendor/llama.cpp/include/llama.h vendor/llama.cpp/ggml/include/ggml.h \
+ vendor/llama.cpp/ggml/include/ggml-cpu.h \
+ vendor/llama.cpp/ggml/include/ggml-backend.h \
+ vendor/llama.cpp/ggml/include/ggml-alloc.h \
+ vendor/llama.cpp/ggml/include/ggml-opt.h \
+ vendor/llama.cpp/ggml/include/gguf.h
+vendor/llama.cpp/include/llama.h:
+vendor/llama.cpp/ggml/include/ggml.h:
+vendor/llama.cpp/ggml/include/ggml-cpu.h:
+vendor/llama.cpp/ggml/include/ggml-backend.h:
+vendor/llama.cpp/ggml/include/ggml-alloc.h:
+vendor/llama.cpp/ggml/include/ggml-opt.h:
+vendor/llama.cpp/ggml/include/gguf.h:
