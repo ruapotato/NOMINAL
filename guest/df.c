@@ -6,8 +6,35 @@
  */
 #include "gsys.h"
 static char t[2048];
+static char arg[128];
 void _start(void)
 {
+    /* -i: INODES, not bytes. A filesystem runs out of the two independently,
+     * and the second one is the confusing one -- plenty of space, every write
+     * refused, nothing corrupt. Nothing but this will tell you. */
+    g_getarg(arg, sizeof arg);
+    char *v[GARGS];
+    int n0 = g_argv(arg, v);
+    int inodes = 0;
+    for (int i = 0; i < n0; i++) if (g_streq(v[i], "-i")) inodes = 1;
+
+    if (inodes) {
+        i64 iu = sysc(SYS_dfused, 2, 0, 0);
+        i64 ic = sysc(SYS_dfused, 3, 0, 0);
+        g_putln("FILESYSTEM      INODES     IUSED     IFREE  IUSE%");
+        g_puts("/dev/sda1     ");
+        g_putn(ic); g_puts("      ");
+        g_putn(iu); g_puts("      ");
+        g_putn(ic - iu); g_puts("      ");
+        g_putn(ic ? (iu * 100 / ic) : 0);
+        g_putln("%");
+        if (ic && iu >= ic)
+            g_putln("\nno free inodes: nothing can create a file, however much\n"
+                    "space `df` says is left. Something has made a very large\n"
+                    "number of files somewhere.");
+        g_exit(0);
+    }
+
     i64 used = sysc(SYS_dfused, 0, 0, 0);
     i64 cap  = sysc(SYS_dfused, 1, 0, 0);
     if (cap > 0) {

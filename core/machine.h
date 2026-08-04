@@ -115,6 +115,9 @@ typedef struct {
      * that grows was not a fault and could not become one -- and "the disk
      * filled up" is one of the commonest real causes there is. */
     uint64_t fs_capacity;
+    /* The other thing a filesystem runs out of. Space and inodes are
+     * independent, and exhausting the second is much harder to see. */
+    uint64_t fs_inodes_max;
     bool  fs_dirty;
     int   fs_lost;           /* files fsck could not save                   */
     /* Which repository channel `pkg` pulls from. Read off the disk at
@@ -228,6 +231,7 @@ int  machine_fsck(Machine *m, const char *dev, Buf *out);
 void machine_read_channel(Machine *m);
 /* Bytes in use on the customer's disk, counted from the tree. */
 uint64_t machine_disk_used(const Machine *m);
+uint64_t machine_inodes_used(const Machine *m);
 
 /* Start a program as a long-lived service. Returns 0 if it is now running,
  * or a negative SPAWN_* if it could not be started at all. */

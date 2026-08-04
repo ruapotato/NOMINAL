@@ -911,6 +911,43 @@ static void fault_dep_disabled(Machine *m, Rng *r, char *d, size_t ds)
                              "ordered after", hub);
 }
 
+/* Inodes exhausted, with space to spare.
+ *
+ * A DIFFERENT DIAGNOSIS FROM A FULL DISK, and that is the whole reason it is
+ * here. `df` reports plenty of room, every hash matches, `pkg verify` says
+ * the machine is perfect -- and nothing can create a file. The only tool that
+ * answers it is `df -i`, and a player who has only ever seen a full disk will
+ * go round the houses first.
+ *
+ * The cause is the one it always is in real life: something that makes a file
+ * per run and never cleans up. A per-minute cron job that has been running
+ * since March leaves a quarter of a million of them, and the directory it
+ * filled is the evidence. */
+static void fault_inodes(Machine *m, Rng *r, char *d, size_t ds)
+{
+    static const char *WHERE[] = {
+        "/var/spool/cron", "/var/cache", "/tmp",
+    };
+    const char *dir = WHERE[rng_next(r) % 3];
+    VNode *dn = vfs_lookup(&m->disk, dir);
+    if (!dn || dn->kind != VN_DIR) return;
+
+    /* Empty files: this must exhaust INODES without touching the byte
+     * budget, or it is just a full disk wearing a hat. */
+    uint64_t room = m->fs_inodes_max > machine_inodes_used(m)
+                  ? m->fs_inodes_max - machine_inodes_used(m) : 0;
+    if (!room) return;
+    for (uint64_t i = 0; i < room; i++) {
+        char p2[NOM_PATH_MAX];
+        snprintf(p2, sizeof p2, "%s/job.%llu.tmp", dir, (unsigned long long)i);
+        VNode *n = vfs_mkfile(&m->disk, p2, "");
+        if (n) n->mode = 0644;
+    }
+    snprintf(d, ds, "left %llu stale files in %s: the filesystem is out of "
+                    "inodes with space to spare",
+             (unsigned long long)room, dir);
+}
+
 static void fault_missing_dir(Machine *m, Rng *r, char *d, size_t ds)
 {
     static const char *VICTIMS[] = {
@@ -982,6 +1019,7 @@ static const StructuralFault STRUCTURAL[] = {
     fault_daemon_directive, fault_disk_full, fault_bad_bind,
     fault_dir_mode, fault_root_ro, fault_bad_libz, fault_fstype,
     fault_missing_dir, fault_wellmeant, fault_dep_disabled,
+    fault_inodes,
 };
 #define NSTRUCT ((int)(sizeof STRUCTURAL / sizeof STRUCTURAL[0]))
 

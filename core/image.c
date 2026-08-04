@@ -1069,6 +1069,9 @@ void machine_install(Machine *m, uint64_t seed)
     install_pkgdb(m);
     install_local_edits(m, seed);
     m->fs_capacity = machine_disk_used(m) + 512u * 1024u;
+    /* Headroom in inodes as well as bytes, so a healthy machine can create
+     * files freely and a fault has to work to exhaust them. */
+    m->fs_inodes_max = machine_inodes_used(m) + 400u;
     install_rescue(m);
     m->next_pid = 1;
 }

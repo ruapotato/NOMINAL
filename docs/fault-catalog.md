@@ -106,7 +106,15 @@ Legend: **[done]** built · **[next]** in progress or immediately next ·
   the interesting one — what filled the disk is a log that has been growing
   quietly since March. The fix is not a package: it is `df`, then finding what
   is big, then deleting it.
-- **[todo]** inode exhaustion — space free, still cannot create a file.
+- **[done]** **inode exhaustion — space free, still cannot create a file.**
+  `fault_inodes`. A DIFFERENT DIAGNOSIS from a full disk, which is the whole
+  reason it exists: `df` reports plenty of room, every hash matches, verify
+  says the machine is perfect, and nothing can create a file. `df -i` is the
+  only tool that answers it. The cause is the one it always is in life --
+  something that writes a file per run and never tidies up.
+
+  A filesystem now has an inode budget as well as a byte budget, and they run
+  out independently.
 
 ## 5. fstab and mounts
 

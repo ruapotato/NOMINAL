@@ -175,6 +175,30 @@ int main(int argc, char **argv)
              * help: every file is exactly right, there is just nowhere to put
              * the next one. Truncating a log is always safe. */
             kernel_run(&m, "rm /var/log/messages", &o);
+
+            /* Nor is a filesystem out of INODES, and that one cannot be fixed
+             * by freeing bytes at all. Anything in a spool or cache directory
+             * that no package owns is scratch by definition -- which is a
+             * rule about what those directories ARE, not knowledge of the
+             * fault. */
+            {
+                static const char *SPOOL[] = {
+                    "/var/spool/cron", "/var/cache", "/tmp", NULL };
+                for (int s2 = 0; SPOOL[s2]; s2++) {
+                    VNode *d2 = vfs_resolve(&m.disk, SPOOL[s2], NULL);
+                    for (VNode *kid = d2 ? d2->child : NULL; kid; ) {
+                        VNode *next = kid->next;
+                        char full[NOM_PATH_MAX];
+                        snprintf(full, sizeof full, "%s/%s", SPOOL[s2], kid->name);
+                        if (kid->kind == VN_FILE && !pkg_owns(&m, full)) {
+                            char cmd[NOM_PATH_MAX + 8];
+                            snprintf(cmd, sizeof cmd, "rm %s", full);
+                            kernel_run(&m, cmd, &o);
+                        }
+                        kid = next;
+                    }
+                }
+            }
             kernel_run(&m, "mkinitrd", &o);
             kernel_run(&m, "zbl-mkconfig", &o);
             kernel_run(&m, "zbl-install /dev/sda", &o);

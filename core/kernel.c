@@ -341,6 +341,12 @@ static int64_t sys_open(Proc *p, Cpu *c, uint64_t pathp, int64_t flags)
             VNode *pd = vfs_lookup(fs, parent);
             if (!pd || pd->kind != VN_DIR) return -1;
         }
+        /* AND ARE THERE ANY INODES LEFT. A filesystem with free space and no
+         * free inodes refuses to create anything at all, which is the whole
+         * point of the fault: df says there is room. */
+        if (fs == &p->m->disk && p->m->fs_inodes_max &&
+            machine_inodes_used(p->m) >= p->m->fs_inodes_max)
+            return -1;
         n = vfs_mkfile(fs, path, "");
         if (!n) return -1;
     }
@@ -627,8 +633,13 @@ static int64_t kernel_syscall(Cpu *c, int64_t n, int64_t a0, int64_t a1,
         return r;
     }
     case SYS_dfused:
-        return a0 ? (int64_t)p->m->fs_capacity
-                  : (int64_t)machine_disk_used(p->m);
+        /* 0 bytes used, 1 bytes total, 2 inodes used, 3 inodes total */
+        switch ((int)a0) {
+        case 1:  return (int64_t)p->m->fs_capacity;
+        case 2:  return (int64_t)machine_inodes_used(p->m);
+        case 3:  return (int64_t)p->m->fs_inodes_max;
+        default: return (int64_t)machine_disk_used(p->m);
+        }
     case SYS_kill: {
         /* Leave the signal pending on the target. Nothing is interrupted --
          * there is no preemption here -- so a daemon sees it the next time it
@@ -1575,6 +1586,32 @@ uint64_t machine_disk_used(const Machine *m)
         }
     }
     return total;
+}
+
+/* How many INODES are in use.
+ *
+ * A filesystem runs out of two things independently, and running out of the
+ * second one is far more confusing than the first: `df` shows plenty of room,
+ * every write fails anyway, and nothing is corrupt. It is a genuinely
+ * different diagnosis from a full disk -- the tool that answers it is `df -i`
+ * and nothing else will tell you -- which is exactly the kind of variety this
+ * game needs more of.
+ *
+ * Directories count, as they do on a real filesystem. */
+uint64_t machine_inodes_used(const Machine *m)
+{
+    uint64_t n = 0;
+    VNode *stack[256];
+    int sp = 0;
+    if (m->disk.root) stack[sp++] = m->disk.root;
+    while (sp) {
+        VNode *d = stack[--sp];
+        for (VNode *k = d->child; k; k = k->next) {
+            n++;
+            if (k->kind == VN_DIR && sp < 256) stack[sp++] = k;
+        }
+    }
+    return n;
 }
 
 /* --------------------------------------------------------------- mount -- */
