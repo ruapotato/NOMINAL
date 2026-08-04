@@ -103,9 +103,9 @@ typedef struct {
     bool  fs_dirty;
     int   fs_lost;           /* files fsck could not save                   */
     /* Which repository channel `pkg` pulls from. Read off the disk at
-     * /etc/pkg/repos.d/*.repo, so pointing it at the wrong one is a
-     * configuration fault and the packages that arrive are genuinely
-     * different. */
+     * the .repo files under /etc/pkg/repos.d, so pointing it at the wrong
+     * one is a configuration fault and the packages that arrive are
+     * genuinely different. */
     char  channel[24];
     Mount mount[MOUNT_MAX];
     int   nmount;

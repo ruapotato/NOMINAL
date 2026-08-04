@@ -312,13 +312,14 @@ static const Package PKG_SHELL = {
       { "/bin/rm", NULL, 0755, NULL },
       { "/bin/touch", NULL, 0755, NULL },
       { "/bin/grep", NULL, 0755, NULL },
+      { "/bin/sed", NULL, 0755, NULL },
       { "/bin/head", NULL, 0755, NULL },
       { "/bin/uname", NULL, 0755, NULL },
       { "/bin/whoami", NULL, 0755, NULL },
       { "/bin/df", NULL, 0755, NULL },
       { "/bin/false", "#!false\n", 0755, NULL },
       { "/bin/true",  "#!true\n",  0755, NULL },
-    }, 25
+    }, 26
 };
 
 
@@ -619,21 +620,40 @@ static const Package PKG_RESCUE_BASE = {
 static const Package PKG_RESCUE_TOOLS = {
     "rescue-tools", "3.2", "the tools on the live medium",
     {
-      { "/bin/rc",      NULL, 0755, NULL },
-      { "/bin/sh",      NULL, 0755, NULL },
-      { "/bin/ls",      NULL, 0755, NULL },
-      { "/bin/cat",     NULL, 0755, NULL },
-      { "/bin/ps",      NULL, 0755, NULL },
-      { "/bin/ns",      NULL, 0755, NULL },
-      { "/bin/stat",    NULL, 0755, NULL },
-      { "/bin/chmod",   NULL, 0755, NULL },
-      { "/bin/mount",   NULL, 0755, NULL },
-      { "/bin/umount",  NULL, 0755, NULL },
-      { "/bin/chroot",  NULL, 0755, NULL },
-      { "/sbin/fsck",   NULL, 0755, NULL },
+      /* The live medium carries EVERY repair tool. It had been quietly
+       * missing most of them -- no grep, no sed, no cp, no mkinitrd --
+       * because three separate edits that meant to add them did not
+       * match, and nothing checked. A rescue disc without the tools is
+       * not a rescue disc. */
+      { "/bin/rc", NULL, 0755, NULL },
+      { "/bin/sh", NULL, 0755, NULL },
+      { "/bin/ls", NULL, 0755, NULL },
+      { "/bin/cat", NULL, 0755, NULL },
+      { "/bin/ps", NULL, 0755, NULL },
+      { "/bin/ns", NULL, 0755, NULL },
+      { "/bin/stat", NULL, 0755, NULL },
+      { "/bin/chmod", NULL, 0755, NULL },
+      { "/bin/mount", NULL, 0755, NULL },
+      { "/bin/umount", NULL, 0755, NULL },
+      { "/bin/chroot", NULL, 0755, NULL },
+      { "/bin/cp", NULL, 0755, NULL },
+      { "/bin/mv", NULL, 0755, NULL },
+      { "/bin/rm", NULL, 0755, NULL },
+      { "/bin/touch", NULL, 0755, NULL },
+      { "/bin/grep", NULL, 0755, NULL },
+      { "/bin/sed", NULL, 0755, NULL },
+      { "/bin/head", NULL, 0755, NULL },
+      { "/bin/uname", NULL, 0755, NULL },
+      { "/bin/whoami", NULL, 0755, NULL },
+      { "/bin/df", NULL, 0755, NULL },
+      { "/sbin/fsck", NULL, 0755, NULL },
       { "/usr/bin/pkg", NULL, 0755, NULL },
       { "/usr/bin/links", NULL, 0755, NULL },
-    }, 14
+      { "/usr/bin/man", NULL, 0755, NULL },
+      { "/usr/sbin/zbl-install", NULL, 0755, NULL },
+      { "/usr/sbin/zbl-mkconfig", NULL, 0755, NULL },
+      { "/usr/bin/mkinitrd", NULL, 0755, NULL },
+    }, 28
 };
 
 static const Package *RESCUE_IMAGE[] = { &PKG_RESCUE_BASE, &PKG_RESCUE_TOOLS };
@@ -724,6 +744,8 @@ void image_generated(const Machine *m, const char *path, Buf *out)
         buf_put(out, (const char *)GUEST_TOUCH, GUEST_TOUCH_LEN);
     else if (strcmp(path, "/bin/grep") == 0)
         buf_put(out, (const char *)GUEST_GREP, GUEST_GREP_LEN);
+    else if (strcmp(path, "/bin/sed") == 0)
+        buf_put(out, (const char *)GUEST_SED, GUEST_SED_LEN);
     else if (strcmp(path, "/bin/head") == 0)
         buf_put(out, (const char *)GUEST_HEAD, GUEST_HEAD_LEN);
     else if (strcmp(path, "/bin/uname") == 0)

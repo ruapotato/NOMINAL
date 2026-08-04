@@ -76,19 +76,55 @@ typedef enum {
     C_UPGRADED,    /* they ran an upgrade                    */
     C_CONFIGURED,  /* they edited a config                   */
     C_VENDOR,      /* somebody else installed something      */
+    C_POWERCUT,    /* it lost power while it was running     */
     C_INNOCENT,    /* genuinely nothing: it just stopped     */
 } Cause;
 
+/* Every fault the breaker can produce maps to something a PERSON would have
+ * noticed. This matters more than it looks: a playtester reported that the
+ * customer "never once volunteered a fact that helped me find the fault", and
+ * the reason was that most breaks fell through to C_INNOCENT -- a customer
+ * who genuinely knows nothing is realistic exactly once and useless after
+ * that. If a fault has no plausible human story, it should not be reaching
+ * this function; add one here rather than shrugging. */
 static Cause cause_of(const char *what)
 {
-    if (!what) return C_INNOCENT;
-    if (strstr(what, "deleted") || strstr(what, "removed") ||
-        strstr(what, "wiped")) return C_TIDIED;
-    if (strstr(what, "upgraded libc") || strstr(what, "wrong architecture"))
+    if (!what || !*what) return C_INNOCENT;
+
+    /* somebody else was on the machine */
+    if (strstr(what, "stray unit") || strstr(what, "vendor"))
+        return C_VENDOR;
+
+    /* an upgrade, in any of its forms */
+    if (strstr(what, "upgraded") || strstr(what, "upgrade") ||
+        strstr(what, "testing") || strstr(what, "architecture") ||
+        strstr(what, "libc"))
         return C_UPGRADED;
-    if (strstr(what, "stray unit")) return C_VENDOR;
+
+    /* the power went, and something was mid-write */
+    if (strstr(what, "unclean shutdown") || strstr(what, "dirty") ||
+        strstr(what, "boot sector"))
+        return C_POWERCUT;
+
+    /* they were in a config file */
     if (strstr(what, "ld.so.conf") || strstr(what, "uuid") ||
-        strstr(what, "typo") || strstr(what, "line")) return C_CONFIGURED;
+        strstr(what, "fstab") || strstr(what, "noauto") ||
+        strstr(what, "login shell") || strstr(what, "passwd") ||
+        strstr(what, "typo") || strstr(what, "line") ||
+        strstr(what, "repo") || strstr(what, "channel"))
+        return C_CONFIGURED;
+
+    /* they were tidying up */
+    if (strstr(what, "deleted") || strstr(what, "removed") ||
+        strstr(what, "wiped") || strstr(what, "truncated"))
+        return C_TIDIED;
+
+    /* corruption with no human cause: the honest answer is a power cut,
+     * because that is what actually corrupts a file on a real machine */
+    if (strstr(what, "corrupted") || strstr(what, "nulled") ||
+        strstr(what, "smashed"))
+        return C_POWERCUT;
+
     return C_INNOCENT;
 }
 
@@ -121,24 +157,35 @@ static const char *admission(Cause c)
     case C_VENDOR:
         return "...the monitoring people were on it last week. They said they\n"
                "  were installing an agent. I did not watch what they did.";
+    case C_POWERCUT:
+        return "...there was a power cut on Tuesday. It was on at the time.\n"
+               "  It came back up fine though, or I thought it did.";
     default:
         return "...no. Honestly, nothing. It was working when I left.";
     }
 }
 
 /* Which topic unlocks the admission. */
-static Topic key_topic(Cause c)
+/* Several questions can earn the admission, not one.
+ *
+ * A playtester asked "did you install anything?" on a ticket where a vendor
+ * had installed something, and was told no -- because the only unlocking
+ * topic was "has anyone else worked on this". That is not a customer being
+ * coy, that is a keyword table being brittle, and it is why the customer was
+ * reported as never once helping find a fault. */
+static bool unlocks(Cause c, Topic t)
 {
     switch (c) {
-    case C_TIDIED:     return T_DELETE;
-    case C_UPGRADED:   return T_UPGRADE;
-    case C_CONFIGURED: return T_WHATCHANGED;
-    case C_VENDOR:     return T_WHOELSE;
-    default:           return T_NONE;
+    case C_TIDIED:     return t == T_DELETE || t == T_DISK;
+    case C_UPGRADED:   return t == T_UPGRADE || t == T_WHATCHANGED;
+    case C_CONFIGURED: return t == T_WHATCHANGED || t == T_UPGRADE;
+    case C_VENDOR:     return t == T_WHOELSE || t == T_UPGRADE ||
+                              t == T_WHATCHANGED;
+    case C_POWERCUT:   return t == T_POWER || t == T_WHATCHANGED;
+    default:           return false;
     }
 }
 
-static Topic key_topic(Cause c);
 
 /* The model backend, if this build has one. Weak symbols so a build without
  * llama.cpp links and behaves exactly as before. */
@@ -164,10 +211,28 @@ static bool llm_ask(const char *a, const char *b, const char *c,
  * repair it. The machine holds the technical truth; the customer holds the
  * human story; the game is joining them up.
  */
+/* Would this customer bring it up on their own?
+ *
+ * People volunteer what was done TO them and go quiet about what they did
+ * themselves. A power cut is the building's fault and a contractor is
+ * somebody else's, so both come out in the first minute. Deleting files to
+ * free space is theirs, and that waits until asked.
+ *
+ * This is the difference between a customer who is atmosphere and one who is
+ * a source: the volunteered facts are real leads, offered early, for free. */
+static bool volunteers(Cause c)
+{
+    return c == C_POWERCUT || c == C_VENDOR;
+}
+
 static void build_brief(Cause c, bool earned, char *out, size_t outsz)
 {
     /* What they did, as they would describe it. */
     static const char *DID[] = {
+      [C_POWERCUT]   = "There was a power cut in the building on Tuesday "
+                       "afternoon. The machine was on at the time and it went "
+                       "off with everything else. It seemed fine when it came "
+                       "back, or you thought it was.",
       [C_TIDIED]     = "A while ago the computer kept saying it was low on "
                        "space, so you went through a folder and deleted some "
                        "old-looking files you did not think were needed. It "
@@ -187,6 +252,7 @@ static void build_brief(Cause c, bool earned, char *out, size_t outsz)
     /* What they saw. This is honest and useless as an answer, which is the
      * point -- it is the shape of every real first report. */
     static const char *SAW[] = {
+      [C_POWERCUT]   = "It was working yesterday. This morning it will not start.",
       [C_TIDIED]     = "It was working yesterday. This morning it will not start.",
       [C_UPGRADED]   = "It was working yesterday. This morning it will not start.",
       [C_CONFIGURED] = "It was working yesterday. This morning it will not start.",
@@ -218,19 +284,31 @@ static void build_brief(Cause c, bool earned, char *out, size_t outsz)
         "A: Oh, thank goodness. It will not turn on at all.\n"
         "Q: What do you see on the screen?\n"
         "A: Some white writing on a black background, then it stops.\n"
-        "Q: Have you installed anything recently?\n"
-        "A: Not that I know of.\n",
+        "%s",
         DID[c], SAW[c],
         /* Social reluctance, not an information hazard. People do not lead
          * with the thing they think they will be blamed for -- but if it
          * comes out early, that is a realistic customer having a good day and
          * it costs the puzzle nothing. */
+        /* An example of volunteering, for the customers who would. Showing it
+         * works and telling it does not -- the instruction alone produced
+         * "Yesterday." every time. */
+        volunteers(c)
+          ? "Q: When did it last work?\n"
+            "A: It was fine yesterday. We did have that power cut on Tuesday, "
+            "mind you.\n"
+          : "Q: Have you installed anything recently?\n"
+            "A: Not that I know of.\n",
         earned
           ? "The technician has asked you directly about this. Tell them what "
-            "you did. You are a little embarrassed about it."
-          : "You would rather not bring up what you did unless you are asked "
-            "about it directly. If they ask a general question, just say "
-            "nothing has changed as far as you know.");
+            "happened. You are a little embarrassed about it."
+          : volunteers(c)
+            ? "This was not your fault and you will happily mention it if the "
+              "conversation gives you any excuse -- especially if you are "
+              "asked when it last worked or what has been going on."
+            : "You would rather not bring up what you did unless you are "
+              "asked about it directly. If they ask a general question, just "
+              "say nothing has changed as far as you know.");
 }
 
 void customer_ask(Machine *m, const char *question, Buf *out)
@@ -249,7 +327,7 @@ void customer_ask(Machine *m, const char *question, Buf *out)
      * better than a spoiled ticket. */
     if (llm_available()) {
         char brief[1400], reply[512];
-        bool earned = (t == key_topic(c));
+        bool earned = unlocks(c, t);
         build_brief(c, earned, brief, sizeof brief);
         /* No forbidden list: D21 removed the reason for one. The customer
          * cannot give away an answer it was never told. */
@@ -280,13 +358,30 @@ void customer_ask(Machine *m, const char *question, Buf *out)
     case T_HELLO:
         buf_puts(out, "  \"Hello. Look, I really need this back today.\"\n");
         return;
-    case T_WHEN:
+    case T_WHEN: {
+        /* The timeline is the one thing every customer volunteers, and it is
+         * where a real lead belongs: not the cause, but WHEN and WHAT ELSE
+         * was going on. This is what makes talking to them worth the time. */
+        static const char *LEAD[] = {
+          [C_TIDIED]     = "  \"It had been complaining about space for weeks "
+                           "before that, mind.\"\n",
+          [C_UPGRADED]   = "  \"It did ask me about some updates on Friday, if "
+                           "that is any use.\"\n",
+          [C_CONFIGURED] = "  \"I was in and out of the settings last week for "
+                           "something else.\"\n",
+          [C_VENDOR]     = "  \"The only thing I can think of is those "
+                           "monitoring people were in on Tuesday.\"\n",
+          [C_POWERCUT]   = "  \"We did have that power cut on Tuesday, but it "
+                           "came back fine afterwards.\"\n",
+          [C_INNOCENT]   = "  \"Nothing happened at all. That is what is so "
+                           "annoying about it.\"\n",
+        };
         buf_puts(out, "  \"It was working yesterday. I shut it down normally\n"
                       "  last night and this morning it just... did not come\n"
                       "  back.\"\n");
-        if (c == C_TIDIED)
-            buf_puts(out, "  \"Well -- it had been up for weeks before that.\"\n");
+        buf_puts(out, LEAD[c]);
         return;
+    }
     case T_PASSWORD:
         if (m->cust.mood >= MOOD_OK) {
             buf_puts(out, "  \"Fine. It is on a sticky note here. hunter2.\n"
@@ -323,7 +418,7 @@ void customer_ask(Machine *m, const char *question, Buf *out)
 
     /* The right area. Whether they own up depends on how the conversation has
      * gone -- a wary customer deflects once and then tells you. */
-    if (t == key_topic(c)) {
+    if (unlocks(c, t)) {
         if (m->cust.mood == MOOD_WARY && !m->cust.deflected) {
             m->cust.deflected = true;
             m->cust.told[t] = 0;          /* they will answer it properly next time */

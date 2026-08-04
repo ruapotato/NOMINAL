@@ -227,7 +227,16 @@ void _start(void)
             }
             if (hit) { g_puts("  "); g_putln(name); found++; }
         }
-        if (!found) g_putln("no package owns that path");
+        if (!found) {
+            /* A playtester hit an orphan service four times and never worked
+             * out that nothing owning it was the CLUE. Say so. */
+            g_putln("no package owns that path");
+            g_putln("");
+            g_putln("nothing installed this file. If the system is trying to");
+            g_putln("use it, either it was dropped there by hand or by an");
+            g_putln("installer that is not managed here -- and removing it is");
+            g_putln("usually safe. `rm <path>` if you are sure.");
+        }
         else { g_puts("(packages owning files under "); g_puts(v[1]); g_putln(")"); }
         g_exit(found ? 0 : 1);
     }

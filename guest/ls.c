@@ -6,7 +6,16 @@ void _start(void)
     g_getarg(arg, sizeof arg);
     char *v[GARGS];
     int n = g_argv(arg, v);
-    const char *dir = n > 0 ? v[0] : ".";
+    /* Flags are accepted and ignored. This listing is already long-form, so
+     * -l is what you get either way -- but reporting "ls: -la: not found"
+     * reads as if the shell tried to run -la as a command, which confused a
+     * playtester who quite reasonably typed `ls -la`. */
+    const char *dir = ".";
+    for (int i = 0; i < n; i++) {
+        if (v[i][0] == '-' && v[i][1]) continue;
+        dir = v[i];
+        break;
+    }
 
     NomStat st;
     if (g_stat(dir, &st) != 0) { g_puts("ls: "); g_puts(dir); g_putln(": not found"); g_exit(1); }
