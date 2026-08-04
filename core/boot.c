@@ -15,6 +15,21 @@
 #include "nom.h"
 #include "machine.h"
 
+bool boot_userland(Machine *m, const char *initpath, Buf *console,
+                   char *err, size_t errsz);
+
+/* Did the console print this yet? Used only to say WHICH stage a failure
+ * happened in, which is an observation about the output, not a flag the
+ * runtime carries. */
+static bool buf_contains(const Buf *b, const char *needle)
+{
+    size_t nl = strlen(needle);
+    if (b->len < nl) return false;
+    for (size_t i = 0; i + nl <= b->len; i++)
+        if (memcmp(b->p + i, needle, nl) == 0) return true;
+    return false;
+}
+
 const char *boot_stage_name(BootStage s)
 {
     switch (s) {
@@ -154,49 +169,6 @@ static bool initrd_has_module(const Buf *b, const char *name)
         p = nl ? nl + 1 : NULL;
     }
     return false;
-}
-
-/* --- services ---------------------------------------------------------- */
-
-typedef struct {
-    char name[40];
-    char after[40];
-    char exec[NOM_PATH_MAX];
-    bool required;
-    bool started;
-} Unit;
-
-static int load_units(Machine *m, Unit *u, int max)
-{
-    Buf names = {0};
-    int n = 0;
-    if (vfs_list(&m->disk, "/etc/init", &names) == IO_OK) {
-        const char *p = names.p, *end = names.p + names.len;
-        while (p && p < end && n < max) {
-            const char *nl = memchr(p, '\n', (size_t)(end - p));
-            size_t len = nl ? (size_t)(nl - p) : (size_t)(end - p);
-            if (len > 8 && strncmp(p + len - 8, ".service", 8) == 0) {
-                char path[NOM_PATH_MAX];
-                snprintf(path, sizeof path, "/etc/init/%.*s", (int)len, p);
-                Buf body = {0};
-                if (slurp(m, path, &body, NULL, NULL, 0) == F_OK) {
-                    Unit *x = &u[n];
-                    memset(x, 0, sizeof *x);
-                    snprintf(x->name, sizeof x->name, "%.*s", (int)(len - 8), p);
-                    cfg_get(&body, "after", x->after, sizeof x->after);
-                    cfg_get(&body, "exec",  x->exec,  sizeof x->exec);
-                    char req[8] = "1";
-                    cfg_get(&body, "required", req, sizeof req);
-                    x->required = (req[0] == '1');
-                    n++;
-                }
-                buf_free(&body);
-            }
-            p = nl ? nl + 1 : NULL;
-        }
-    }
-    buf_free(&names);
-    return n;
 }
 
 /* --- the chain --------------------------------------------------------- */
@@ -357,151 +329,30 @@ void machine_boot(Machine *m)
     }
     say(c, "initrd: mounted %s on /", rootspec);
 
-    /* ---- init ---- */
+    /* ---- PID 1: from here it is real, executed userland ----
+     * The kernel does exactly what a kernel does: it finds /sbin/init and
+     * runs it. It does not know what init will do, because init is a program
+     * on the disk and the machine's behaviour from here is whatever that
+     * program says it is. */
     m->boot.reached = BOOT_INIT;
-    buf_clear(&f);
-    link[0] = '\0';
-    mode = 0;
-    st = slurp(m, "/sbin/init", &f, &mode, link, sizeof link);
-    if (st == F_DANGLING) {
-        fail(m, c, BOOT_INIT, "kernel: /sbin/init -> %s: no such file -- "
-             "kernel panic: no init found", link);
-        goto done;
-    }
-    if (st != F_OK) {
-        fail(m, c, BOOT_INIT, "kernel panic: no init found -- /sbin/init: not found");
-        goto done;
-    }
-    if (!(mode & 0111)) {
-        fail(m, c, BOOT_INIT, "kernel panic: /sbin/init: permission denied "
-             "(mode %04o)", mode);
-        goto done;
-    }
-    say(c, "sysinit 254 running as pid 1");
-
-    /* fstab is read by init, and an entry naming a device that is not there
-     * stops a boot dead. Everyone who has typed a UUID wrong knows this one. */
-    buf_clear(&f);
-    if (slurp(m, "/etc/fstab", &f, NULL, NULL, 0) != F_OK) {
-        fail(m, c, BOOT_INIT, "sysinit: /etc/fstab: not found");
-        goto done;
-    }
     {
-        const char *p = f.p, *end = f.p + f.len;
-        int lineno = 0;
-        while (p && p < end) {
-            char raw[256], scrub[256];
-            size_t len = line_at(p, end, raw, sizeof raw);
-            lineno++;
-            const char *s2 = raw;
-            while (*s2 == ' ' || *s2 == '\t') s2++;
-            if (*s2 && *s2 != '#') {
-                char dev[80] = {0}, mnt[80] = {0}, type[40] = {0};
-                int got = sscanf(s2, "%79s %79s %39s", dev, mnt, type);
-                if (got < 3) {
-                    fail(m, c, BOOT_INIT, "sysinit: /etc/fstab:%d: bad entry: %s",
-                         lineno, clean(raw, strlen(raw), scrub, sizeof scrub));
-                    goto done;
-                }
-                if (mnt[0] != '/') {
-                    fail(m, c, BOOT_INIT,
-                         "sysinit: /etc/fstab:%d: mount point is not an absolute path: %s",
-                         lineno, clean(mnt, strlen(mnt), scrub, sizeof scrub));
-                    goto done;
-                }
-                if (strncmp(dev, "UUID=", 5) == 0 &&
-                    strcmp(dev + 5, m->root_uuid) != 0) {
-                    fail(m, c, BOOT_INIT,
-                         "sysinit: %s: no device with that uuid -- "
-                         "dependency failed for %s",
-                         clean(dev, strlen(dev), scrub, sizeof scrub), mnt);
-                    goto done;
-                }
-            }
-            p = (p + len < end) ? p + len + 1 : NULL;
-        }
-    }
-    say(c, "sysinit: local filesystems mounted");
-
-    /* ---- services ---- */
-    m->boot.reached = BOOT_SERVICES;
-    Unit u[UNIT_MAX];
-    int nu = load_units(m, u, UNIT_MAX);
-    /* Start in dependency order. A unit whose `after` never becomes startable
-     * is left unstarted, which is how a cycle or a missing dependency shows
-     * up: not as an error about cycles, but as services that never come up. */
-    for (int pass = 0; pass < UNIT_MAX; pass++) {
-        int progress = 0;
-        for (int i = 0; i < nu; i++) {
-            if (u[i].started) continue;
-            if (u[i].after[0]) {
-                bool ready = false;
-                for (int j = 0; j < nu; j++)
-                    if (strcmp(u[j].name, u[i].after) == 0 && u[j].started) ready = true;
-                if (!ready) continue;
-            }
-            unsigned xm = 0;
-            FileState xs = slurp(m, u[i].exec, NULL, &xm, NULL, 0);
-            if (xs != F_OK) {
-                say(c, "sysinit: %s: %s: not found", u[i].name, u[i].exec);
-                if (u[i].required) {
-                    fail(m, c, BOOT_SERVICES,
-                         "sysinit: failed to start %s -- required, giving up",
-                         u[i].name);
-                    goto done;
-                }
-                u[i].started = true;   /* optional: note it and carry on */
-                progress++;
-                continue;
-            }
-            if (!(xm & 0111)) {
-                say(c, "sysinit: %s: %s: permission denied", u[i].name, u[i].exec);
-                if (u[i].required) {
-                    fail(m, c, BOOT_SERVICES,
-                         "sysinit: failed to start %s -- required, giving up",
-                         u[i].name);
-                    goto done;
-                }
-                u[i].started = true;
-                progress++;
-                continue;
-            }
-            say(c, "sysinit: started %s", u[i].name);
-            u[i].started = true;
-            progress++;
-        }
-        if (!progress) break;
-    }
-    for (int i = 0; i < nu; i++) {
-        if (u[i].started) continue;
-        say(c, "sysinit: %s: waiting for %s", u[i].name, u[i].after);
-        if (u[i].required) {
-            fail(m, c, BOOT_SERVICES,
-                 "sysinit: %s never started -- dependency %s did not come up",
-                 u[i].name, u[i].after);
+        char uerr[NOM_ERR_MAX] = "";
+        bool ok = boot_userland(m, "/sbin/init", &m->boot.console, uerr, sizeof uerr);
+        if (!ok) {
+            /* Which stage the machine died in is a fact about how far the
+             * console got, not something the runtime was told. */
+            BootStage at = BOOT_INIT;
+            if (buf_contains(&m->boot.console, "rc.boot:")) at = BOOT_SERVICES;
+            if (buf_contains(&m->boot.console, "rc.3:") ||
+                buf_contains(&m->boot.console, "entering runlevel")) at = BOOT_SERVICES;
+            fail(m, c, at, "%s", uerr[0] ? uerr : "init failed");
             goto done;
         }
     }
 
-    /* ---- up ---- */
     m->boot.reached   = BOOT_TARGET;
     m->boot.failed_at = BOOT_TARGET;
     m->boot.running   = true;
-    {
-        Buf h = {0};
-        char host[64] = "localhost";
-        if (slurp(m, "/etc/hostname", &h, NULL, NULL, 0) == F_OK && h.len) {
-            size_t n = h.len;
-            while (n && (h.p[n-1] == '\n' || h.p[n-1] == '\r')) n--;
-            if (n >= sizeof host) n = sizeof host - 1;
-            memcpy(host, h.p, n);
-            host[n] = '\0';
-        }
-        buf_free(&h);
-        say(c, "");
-        say(c, "Nominal Linux 11.4  %s", host);
-        say(c, "%s login:", host);
-    }
 
 done:
     buf_free(&f);

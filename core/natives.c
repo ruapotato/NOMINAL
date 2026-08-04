@@ -178,12 +178,17 @@ static VmStatus n_parse(VM *v, Value *a, int n, Value *out)
         size_t le = i;
         if (i < len) i++;
         while (le > ls && (s[le - 1] == '\r' || s[le - 1] == ' ')) le--;
+        while (ls < le && (s[ls] == ' ' || s[ls] == '\t')) ls++;
         if (le == ls) continue;
+        if (s[ls] == '#') continue;         /* a comment is not a setting */
         size_t k = ls;
-        while (k < le && s[k] != ' ' && s[k] != '\t') k++;
+        while (k < le && s[k] != ' ' && s[k] != '\t' &&
+               s[k] != ':' && s[k] != '=') k++;
+        size_t ke = k;                       /* key ends before the separator */
+        while (k < le && (s[k] == ':' || s[k] == '=')) k++;
         size_t vs = k;
         while (vs < le && (s[vs] == ' ' || s[vs] == '\t')) vs++;
-        Value key = str_new(s + ls, k - ls);
+        Value key = str_new(s + ls, ke - ls);
         Value val;
         if (!nom_parse_number(s + vs, le - vs, &val)) val = str_new(s + vs, le - vs);
         dict_set(AS_DICT(d), key, val);
@@ -356,6 +361,14 @@ static VmStatus n_mount(VM *v, Value *a, int n, Value *out)
     path_of(a[0], host, sizeof host);
     path_of(a[1], at, sizeof at);
     char e[NOM_ERR_MAX];
+    if (v->mount_hook) {
+        if (!v->mount_hook(v, host, at, e, sizeof e)) {
+            vm_runtime_error(v, "mount: %s", e);
+            return VM_ERROR;
+        }
+        *out = VAL_NIL;
+        return VM_OK;
+    }
     if (!wreck_mount(v->sim, host, at, e, sizeof e)) { vm_runtime_error(v, "mount: %s", e); return VM_ERROR; }
     *out = VAL_NIL;
     return VM_OK;
@@ -392,10 +405,93 @@ static VmStatus n_print(VM *v, Value *a, int n, Value *out)
         if (i) buf_putc(&b, ' ');
         val_tostr(&b, a[i]);
     }
-    sim_log(v->sim, "%s", b.p ? b.p : "");
+    if (v->console) {
+        buf_puts(v->console, b.p ? b.p : "");
+        buf_putc(v->console, '\n');
+    } else {
+        sim_log(v->sim, "%s", b.p ? b.p : "");
+    }
     buf_free(&b);
     *out = VAL_NIL;
     return VM_OK;
+}
+
+/* Start a service. Only a booting machine can do this. */
+static VmStatus n_svc(VM *v, Value *a, int n, Value *out)
+{
+    (void)n;
+    *out = VAL_NIL;
+    if (!v->svc_hook)      { vm_runtime_error(v, "svc: not available here"); return VM_ERROR; }
+    const char *sp; size_t sl;
+    if (!want_str(v, a[0], "svc", &sp, &sl)) return VM_ERROR;
+    char path[NOM_PATH_MAX];
+    path_of(a[0], path, sizeof path);
+    char e[NOM_ERR_MAX];
+    if (!v->svc_hook(v, path, e, sizeof e)) {
+        vm_runtime_error(v, "svc: %s", e);
+        return VM_ERROR;
+    }
+    return VM_OK;
+}
+
+/* String helpers the rc scripts genuinely need. Config parsing is most of
+ * what a boot does, so these are not conveniences, they are the job. */
+static VmStatus n_startswith(VM *v, Value *a, int n, Value *out)
+{
+    (void)v; (void)n;
+    if (!IS_STR(a[0]) || !IS_STR(a[1])) { *out = VAL_BOOL(false); return VM_OK; }
+    size_t pl = AS_STR(a[1])->len;
+    *out = VAL_BOOL(AS_STR(a[0])->len >= pl &&
+                    memcmp(AS_STR(a[0])->s, AS_STR(a[1])->s, pl) == 0);
+    return VM_OK;
+}
+
+static VmStatus n_endswith(VM *v, Value *a, int n, Value *out)
+{
+    (void)v; (void)n;
+    if (!IS_STR(a[0]) || !IS_STR(a[1])) { *out = VAL_BOOL(false); return VM_OK; }
+    size_t sl = AS_STR(a[0])->len, pl = AS_STR(a[1])->len;
+    *out = VAL_BOOL(sl >= pl &&
+                    memcmp(AS_STR(a[0])->s + sl - pl, AS_STR(a[1])->s, pl) == 0);
+    return VM_OK;
+}
+
+/* Run another script file. A real init hands off to a real rc script; this is
+ * the native that makes that literally true rather than a description of it. */
+static VmStatus n_exec(VM *v, Value *a, int n, Value *out)
+{
+    *out = VAL_NIL;
+    if (!v->run_script) {
+        vm_runtime_error(v, "exec: not available here");
+        return VM_ERROR;
+    }
+    if (!IS_STR(a[0])) {
+        vm_runtime_error(v, "exec: expected a path");
+        return VM_ERROR;
+    }
+    if (v->depth > 6) {
+        vm_runtime_error(v, "exec: too many nested execs");
+        return VM_ERROR;
+    }
+    char xpath[NOM_PATH_MAX];
+    path_of(a[0], xpath, sizeof xpath);
+    if (!v->run_script(v, xpath)) {
+        /* the child already reported itself on the console; stop the parent */
+        vm_runtime_error(v, "exec: %s failed", xpath);
+        return VM_ERROR;
+    }
+    return VM_OK;
+}
+
+/* Stop the machine, the way a real init does when it cannot continue. */
+static VmStatus n_panic(VM *v, Value *a, int n, Value *out)
+{
+    *out = VAL_NIL;
+    Buf b; buf_init(&b);
+    for (int i = 0; i < n; i++) { if (i) buf_putc(&b, ' '); val_tostr(&b, a[i]); }
+    vm_runtime_error(v, "%s", b.p ? b.p : "panic");
+    buf_free(&b);
+    return VM_ERROR;
 }
 
 /* ------------------------------------------------------------- conversion */
@@ -654,6 +750,11 @@ static const Native NATIVES[] = {
     { "keys",   1, 1, n_keys   },
     { "lookup", 2, 3, n_lookup },
     { "has",    2, 2, n_has    },
+    { "exec",   1, 1, n_exec   },
+    { "svc",    1, 1, n_svc    },
+    { "startswith", 2, 2, n_startswith },
+    { "endswith",   2, 2, n_endswith   },
+    { "panic",  1, 1, n_panic  },
 };
 
 const Native *native_table(int *count)

@@ -105,6 +105,21 @@ struct VM {
     Vfs    *fs;
     Sim    *sim;
 
+    /* Where print() goes when there is no Sim: the machine's console. This is
+     * what makes a boot script's output the boot output. */
+    Buf    *console;
+    /* Run another script file, in the same machine, and return whether it
+     * succeeded. Set by the boot runtime; NULL means exec() is unavailable.
+     * This is how /sbin/init hands off to /etc/rc.boot for real. */
+    bool  (*run_script)(struct VM *v, const char *path);
+    void   *host;        /* the Machine, for run_script */
+    /* Mounting and starting a service are things only a booting machine can
+     * do. Hooks rather than #ifdefs, so natives.c stays the single sandbox. */
+    bool  (*mount_hook)(struct VM *v, const char *what, const char *where,
+                        char *err, size_t errsz);
+    bool  (*svc_hook)(struct VM *v, const char *exec, char *err, size_t errsz);
+    int     depth;       /* exec nesting, so a corrupted script cannot recurse */
+
     Value   stack[NOM_STACK_MAX];
     int     sp;
 

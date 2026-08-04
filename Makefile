@@ -27,14 +27,20 @@ CORE_OBJ = $(CORE_SRC:core/%.c=build/%.o)
 
 BIN = build/nominal
 
+# The default goal is pinned: rules defined above `all:` would otherwise
+# become the default, which silently builds the wrong thing (and made the
+# determinism gate compare a binary it had not rebuilt).
+.DEFAULT_GOAL := all
+
 .PHONY: all check clean gdext test-lang test-scenario bf test-break
 
 # --- break-fix (D17) ---------------------------------------------------
 # The new core. `make test-break` is the gate: random corruption must always
 # produce a ticket, that ticket must always be visible to pkg verify, and
 # repairing it must always get the machine booting again.
-BF_SRC = core/util.c core/value.c core/vfs.c core/image.c core/boot.c \
-         core/breaker.c core/bfmain.c
+BF_SRC = core/util.c core/value.c core/vfs.c core/lex.c core/compile.c \
+         core/vm.c core/natives.c core/image.c core/boot.c core/bootrt.c \
+         core/breaker.c core/bfstub.c core/bfmain.c
 
 bf: build/bf
 build/bf: $(BF_SRC) core/machine.h core/nom.h | build
