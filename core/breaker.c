@@ -809,6 +809,62 @@ static void fault_fstype(Machine *m, Rng *r, char *d, size_t ds)
  * really do, so verify reports the directory MISSING by name and reinstall
  * recreates it. The fault is back, and it is the same fault a careless
  * cleanup script produces on a real machine. */
+/* THE PREVIOUS TECHNICIAN'S FIX, WHICH IS THE FAULT.
+ *
+ * Every other fault here looks like damage. This one looks like WORK: a dated
+ * comment, a reason, a name, in exactly the voice of the legitimate local
+ * edits on every machine -- because that is what it is. Somebody solved a
+ * real problem on a Tuesday and broke the machine doing it.
+ *
+ * It is the answer to the sharpest thing a playtester has said about this
+ * game: that `pkg verify` is an oracle, because the two or three CHANGED
+ * files are always the same familiar decoys and exactly one unfamiliar line,
+ * which is the answer. Now one of the deliberate-looking edits IS the answer,
+ * and telling them apart means reading what each one actually does instead of
+ * pattern-matching on which file it is.
+ *
+ * `pkg reinstall` will not overwrite it -- it looks locally modified, because
+ * it is -- so the repair is `pkg diff`, then judgement, then `--force` or an
+ * edit. Which is the whole loop this game is about. */
+static void fault_wellmeant(Machine *m, Rng *r, char *d, size_t ds)
+{
+    static const struct { const char *path, *content, *what; } FIX[] = {
+      { "/etc/syslog.conf",
+        "# moved the log off the root fs 14 May, it filled up again\n"
+        "*.info /var/log/archive/messages\n",
+        "pointed syslog at /var/log/archive, a directory that is not there" },
+      { "/etc/ntp.conf",
+        "# commented out while we were being rate-limited -- put back!\n"
+        "# server 10.0.2.4\n",
+        "commented out the only time server in /etc/ntp.conf" },
+      { "/etc/net/interfaces",
+        "# renamed to match the new cabling standard, 2 April\n"
+        "iface eth1\n"
+        "  address 10.0.2.15\n"
+        "  gateway 10.0.2.2\n",
+        "renamed the interface in /etc/net/interfaces to one that does not exist" },
+      { "/etc/default/postfix",
+        "# hostname corrected to the new domain -- J.\n"
+        "# myhostname = node.nomnix.org\n"
+        "relayhost = 10.0.2.7\n",
+        "commented out myhostname in the mail config" },
+      { "/etc/audit/auditd.conf",
+        "# audit trail moved to its own volume, 30 Jan\n"
+        "log_file = /var/audit/trail\n",
+        "pointed the audit log at /var/audit, which was never created" },
+      { "/etc/crontab",
+        "# tidy the logs nightly -- added after the March incident\n"
+        "# 0 3 * * *  root  rm /var/log/messages\n",
+        "commented out every line of /etc/crontab" },
+    };
+    int i = (int)(rng_next(r) % 6);
+    VNode *n = vfs_lookup(&m->disk, FIX[i].path);
+    if (!n || n->kind != VN_FILE) return;
+    buf_clear(&n->data);
+    buf_puts(&n->data, FIX[i].content);
+    snprintf(d, ds, "%s", FIX[i].what);
+}
+
 static void fault_missing_dir(Machine *m, Rng *r, char *d, size_t ds)
 {
     static const char *VICTIMS[] = {
@@ -879,7 +935,7 @@ static const StructuralFault STRUCTURAL[] = {
     fault_wrong_channel, fault_fstab, fault_daemon_config,
     fault_daemon_directive, fault_disk_full, fault_bad_bind,
     fault_dir_mode, fault_root_ro, fault_bad_libz, fault_fstype,
-    fault_missing_dir,
+    fault_missing_dir, fault_wellmeant,
 };
 #define NSTRUCT ((int)(sizeof STRUCTURAL / sizeof STRUCTURAL[0]))
 

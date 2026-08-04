@@ -1065,16 +1065,37 @@ void machine_install(Machine *m, uint64_t seed)
  * the answer. Now the player has to decide which difference MATTERS -- and
  * `pkg reinstall` on the wrong package silently destroys somebody's work.
  */
+/* How many legitimate local edits exist, and a way to install exactly one of
+ * them. `--health` walks all of them, because a decoy that breaks the machine
+ * is a fairness bug of the worst kind: the player is told a deliberate-looking
+ * edit is innocent by every signal the game gives, and it is the fault.
+ *
+ * One shipped. /etc/httpd/httpd.conf said `listen`/`root` where httpd wants
+ * `Listen`/`DocumentRoot`, so that decoy silently killed the web server. It
+ * survived a 20-machine health run because 17 decoys drawn 2-5 at a time do
+ * not cover themselves in twenty tries. Now they are covered on purpose. */
+int local_edit_count(void);
+
 static void install_local_edits(Machine *m, uint64_t seed)
 {
     Rng r;
     rng_seed(&r, seed ^ 0xc0ffee1234ULL);
 
+    /* A wide pool, and SEVERAL WORDINGS EACH. A playtester reported that by
+     * the fourth machine they filtered the decoys on sight without reading
+     * them -- which is exactly right, because there were six files with one
+     * fixed text apiece, so `/etc/ssh/sshd_config` always said "hardened
+     * after the audit". A decoy you recognise is not a decoy, it is a
+     * landmark. Rotating the wording is what makes you read the file. */
     struct { const char *path; const char *content; } EDITS[] = {
       { "/etc/resolv.conf",
         "# changed 12 March -- the .3 resolver was timing out at peak\n"
         "nameserver 10.0.2.9\n"
         "search nomnix.org\n" },
+      { "/etc/resolv.conf",
+        "nameserver 10.0.2.3\n"
+        "# second one added after the outage in Feb, do not remove\n"
+        "nameserver 10.0.2.9\n" },
       { "/etc/hosts",
         "127.0.0.1       localhost nominal.local\n"
         "10.0.2.20       wiki.nomnix.org wiki\n"
@@ -1082,31 +1103,92 @@ static void install_local_edits(Machine *m, uint64_t seed)
         "10.0.2.44       bofh.nomnix.org bofh\n"
         "# added for the migration, remove when dock-2 is retired\n"
         "10.0.2.61       oldbilling.internal oldbilling\n" },
+      { "/etc/hosts",
+        "127.0.0.1       localhost\n"
+        "10.0.2.20       wiki.nomnix.org wiki\n"
+        "10.0.2.30       support.internal support\n"
+        "10.0.2.44       bofh.nomnix.org bofh\n"
+        "# pinning this until DNS is fixed -- J.\n"
+        "10.0.2.31       licences.internal licences\n" },
       { "/etc/ssh/sshd_config",
         "# hardened after the audit, do not revert\n"
         "Port 2222\n"
         "PermitRootLogin no\n"
         "MaxAuthTries 3\n" },
+      { "/etc/ssh/sshd_config",
+        "Port 22\n"
+        "# left root login on for the console cart -- ops asked, ticket 8841\n"
+        "PermitRootLogin yes\n" },
       { "/etc/syslog.conf",
         "# quieten the udev chatter, it was filling the disk\n"
         "*.info /var/log/messages\n"
         "udev.* /dev/null\n" },
+      { "/etc/syslog.conf",
+        "*.info /var/log/messages\n"
+        "# cron was noisy every minute, dropped it 4 Jan\n"
+        "cron.* /dev/null\n" },
       { "/etc/net/interfaces",
         "# static since the dhcp lease kept moving us\n"
         "iface eth0\n"
         "  address 10.0.2.15\n"
         "  gateway 10.0.2.2\n" },
+      { "/etc/net/interfaces",
+        "iface eth0\n"
+        "  address 10.0.2.15\n"
+        "  gateway 10.0.2.2\n"
+        "# mtu lowered for the tunnel, see the runbook\n"
+        "  mtu 1400\n" },
       { "/etc/profile",
         "# login shell profile\n"
         "PATH=/bin:/usr/bin:/sbin\n"
         "# added by nomowner: I got tired of typing it\n"
         "alias v=pkg verify\n" },
+      { "/etc/profile",
+        "# login shell profile\n"
+        "PATH=/bin:/usr/bin:/sbin:/usr/sbin\n"
+        "# sbin on the path so I stop getting command not found -- nomowner\n" },
+      { "/etc/crontab",
+        "# nightly log trim, added after we filled the disk in March\n"
+        "0 3 * * *  root  rm /var/log/messages\n" },
+      { "/etc/ntp.conf",
+        "server 10.0.2.4\n"
+        "# second source added after the drift complaint\n"
+        "server 10.0.2.5\n" },
+      { "/etc/httpd/httpd.conf",
+        "# port moved off 80, the load balancer terminates now\n"
+        "Listen 8080\nDocumentRoot /srv/www\nServerName nominal.local\n" },
+      { "/etc/motd",
+        "Welcome to NomnixOS.\n"
+        "\n"
+        "*** dock-2 is scheduled for migration. Do NOT reboot without\n"
+        "*** telling ops first. -- J.\n" },
+      { "/etc/default/postfix",
+        "myhostname = node.nomnix.org\n"
+        "# relay added when we lost direct outbound, 9 Feb\n"
+        "relayhost = 10.0.2.7\n" },
     };
     const int NEDITS = (int)(sizeof EDITS / sizeof EDITS[0]);
 
-    /* One to three of them, chosen by the seed, so two machines are not the
-     * same machine. */
-    int want = 1 + (int)(rng_next(&r) % 3);
+    /* NOM_FORCE_EDIT=<n>: install exactly decoy n and nothing else. */
+    const char *fe = getenv("NOM_FORCE_EDIT");
+    if (fe) {
+        int i = atoi(fe) % NEDITS;
+        VNode *n = vfs_lookup(&m->disk, EDITS[i].path);
+        if (n && n->kind == VN_FILE) {
+            buf_clear(&n->data);
+            buf_puts(&n->data, EDITS[i].content);
+            buf_puts(&m->local_orig[m->nlocal], EDITS[i].content);
+            snprintf(m->local[m->nlocal], NOM_PATH_MAX, "%s", EDITS[i].path);
+            m->nlocal++;
+        }
+        return;
+    }
+
+    /* Two to five of them, chosen by the seed. More than before, because the
+     * point is that `pkg verify` output has to be READ rather than skimmed
+     * for the one familiar line. Duplicates by path are skipped, so a machine
+     * never gets two versions of the same file. */
+    int want = 2 + (int)(rng_next(&r) % 4);
     for (int k = 0; k < want && m->nlocal < 8; k++) {
         int i = (int)(rng_next(&r) % (uint64_t)NEDITS);
         bool dup = false;
