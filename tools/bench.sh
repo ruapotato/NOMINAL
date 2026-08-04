@@ -5,13 +5,53 @@
 # rebuild replaced the binary underneath it, sometimes it simply exited. A
 # playtester with half a diagnosis and no socket is a wasted run, so this
 # restarts it and records why it stopped.
+#
+# THE HOT LOOP. The first version restarted unconditionally with a one second
+# sleep. Start a second copy while the first still holds the port and it can
+# never bind, so it exits immediately, sleeps a second, and tries again --
+# forever. Five of these accumulated across one working session and between
+# them burned 1341 restarts on a single log. With the model linked in, every
+# one of those attempts loads 1.8 GB of weights before discovering it cannot
+# have the port, which is how a supervisor for a text server ends up pinned at
+# 100% of a core and holding 2.8 GB.
+#
+# Two guards, because either alone is not enough:
+#   1. Refuse to start at all if something already holds the port.
+#   2. Give up if the child keeps dying immediately. A server that lives less
+#      than a few seconds has not failed at serving, it has failed at
+#      starting, and restarting it will not change that.
 PORT=${1:-7777}
 SEED=${2:-12000}
 LOG=${3:-/tmp/nominal-bench.log}
+BIN=${BIN:-./build/bf}
+
+if command -v ss >/dev/null 2>&1 && ss -ltn 2>/dev/null | grep -q ":$PORT "; then
+    echo "bench: port $PORT is already in use -- refusing to start" >&2
+    echo "bench: port $PORT already in use, refused to start" >> "$LOG"
+    exit 1
+fi
+
+FAST=0
 while true; do
-    echo "=== bench starting on $PORT" >> "$LOG"
-    ${BIN:-./build/bf} --serve "$PORT" "$SEED" >> "$LOG" 2>&1
-    echo "=== bench exited with $? -- restarting" >> "$LOG"
+    echo "=== bench starting on $PORT (seed $SEED)" >> "$LOG"
+    START=$(date +%s)
+    "$BIN" --serve "$PORT" "$SEED" >> "$LOG" 2>&1
+    RC=$?
+    END=$(date +%s)
+    RAN=$((END - START))
+    echo "=== bench exited with $RC after ${RAN}s" >> "$LOG"
+
+    if [ "$RAN" -lt 5 ]; then
+        FAST=$((FAST + 1))
+        if [ "$FAST" -ge 3 ]; then
+            echo "bench: died in under 5s three times running -- giving up" >&2
+            echo "bench: gave up after 3 immediate failures (last rc=$RC)" >> "$LOG"
+            exit 1
+        fi
+    else
+        FAST=0
+    fi
+
     SEED=$((SEED + 100))
     sleep 1
 done
