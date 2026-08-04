@@ -212,15 +212,36 @@ WIN_LLAMA_LIBS  = $(WIN_LLAMA_BUILD)/src/libllama.a \
                   $(WIN_LLAMA_BUILD)/ggml/src/ggml-base.a
 WIN_BIN_LLM = build/win/nominal-bench.exe
 
+# Per-object, not one enormous invocation. Compiling thirteen C files and a
+# C++ file in a single g++ command took over fifteen minutes and was killed by
+# its own timeout twice -- and every retry started again from nothing, because
+# there was no intermediate to keep. Separate objects also mean the C files are
+# compiled AS C (the single command needed -x c / -x c++ juggling, which put a
+# C standard flag on the C++ compile), and that a change to one file costs one
+# file.
+WIN_OBJDIR  = build/win/obj
+WIN_CC_OBJ  = $(BF_SRC:core/%.c=$(WIN_OBJDIR)/%.o)
+WIN_CXX_OBJ = $(WIN_OBJDIR)/llm.o
+WIN_INC     = -Icore -I$(LLAMA_DIR)/include -I$(LLAMA_DIR)/ggml/include
+
 .PHONY: windows-llm
 windows-llm: $(WIN_BIN_LLM)
 
-$(WIN_BIN_LLM): $(BF_SRC) core/llm.cpp $(WIN_LLAMA_LIBS)
+$(WIN_OBJDIR):
+	@mkdir -p $(WIN_OBJDIR)
+
+$(WIN_OBJDIR)/%.o: core/%.c | $(WIN_OBJDIR)
+	x86_64-w64-mingw32-gcc $(CSTD) $(WARN) $(FPFLAGS) $(OPT) $(WIN_INC) \
+	  -DNOM_LLM -c $< -o $@
+
+$(WIN_OBJDIR)/llm.o: core/llm.cpp | $(WIN_OBJDIR)
+	x86_64-w64-mingw32-g++ $(WARN) $(FPFLAGS) $(OPT) $(WIN_INC) \
+	  -DNOM_LLM -c $< -o $@
+
+$(WIN_BIN_LLM): $(WIN_CC_OBJ) $(WIN_CXX_OBJ) $(WIN_LLAMA_LIBS)
 	@mkdir -p build/win
-	x86_64-w64-mingw32-g++ $(CSTD:-std=%=) $(WARN) $(FPFLAGS) $(OPT) \
-	  -Icore -I$(LLAMA_DIR)/include -I$(LLAMA_DIR)/ggml/include -DNOM_LLM \
-	  -x c $(BF_SRC) -x c++ core/llm.cpp \
-	  -o $@ $(WIN_LLAMA_LIBS) -static -static-libgcc -static-libstdc++ \
+	x86_64-w64-mingw32-g++ -o $@ $(WIN_CC_OBJ) $(WIN_CXX_OBJ) \
+	  $(WIN_LLAMA_LIBS) -static -static-libgcc -static-libstdc++ \
 	  -fopenmp -lws2_32
 
 $(WIN_GDEXT): $(BF_SRC_LIB) gdext/nominal_gdext.c
