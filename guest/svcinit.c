@@ -21,6 +21,8 @@ static int  nunits;
 
 static char body[4096];
 static char level[16];
+static char crit[UNITS][8];
+static int  failed_critical;
 
 /* Pull `key` out of a `key: value` config body into `out`. */
 static void get(const char *b, const char *key, char *out, u64 cap, const char *dflt)
@@ -91,6 +93,11 @@ void _start(void)
         int u = nunits++;
         g_copy(unitname[u], name, sizeof unitname[u]);
         get(body, "name",        names[u],  sizeof names[u],  name);
+        /* `critical: yes` means the machine is not usable without it. Anything
+         * else is reported and stepped over -- a box where sshd is down is a
+         * different (and lesser) problem than a box that will not boot, and
+         * conflating them would be wrong. */
+        get(body, "critical",    crit[u],   sizeof crit[u],   "no");
         get(body, "exec",        execs[u],  sizeof execs[u],  "");
         get(body, "after",       afters[u], sizeof afters[u], "");
         get(body, "description", descs[u],  sizeof descs[u],  "");
@@ -113,21 +120,25 @@ void _start(void)
                 g_exit(1);
             }
             NomStat st;
-            if (g_stat(execs[u], &st) != 0) {
+            int bad = 0;
+            const char *why = "";
+            if (g_stat(execs[u], &st) != 0)      { bad = 1; why = ": not found"; }
+            else if (!(st.mode & 0111))          { bad = 1; why = ": permission denied"; }
+            if (bad) {
                 g_puts("svcinit: ");
                 g_puts(names[u]);
                 g_puts(": ");
                 g_puts(execs[u]);
-                g_putln(": not found");
-                g_exit(1);
-            }
-            if (!(st.mode & 0111)) {
-                g_puts("svcinit: ");
-                g_puts(names[u]);
-                g_puts(": ");
-                g_puts(execs[u]);
-                g_putln(": permission denied");
-                g_exit(1);
+                g_puts(why);
+                if (g_streq(crit[u], "yes")) {
+                    g_putln("  [critical]");
+                    failed_critical = 1;
+                    g_exit(1);
+                }
+                g_putln("  [degraded, continuing]");
+                started[u] = 1;
+                moved = 1;
+                continue;
             }
             g_puts("svcinit: started ");
             g_puts(names[u]);
@@ -145,7 +156,7 @@ void _start(void)
         g_puts(names[u]);
         g_puts(": waiting for ");
         g_putln(afters[u][0] ? afters[u] : "?");
-        g_exit(1);
+        if (g_streq(crit[u], "yes")) g_exit(1);
     }
-    g_exit(0);
+    g_exit(failed_critical ? 1 : 0);
 }

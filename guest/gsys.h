@@ -41,6 +41,64 @@ static inline i64  g_readdir(const char *dir, int i, char *buf)
 static inline int  g_stat(const char *p, NomStat *st) { return (int)sysc(SYS_stat, (i64)p, (i64)st, 0); }
 static inline i64  g_spawn(const char *p, const char *arg) { return sysc(SYS_spawn, (i64)p, (i64)arg, 0); }
 static inline i64  g_getarg(char *buf, u64 n) { return sysc(SYS_getarg, (i64)buf, (i64)n, 0); }
+static inline int  g_getpid(void) { return (int)sysc(SYS_getpid, 0, 0, 0); }
+static inline int  g_bind(const char *target, const char *at) { return (int)sysc(SYS_bind, (i64)target, (i64)at, 0); }
+static inline int  g_unbind(const char *at) { return (int)sysc(SYS_unbind, (i64)at, 0, 0); }
+static inline int  g_chdir(const char *p) { return (int)sysc(SYS_chdir, (i64)p, 0, 0); }
+static inline i64  g_getcwd(char *b, u64 n) { return sysc(SYS_getcwd, (i64)b, (i64)n, 0); }
+static inline i64  g_repo(const char *pkg, const char *path, char *buf)
+                        { return sysc(SYS_repo, (i64)pkg, (i64)path, (i64)buf); }
+
+/* Decimal, without a libc. */
+static inline void g_putn(i64 v)
+{
+    char t[24]; int i = 0; int neg = v < 0;
+    unsigned long u = neg ? (unsigned long)(-v) : (unsigned long)v;
+    if (!u) t[i++] = '0';
+    while (u) { t[i++] = (char)('0' + u % 10); u /= 10; }
+    char o[26]; int j = 0;
+    if (neg) o[j++] = '-';
+    while (i) o[j++] = t[--i];
+    g_write(1, o, (u64)j);
+}
+
+static inline void g_putoct(unsigned v, int digits)
+{
+    char o[12]; int j = 0;
+    for (int i = digits - 1; i >= 0; i--) o[j++] = (char)('0' + ((v >> (3 * i)) & 7));
+    g_write(1, o, (u64)j);
+}
+
+/* FNV-1a, so a guest can tell whether a file matches what a package shipped.
+ * Deterministic and tiny; this is a corruption check, not a security one. */
+static inline unsigned long g_hash(const char *p, u64 n)
+{
+    unsigned long h = 1469598103934665603UL;
+    for (u64 i = 0; i < n; i++) { h ^= (unsigned char)p[i]; h *= 1099511628211UL; }
+    return h;
+}
+
+static inline void g_puthex(unsigned long v)
+{
+    char o[16]; const char *hex = "0123456789abcdef";
+    for (int i = 0; i < 16; i++) o[i] = hex[(v >> ((15 - i) * 4)) & 15];
+    g_write(1, o, 16);
+}
+
+/* argv, split from the single argument string the ABI hands us. */
+#define GARGS 8
+static inline int g_argv(char *arg, char **v)
+{
+    int n = 0;
+    while (*arg && n < GARGS) {
+        while (*arg == ' ' || *arg == '\t') arg++;
+        if (!*arg) break;
+        v[n++] = arg;
+        while (*arg && *arg != ' ' && *arg != '\t') arg++;
+        if (*arg) *arg++ = 0;
+    }
+    return n;
+}
 
 /* Read a whole file into a caller-supplied buffer. Returns length, or -1.
  * Guests own their buffers: there is no allocator on this machine. */

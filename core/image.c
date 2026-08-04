@@ -135,6 +135,7 @@ static const Package PKG_NET = {
       { "/etc/services.d/net.svc",
         "# /etc/services.d/net.svc\n"
         "name: net\n"
+        "critical: yes\n"
         "exec: /usr/sbin/netd\n"
         "description: network interfaces\n"
         "after: syslog\n"
@@ -158,6 +159,7 @@ static const Package PKG_SYSLOG = {
       { "/etc/services.d/syslog.svc",
         "# /etc/services.d/syslog.svc\n"
         "name: syslog\n"
+        "critical: yes\n"
         "exec: /usr/sbin/syslogd\n"
         "description: system logging\n"
         "after: udev\n"
@@ -175,6 +177,7 @@ static const Package PKG_UDEV = {
       { "/etc/services.d/udev.svc",
         "# /etc/services.d/udev.svc\n"
         "name: udev\n"
+        "critical: yes\n"
         "exec: /usr/sbin/udevd\n"
         "description: device manager\n"
         "restart: on-failure\n"
@@ -222,15 +225,18 @@ static const Package PKG_HAMDE = {
 static const Package PKG_SHELL = {
     "hamsh", "1.9", "the shell and the base tools",
     {
-      { "/bin/rc",    NULL, 0755, NULL },              /* GUEST_RC */
-      { "/bin/hamsh", "#!hamsh\n", 0755, NULL },
-      { "/bin/ls",    "#!ls\n",    0755, NULL },
-      { "/bin/cat",   "#!cat\n",   0755, NULL },
-      { "/bin/echo",  "#!echo\n",  0755, NULL },
-      { "/bin/mount", "#!mount\n", 0755, NULL },
+      { "/bin/rc",    NULL, 0755, NULL },
+      { "/bin/sh",    NULL, 0755, NULL },
+      { "/bin/ls",    NULL, 0755, NULL },
+      { "/bin/cat",   NULL, 0755, NULL },
+      { "/bin/ps",    NULL, 0755, NULL },
+      { "/bin/ns",    NULL, 0755, NULL },
+      { "/bin/stat",  NULL, 0755, NULL },
+      { "/bin/chmod", NULL, 0755, NULL },
+      { "/usr/bin/pkg", NULL, 0755, NULL },
       { "/bin/false", "#!false\n", 0755, NULL },
       { "/bin/true",  "#!true\n",  0755, NULL },
-    }, 8
+    }, 11
 };
 
 static const Package *IMAGE[] = {
@@ -249,6 +255,22 @@ void image_generated(const Machine *m, const char *path, Buf *out)
         buf_put(out, (const char *)GUEST_INIT, GUEST_INIT_LEN);
     else if (strcmp(path, "/bin/rc") == 0)
         buf_put(out, (const char *)GUEST_RC, GUEST_RC_LEN);
+    else if (strcmp(path, "/bin/sh") == 0)
+        buf_put(out, (const char *)GUEST_SH, GUEST_SH_LEN);
+    else if (strcmp(path, "/bin/ls") == 0)
+        buf_put(out, (const char *)GUEST_LS, GUEST_LS_LEN);
+    else if (strcmp(path, "/bin/cat") == 0)
+        buf_put(out, (const char *)GUEST_CAT, GUEST_CAT_LEN);
+    else if (strcmp(path, "/bin/ps") == 0)
+        buf_put(out, (const char *)GUEST_PS, GUEST_PS_LEN);
+    else if (strcmp(path, "/bin/ns") == 0)
+        buf_put(out, (const char *)GUEST_NS, GUEST_NS_LEN);
+    else if (strcmp(path, "/bin/stat") == 0)
+        buf_put(out, (const char *)GUEST_STAT, GUEST_STAT_LEN);
+    else if (strcmp(path, "/bin/chmod") == 0)
+        buf_put(out, (const char *)GUEST_CHMOD, GUEST_CHMOD_LEN);
+    else if (strcmp(path, "/usr/bin/pkg") == 0)
+        buf_put(out, (const char *)GUEST_PKG, GUEST_PKG_LEN);
     else if (strcmp(path, "/sbin/svcinit") == 0)
         buf_put(out, (const char *)GUEST_SVCINIT, GUEST_SVCINIT_LEN);
     else if (strcmp(path, "/sbin/login") == 0)
@@ -278,6 +300,8 @@ void image_generated(const Machine *m, const char *path, Buf *out)
     }
 }
 
+static void pristine(const Machine *m, const PkgFile *f, Buf *out);
+
 static void install_file(Machine *m, const PkgFile *f)
 {
     if (f->link) { vfs_symlink(&m->disk, f->link, f->path); return; }
@@ -299,6 +323,55 @@ static void install_file(Machine *m, const PkgFile *f)
         n->mode = f->mode;
     }
     buf_free(&b);
+}
+
+/* FNV-1a, the same hash /usr/bin/pkg computes on the guest side. If these two
+ * ever disagree, verify reports a clean machine as broken -- so they are the
+ * same three lines, deliberately trivial. */
+static uint64_t fnv1a(const char *p, size_t n)
+{
+    uint64_t h = 1469598103934665603ULL;
+    for (size_t i = 0; i < n; i++) { h ^= (unsigned char)p[i]; h *= 1099511628211ULL; }
+    return h;
+}
+
+/* The package database, written onto the machine's own disk at
+ * /var/lib/pkg/<name>/{version,files}. It is real data that a real program
+ * reads -- which also means it can be damaged, and `pkg verify` says so
+ * rather than reporting a clean system. */
+static void install_pkgdb(Machine *m)
+{
+    for (int i = 0; i < m->npkg; i++) {
+        const Package *p = m->pkg[i];
+        char dir[NOM_PATH_MAX], fp[NOM_PATH_MAX];
+        snprintf(dir, sizeof dir, "/var/lib/pkg/%s", p->name);
+        vfs_mkdir(&m->disk, dir);
+
+        snprintf(fp, sizeof fp, "%s/version", dir);
+        char ver[128];
+        snprintf(ver, sizeof ver, "%s  %s\n", p->version, p->desc);
+        VNode *vn = vfs_mkfile(&m->disk, fp, ver);
+        if (vn) vn->mode = 0644;
+
+        Buf man = {0};
+        for (int j = 0; j < p->nfiles; j++) {
+            const PkgFile *f = &p->file[j];
+            if (f->link) continue;      /* a symlink has no content to hash */
+            Buf c = {0};
+            pristine(m, f, &c);
+            buf_printf(&man, "%04o %016llx %s\n", f->mode,
+                       (unsigned long long)fnv1a(c.p, c.len), f->path);
+            buf_free(&c);
+        }
+        snprintf(fp, sizeof fp, "%s/files", dir);
+        VNode *fn = vfs_mkfile(&m->disk, fp, "");
+        if (fn) {
+            buf_clear(&fn->data);
+            buf_put(&fn->data, man.p, man.len);
+            fn->mode = 0644;
+        }
+        buf_free(&man);
+    }
 }
 
 void machine_install(Machine *m, uint64_t seed)
@@ -324,6 +397,8 @@ void machine_install(Machine *m, uint64_t seed)
         for (int j = 0; j < IMAGE[i]->nfiles; j++)
             install_file(m, &IMAGE[i]->file[j]);
     }
+    install_pkgdb(m);
+    m->next_pid = 1;
 }
 
 void machine_free(Machine *m)
@@ -389,6 +464,20 @@ void pkg_verify(Machine *m, const char *name, Buf *out)
         for (int i = 0; i < m->npkg; i++) verify_pkg(m, m->pkg[i], out, &bad);
     }
     if (bad == 0) buf_puts(out, "all files match their packages\n");
+}
+
+bool pkg_file_content(const Machine *m, const char *pkgname, const char *path,
+                      Buf *out)
+{
+    const Package *p = pkg_find(m, pkgname);
+    if (!p) return false;
+    for (int j = 0; j < p->nfiles; j++) {
+        if (strcmp(p->file[j].path, path) != 0) continue;
+        if (p->file[j].link) return false;      /* a link is not content */
+        pristine(m, &p->file[j], out);
+        return true;
+    }
+    return false;
 }
 
 int pkg_reinstall(Machine *m, const char *name, Buf *out)

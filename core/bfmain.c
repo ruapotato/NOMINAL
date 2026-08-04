@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include "nom.h"
 #include "machine.h"
+#include "kernel.h"
 
 int main(int argc, char **argv)
 {
@@ -114,6 +115,51 @@ int main(int argc, char **argv)
         }
         printf("\n%d/%d tickets converged to a booting machine\n", converged, n);
         printf("%d/%d moved the failure to a new stage at least once\n", layered, n);
+        return 0;
+    }
+
+    if (argc > 1 && strcmp(argv[1], "--serve") == 0) {
+        int port = argc > 2 ? atoi(argv[2]) : 7777;
+        return bench_serve(port, true, argc > 3 ? strtoull(argv[3], NULL, 10) : 4800);
+    }
+
+    if (argc > 1 && strcmp(argv[1], "--sh") == 0) {
+        /* An interactive session against one machine: the whole game, with no
+         * GUI anywhere near it. Each line is executed by /bin/sh ON the
+         * machine, so this shell and the desktop's terminal cannot diverge. */
+        uint64_t sd = argc > 2 ? strtoull(argv[2], NULL, 10) : 4823;
+        int nf = argc > 3 ? atoi(argv[3]) : 1;
+        Machine m; char what[512] = "";
+        machine_install(&m, sd);
+        if (nf > 0) machine_break(&m, sd, nf, what, sizeof what);
+        machine_boot(&m);
+        fwrite(m.boot.console.p, 1, m.boot.console.len, stdout);
+        printf("\n[%s at %s]\n", m.boot.running ? "UP" : "DOWN",
+               boot_stage_name(m.boot.failed_at));
+        if (getenv("NOM_SPOIL")) printf("[break: %s]\n", what);
+
+        /* One long-lived process owns the session, so cd and bind persist. */
+        char line[512];
+        for (;;) {
+            printf("rescue# ");
+            fflush(stdout);
+            if (!fgets(line, sizeof line, stdin)) break;
+            size_t L = strlen(line);
+            while (L && (line[L-1] == '\n' || line[L-1] == '\r')) line[--L] = 0;
+            if (strcmp(line, "exit") == 0) break;
+            if (strcmp(line, "boot") == 0) {
+                machine_boot(&m);
+                fwrite(m.boot.console.p, 1, m.boot.console.len, stdout);
+                printf("[%s at %s]\n", m.boot.running ? "UP" : "DOWN",
+                       boot_stage_name(m.boot.failed_at));
+                continue;
+            }
+            Buf out = {0};
+            kernel_run(&m, line, &out);
+            fwrite(out.p, 1, out.len, stdout);
+            buf_free(&out);
+        }
+        machine_free(&m);
         return 0;
     }
 

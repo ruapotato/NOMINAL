@@ -40,6 +40,17 @@ typedef unsigned long      uint64_t;
 #define SYS_stat     1026   /* (path, statbuf) -> 0 or -1                   */
 #define SYS_spawn    1027   /* (path, argptr) -> exit code, or negative     */
 #define SYS_getarg   1028   /* (buf, len) -> length of our argument         */
+#define SYS_getpid   1029   /* () -> pid                                    */
+#define SYS_bind     1030   /* (target, at) -> 0 or -1  (plan 9 bind)       */
+#define SYS_unbind   1031   /* (at) -> 0 or -1                              */
+#define SYS_chdir    1032   /* (path) -> 0 or -1                            */
+#define SYS_getcwd   1033   /* (buf, len) -> length                         */
+#define SYS_repo     1034   /* (pkg, path, buf, len) -> bytes of the file as
+                             * the package SHIPPED it. This is the machine
+                             * talking to a package repository, which is off
+                             * the machine -- that is why reinstall can fix a
+                             * disk that has nothing good left on it. */
+#define SYS_chmod    1035   /* (path, mode) -> 0 or -1                      */
 
 #define O_RDONLY  0
 #define O_WRONLY  1

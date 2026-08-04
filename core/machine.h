@@ -10,10 +10,27 @@
 #ifndef NOM_MACHINE_H
 #define NOM_MACHINE_H
 
+#include "ns.h"
+
 #define PKG_MAX        24
 #define PKGFILE_MAX    24
 #define UNIT_MAX       16
 #define CONSOLE_MAX    120
+#define PROC_MAX        32
+
+/* A running program. The table lives in the Machine because the machine IS
+ * the computer: /proc is a view of this, not of anything on the disk, which
+ * is why corrupting the disk cannot fabricate a process. */
+typedef struct {
+    int      pid, ppid;
+    char     name[64];
+    char     arg[128];
+    char     cwd[NOM_PATH_MAX];
+    Ns       ns;
+    bool     alive;
+    int64_t  exit_code;
+    uint64_t icount;
+} ProcInfo;
 
 /* A file as its package shipped it. `hash` is of the pristine content, so a
  * corrupted file is detectable without keeping a second copy of the tree —
@@ -69,6 +86,10 @@ typedef struct {
      * so they do not need copying per machine. */
     const Package *pkg[PKG_MAX];
     int   npkg;
+
+    ProcInfo proc[PROC_MAX];
+    int      nproc;        /* high-water mark, so exited pids stay visible */
+    int      next_pid;
 } Machine;
 
 /* Build a pristine installation. Deterministic: same seed, same machine. */
@@ -87,6 +108,10 @@ const Package *pkg_owns(const Machine *m, const char *path);
 void pkg_verify(Machine *m, const char *name_or_null, Buf *out);
 /* Put a package's files back exactly as shipped. Returns files restored. */
 int  pkg_reinstall(Machine *m, const char *name, Buf *out);
+/* The pristine bytes of one file, as its package shipped it. This is the
+ * repository, and it deliberately lives OFF the machine: it is how a disk
+ * with nothing good left on it can still be repaired. */
+bool pkg_file_content(const Machine *m, const char *pkg, const char *path, Buf *out);
 
 /* --- the breaker, which is the content generator ---------------------- */
 /* Damage one random file one random way. Returns false if the mutation was a

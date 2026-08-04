@@ -19,6 +19,7 @@
 #include "cpu.h"
 #include "abi.h"
 #include "machine.h"
+#include "ns.h"
 #include "kernel.h"
 
 #define FD_MAX      16
@@ -42,8 +43,84 @@ struct Proc {
     Fd       fd[FD_MAX];
     char     arg[NOM_PATH_MAX];
     int      depth;
-    uint64_t icount_total;   /* charged across the whole spawn tree */
+    int      pid;            /* index into m->proc                       */
+    ProcInfo *info;          /* our own row: cwd and namespace live here */
 };
+
+/* Turn whatever a program said into an absolute path in ITS namespace.
+ * Relative paths are resolved against the process's cwd first, because a
+ * process that has chdir'd somewhere expects "ls" to mean where it is. */
+static void resolve(Proc *p, const char *in, char *out, size_t outsz)
+{
+    char abs[NOM_PATH_MAX * 2];
+    vfs_normalize(p->info ? p->info->cwd : "/", in, abs, sizeof abs);
+    if (p->info) ns_resolve(&p->info->ns, abs, out, outsz);
+    else         snprintf(out, outsz, "%s", abs);
+}
+
+/* ------------------------------------------------------------- /proc ----
+ * Synthesised from the process table, never read off the disk -- exactly as
+ * on a real system. Corrupting the customer's filesystem therefore cannot
+ * forge a process, and /proc stays trustworthy when everything else is not.
+ * That is a property worth having in a game about deciding what to believe.
+ */
+
+static bool proc_split(const char *path, int *pid, char *leaf, size_t leafsz,
+                       Proc *self)
+{
+    if (strncmp(path, "/proc", 5) != 0) return false;
+    if (path[5] != '/' ) { *pid = -1; leaf[0] = 0; return path[5] == 0; }
+    const char *p = path + 6;
+    if (strncmp(p, "self", 4) == 0 && (p[4] == 0 || p[4] == '/')) {
+        *pid = self ? self->pid : 1;
+        p += 4;
+    } else {
+        int v = 0; bool any = false;
+        while (*p >= '0' && *p <= '9') { v = v * 10 + (*p++ - '0'); any = true; }
+        if (!any) return false;
+        *pid = v;
+    }
+    if (*p == '/') p++;
+    snprintf(leaf, leafsz, "%s", p);
+    return true;
+}
+
+static ProcInfo *proc_by_pid(Machine *m, int pid)
+{
+    for (int i = 0; i < m->nproc; i++)
+        if (m->proc[i].pid == pid) return &m->proc[i];
+    return NULL;
+}
+
+/* Fill `out` with the contents of a /proc file. Returns false if there is no
+ * such file. */
+static bool proc_read(Machine *m, Proc *self, const char *path, Buf *out)
+{
+    int pid; char leaf[64];
+    if (!proc_split(path, &pid, leaf, sizeof leaf, self)) return false;
+    if (pid < 0) return false;                    /* /proc itself is a dir */
+    ProcInfo *pi = proc_by_pid(m, pid);
+    if (!pi) return false;
+
+    if (strcmp(leaf, "status") == 0) {
+        buf_printf(out, "name %s\n", pi->name);
+        buf_printf(out, "pid %d\n", pi->pid);
+        buf_printf(out, "ppid %d\n", pi->ppid);
+        buf_printf(out, "state %s\n", pi->alive ? "running" : "exited");
+        buf_printf(out, "exit %lld\n", (long long)pi->exit_code);
+        buf_printf(out, "instructions %llu\n", (unsigned long long)pi->icount);
+        return true;
+    }
+    if (strcmp(leaf, "cmdline") == 0) {
+        buf_printf(out, "%s%s%s\n", pi->name, pi->arg[0] ? " " : "", pi->arg);
+        return true;
+    }
+    if (strcmp(leaf, "cwd") == 0) { buf_printf(out, "%s\n", pi->cwd); return true; }
+    if (strcmp(leaf, "ns") == 0)  { ns_print(&pi->ns, out); return true; }
+    return false;
+}
+
+static const char *PROC_FILES[] = { "status", "cmdline", "cwd", "ns", NULL };
 
 /* Read a NUL-terminated string out of guest memory, bounded. */
 static bool guest_str(Cpu *c, uint64_t addr, char *out, size_t outsz)
@@ -65,8 +142,25 @@ static int alloc_fd(Proc *p)
 
 static int64_t sys_open(Proc *p, Cpu *c, uint64_t pathp, int64_t flags)
 {
-    char path[NOM_PATH_MAX];
-    if (!guest_str(c, pathp, path, sizeof path)) return -1;
+    char raw[NOM_PATH_MAX], path[NOM_PATH_MAX];
+    if (!guest_str(c, pathp, raw, sizeof raw)) return -1;
+    resolve(p, raw, path, sizeof path);
+
+    /* /proc is generated, read-only, and not on any disk. */
+    {
+        Buf pb = {0};
+        if (proc_read(p->m, p, path, &pb)) {
+            int pfd = alloc_fd(p);
+            if (pfd < 0) { buf_free(&pb); return -1; }
+            Fd *pf = &p->fd[pfd];
+            memset(pf, 0, sizeof *pf);
+            pf->used = true;
+            snprintf(pf->path, sizeof pf->path, "%s", path);
+            buf_put(&pf->data, pb.p, pb.len);
+            buf_free(&pb);
+            return pfd;
+        }
+    }
 
     bool dangling = false;
     VNode *n = vfs_resolve(&p->m->disk, path, &dangling);
@@ -117,6 +211,7 @@ static int64_t sys_write(Proc *p, Cpu *c, int64_t fd, uint64_t buf, int64_t len)
         return -1;
     }
     Fd *f = &p->fd[fd];
+    if (strncmp(f->path, "/proc", 5) == 0) { nom_free(tmp); return -1; }
     if (f->pos != f->data.len) buf_clear(&f->data);   /* no seeking yet */
     buf_put(&f->data, tmp, (size_t)len);
     f->pos = f->data.len;
@@ -143,8 +238,30 @@ static int64_t sys_close(Proc *p, int64_t fd)
 static int64_t sys_readdir(Proc *p, Cpu *c, uint64_t pathp, int64_t idx,
                            uint64_t buf, int64_t len)
 {
-    char path[NOM_PATH_MAX];
-    if (!guest_str(c, pathp, path, sizeof path)) return -1;
+    char raw[NOM_PATH_MAX], path[NOM_PATH_MAX], name[NOM_NAME_MAX];
+    if (!guest_str(c, pathp, raw, sizeof raw)) return -1;
+    resolve(p, raw, path, sizeof path);
+
+    /* /proc listings come from the process table */
+    {
+        int pid; char leaf[64];
+        if (proc_split(path, &pid, leaf, sizeof leaf, p)) {
+            if (pid < 0) {                        /* ls /proc -> the pids */
+                if (idx < 0 || idx >= p->m->nproc) return -1;
+                snprintf(name, sizeof name, "%d", p->m->proc[idx].pid);
+            } else {                              /* ls /proc/N -> its files */
+                if (!proc_by_pid(p->m, pid)) return -1;
+                int n = 0;
+                while (PROC_FILES[n]) n++;
+                if (idx < 0 || idx >= n) return -1;
+                snprintf(name, sizeof name, "%s", PROC_FILES[idx]);
+            }
+            size_t nl = strlen(name);
+            if ((int64_t)nl + 1 > len) return -1;
+            return cpu_write(c, buf, name, nl + 1) ? (int64_t)nl : -1;
+        }
+    }
+
     VNode *d = vfs_resolve(&p->m->disk, path, NULL);
     if (!d || d->kind != VN_DIR) return -1;
     int64_t i = 0;
@@ -160,8 +277,27 @@ static int64_t sys_readdir(Proc *p, Cpu *c, uint64_t pathp, int64_t idx,
 
 static int64_t sys_stat(Proc *p, Cpu *c, uint64_t pathp, uint64_t sbuf)
 {
-    char path[NOM_PATH_MAX];
-    if (!guest_str(c, pathp, path, sizeof path)) return -1;
+    char raw[NOM_PATH_MAX], path[NOM_PATH_MAX];
+    if (!guest_str(c, pathp, raw, sizeof raw)) return -1;
+    resolve(p, raw, path, sizeof path);
+
+    {
+        int pid; char leaf[64];
+        if (proc_split(path, &pid, leaf, sizeof leaf, p)) {
+            NomStat st; memset(&st, 0, sizeof st);
+            st.mode = 0555;
+            if (pid < 0 || !leaf[0]) { st.kind = NOM_KIND_DIR; }
+            else {
+                Buf pb = {0};
+                if (!proc_read(p->m, p, path, &pb)) { buf_free(&pb); return -1; }
+                st.kind = NOM_KIND_FILE;
+                st.size = (int64_t)pb.len;
+                buf_free(&pb);
+            }
+            return cpu_write(c, sbuf, &st, sizeof st) ? 0 : -1;
+        }
+    }
+
     VNode *ln = vfs_lookup(&p->m->disk, path);
     if (!ln) return -1;
     NomStat st;
@@ -206,11 +342,75 @@ static int64_t kernel_syscall(Cpu *c, int64_t n, int64_t a0, int64_t a1,
                                          (int64_t)NOM_NAME_MAX);
     case SYS_stat:    return sys_stat (p, c, (uint64_t)a0, (uint64_t)a1);
     case SYS_getarg:  return sys_getarg(p, c, (uint64_t)a0, a1);
+    case SYS_getpid:  return p->pid;
+    case SYS_bind: {
+        char t[NOM_PATH_MAX], at[NOM_PATH_MAX];
+        if (!guest_str(c, (uint64_t)a0, t, sizeof t)) return -1;
+        if (!guest_str(c, (uint64_t)a1, at, sizeof at)) return -1;
+        if (!p->info) return -1;
+        char ta[NOM_PATH_MAX * 2], aa[NOM_PATH_MAX * 2];
+        vfs_normalize(p->info->cwd, t, ta, sizeof ta);
+        vfs_normalize(p->info->cwd, at, aa, sizeof aa);
+        return ns_bind(&p->info->ns, ta, aa, NULL, 0) ? 0 : -1;
+    }
+    case SYS_unbind: {
+        char at[NOM_PATH_MAX];
+        if (!guest_str(c, (uint64_t)a0, at, sizeof at)) return -1;
+        if (!p->info) return -1;
+        char aa[NOM_PATH_MAX * 2];
+        vfs_normalize(p->info->cwd, at, aa, sizeof aa);
+        return ns_unbind(&p->info->ns, aa) ? 0 : -1;
+    }
+    case SYS_chdir: {
+        char raw[NOM_PATH_MAX], path[NOM_PATH_MAX];
+        if (!guest_str(c, (uint64_t)a0, raw, sizeof raw)) return -1;
+        resolve(p, raw, path, sizeof path);
+        int pid; char leaf[64];
+        bool isproc = proc_split(path, &pid, leaf, sizeof leaf, p);
+        VNode *d = isproc ? NULL : vfs_resolve(&p->m->disk, path, NULL);
+        if (!isproc && (!d || d->kind != VN_DIR)) return -1;
+        if (p->info) {
+            char abs[NOM_PATH_MAX * 2];
+            vfs_normalize(p->info->cwd, raw, abs, sizeof abs);
+            snprintf(p->info->cwd, sizeof p->info->cwd, "%s", abs);
+        }
+        return 0;
+    }
+    case SYS_getcwd: {
+        const char *cw = p->info ? p->info->cwd : "/";
+        size_t n = strlen(cw);
+        if ((int64_t)n + 1 > a1) return -1;
+        return cpu_write(c, (uint64_t)a0, cw, n + 1) ? (int64_t)n : -1;
+    }
+    case SYS_chmod: {
+        char raw[NOM_PATH_MAX], path[NOM_PATH_MAX];
+        if (!guest_str(c, (uint64_t)a0, raw, sizeof raw)) return -1;
+        resolve(p, raw, path, sizeof path);
+        VNode *n = vfs_lookup(&p->m->disk, path);
+        if (!n) return -1;
+        n->mode = (unsigned)(a1 & 0777);
+        return 0;
+    }
+    case SYS_repo: {
+        char pkg[64], path[NOM_PATH_MAX];
+        if (!guest_str(c, (uint64_t)a0, pkg, sizeof pkg)) return -1;
+        if (!guest_str(c, (uint64_t)a1, path, sizeof path)) return -1;
+        Buf b = {0};
+        bool ok = pkg_file_content(p->m, pkg, path, &b);
+        int64_t r = -1;
+        if (ok) {
+            /* a2 is the buffer; its size is fixed by the ABI at 64k */
+            if (b.len <= (1u << 16) && cpu_write(c, (uint64_t)a2, b.p, b.len))
+                r = (int64_t)b.len;
+        }
+        buf_free(&b);
+        return r;
+    }
     case SYS_spawn: {
         char path[NOM_PATH_MAX], arg[NOM_PATH_MAX] = "";
         if (!guest_str(c, (uint64_t)a0, path, sizeof path)) return SPAWN_ENOENT;
         if (a1 && !guest_str(c, (uint64_t)a1, arg, sizeof arg)) return SPAWN_ENOENT;
-        return kernel_spawn(p->m, path, arg, p->console, p->depth + 1, NULL, 0);
+        return kernel_spawn_p(p->m, path, arg, p->console, p->depth + 1, p, NULL, 0);
     }
     case SYS_exit:
         c->exit_code = a0;
@@ -239,13 +439,22 @@ static int64_t spawn_fail(Buf *console, char *err, size_t errsz, int64_t code,
     return code;
 }
 
-int64_t kernel_spawn(Machine *m, const char *path, const char *arg,
-                     Buf *console, int depth, char *err, size_t errsz)
+int64_t kernel_spawn_as(Machine *m, const char *path, const char *arg,
+                        Buf *console, int depth, Proc *parent,
+                        ProcInfo *as, char *err, size_t errsz)
 {
     if (err && errsz) err[0] = '\0';
     if (depth > SPAWN_DEPTH)
         return spawn_fail(console, err, errsz, SPAWN_EDEPTH,
                           "%s: too many nested programs", path);
+
+    /* The program name is looked up in the PARENT's namespace, because that
+     * is who said it. A child that inherits a bind can be handed a path its
+     * parent could not have resolved, and vice versa. */
+    char rpath[NOM_PATH_MAX];
+    if (parent) resolve(parent, path, rpath, sizeof rpath);
+    else        snprintf(rpath, sizeof rpath, "%s", path);
+    path = rpath;
 
     bool dangling = false;
     VNode *ln = vfs_lookup(&m->disk, path);
@@ -271,12 +480,46 @@ int64_t kernel_spawn(Machine *m, const char *path, const char *arg,
         return spawn_fail(console, err, errsz, SPAWN_ENOEXEC, "%s: %s", path, lerr);
     }
 
+    /* Register the process. A pid is handed out even for a program that is
+     * about to fail, because "pid 7 exited 1" is information the player wants
+     * and a table that only lists successes is a lie. */
     Proc p;
     memset(&p, 0, sizeof p);
     p.m = m;
     p.console = console;
     p.depth = depth;
     snprintf(p.arg, sizeof p.arg, "%s", arg ? arg : "");
+
+    ProcInfo *pi = as;
+    if (as) {
+        /* Running AS an existing process: this is what a shell session is.
+         * cd and bind then change the session's own namespace, which is the
+         * only way they can persist between commands. */
+        snprintf(pi->name, sizeof pi->name, "%s", path);
+        snprintf(pi->arg, sizeof pi->arg, "%s", arg ? arg : "");
+        pi->alive = true;
+        p.pid = pi->pid;
+        p.info = pi;
+    } else if (m->nproc < PROC_MAX) {
+        pi = &m->proc[m->nproc++];
+        memset(pi, 0, sizeof *pi);
+        pi->pid  = m->next_pid ? m->next_pid++ : (m->next_pid = 2, 1);
+        pi->ppid = parent ? parent->pid : 0;
+        pi->alive = true;
+        snprintf(pi->name, sizeof pi->name, "%s", path);
+        snprintf(pi->arg, sizeof pi->arg, "%s", arg ? arg : "");
+        /* A child inherits its parent's view of the world and may then change
+         * its own copy. That is the whole of Plan 9 namespace inheritance. */
+        if (parent && parent->info) {
+            ns_copy(&pi->ns, &parent->info->ns);
+            snprintf(pi->cwd, sizeof pi->cwd, "%s", parent->info->cwd);
+        } else {
+            ns_init(&pi->ns);
+            snprintf(pi->cwd, sizeof pi->cwd, "/");
+        }
+        p.pid = pi->pid;
+        p.info = pi;
+    }
 
     c.syscall = kernel_syscall;
     c.ctx = &p;
@@ -302,6 +545,51 @@ int64_t kernel_spawn(Machine *m, const char *path, const char *arg,
     }
 
     for (int i = 0; i < FD_MAX; i++) if (p.fd[i].used) sys_close(&p, i);
+    if (pi) {
+        pi->alive = (as != NULL);      /* a session outlives its commands */
+        pi->exit_code = (t == TRAP_EXIT) ? c.exit_code : rc;
+        pi->icount = c.icount;
+    }
     cpu_free(&c);
     return rc;
+}
+
+int64_t kernel_spawn_p(Machine *m, const char *path, const char *arg,
+                       Buf *console, int depth, Proc *parent,
+                       char *err, size_t errsz)
+{
+    return kernel_spawn_as(m, path, arg, console, depth, parent, NULL, err, errsz);
+}
+
+int64_t kernel_spawn(Machine *m, const char *path, const char *arg,
+                     Buf *console, int depth, char *err, size_t errsz)
+{
+    return kernel_spawn_as(m, path, arg, console, depth, NULL, NULL, err, errsz);
+}
+
+/* The session: one long-lived process that a person is driving. Its namespace
+ * and working directory persist between commands, because they belong to it
+ * and not to the programs it runs. */
+ProcInfo *kernel_session(Machine *m)
+{
+    for (int i = 0; i < m->nproc; i++)
+        if (m->proc[i].ppid == -1) return &m->proc[i];
+    if (m->nproc >= PROC_MAX) return NULL;
+    ProcInfo *pi = &m->proc[m->nproc++];
+    memset(pi, 0, sizeof *pi);
+    pi->pid  = m->next_pid ? m->next_pid++ : (m->next_pid = 2, 1);
+    pi->ppid = -1;                     /* marks it as the session */
+    pi->alive = true;
+    ns_init(&pi->ns);
+    snprintf(pi->name, sizeof pi->name, "-sh");
+    snprintf(pi->cwd, sizeof pi->cwd, "/");
+    return pi;
+}
+
+int64_t kernel_run(Machine *m, const char *line, Buf *console)
+{
+    ProcInfo *ses = kernel_session(m);
+    char err[NOM_ERR_MAX] = "";
+    return kernel_spawn_as(m, "/bin/sh", line, console, 0, NULL, ses,
+                           err, sizeof err);
 }

@@ -40,9 +40,9 @@ BIN = build/nominal
 # repairing it must always get the machine booting again.
 # The machine, without a main(): this is what both the harness and the
 # GDExtension are built from, so the game and the tests run the same code.
-BF_SRC_LIB = core/util.c core/value.c core/vfs.c core/cpu.c core/kernel.c \
-             core/image.c core/boot.c core/breaker.c
-BF_SRC = $(BF_SRC_LIB) core/bfmain.c
+BF_SRC_LIB = core/util.c core/value.c core/vfs.c core/ns.c core/cpu.c \
+             core/kernel.c core/image.c core/boot.c core/breaker.c
+BF_SRC = $(BF_SRC_LIB) core/serve.c core/bfmain.c
 
 # Regenerate the embedded guest userland. Needs clang+lld for riscv; the
 # generated header is committed so nobody else does.
@@ -76,15 +76,15 @@ build/bf_asan: $(BF_SRC) core/machine.h core/nom.h core/abi.h core/cpu.h \
 	  -Icore -o $@ $(BF_SRC)
 
 test-break: build/bf build/bf_asan
-	@./build/bf --survey 400 | tail -9
+	@./build/bf --survey 300 | tail -9
 	@echo
-	@./build/bf --solve 300 | tail -1
+	@./build/bf --solve 200 | tail -1
 	@echo
-	@./build/bf --peel 150 3 | tail -2
+	@./build/bf --peel 60 3 | tail -2
 	@echo
-	@echo "--- under asan/ubsan, 1 to 5 simultaneous faults:"
-	@for n in 1 2 3 5; do \
-	  ./build/bf_asan --survey 120 $$n 2>&1 | grep -E 'ERROR|SUMMARY|seeds produced' \
+	@echo "--- under asan/ubsan (slower now: every boot runs a real cpu):"
+	@for n in 1 3; do \
+	  ./build/bf_asan --survey 25 $$n 2>&1 | grep -E 'ERROR|SUMMARY|seeds produced' \
 	    | sed "s/^/  $$n faults: /"; \
 	done
 
