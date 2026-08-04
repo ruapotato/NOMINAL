@@ -150,8 +150,14 @@ static void nominal_load_model(void) { }
 /* One Godot object == one customer machine: a disk, a package database and a
  * boot chain that really runs the programs on that disk. */
 typedef struct {
-    Machine m;
+    Machine m;          /* THE CUSTOMER'S machine: broken, reached by rcon  */
+    /* YOUR WORKSTATION. A healthy install of the same system that is never
+     * corrupted, so "compare it against mine" is a real move. It is also
+     * where rcon runs from, because a service processor is reached over the
+     * network from somewhere -- and that somewhere is a computer too. */
+    Machine desk;
     bool    installed;
+    bool    desk_up;
     Buf     scratch;
 } Station;
 
@@ -190,11 +196,27 @@ static void station_free(void *userdata, GDExtensionClassInstancePtr instance)
 
 typedef void (*Bound)(Station *st, const GDExtensionConstTypePtr *args, void *ret);
 
+static void ensure_desk(Station *st, uint64_t seed);
+
 static void reset_to(Station *st, uint64_t seed)
 {
     if (st->installed) machine_free(&st->m);
     machine_install(&st->m, seed);
     st->installed = true;
+    ensure_desk(st, seed);
+}
+
+/* The workstation, brought up once and re-pointed at each new ticket. */
+static void ensure_desk(Station *st, uint64_t seed)
+{
+    if (!st->desk_up) {
+        machine_install(&st->desk, 1);
+        machine_boot(&st->desk);
+        st->desk_up = true;
+    }
+    st->desk.peer = &st->m;
+    snprintf(st->desk.peer_addr, sizeof st->desk.peer_addr,
+             "10.0.2.%d", 60 + (int)(seed % 40));
 }
 
 /* install(int seed) -> String — a healthy machine. Returns its id. */
@@ -217,6 +239,11 @@ static void m_take_ticket(Station *st, const GDExtensionConstTypePtr *args, void
     st->installed = true;
     char what[512];
     machine_break(&st->m, seed, faults < 1 ? 1 : faults, what, sizeof what);
+    /* AND YOUR OWN MACHINE. Without this the workstation was a zeroed struct
+     * and the first command typed into your own terminal ran a kernel on it,
+     * which crashes Godot outright -- no GDScript error, just a native
+     * backtrace, because the fault is three layers below the script. */
+    ensure_desk(st, seed);
     c_to_gdstring(ret, st->m.id);
 }
 
@@ -376,6 +403,31 @@ static void m_on_rescue(Station *st, const GDExtensionConstTypePtr *args, void *
 /* sh(String line) -> String — run one command line on the machine, through
  * the same kernel_run() the socket uses. The desktop therefore cannot do
  * anything a remote player cannot, which is the point. */
+/* sh_on(int which, String line) -> String
+ *
+ * which 0 = YOUR workstation, 1 = the customer's machine.
+ *
+ * A terminal window is bound to one machine or the other, which is what makes
+ * `rcon connect` able to open a NEW terminal on their box while your own
+ * shell stays alive beside it -- the thing a support engineer actually does. */
+static void m_sh_on(Station *st, const GDExtensionConstTypePtr *args, void *ret)
+{
+    int64_t which = *(const int64_t *)args[0];
+    char line[2048];
+    gdstring_to_c(args[1], line, sizeof line);
+    Buf out; buf_init(&out);
+    kernel_run(which ? &st->m : &st->desk, line, &out);
+    c_to_gdstring(ret, out.p ? out.p : "");
+    buf_free(&out);
+}
+
+/* peer_addr() -> String: what the customer reads off the sticker. */
+static void m_peer_addr(Station *st, const GDExtensionConstTypePtr *args, void *ret)
+{
+    (void)args;
+    c_to_gdstring(ret, st->desk.peer_addr);
+}
+
 static void m_sh(Station *st, const GDExtensionConstTypePtr *args, void *ret)
 {
     char line[2048];
@@ -464,6 +516,8 @@ static const MethodDef METHODS[] = {
     { "on_rescue",   m_on_rescue,   0, { 0 },                              GDEXTENSION_VARIANT_TYPE_BOOL },
     { "sh",          m_sh,          1, { GDEXTENSION_VARIANT_TYPE_STRING }, GDEXTENSION_VARIANT_TYPE_STRING },
     { "ask",         m_ask,         1, { GDEXTENSION_VARIANT_TYPE_STRING }, GDEXTENSION_VARIANT_TYPE_STRING },
+    { "sh_on",       m_sh_on,       2, { GDEXTENSION_VARIANT_TYPE_INT, GDEXTENSION_VARIANT_TYPE_STRING }, GDEXTENSION_VARIANT_TYPE_STRING },
+    { "peer_addr",   m_peer_addr,   0, { 0 },                              GDEXTENSION_VARIANT_TYPE_STRING },
     { "colleague",   m_colleague,   2, { GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_STRING }, GDEXTENSION_VARIANT_TYPE_STRING },
     { "customer_name", m_customer_name, 0, { 0 },            GDEXTENSION_VARIANT_TYPE_STRING },
 };

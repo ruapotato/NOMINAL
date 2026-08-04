@@ -27,8 +27,11 @@ var accent := Color("#6fdc96")
 var on_command: Callable = func(_s: String) -> String: return ""
 var prompt_fn: Callable = func() -> String: return "$ "
 
-var lines: PackedStringArray = ["NomnixOS support terminal.",
-	"Everything here runs on the customer's machine.", ""]
+# Set by whoever opens the window, because a terminal on YOUR workstation and
+# a console on somebody else's machine are not the same thing and must not
+# claim to be.
+var banner: PackedStringArray = []
+var lines: PackedStringArray = []
 var cur := ""              # the line being typed
 var caret := 0             # where in it the cursor is
 var history: PackedStringArray = []
@@ -43,6 +46,8 @@ const MAX_LINES := 4000
 
 
 func _ready() -> void:
+	if lines.is_empty():
+		lines = banner.duplicate()
 	focus_mode = Control.FOCUS_ALL
 	mouse_filter = Control.MOUSE_FILTER_STOP
 	if mono == null:

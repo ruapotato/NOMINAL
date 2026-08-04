@@ -56,6 +56,13 @@ func take_focus() -> void:
 	grab_focus()
 
 
+# The first thing they say, before you have asked anything -- the message
+# that was waiting in the notification.
+func seed_first(text: String) -> void:
+	logs[0].append([cust_name, text])
+	queue_redraw()
+
+
 func reset(name: String) -> void:
 	cust_name = name
 	logs[0] = [["", "%s is on the line. They are not technical, and they are the only pair of hands in the room." % name]]
