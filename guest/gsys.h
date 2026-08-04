@@ -45,6 +45,24 @@ static inline int  g_bootsec(int write) { return (int)sysc(SYS_bootsec, write, 0
 static inline i64  g_rootuuid(char *b, u64 n) { return sysc(SYS_rootuuid, (i64)b, (i64)n, 0); }
 static inline i64  g_dns(const char *n, char *b, u64 c) { return sysc(SYS_dns, (i64)n, (i64)b, (i64)c); }
 static inline i64  g_http(const char *ip, const char *p, char *b) { return sysc(SYS_http, (i64)ip, (i64)p, (i64)b); }
+static inline i64  g_pipe(const char *p, const char *a) { return sysc(SYS_pipe, (i64)p, (i64)a, 0); }
+static inline void g_pipeout(void) { sysc(SYS_pipeout, 0, 0, 0); }
+
+/* Read all of stdin. Filters use this when they are given no file, which is
+ * what makes them usable in a pipeline. */
+static inline i64 g_slurp_stdin(char *buf, u64 cap)
+{
+    u64 got = 0;
+    for (;;) {
+        i64 n = sysc(SYS_read, 0, (i64)(buf + got), (i64)(cap - 1 - got));
+        if (n <= 0) break;
+        got += (u64)n;
+        if (got >= cap - 1) break;
+    }
+    buf[got] = 0;
+    return (i64)got;
+}
+
 static inline i64  g_svcstart(const char *p, const char *n) { return sysc(SYS_svcstart, (i64)p, (i64)n, 0); }
 static inline i64  g_readlink(const char *p, char *b, u64 n) { return sysc(SYS_readlink, (i64)p, (i64)b, (i64)n); }
 static inline int  g_getpid(void) { return (int)sysc(SYS_getpid, 0, 0, 0); }

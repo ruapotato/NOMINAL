@@ -183,10 +183,17 @@ Legend: **[done]** built · **[next]** in progress or immediately next ·
 - **[todo]** signals, so a daemon can be told to reload or stop.
 - **[todo]** `restart: on-failure` actually restarting, and the "respawning
   too fast" loop that follows when it cannot.
-- **[todo]** pipes and redirection for child processes in the shell.
+- **[done]** pipes. `a | b | c` runs each stage to completion with its output
+  as the next one's input — no concurrency, which is right, because these are
+  filters and a filter that has not finished has nothing to say. `pkg verify |
+  grep CHANGED` and `ls /etc | wc` both work. Builtins cannot be stages
+  (`cd` changes this process and there is nothing to pipe it to), so `echo` is
+  now a real program as well as a builtin.
+- **[todo]** redirection for child processes — still only `echo` can redirect,
+  because handing a child a file descriptor needs a real fork/exec.
 - **[todo]** globbing and quoting.
-- **[todo]** a `logs` surface worth grepping: real `/var/log/messages` written
-  during boot, so `grep` is a diagnostic rather than a toy.
+- **[done]** `/var/log/messages` is written by a real syslogd at every boot, so
+  `grep` over it is a diagnostic. More of the boot should log to it.
 
 ---
 

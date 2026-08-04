@@ -5,9 +5,15 @@ static char arg[256], buf[65536], line[1024];
 void _start(void){
     g_getarg(arg, sizeof arg);
     char *v[GARGS];
-    if (g_argv(arg, v) < 2) { g_putln("usage: grep <text> <file>"); g_exit(1); }
-    i64 n = g_slurp(v[1], buf, sizeof buf);
-    if (n < 0) { g_puts("grep: "); g_puts(v[1]); g_putln(": cannot read"); g_exit(1); }
+    int n_args = g_argv(arg, v);
+    if (n_args < 1) { g_putln("usage: grep <text> [file]   (reads stdin if no file)"); g_exit(1); }
+    i64 n;
+    if (n_args >= 2) {
+        n = g_slurp(v[1], buf, sizeof buf);
+        if (n < 0) { g_puts("grep: "); g_puts(v[1]); g_putln(": cannot read"); g_exit(1); }
+    } else {
+        n = g_slurp_stdin(buf, sizeof buf);
+    }
     u64 pl = g_strlen(v[0]);
     int hits = 0;
     char *p = buf;

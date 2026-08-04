@@ -49,6 +49,16 @@ struct Proc {
     int      depth;
     int      pid;            /* index into m->proc                       */
     ProcInfo *info;          /* our own row: cwd and namespace live here */
+
+    /* PIPES. A process holds one buffer that is both the output of the last
+     * stage it ran and the input of the next. `a | b | c` is three children
+     * in a row, each reading what the previous one wrote. There is no
+     * concurrency and none is needed: these are filters, not conversations. */
+    Buf      pipe;
+    Buf     *stdin_from;     /* fd 0 reads from here, if set              */
+    size_t   stdin_pos;
+    bool     capture;        /* fd 1 goes to the parent's pipe, not the console */
+    Buf     *capture_into;
 };
 
 /* Which filesystem is a path actually on, and where on it?
@@ -271,6 +281,15 @@ static int64_t sys_open(Proc *p, Cpu *c, uint64_t pathp, int64_t flags)
 
 static int64_t sys_read(Proc *p, Cpu *c, int64_t fd, uint64_t buf, int64_t len)
 {
+    if (fd == 0) {                                 /* stdin, from a pipe */
+        if (!p->stdin_from || len < 0) return 0;
+        size_t left = p->stdin_from->len > p->stdin_pos
+                    ? p->stdin_from->len - p->stdin_pos : 0;
+        size_t n = (size_t)len < left ? (size_t)len : left;
+        if (n && !cpu_write(c, buf, p->stdin_from->p + p->stdin_pos, n)) return -1;
+        p->stdin_pos += n;
+        return (int64_t)n;
+    }
     if (fd < 3 || fd >= FD_MAX || !p->fd[fd].used || len < 0) return -1;
     Fd *f = &p->fd[fd];
     size_t left = f->data.len > f->pos ? f->data.len - f->pos : 0;
@@ -286,8 +305,14 @@ static int64_t sys_write(Proc *p, Cpu *c, int64_t fd, uint64_t buf, int64_t len)
     char *tmp = nom_alloc((size_t)len + 1);
     if (!cpu_read(c, buf, tmp, (size_t)len)) { nom_free(tmp); return -1; }
 
-    if (fd == 1 || fd == 2) {                     /* the console */
-        if (p->console) buf_put(p->console, tmp, (size_t)len);
+    if (fd == 1 || fd == 2) {
+        /* A captured stdout goes to the pipe. stderr always goes to the
+         * console, because an error message that vanishes into a pipe is how
+         * you lose an afternoon. */
+        if (fd == 1 && p->capture && p->capture_into)
+            buf_put(p->capture_into, tmp, (size_t)len);
+        else if (p->console)
+            buf_put(p->console, tmp, (size_t)len);
         nom_free(tmp);
         return len;
     }
@@ -497,6 +522,24 @@ static int64_t kernel_syscall(Cpu *c, int64_t n, int64_t a0, int64_t a1,
         buf_free(&b);
         return r;
     }
+    case SYS_pipe: {
+        /* One stage of a pipeline. The child reads what this process's pipe
+         * currently holds and writes into a fresh buffer, which then becomes
+         * the pipe -- so the next stage reads this one's output. */
+        char path[NOM_PATH_MAX], arg[NOM_PATH_MAX] = "";
+        if (!guest_str(c, (uint64_t)a0, path, sizeof path)) return SPAWN_ENOENT;
+        if (a1 && !guest_str(c, (uint64_t)a1, arg, sizeof arg)) return SPAWN_ENOENT;
+        Buf next = {0};
+        int64_t rc = kernel_spawn_piped(p->m, path, arg, p->console, p->depth + 1,
+                                        p, &p->pipe, &next);
+        buf_free(&p->pipe);
+        p->pipe = next;
+        return rc;
+    }
+    case SYS_pipeout:
+        if (p->console && p->pipe.len) buf_put(p->console, p->pipe.p, p->pipe.len);
+        buf_clear(&p->pipe);
+        return 0;
     case SYS_svcstart: {
         char path[NOM_PATH_MAX], name[64] = "";
         if (!guest_str(c, (uint64_t)a0, path, sizeof path)) return -1;
@@ -653,6 +696,29 @@ static int64_t spawn_fail(Buf *console, char *err, size_t errsz, int64_t code,
 
 int64_t kernel_spawn_as(Machine *m, const char *path, const char *arg,
                         Buf *console, int depth, Proc *parent,
+                        ProcInfo *as, char *err, size_t errsz);
+
+/* Set on the next spawn, consumed by it. Threading two more parameters
+ * through every caller of kernel_spawn_as would be worse than this, and the
+ * whole thing is single-threaded. */
+static Buf *g_next_stdin;
+static Buf *g_next_capture;
+
+int64_t kernel_spawn_piped(Machine *m, const char *path, const char *arg,
+                           Buf *console, int depth, Proc *parent,
+                           Buf *in, Buf *out)
+{
+    g_next_stdin = in;
+    g_next_capture = out;
+    int64_t rc = kernel_spawn_as(m, path, arg, console, depth, parent, NULL,
+                                 NULL, 0);
+    g_next_stdin = NULL;
+    g_next_capture = NULL;
+    return rc;
+}
+
+int64_t kernel_spawn_as(Machine *m, const char *path, const char *arg,
+                        Buf *console, int depth, Proc *parent,
                         ProcInfo *as, char *err, size_t errsz)
 {
     if (err && errsz) err[0] = '\0';
@@ -726,6 +792,10 @@ int64_t kernel_spawn_as(Machine *m, const char *path, const char *arg,
     p.console = console;
     p.depth = depth;
     snprintf(p.arg, sizeof p.arg, "%s", arg ? arg : "");
+    /* Pipeline plumbing, set by kernel_spawn_piped and consumed here. */
+    p.stdin_from   = g_next_stdin;
+    p.capture_into = g_next_capture;
+    p.capture      = (g_next_capture != NULL);
 
     /* Reap. The table is finite and a real session runs hundreds of commands;
      * when it filled, new processes got no ProcInfo at all and silently lost
@@ -800,6 +870,7 @@ int64_t kernel_spawn_as(Machine *m, const char *path, const char *arg,
     }
 
     for (int i = 0; i < FD_MAX; i++) if (p.fd[i].used) sys_close(&p, i);
+    buf_free(&p.pipe);
     if (pi) {
         pi->alive = (as != NULL);      /* a session outlives its commands */
         pi->exit_code = (t == TRAP_EXIT) ? c.exit_code : rc;

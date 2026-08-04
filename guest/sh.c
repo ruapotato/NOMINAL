@@ -60,6 +60,54 @@ static int is_for_impl(const char *s2)
 
 static int is_for(const char *s2) { return is_for_impl(s2); }
 
+static const char *PATHDIRS[] = { "/bin", "/usr/bin", "/sbin", "/usr/sbin", 0 };
+
+/* a | b | c
+ *
+ * Each stage runs to completion and its output becomes the next stage's
+ * input. There is no concurrency, which is right: these are filters, and a
+ * filter that has not finished has nothing to say yet. */
+static int run_pipeline(char *s2)
+{
+    int rc = 0;
+    char *stage = s2;
+    while (stage) {
+        char *bar = stage;
+        while (*bar && *bar != '|') bar++;
+        char save = *bar;
+        *bar = 0;
+        char *one = g_trim(stage);
+        if (*one) {
+            /* split verb from arguments for this stage */
+            char *rest = one;
+            while (*rest && *rest != ' ' && *rest != '\t') rest++;
+            if (*rest) { *rest++ = 0; while (*rest == ' ') rest++; }
+            static char full[256];
+            NomStat st;
+            const char *prog = 0;
+            if (one[0] == '/') { if (g_stat(one, &st) == 0) prog = one; }
+            else {
+                for (int i = 0; PATHDIRS[i] && !prog; i++) {
+                    g_copy(full, PATHDIRS[i], sizeof full);
+                    g_cat(full, "/", sizeof full);
+                    g_cat(full, one, sizeof full);
+                    if (g_stat(full, &st) == 0) prog = full;
+                }
+            }
+            if (!prog) {
+                g_puts(one);
+                g_putln(": command not found");
+                return 127;
+            }
+            rc = (int)g_pipe(prog, rest);
+        }
+        *bar = save;
+        stage = save ? bar + 1 : 0;
+    }
+    g_pipeout();
+    return rc;
+}
+
 static int run_list(char *s2)
 {
     int rc = 0;
@@ -79,7 +127,6 @@ static int run_list(char *s2)
     return rc;
 }
 
-static const char *PATHDIRS[] = { "/bin", "/usr/bin", "/sbin", "/usr/sbin", 0 };
 
 static int try_exec(const char *prog, const char *rest)
 {
@@ -183,6 +230,13 @@ static int run_line(char *cmd0)
         return 0;
     }
 
+    /* A pipeline is handled as a whole. Builtins do not pipe: cd and bind
+     * change this process, and there is nothing to pipe them to. */
+    for (char *q = cmd; *q; q++) {
+        if (*q != '|') continue;
+        return run_pipeline(cmd);
+    }
+
     /* pull off a trailing > or >> before the verb is parsed */
     int append = 0;
     char *redir = 0;
@@ -276,7 +330,8 @@ static int run_line(char *cmd0)
         g_putln("builtins:  cd  pwd  bind  unbind  echo  help");
         g_putln("           for i in a b c; do ... ; done      $i expands");
         g_putln("           echo text > file        redirect (append with >>)");
-        g_putln("files:     ls cat cp mv rm touch grep head stat chmod");
+        g_putln("           a | b | c               pipelines");
+        g_putln("files:     ls cat cp mv rm touch grep head wc stat chmod sed");
         g_putln("system:    ps ns mount umount chroot df uname whoami pkg");
         g_putln("network:   links <host>[/path]      try links wiki.hamnix.org");
         g_putln("");

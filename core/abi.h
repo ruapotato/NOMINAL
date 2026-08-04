@@ -55,6 +55,11 @@ typedef unsigned long      uint64_t;
 #define SYS_umount   1037   /* (at) -> 0 or -1                              */
 #define SYS_chroot   1038   /* (path) -> 0 or -1                            */
 #define SYS_mounts   1039   /* (buf, len) -> bytes: the mount table         */
+#define SYS_pipe     1048   /* (path, arg) -> exit code. Runs the program with
+                             * this process's pipe buffer as its stdin and
+                             * captures its stdout back into it, which is all
+                             * a pipeline is.                              */
+#define SYS_pipeout  1049   /* () -> flush the pipe buffer to the console  */
 #define SYS_svcstart 1047   /* (path, name) -> 0 running, negative if it would
                              * not start. Unlike spawn, the program STAYS
                              * running afterwards.                         */

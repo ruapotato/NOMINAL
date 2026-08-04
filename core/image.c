@@ -314,13 +314,15 @@ static const Package PKG_SHELL = {
       { "/bin/touch", NULL, 0755, NULL },
       { "/bin/grep", NULL, 0755, NULL },
       { "/bin/sed", NULL, 0755, NULL },
+      { "/bin/echo", NULL, 0755, NULL },
+      { "/bin/wc", NULL, 0755, NULL },
       { "/bin/head", NULL, 0755, NULL },
       { "/bin/uname", NULL, 0755, NULL },
       { "/bin/whoami", NULL, 0755, NULL },
       { "/bin/df", NULL, 0755, NULL },
       { "/bin/false", "#!false\n", 0755, NULL },
       { "/bin/true",  "#!true\n",  0755, NULL },
-    }, 26
+    }, 28
 };
 
 
@@ -643,6 +645,8 @@ static const Package PKG_RESCUE_TOOLS = {
       { "/bin/touch", NULL, 0755, NULL },
       { "/bin/grep", NULL, 0755, NULL },
       { "/bin/sed", NULL, 0755, NULL },
+      { "/bin/echo", NULL, 0755, NULL },
+      { "/bin/wc", NULL, 0755, NULL },
       { "/bin/head", NULL, 0755, NULL },
       { "/bin/uname", NULL, 0755, NULL },
       { "/bin/whoami", NULL, 0755, NULL },
@@ -654,7 +658,7 @@ static const Package PKG_RESCUE_TOOLS = {
       { "/usr/sbin/zbl-install", NULL, 0755, NULL },
       { "/usr/sbin/zbl-mkconfig", NULL, 0755, NULL },
       { "/usr/bin/mkinitrd", NULL, 0755, NULL },
-    }, 28
+    }, 30
 };
 
 static const Package *RESCUE_IMAGE[] = { &PKG_RESCUE_BASE, &PKG_RESCUE_TOOLS };
@@ -747,6 +751,10 @@ void image_generated(const Machine *m, const char *path, Buf *out)
         buf_put(out, (const char *)GUEST_GREP, GUEST_GREP_LEN);
     else if (strcmp(path, "/bin/sed") == 0)
         buf_put(out, (const char *)GUEST_SED, GUEST_SED_LEN);
+    else if (strcmp(path, "/bin/echo") == 0)
+        buf_put(out, (const char *)GUEST_ECHO, GUEST_ECHO_LEN);
+    else if (strcmp(path, "/bin/wc") == 0)
+        buf_put(out, (const char *)GUEST_WC, GUEST_WC_LEN);
     else if (strcmp(path, "/bin/head") == 0)
         buf_put(out, (const char *)GUEST_HEAD, GUEST_HEAD_LEN);
     else if (strcmp(path, "/bin/uname") == 0)

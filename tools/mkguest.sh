@@ -25,12 +25,19 @@ TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
   echo
 } > "$TMP/h"
 
-for p in init rc svcinit login sh ls cat ps ns pkg stat chmod mount umount chroot links cp mv rm touch grep head uname whoami df man zbl-install zbl-mkconfig mkinitrd getty fsck mountall sed syslogd netd udevd crond ntpd httpd nft auditd sshd postfix; do
+for p in init rc svcinit login sh ls cat ps ns pkg stat chmod mount umount chroot links cp mv rm touch grep head uname whoami df man zbl-install zbl-mkconfig mkinitrd getty fsck mountall sed wc echo syslogd netd udevd crond ntpd httpd nft auditd sshd postfix; do
     # -Ttext keeps every program at a fixed load address: same layout every
     # run, on every host, which is one more thing determinism does not have
     # to be careful about.
-    $CC $CFLAGS -fuse-ld=lld -Wl,-Ttext=0x10000 -Wl,--build-id=none \
-        -o "$TMP/$p.elf" "guest/$p.c"
+    # A guest program that fails to compile used to leave the PREVIOUS
+    # guestbin.h in place and say nothing useful, so the game silently kept
+    # running the old binary and the change appeared to have no effect. Say
+    # so, loudly, and stop.
+    if ! $CC $CFLAGS -fuse-ld=lld -Wl,-Ttext=0x10000 -Wl,--build-id=none \
+             -o "$TMP/$p.elf" "guest/$p.c"; then
+        echo "mkguest: FAILED to build guest/$p.c -- $OUT left UNCHANGED" >&2
+        exit 1
+    fi
     python3 - "$TMP/$p.elf" "$p" >> "$TMP/h" <<'PY'
 import sys
 data = open(sys.argv[1], 'rb').read()

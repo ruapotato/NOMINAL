@@ -23,6 +23,11 @@ int64_t kernel_spawn_p(Machine *m, const char *path, const char *arg,
  * This is the ONLY entry point the terminal, the socket and the desktop use,
  * so none of them can diverge from the others. */
 int64_t kernel_run(Machine *m, const char *line, Buf *console);
+/* One stage of a pipeline: `in` becomes the child's stdin, its stdout is
+ * captured into `out`. */
+int64_t kernel_spawn_piped(Machine *m, const char *path, const char *arg,
+                           Buf *console, int depth, Proc *parent,
+                           Buf *in, Buf *out);
 ProcInfo *kernel_session(Machine *m);
 
 /* The TCP bench: the entire game, with no GUI in the process at all. */
