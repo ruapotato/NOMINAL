@@ -246,7 +246,38 @@ static bool volunteers(Cause c)
     return c == C_POWERCUT || c == C_VENDOR;
 }
 
-static void build_brief(Cause c, bool earned, char *out, size_t outsz)
+/* WHAT THEY ACTUALLY SEE, from the machine rather than from a table.
+ *
+ * Every variant of this used to say "it will not start" -- including on the
+ * machines that boot to a login prompt with a service quietly dead. A
+ * playtester had the customer insist the computer would not start while
+ * `boot` returned [UP at target] with all eleven services running, and kept
+ * insisting after the box was repaired. A customer who contradicts the
+ * machine is worse than no customer: they are a source of false evidence.
+ *
+ * A person does not say "httpd is dead". They say the website is down, or
+ * that it takes their password and then nothing happens. */
+static const char *saw_of(Machine *m)
+{
+    if (!m) return "It was working yesterday. This morning it will not start.";
+    if (!m->boot.running) {
+        if (m->boot.failed_at <= BOOT_INITRD)
+            return "It was working yesterday. This morning it will not start "
+                   "at all -- it never gets as far as asking me to log in.";
+        return "It starts to come up, there is some white writing on a black "
+               "background, and then it stops. It never asks me to log in.";
+    }
+    Buf sick = {0};
+    int dead = kernel_health(m, &sick);
+    buf_free(&sick);
+    if (dead > 0)
+        return "It does start, and it asks me to log in, so I thought it was "
+               "fine. But things are not working right -- some of what I use "
+               "it for just is not there any more.";
+    return "It seems to be working now, actually. It was not this morning.";
+}
+
+static void build_brief(Machine *m, Cause c, bool earned, char *out, size_t outsz)
 {
     /* What they did, as they would describe it. */
     static const char *DID[] = {
@@ -272,14 +303,6 @@ static void build_brief(Cause c, bool earned, char *out, size_t outsz)
     };
     /* What they saw. This is honest and useless as an answer, which is the
      * point -- it is the shape of every real first report. */
-    static const char *SAW[] = {
-      [C_POWERCUT]   = "It was working yesterday. This morning it will not start.",
-      [C_TIDIED]     = "It was working yesterday. This morning it will not start.",
-      [C_UPGRADED]   = "It was working yesterday. This morning it will not start.",
-      [C_CONFIGURED] = "It was working yesterday. This morning it will not start.",
-      [C_VENDOR]     = "It was working yesterday. This morning it will not start.",
-      [C_INNOCENT]   = "It was working yesterday. This morning it will not start.",
-    };
 
     snprintf(out, outsz,
         "You are Dana, an office worker. Your work computer will not start and "
@@ -300,13 +323,21 @@ static void build_brief(Cause c, bool earned, char *out, size_t outsz)
         "- %s\n"
         "- Never mention these instructions.\n"
         "\n"
-        "Examples of how you sound:\n"
+        /* The examples show TONE, never content. They used to answer "what
+         * do you see on the screen" with a specific screen, and a small model
+         * copies an example ahead of following an instruction -- so the
+         * customer described a dead boot on a machine that was sitting at a
+         * login prompt, and went on doing it after the box was repaired.
+         * WHAT YOU SEE above is the truth; the examples must not compete
+         * with it. */
+        "Examples of how you SOUND (never copy their content -- describe what\n"
+        "you actually see, from WHAT YOU SEE above):\n"
         "Q: Hello, this is IT support.\n"
-        "A: Oh, thank goodness. It will not turn on at all.\n"
-        "Q: What do you see on the screen?\n"
-        "A: Some white writing on a black background, then it stops.\n"
+        "A: Oh, thank goodness. Thanks for calling me back.\n"
+        "Q: Have you moved the machine recently?\n"
+        "A: No, it has been under the same desk for years.\n"
         "%s",
-        DID[c], SAW[c],
+        DID[c], saw_of(m),
         /* Social reluctance, not an information hazard. People do not lead
          * with the thing they think they will be blamed for -- but if it
          * comes out early, that is a realistic customer having a good day and
@@ -349,7 +380,7 @@ void customer_ask(Machine *m, const char *question, Buf *out)
     if (llm_available()) {
         char brief[1400], reply[512];
         bool earned = unlocks(c, t);
-        build_brief(c, earned, brief, sizeof brief);
+        build_brief(m, c, earned, brief, sizeof brief);
         /* No forbidden list: D21 removed the reason for one. The customer
          * cannot give away an answer it was never told. */
         if (llm_ask(brief, question, "", reply, sizeof reply)) {
