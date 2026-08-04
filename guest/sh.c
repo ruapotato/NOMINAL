@@ -108,6 +108,56 @@ static int run_pipeline(char *s2)
     return rc;
 }
 
+/* `a && b` and `a || b`, with the short-circuit that makes them worth having.
+ *
+ * Neither was parsed. `echo a && echo b` printed the literal text
+ * "a && echo b", because `&&` was never an operator and echo simply received
+ * it as an argument -- which is the sort of thing that makes a shell feel
+ * fake. They bind tighter than `;` here, as they do everywhere.
+ *
+ * Quotes are respected while scanning, so `grep "a && b" f` is one command. */
+static int run_andor(char *s2)
+{
+    int rc = 0;
+    while (*s2) {
+        char *p = s2;
+        char *op = 0;
+        int is_and = 0;
+        char q = 0;
+        for (; *p; p++) {
+            if (q)                      { if (*p == q) q = 0; continue; }
+            if (*p == '"' || *p == '\'') { q = *p; continue; }
+            if (p[0] == '&' && p[1] == '&') { op = p; is_and = 1; break; }
+            if (p[0] == '|' && p[1] == '|') { op = p; is_and = 0; break; }
+        }
+        if (op) *op = 0;
+        char *one = g_trim(s2);
+        if (*one) rc = run_line(one);
+        if (!op) return rc;
+        s2 = op + 2;
+        /* Short-circuit: && skips the rest on failure, || on success. */
+        if (( is_and && rc != 0) || (!is_and && rc == 0)) {
+            /* Skip to the next operator of the OPPOSITE persuasion, or the
+             * end. Chained `a || b || c` must not run b AND c. */
+            while (*s2) {
+                char *n = s2, qq = 0;
+                int found = 0;
+                for (; *n; n++) {
+                    if (qq)                        { if (*n == qq) qq = 0; continue; }
+                    if (*n == '"' || *n == '\'')   { qq = *n; continue; }
+                    if ((n[0] == '&' && n[1] == '&') ||
+                        (n[0] == '|' && n[1] == '|')) { found = 1; break; }
+                }
+                if (!found) return rc;
+                int next_and = (n[0] == '&');
+                s2 = n + 2;
+                if (( is_and && !next_and) || (!is_and && next_and)) break;
+            }
+        }
+    }
+    return rc;
+}
+
 static int run_list(char *s2)
 {
     int rc = 0;
@@ -115,12 +165,18 @@ static int run_list(char *s2)
      * would tear `for i in a b; do x; done` into three broken fragments. */
     if (is_for(s2)) return run_line(s2);
     while (*s2) {
-        char *semi = s2;
-        while (*semi && *semi != ';') semi++;
+        char *semi = s2, q = 0;
+        for (; *semi; semi++) {
+            if (q)                       { if (*semi == q) q = 0; continue; }
+            if (*semi == '"' || *semi == '\'') { q = *semi; continue; }
+            if (*semi == ';') break;
+        }
         char save = *semi;
         *semi = 0;
         char *one = g_trim(s2);
-        if (*one) { rc = run_line(one); if (rc != 0) return rc; }
+        /* `;` runs the next command whatever happened to the last one. It
+         * used to stop on failure, which is `&&` wearing a semicolon. */
+        if (*one) rc = run_andor(one);
         *semi = save;
         s2 = save ? semi + 1 : semi;
     }
