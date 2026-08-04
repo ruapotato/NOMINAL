@@ -235,6 +235,10 @@ static void build_brief(Cause c, bool earned, char *out, size_t outsz)
 
 void customer_ask(Machine *m, const char *question, Buf *out)
 {
+    /* A request to DO something is not a question, and answering it with
+     * dialogue would be useless. Checked first. */
+    if (customer_do(m, question, out)) { m->cust.asked++; return; }
+
     Topic t = topic_of(question);
     Cause c = (Cause)m->cust.cause;
     m->cust.asked++;
@@ -350,6 +354,135 @@ void customer_ask(Machine *m, const char *question, Buf *out)
     default:
         buf_puts(out, "  \"I could not tell you, sorry.\"\n");
         break;
+    }
+}
+
+/* ------------------------------------------------------------- actions --
+ *
+ * The other half of a support call. The technician is on the phone and the
+ * machine is three hundred miles away, so anything physical has to be asked
+ * for: press the power button, read out what is on the screen, put the disc
+ * in. A customer who will not read their password out loud is an obstacle
+ * with a human reason behind it, and that is a better obstacle than a locked
+ * door.
+ *
+ * These are matched here rather than by the model, for the same reason topic
+ * classification is: a table does it perfectly and a small model does not.
+ * The model supplies the words, the table supplies the effect.
+ */
+typedef enum {
+    A_NONE = 0, A_POWER, A_SCREEN, A_DISC, A_CABLE, A_TYPEPW, A_SITDOWN
+} Action;
+
+static Action action_of(const char *q)
+{
+    struct { Action a; const char *words[10]; } MAP[] = {
+      { A_POWER,   { "turn it off", "power cycle", "reboot it", "restart it",
+                     "switch it off", "press the power", "turn it on", 0 } },
+      { A_SCREEN,  { "read out", "what does it say", "read me", "what is on the screen",
+                     "what's on the screen", "look at the screen", 0 } },
+      { A_DISC,    { "put the disc", "insert the disc", "rescue disc",
+                     "boot from the disc", "put the cd", "recovery disc", 0 } },
+      { A_CABLE,   { "check the cable", "is it plugged", "power lead",
+                     "unplug", "plugged in", 0 } },
+      { A_TYPEPW,  { "type the password", "type in the password",
+                     "enter the password", "type your password", 0 } },
+      { A_SITDOWN, { "are you at the machine", "go to the machine",
+                     "sit down at", "in front of it", 0 } },
+    };
+    char low[512];
+    size_t n = 0;
+    for (; q[n] && n < sizeof low - 1; n++)
+        low[n] = (q[n] >= 'A' && q[n] <= 'Z') ? (char)(q[n] + 32) : q[n];
+    low[n] = 0;
+    for (size_t i = 0; i < sizeof MAP / sizeof MAP[0]; i++)
+        for (int w = 0; w < 10 && MAP[i].words[w]; w++)
+            if (strstr(low, MAP[i].words[w])) return MAP[i].a;
+    return A_NONE;
+}
+
+bool customer_do(Machine *m, const char *request, Buf *out)
+{
+    Action a = action_of(request);
+    if (a == A_NONE) return false;
+
+    switch (a) {
+    case A_SITDOWN:
+        m->cust.at_machine = true;
+        buf_puts(out, "  \"Yes, I am right in front of it.\"\n");
+        return true;
+
+    case A_CABLE:
+        buf_puts(out, "  \"Hang on... yes, it is plugged in. The little light "
+                      "on the front is on.\"\n");
+        return true;
+
+    case A_POWER:
+        m->cust.power_cycles++;
+        m->cust.at_machine = true;
+        if (m->cust.power_cycles == 1)
+            buf_puts(out, "  \"Okay, holding the button... and back on.\"\n"
+                          "  \"Same as before. It gets partway and stops.\"\n");
+        else if (m->cust.power_cycles < 4)
+            buf_puts(out, "  \"I have done that twice now and it does the same "
+                          "thing every time.\"\n");
+        else
+            buf_puts(out, "  \"I do not think turning it off and on again is "
+                          "going to fix it, is it.\"\n");
+        return true;
+
+    case A_SCREEN: {
+        /* They read out the last line of the console, badly. This is real
+         * evidence obtained socially rather than technically -- and it is
+         * how you find out anything at all before the disc goes in. */
+        m->cust.at_machine = true;
+        const char *last = NULL;
+        if (m->boot.console.len) {
+            size_t e = m->boot.console.len;
+            while (e && (m->boot.console.p[e-1] == '\n')) e--;
+            size_t b = e;
+            while (b && m->boot.console.p[b-1] != '\n') b--;
+            static char linebuf[200];
+            size_t len = e - b;
+            if (len >= sizeof linebuf) len = sizeof linebuf - 1;
+            memcpy(linebuf, m->boot.console.p + b, len);
+            linebuf[len] = 0;
+            last = linebuf;
+        }
+        if (last && *last) {
+            buf_puts(out, "  \"It says... hang on, let me get my glasses.\"\n");
+            buf_printf(out, "  \"%s\"\n", last);
+            buf_puts(out, "  \"Does that mean anything to you?\"\n");
+        } else {
+            buf_puts(out, "  \"It is just black. Nothing at all.\"\n");
+        }
+        return true;
+    }
+
+    case A_DISC:
+        if (m->cust.disc_inserted) {
+            buf_puts(out, "  \"It is already in there.\"\n");
+            return true;
+        }
+        m->cust.disc_inserted = true;
+        m->cust.at_machine = true;
+        buf_puts(out, "  \"Found it in the drawer. It is in.\"\n"
+                      "  \"Do you want me to turn it off and on again?\"\n");
+        return true;
+
+    case A_TYPEPW:
+        if (!m->cust.at_machine) {
+            buf_puts(out, "  \"I am not at the machine, give me a minute.\"\n");
+            m->cust.at_machine = true;
+            return true;
+        }
+        m->cust.gave_password = true;
+        buf_puts(out, "  \"Typing it now... it is not doing anything. There is "
+                      "no cursor.\"\n");
+        return true;
+
+    default:
+        return false;
     }
 }
 

@@ -131,6 +131,11 @@ typedef struct {
         bool deflected;       /* denied it once, as people do              */
         bool confessed;
         bool gave_password;
+        /* The customer is also the pair of hands in the room. The technician
+         * cannot press the power button; they have to ask. */
+        bool at_machine;      /* are they sitting in front of it right now  */
+        bool disc_inserted;   /* have they put the rescue medium in         */
+        int  power_cycles;
     } cust;
 
     ProcInfo proc[PROC_MAX];
@@ -157,6 +162,9 @@ void machine_boot_rescue(Machine *m);
 void customer_brief(Machine *m, const char *what);
 void customer_ask(Machine *m, const char *question, Buf *out);
 void customer_intro(Machine *m, Buf *out);
+/* Ask the customer to DO something. Returns false if the request was not
+ * understood as an action, in which case it was a question. */
+bool customer_do(Machine *m, const char *request, Buf *out);
 
 bool machine_mount(Machine *m, const char *dev, const char *at, int flags);
 /* Check and repair the filesystem. Clears the dirty flag; reports what it

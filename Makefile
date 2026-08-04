@@ -200,7 +200,12 @@ test-lang: $(BIN)
 test-scenario: $(BIN)
 	@tools/test_scenario.sh
 
--include $(CORE_OBJ:.o=.d) build/main.d
+# EVERY object's header dependencies, not just the station's. The break-fix
+# objects were missing from this line, so editing machine.h did not rebuild
+# them: the binary kept an old struct layout and behaved as though a field
+# were set when it was not. That cost real time three separate times before
+# anyone noticed the build was lying.
+-include $(wildcard build/*.d)
 
 clean:
 	rm -rf build game/bin
