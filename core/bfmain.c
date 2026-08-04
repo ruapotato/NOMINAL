@@ -124,6 +124,30 @@ int main(int argc, char **argv)
                          m.pkg[k]->name);
                 kernel_run(&m, cmd, &o);
             }
+            /* Make sure every directory a package installs into can actually
+             * be entered. A file reported UNREADABLE whose content is right is
+             * a permissions problem one level up, and no amount of
+             * reinstalling fixes a parent directory -- no manifest lists one.
+             *
+             * This step does not know which fault was injected: the directory
+             * list is DERIVED from the package database, which is the same
+             * thing a person would do after seeing UNREADABLE next to a file
+             * they can see is fine. */
+            for (int k = 0; k < m.npkg; k++) {
+                for (int f = 0; f < m.pkg[k]->nfiles; f++) {
+                    const char *fp = m.pkg[k]->file[f].path;
+                    const char *slash = strrchr(fp, '/');
+                    if (!slash || slash == fp) continue;
+                    char dir[NOM_PATH_MAX], cmd[NOM_PATH_MAX + 24];
+                    size_t dl = (size_t)(slash - fp);
+                    if (dl >= sizeof dir) continue;
+                    memcpy(dir, fp, dl);
+                    dir[dl] = 0;
+                    snprintf(cmd, sizeof cmd, "chmod 755 /mnt%s", dir);
+                    kernel_run(&m, cmd, &o);
+                }
+            }
+
             kernel_run(&m, "chroot /mnt", &o);
 
             /* a unit no package owns was never installed: remove it */

@@ -14,6 +14,7 @@
  * tell the boot chain anything, because there is nothing to tell.
  */
 #include <string.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include "nom.h"
 #include "machine.h"
@@ -639,6 +640,27 @@ static void fault_disk_full(Machine *m, Rng *r, char *d, size_t ds)
  * namespace actually says: `cat /proc/<pid>/ns`, or the line in rc.boot that
  * put it there. This is the fault the wiki has been promising and could not
  * deliver. */
+/* A recursive chmod that caught a directory. Every file underneath is
+ * byte-for-byte what the package shipped -- `pkg verify` reports the machine
+ * as clean -- and nothing can read any of them. The evidence is in the error
+ * ("cannot read"), in `ls -l` on the parent, and nowhere else.
+ *
+ * This is the answer to the playtest note that the game is recipe-following.
+ * There IS no manifest line for a directory, so verify cannot hand this one
+ * over, and the player has to notice that a file which reads as present is
+ * still unreachable. */
+static void fault_dir_mode(Machine *m, Rng *r, char *d, size_t ds)
+{
+    static const char *VICTIMS[] = {
+        "/etc/rc.d", "/etc/svc", "/lib/modules/6.4.11", "/etc/pkg", "/boot/zbl",
+    };
+    const char *path = VICTIMS[rng_next(r) % 5];
+    VNode *n = vfs_lookup(&m->disk, path);
+    if (!n || n->kind != VN_DIR) return;
+    n->mode = 0644;                  /* readable, NOT traversable */
+    snprintf(d, ds, "took the execute bit off the directory %s", path);
+}
+
 static void fault_bad_bind(Machine *m, Rng *r, char *d, size_t ds)
 {
     (void)r;
@@ -684,6 +706,7 @@ static const StructuralFault STRUCTURAL[] = {
     fault_bad_shell, fault_no_root, fault_unclean_shutdown,
     fault_wrong_channel, fault_fstab, fault_daemon_config,
     fault_daemon_directive, fault_disk_full, fault_bad_bind,
+    fault_dir_mode,
 };
 #define NSTRUCT ((int)(sizeof STRUCTURAL / sizeof STRUCTURAL[0]))
 
@@ -743,6 +766,17 @@ bool machine_corrupt(Machine *m, Rng *r, char *what, size_t whatsz)
     /* Roughly one ticket in four is structural rather than a damaged file, so
      * `pkg reinstall` is not the answer often enough that the player cannot
      * rely on it. */
+    /* NOM_FORCE_FAULT=<n> pins the structural fault, so a new one can be
+     * exercised without waiting for it to come up at 15%/17. Survey only
+     * prints a sample of seeds, so "I did not see it" proves nothing. */
+    const char *forced = getenv("NOM_FORCE_FAULT");
+    if (forced) {
+        char d[200] = "";
+        int fi = atoi(forced) % NSTRUCT;
+        STRUCTURAL[fi](m, r, d, sizeof d);
+        if (d[0]) { snprintf(what, whatsz, "%s", d); return true; }
+        return false;
+    }
     if (rng_next(r) % 100 < 15) {
         char d[200] = "";
         STRUCTURAL[rng_next(r) % (uint64_t)NSTRUCT](m, r, d, sizeof d);

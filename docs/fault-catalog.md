@@ -169,8 +169,14 @@ Legend: **[done]** built · **[next]** in progress or immediately next ·
   that never did, a rename meant to be temporary, or the field left empty.
 - **[done]** the root account missing from `/etc/passwd` entirely.
 - **[todo]** `/etc/passwd` and `/etc/shadow` out of step.
-- **[todo]** a directory whose mode stops traversal, so everything under a
-  perfectly healthy tree is unreachable.
+- **[done]** a directory whose mode stops traversal, so everything under a
+  perfectly healthy tree is unreachable. `fault_dir_mode`. This is the answer
+  to a playtester's complaint that the game is recipe-following: no manifest
+  lists a directory, so `pkg verify` cannot name the culprit. It reports the
+  files inside as UNREADABLE rather than CHANGED, which is a genuinely
+  different signal -- the content is right, the way in is not -- and joining
+  those two facts up is the deduction the fault exists to ask for. The kernel
+  now enforces traversal, which it did not before.
 - **[todo]** ownership wrong on a spool or state directory, so one daemon —
   and only that one — cannot start.
 

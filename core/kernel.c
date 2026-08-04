@@ -260,6 +260,42 @@ static int alloc_fd(Proc *p)
     return -1;
 }
 
+/* A directory you cannot enter hides everything under it, however healthy
+ * those files are. This is the one fault class `pkg verify` structurally
+ * cannot see: no manifest lists a directory, so every file inside reports as
+ * pristine while nothing can read them. A playtester called the game
+ * recipe-following because verify names the broken file every time; a fault
+ * verify is blind to is the answer to that, and this one is a mistake real
+ * administrators make constantly with a careless recursive chmod.
+ *
+ * Returns the first ancestor that bars the way, or NULL. */
+static VNode *dir_barred(Vfs *fs, const char *path)
+{
+    char acc[NOM_PATH_MAX * 2];
+    size_t al = 0;
+    acc[al++] = '/';
+    acc[al] = 0;
+    /* Every component except the last: the leaf's own mode is the caller's
+     * business, the path TO it is ours. */
+    const char *q = path;
+    while (*q == '/') q++;
+    while (*q) {
+        const char *e = q;
+        while (*e && *e != '/') e++;
+        if (!*e) break;                      /* last component: not a parent */
+        size_t seg = (size_t)(e - q);
+        if (al + seg + 2 >= sizeof acc) return NULL;
+        if (al > 1) acc[al++] = '/';
+        memcpy(acc + al, q, seg);
+        al += seg;
+        acc[al] = 0;
+        VNode *d = vfs_lookup(fs, acc);
+        if (d && d->kind == VN_DIR && !(d->mode & 0111)) return d;
+        q = e + 1;
+    }
+    return NULL;
+}
+
 static int64_t sys_open(Proc *p, Cpu *c, uint64_t pathp, int64_t flags)
 {
     char raw[NOM_PATH_MAX], path[NOM_PATH_MAX];
@@ -281,6 +317,8 @@ static int64_t sys_open(Proc *p, Cpu *c, uint64_t pathp, int64_t flags)
             return pfd;
         }
     }
+
+    if (dir_barred(fs, path)) return -1;
 
     bool dangling = false;
     VNode *n = vfs_resolve(fs, path, &dangling);
