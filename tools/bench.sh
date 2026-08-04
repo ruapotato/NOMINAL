@@ -20,10 +20,19 @@
 #   2. Give up if the child keeps dying immediately. A server that lives less
 #      than a few seconds has not failed at serving, it has failed at
 #      starting, and restarting it will not change that.
+#
+# AND IT STOPS ON ITS OWN. The hot-loop guards below fixed a supervisor that
+# would not stop restarting; they did nothing about a supervisor nobody
+# stopped. A bench left up after a playtest sat idle for an hour and a half
+# holding 3.3 GB, because the model is loaded whether anyone is connected or
+# not, and David spotted it in the process table rather than me. A playtest is
+# hours, not days; MAXMIN is the outer bound and can be raised deliberately.
 PORT=${1:-7777}
 SEED=${2:-12000}
 LOG=${3:-/tmp/nominal-bench.log}
+MAXMIN=${4:-180}
 BIN=${BIN:-./build/bf}
+BEGAN=$(date +%s)
 
 if command -v ss >/dev/null 2>&1 && ss -ltn 2>/dev/null | grep -q ":$PORT "; then
     echo "bench: port $PORT is already in use -- refusing to start" >&2
@@ -50,6 +59,15 @@ while true; do
         fi
     else
         FAST=0
+    fi
+
+    if [ "$MAXMIN" -gt 0 ]; then
+        RUNMIN=$(( ($(date +%s) - BEGAN) / 60 ))
+        if [ "$RUNMIN" -ge "$MAXMIN" ]; then
+            echo "bench: ${RUNMIN}m old, past the ${MAXMIN}m limit -- stopping" >&2
+            echo "bench: stopped after ${RUNMIN}m (limit ${MAXMIN}m)" >> "$LOG"
+            exit 0
+        fi
     fi
 
     SEED=$((SEED + 100))

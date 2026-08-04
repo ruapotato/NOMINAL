@@ -23,6 +23,128 @@
 #include "nom.h"
 #include "machine.h"
 
+/* WHO THEY ARE, as opposed to what they know.
+ *
+ * The cause tells you what happened to the machine; this tells you what it is
+ * like to be on the phone with the person it happened to. Drawn per ticket
+ * from the seed, so the same fault twice is not the same call twice -- which
+ * matters more than it sounds, because a support call IS the person, and a
+ * hundred faults answered by one voice is one conversation with a hundred
+ * skins on it.
+ *
+ * None of these touch what the customer knows. A grumpy customer and a
+ * cheerful one hold exactly the same facts and give them up on exactly the
+ * same question; the difference is entirely in the telling. That is
+ * deliberate: personality must not make a ticket harder or easier, only
+ * different.
+ */
+static const char *PERSONA[] = {
+  "grumpy, and you would rather be using Windows; you say so",
+  "cheerful and chatty, and you wander off the subject",
+  "in a hurry, with a meeting in ten minutes you keep mentioning",
+  "apologetic about everything, including things that are not your fault",
+  "convinced this has happened before and nobody fixed it properly",
+  "suspicious that IT changed something without telling you",
+  "very polite and a little formal, as though writing a letter",
+  "blunt to the point of rudeness, but not unkind",
+  "nervous that you are going to be blamed for this",
+  "certain the machine is simply too old and should be replaced",
+  "distracted; someone keeps talking to you while you are on the phone",
+  "proud of being 'quite good with computers', and you are not",
+  "worried about a deadline today that needs this machine",
+  "resigned, as though nothing ever works and this is normal",
+  "bewildered by all of it, and you say so often",
+  "trying to be helpful by guessing at what might be wrong",
+  "annoyed at having been on hold before you got through",
+  "relieved that a person has finally answered",
+  "frosty, because the last technician was rude to you",
+  "delighted to have someone to talk to; it has been a quiet week",
+  "impatient, and you interrupt with 'yes, but' a lot",
+  "hard of hearing, so you ask them to repeat things",
+  "on a bad line, and you keep saying you cannot hear well",
+  "eating your lunch while you talk",
+  "new here, and you keep saying you only started last month",
+  "the longest-serving person in the building, and you mention it",
+  "sceptical that anything can be done remotely",
+  "fascinated, and you keep asking what the technician is doing",
+  "terse; you answer in as few words as possible",
+  "rambling; you give far more context than anyone needs",
+  "convinced it is a virus, and you keep coming back to that",
+  "sure it is the network, because it is always the network",
+  "embarrassed that you had to call at all",
+  "under the impression the technician is a supplier you are paying",
+  "very tired, and you say you were up half the night",
+  "cold, because the heating is off and you mention it twice",
+  "cheerfully fatalistic: 'ah well, these things happen'",
+  "protective of the machine, as though it were a pet",
+  "keen to get off the phone and let you get on with it",
+  "keen to stay on the phone and watch everything happen",
+  "a smoker, and you keep stepping outside mid-sentence",
+  "a manager, and you mention that you are a manager",
+  "not a manager, and slightly bitter about your manager",
+  "recently transferred from another site, and comparing everything to it",
+  "worried about the cost, and you ask whether this will be charged",
+  "worried about the data, and you ask about it repeatedly",
+  "convinced somebody else has been using your machine",
+  "sure you did nothing at all, in a way that invites doubt",
+  "positive that you turned it off properly on Friday",
+  "vague about dates; 'a while ago' is as precise as you get",
+  "precise about dates to an unhelpful degree",
+  "using a colleague's phone because yours is charging",
+  "typing on another machine while you talk",
+  "reading the screen out loud whether asked or not",
+  "reluctant to touch anything in case you make it worse",
+  "far too willing to touch things, and you keep doing so",
+  "the sort who has written down every password on a card",
+  "the sort who cannot remember any password at all",
+  "in an open-plan office and self-conscious about being overheard",
+  "alone in the building, and slightly spooked by it",
+  "half-listening, because you are also watching the door",
+  "cheerful but hopeless with words for things",
+  "fond of calling everything 'the system'",
+  "fond of calling everything 'the hard drive'",
+  "convinced the screen and the computer are the same object",
+  "insistent that you have 'done nothing different'",
+  "insistent that you have 'tried everything'",
+  "helpful in a way that is actively misleading",
+  "quietly competent, and you answer well when asked well",
+  "flustered, and you get the order of events wrong",
+  "confident and wrong about what happened",
+  "unwilling to admit you do not understand a question",
+  "quick to say when you do not understand a question",
+  "of the view that it was fine until the update",
+  "of the view that updates are always the problem",
+  "of the view that it is probably the cleaner unplugging things",
+  "amused by the whole situation",
+  "not remotely amused by the whole situation",
+  "distracted by a dog that you mention several times",
+  "distracted by a child in the background",
+  "carefully writing down everything the technician says",
+  "not writing anything down and asking twice",
+  "a person who says 'obviously' about things that are not",
+  "a person who apologises for the machine's behaviour",
+  "convinced you are the only one having this problem",
+  "convinced everyone is having this problem",
+  "sure a colleague had exactly this last month",
+  "wary of being talked down to, and quick to notice it",
+  "grateful for anything explained plainly",
+  "hostile to jargon and you say so",
+  "keen on jargon you do not understand and use wrongly",
+  "the sort who calls the machine 'she'",
+  "brisk and businesslike, treating this as a transaction",
+  "warm and personal, asking how the technician's day is",
+  "prone to long pauses that the technician has to fill",
+  "prone to answering before the question is finished",
+  "someone who was about to go on holiday and now cannot",
+  "someone who has just come back from holiday to this",
+  "put out that this is not somebody else's job",
+  "willing to do anything asked, competently and slowly",
+  "willing to do anything asked, badly and fast",
+  "convinced that turning it off and on again fixes everything",
+  "convinced that turning it off and on again breaks everything",
+};
+#define NPERSONA ((int)(sizeof PERSONA / sizeof PERSONA[0]))
+
 /* How the customer is feeling about this. It moves: ask a decent question and
  * they warm up, ask the same thing twice and they do not. */
 typedef enum { MOOD_WARY, MOOD_OK, MOOD_HELPFUL } Mood;
@@ -146,6 +268,14 @@ void customer_brief(Machine *m, const char *what)
 {
     snprintf(m->cust.truth, sizeof m->cust.truth, "%s", what ? what : "");
     m->cust.cause = (int)cause_of(what);
+    /* Drawn from the truth string, so it varies per ticket without needing a
+     * seed threaded down here. */
+    {
+        unsigned long h = 5381;
+        for (const char *q = m->cust.truth; *q; q++) h = h * 33u + (unsigned char)*q;
+        m->cust.persona = (int)(h % (unsigned long)NPERSONA);
+    }
+    m->cust.nturns = 0;
     m->cust.mood = MOOD_WARY;
     m->cust.asked = 0;
     memset(m->cust.told, 0, sizeof m->cust.told);
@@ -214,11 +344,16 @@ static bool unlocks(Cause c, Topic t)
 bool llm_available(void);
 bool llm_ask(const char *system_brief, const char *question,
              const char *forbidden, char *out, size_t outsz);
+bool llm_ask_hist(const char *system_brief, const char **hist, int nhist,
+                  const char *question, char *out, size_t outsz);
 #else
 static bool llm_available(void) { return false; }
 static bool llm_ask(const char *a, const char *b, const char *c,
                     char *d, size_t e)
 { (void)a; (void)b; (void)c; (void)d; (void)e; return false; }
+static bool llm_ask_hist(const char *a, const char **b, int c,
+                         const char *d, char *e, size_t f)
+{ (void)a; (void)b; (void)c; (void)d; (void)e; (void)f; return false; }
 #endif
 
 /* WHAT THE CUSTOMER KNOWS.
@@ -245,6 +380,7 @@ static bool volunteers(Cause c)
 {
     return c == C_POWERCUT || c == C_VENDOR;
 }
+
 
 /* WHAT THEY ACTUALLY SEE, from the machine rather than from a table.
  *
@@ -305,10 +441,13 @@ static void build_brief(Machine *m, Cause c, bool earned, char *out, size_t outs
      * point -- it is the shape of every real first report. */
 
     snprintf(out, outsz,
-        "You are Dana, an office worker. Your work computer will not start and "
-        "you have called IT support. You are not technical: you do not know "
-        "words like kernel, package, filesystem or boot loader, and you would "
-        "not use them.\n"
+        "You are Dana, an office worker. Your work computer is not working "
+        "properly and you have called IT support. You are not technical: you "
+        "do not know words like kernel, package, filesystem or boot loader, "
+        "and you would not use them.\n"
+        "\n"
+        "YOUR MANNER: you are %s. Let that colour how you say things. It does "
+        "NOT change what you know or what you are willing to say.\n"
         "\n"
         "WHAT YOU KNOW:\n"
         "- %s\n"
@@ -337,7 +476,7 @@ static void build_brief(Machine *m, Cause c, bool earned, char *out, size_t outs
         "Q: Have you moved the machine recently?\n"
         "A: No, it has been under the same desk for years.\n"
         "%s",
-        DID[c], saw_of(m),
+        PERSONA[m ? m->cust.persona % NPERSONA : 0], DID[c], saw_of(m),
         /* Social reluctance, not an information hazard. People do not lead
          * with the thing they think they will be blamed for -- but if it
          * comes out early, that is a realistic customer having a good day and
@@ -383,7 +522,31 @@ void customer_ask(Machine *m, const char *question, Buf *out)
         build_brief(m, c, earned, brief, sizeof brief);
         /* No forbidden list: D21 removed the reason for one. The customer
          * cannot give away an answer it was never told. */
-        if (llm_ask(brief, question, "", reply, sizeof reply)) {
+        /* The call so far, replayed. The BRIEF is rebuilt from scratch every
+         * turn -- so once the machine boots, the customer stops insisting it
+         * will not start -- while the transcript persists, so they remember
+         * what they have already told you. State fresh, memory kept. */
+        const char *hist[CUST_TURNS * 2];
+        int nh = m->cust.nturns < CUST_TURNS ? m->cust.nturns : CUST_TURNS;
+        for (int i = 0; i < nh; i++) {
+            hist[i * 2]     = m->cust.hq[i];
+            hist[i * 2 + 1] = m->cust.ha[i];
+        }
+        if (llm_ask_hist(brief, hist, nh, question, reply, sizeof reply)) {
+            /* Remember it. When the call runs long the oldest exchange is
+             * dropped, which is also roughly what a person does. */
+            if (m->cust.nturns >= CUST_TURNS) {
+                for (int i = 1; i < CUST_TURNS; i++) {
+                    snprintf(m->cust.hq[i-1], sizeof m->cust.hq[0], "%s", m->cust.hq[i]);
+                    snprintf(m->cust.ha[i-1], sizeof m->cust.ha[0], "%s", m->cust.ha[i]);
+                }
+                m->cust.nturns = CUST_TURNS - 1;
+            }
+            snprintf(m->cust.hq[m->cust.nturns], sizeof m->cust.hq[0], "%s", question);
+            snprintf(m->cust.ha[m->cust.nturns], sizeof m->cust.ha[0], "%s", reply);
+            m->cust.nturns++;
+        }
+        if (reply[0]) {
             buf_puts(out, "  \"");
             buf_puts(out, reply);
             buf_puts(out, "\"\n");

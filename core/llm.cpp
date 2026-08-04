@@ -29,6 +29,12 @@ void llm_free(void);
  * question was not one that earns the admission. */
 bool llm_ask(const char *system_brief, const char *question,
              const char *forbidden, char *out, size_t outsz);
+/* The same, with the call so far. `hist` is 2*nhist alternating strings:
+ * question, answer, question, answer. The system brief is rebuilt by the
+ * caller every turn, so a stale description of the machine can never
+ * outlive the machine's actual state. */
+bool llm_ask_hist(const char *system_brief, const char **hist, int nhist,
+                  const char *question, char *out, size_t outsz);
 }
 
 namespace {
@@ -39,7 +45,7 @@ bool           g_tried = false;
 
 /* Small on purpose. The customer says one or two sentences; a bigger window
  * costs memory on a machine that is also running a game. */
-constexpr int CTX_TOKENS  = 1024;
+constexpr int CTX_TOKENS  = 4096;   /* the brief plus eight exchanges */
 constexpr int MAX_REPLY   = 64;
 
 std::vector<llama_token> tokenize(const std::string &text, bool add_special)
@@ -114,21 +120,34 @@ void llm_free(void)
 bool llm_ask(const char *system_brief, const char *question,
              const char *forbidden, char *out, size_t outsz)
 {
+    return llm_ask_hist(system_brief, nullptr, 0, question, out, outsz);
+}
+
+bool llm_ask_hist(const char *system_brief, const char **hist, int nhist,
+                  const char *question, char *out, size_t outsz)
+{
+    const char *forbidden = "";
     if (!llm_available() || !out || outsz < 2) return false;
     out[0] = '\0';
 
     /* The model's own chat template, taken from the GGUF. Hand-rolling the
      * markers is how you get a model that answers as the wrong speaker. */
-    std::vector<llama_chat_message> msgs = {
-        { "system", system_brief },
-        { "user",   question     },
-    };
+    std::vector<llama_chat_message> msgs;
+    msgs.push_back({ "system", system_brief });
+    /* The transcript, oldest first. Replayed every turn because there is no
+     * kv-cache reuse here -- the brief changes each turn by design, so there
+     * would be nothing to reuse. */
+    for (int i = 0; i < nhist; i++) {
+        msgs.push_back({ "user",      hist[i * 2]     });
+        msgs.push_back({ "assistant", hist[i * 2 + 1] });
+    }
+    msgs.push_back({ "user", question });
     /* A GGUF may carry no chat template at all, and passing null straight
      * into llama_chat_apply_template segfaults. Fall back to chatml, which is
      * what most small instruct models are trained with anyway. */
     const char *tmpl = llama_model_chat_template(g_model, nullptr);
     if (!tmpl) tmpl = "chatml";
-    std::vector<char> promptbuf(8192);
+    std::vector<char> promptbuf(16384);
     int32_t plen = llama_chat_apply_template(tmpl, msgs.data(), msgs.size(),
                                              true, promptbuf.data(),
                                              (int32_t)promptbuf.size());

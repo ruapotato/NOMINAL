@@ -85,6 +85,11 @@ typedef struct {
 
 #define MOUNT_MAX 12
 
+/* How much of the call the customer remembers. Eight exchanges is far more
+ * than a support call needs and still fits a small model's context beside
+ * the brief. */
+#define CUST_TURNS 8
+
 /* A mounted filesystem. `dev` is what you named when you mounted it, so
  * `mount` can print the table the way mount(8) does. */
 typedef struct {
@@ -161,6 +166,20 @@ typedef struct {
         bool at_machine;      /* are they sitting in front of it right now  */
         bool disc_inserted;   /* have they put the rescue medium in         */
         int  power_cycles;
+
+        /* WHO they are, on top of what they know. Drawn per ticket, so the
+         * same fault twice is not the same phone call twice. */
+        int  persona;
+
+        /* THE CALL SO FAR. The model was asked each question cold, with no
+         * memory, so it could contradict itself between one sentence and the
+         * next and could not be led anywhere. The transcript is kept and
+         * replayed; the SYSTEM prompt is rebuilt from scratch every turn, so
+         * what the machine is doing right now always wins over what was true
+         * when the call started. */
+        char hq[CUST_TURNS][200];   /* what the technician asked */
+        char ha[CUST_TURNS][240];   /* what the customer said    */
+        int  nturns;
     } cust;
 
     /* Daemons. A service that starts does not run to completion: it runs
