@@ -308,6 +308,26 @@ func _raise(w: Control) -> void:
 	panel.queue_redraw()
 
 
+# WINDOWS OPEN FREE-FLOATING AND CASCADED, the way MATE does it: a sensible
+# fixed size, each one down and right of the last, wrapping when it runs out
+# of room. Sizing them as fractions of the screen made them LOOK tiled even
+# though nothing was tiling them, which David spotted immediately. Tiling only
+# ever happens because you dragged a window to an edge.
+var _cascade := 0
+
+func _cascade_at(w: float, h: float) -> Rect2:
+	var step := 28.0
+	var n := _cascade % 7
+	_cascade += 1
+	var x := 120.0 + n * step
+	var y := PANEL_H + 30.0 + n * step
+	if x + w > size.x - 20:
+		x = max(120.0, size.x - w - 20)
+	if y + h > size.y - FOOT_H - 20:
+		y = max(PANEL_H + 10.0, size.y - FOOT_H - h - 20)
+	return Rect2(x, y, w, h)
+
+
 var _drag: Control = null
 var _dragfrom := Vector2.ZERO
 var _sizing: Control = null
@@ -388,12 +408,10 @@ func _launch(kind: String) -> void:
 			foot.queue_redraw()
 		return
 
-	var W := size.x
-	var H := size.y
 	match kind:
 		"term":
 			_open_terminal(0, "terminal - your workstation",
-				Rect2(W * 0.20, PANEL_H + 40, W * 0.52, H * 0.46))
+				_cascade_at(700, 420))
 		"chat":
 			chat = preload("res://scripts/chat.gd").new()
 			chat.mono = mono
@@ -401,7 +419,7 @@ func _launch(kind: String) -> void:
 			chat.ink = INK
 			chat.dim = DIM
 			chat.bg = WIN_BG
-			_win("chat", Rect2(W * 0.40, PANEL_H + 130, W * 0.46, H * 0.44), chat)
+			_win("chat", _cascade_at(620, 380), chat)
 			chat.call("reset", cust)
 			chat.call("seed_first",
 				"my computer will not start. the sticker on the front says %s" % addr)
@@ -412,13 +430,12 @@ func _launch(kind: String) -> void:
 			var f := preload("res://scripts/files.gd").new()
 			f.mono = mono
 			f.machine = machine
-			_win("files - your workstation",
-				Rect2(W * 0.06, PANEL_H + 60, 470, 400), f)
+			_win("files - your workstation", _cascade_at(470, 400), f)
 		"notes":
 			var n := preload("res://scripts/notes.gd").new()
 			n.mono = mono
 			n.machine = machine
-			_win("notes", Rect2(W * 0.30, PANEL_H + 90, 500, 340), n)
+			_win("notes", _cascade_at(500, 340), n)
 		"log":
 			var l := preload("res://scripts/terminal.gd").new()
 			l.mono = mono
@@ -428,13 +445,12 @@ func _launch(kind: String) -> void:
 			l.banner = []
 			l.prompt_fn = func() -> String: return ""
 			l.on_command = func(_s: String) -> String: return ""
-			_win("log viewer - your workstation",
-				Rect2(W * 0.24, PANEL_H + 50, W * 0.5, H * 0.45), l)
+			_win("log viewer - your workstation", _cascade_at(720, 420), l)
 			l.call("write", machine.sh_on(0, "dmesg"))
 		"manual":
 			var d := preload("res://scripts/manual.gd").new()
 			d.mono = mono
-			_win("manual", Rect2(W * 0.16, PANEL_H + 40, W * 0.64, H * 0.7), d)
+			_win("manual", _cascade_at(820, 560), d)
 
 
 # A terminal bound to ONE machine. which: 0 your workstation, 1 the customer's.
@@ -469,7 +485,7 @@ func _run(which: int, line: String) -> String:
 		var W := size.x
 		var H := size.y
 		var t := _open_terminal(1, "console - %s (%s)" % [addr, cust],
-			Rect2(W * 0.32, PANEL_H + 200, W * 0.58, H * 0.42))
+			_cascade_at(700, 420))
 		t.call("write", machine.sh_on(0, "rcon console"))
 		t.call("write",
 			"\n-- this terminal is on THEIR machine. yours is still open. --\n")

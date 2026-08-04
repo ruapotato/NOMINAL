@@ -1016,9 +1016,29 @@ bool customer_do(Machine *m, const char *request, Buf *out)
         return true;
 
     case A_POWER:
+        /* THEY ACTUALLY DO IT.
+         *
+         * This used to print a line of dialogue and touch nothing, so the
+         * customer was describing a reboot that had not happened -- and a
+         * technician watching the console over the service processor saw
+         * nothing change, which is the worst kind of lie a simulation can
+         * tell. The customer is the pair of hands in the room: asking them to
+         * power cycle the box power cycles the box, and if they have put the
+         * rescue disc in, the box comes up on the disc.
+         *
+         * That also makes the two routes agree. `rcon power cycle` and "could
+         * you turn it off and on again" do the same thing to the same machine,
+         * because they are the same act performed by different people. */
         m->cust.power_cycles++;
         m->cust.at_machine = true;
-        if (m->cust.power_cycles == 1)
+        if (m->cust.disc_inserted) machine_boot_rescue(m);
+        else                       machine_boot(m);
+
+        if (m->cust.disc_inserted)
+            buf_puts(out, "  \"Right, holding the button... it is coming back "
+                          "up.\"\n  \"It looks different this time -- lots of "
+                          "writing, and it has stopped with a hash.\"\n");
+        else if (m->cust.power_cycles == 1)
             buf_puts(out, "  \"Okay, holding the button... and back on.\"\n"
                           "  \"Same as before. It gets partway and stops.\"\n");
         else if (m->cust.power_cycles < 4)
