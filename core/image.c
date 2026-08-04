@@ -317,14 +317,222 @@ static const Package PKG_SHELL = {
     }, 24
 };
 
+
+/* ---------------------------------------------------------------------
+ * A distribution is WIDE. `pkg verify` with no arguments over thirty-odd
+ * packages is a wall of text with real local edits mixed into it -- so the
+ * skill is knowing which package to suspect from where the boot died, and
+ * verifying THAT. Dumping everything is a last resort, exactly as it is on a
+ * real machine.
+ * ------------------------------------------------------------------ */
+
+static const Package PKG_LIBC = {
+    "libc", "2.38", "the C library",
+    {
+      { "/lib/libc.so.6",  "\x7fELF (stub) libc 2.38\n", 0755, NULL },
+      { "/lib/libm.so.6",  "\x7fELF (stub) libm 2.38\n", 0755, NULL },
+      { "/etc/ld.so.conf", "/lib\n/usr/lib\n", 0644, NULL },
+      { "/etc/nsswitch.conf",
+        "passwd: files\ngroup: files\nhosts: files dns\n", 0644, NULL },
+    }, 4
+};
+
+static const Package PKG_ZLIB = {
+    "zlib", "1.3", "compression library",
+    { { "/lib/libz.so.1", "\x7fELF (stub) zlib 1.3\n", 0755, NULL } }, 1
+};
+
+static const Package PKG_CRON = {
+    "cron", "3.0", "scheduled jobs",
+    {
+      { "/usr/sbin/crond", "#!crond\n", 0755, NULL },
+      { "/etc/services.d/cron.svc",
+        "# /etc/services.d/cron.svc\n"
+        "name: cron\nexec: /usr/sbin/crond\n"
+        "description: scheduled jobs\nafter: syslog\n"
+        "restart: on-failure\nenabled: yes\nrunlevel: 3 5\n", 0644, NULL },
+      { "/etc/crontab",
+        "# m h dom mon dow  command\n"
+        "17 *  * * *  /usr/sbin/logrotate /etc/logrotate.conf\n"
+        "0  4  * * *  /home/hamowner/bin/cleanup   # DISABLED, see TODO\n", 0644, NULL },
+      { "/var/spool/cron/root", "# no personal jobs\n", 0600, NULL },
+    }, 4
+};
+
+static const Package PKG_LOGROTATE = {
+    "logrotate", "3.21", "log rotation",
+    {
+      { "/usr/sbin/logrotate", "#!logrotate\n", 0755, NULL },
+      { "/etc/logrotate.conf",
+        "weekly\nrotate 4\ncompress\ninclude /etc/logrotate.d\n", 0644, NULL },
+      { "/etc/logrotate.d/syslog",
+        "/var/log/messages {\n  weekly\n  rotate 8\n}\n", 0644, NULL },
+    }, 3
+};
+
+static const Package PKG_NTP = {
+    "ntp", "4.2", "time synchronisation",
+    {
+      { "/usr/sbin/ntpd", "#!ntpd\n", 0755, NULL },
+      { "/etc/ntp.conf",
+        "server 10.0.2.3 iburst\ndriftfile /var/lib/ntp/drift\n", 0644, NULL },
+      { "/etc/services.d/ntp.svc",
+        "# /etc/services.d/ntp.svc\n"
+        "name: ntp\nexec: /usr/sbin/ntpd\n"
+        "description: time synchronisation\nafter: net\n"
+        "restart: on-failure\nenabled: yes\nrunlevel: 3 5\n", 0644, NULL },
+    }, 3
+};
+
+static const Package PKG_HTTPD = {
+    "httpd", "2.4", "the web server",
+    {
+      { "/usr/sbin/httpd", "#!httpd\n", 0755, NULL },
+      { "/etc/httpd/httpd.conf",
+        "Listen 80\nDocumentRoot /srv/www\nServerName nominal.local\n", 0644, NULL },
+      { "/srv/www/index.html",
+        "this machine\n============\n\n"
+        "if you are reading this over the network, httpd is up and the\n"
+        "document root is intact.\n", 0644, NULL },
+      { "/etc/services.d/httpd.svc",
+        "# /etc/services.d/httpd.svc\n"
+        "name: httpd\nexec: /usr/sbin/httpd\n"
+        "description: web server\nafter: net\n"
+        "restart: on-failure\nenabled: yes\nrunlevel: 3 5\n", 0644, NULL },
+    }, 4
+};
+
+static const Package PKG_FIREWALL = {
+    "nftables", "1.0", "packet filter",
+    {
+      { "/usr/sbin/nft", "#!nft\n", 0755, NULL },
+      { "/etc/nftables.conf",
+        "table inet filter {\n"
+        "  chain input {\n"
+        "    type filter hook input priority 0; policy drop;\n"
+        "    tcp dport { 22, 80 } accept\n"
+        "  }\n}\n", 0644, NULL },
+      { "/etc/services.d/nftables.svc",
+        "# /etc/services.d/nftables.svc\n"
+        "name: nftables\nexec: /usr/sbin/nft\n"
+        "description: packet filter\ncritical: yes\nafter: udev\n"
+        "restart: on-failure\nenabled: yes\nrunlevel: 3 5\n", 0644, NULL },
+    }, 3
+};
+
+static const Package PKG_MAN = {
+    "man-db", "2.11", "the manual",
+    {
+      { "/usr/bin/man", NULL, 0755, NULL },
+      { "/usr/share/man/pkg",
+        "pkg(1)\n\n"
+        "  pkg list                 every installed package\n"
+        "  pkg verify [name]        compare installed files against the\n"
+        "                           manifest in /var/lib/pkg/<name>/files\n"
+        "  pkg diff <path>          what a CHANGED file says, against what\n"
+        "                           the package shipped\n"
+        "  pkg owns <path>          which package owns it\n"
+        "  pkg reinstall <name>     refetch from the repository\n"
+        "\n"
+        "NOTE. `pkg verify` with no arguments checks EVERY package and will\n"
+        "report local configuration changes as CHANGED, because they are.\n"
+        "That is not a fault list. Work out which package to suspect from\n"
+        "where the boot stopped, verify that one, and use `pkg diff` before\n"
+        "you reinstall anything.\n", 0644, NULL },
+      { "/usr/share/man/boot",
+        "boot(7)\n\n"
+        "  firmware -> zbl -> kernel -> initrd -> init -> rc -> services\n"
+        "\n"
+        "  zbl              /boot/zbl/zbl.cfg        pkg zbl\n"
+        "  kernel, initrd   /boot/vmlinuz, /boot/initrd (SYMLINKS)\n"
+        "                                            pkg kernel-default\n"
+        "  init             /sbin/init, /etc/inittab pkg sysinit\n"
+        "  rc               /etc/rc.boot, /etc/rc.d  pkg sysinit\n"
+        "  services         /etc/services.d/*.svc    the owning package\n"
+        "\n"
+        "The stage the console stops at tells you which package to verify.\n", 0644, NULL },
+      { "/usr/share/man/rescue",
+        "rescue(7)\n\n"
+        "  mount /dev/sda1 /mnt\n"
+        "  for i in dev sys proc; do mount /$i /mnt/$i; done\n"
+        "  chroot /mnt\n"
+        "\n"
+        "The customer disk is /dev/sda1. The live medium is /dev/sr0 and is\n"
+        "never damaged. `exit` leaves the chroot; `quit` hangs up.\n", 0644, NULL },
+      { "/usr/share/man/ns",
+        "ns(1)\n\n"
+        "  bind TARGET AT     lookups under AT resolve to TARGET\n"
+        "  ns [pid]           print a namespace\n"
+        "\n"
+        "A bad bind is a fault where nothing is corrupt: every file passes\n"
+        "pkg verify and the machine still reads the wrong one.\n", 0644, NULL },
+    }, 5
+};
+
+static const Package PKG_MAIL = {
+    "postfix", "3.8", "mail transport",
+    {
+      { "/usr/sbin/postfix", "#!postfix\n", 0755, NULL },
+      { "/etc/postfix/main.cf",
+        "myhostname = nominal.local\nrelayhost = 10.0.2.30\n", 0644, NULL },
+      { "/etc/aliases", "root: hamowner\npostmaster: root\n", 0644, NULL },
+      { "/etc/services.d/postfix.svc",
+        "# /etc/services.d/postfix.svc\n"
+        "name: postfix\nexec: /usr/sbin/postfix\n"
+        "description: mail transport\nafter: net\n"
+        "restart: on-failure\nenabled: no\nrunlevel: 3\n", 0644, NULL },
+    }, 4
+};
+
+static const Package PKG_ACCT = {
+    "acct", "6.6", "process accounting",
+    {
+      { "/usr/sbin/accton", "#!accton\n", 0755, NULL },
+      { "/etc/default/acct", "ACCT_ENABLE=no\n", 0644, NULL },
+    }, 2
+};
+
+static const Package PKG_TZ = {
+    "tzdata", "2024a", "time zones",
+    {
+      { "/etc/timezone", "UTC\n", 0644, NULL },
+      { "/usr/share/zoneinfo/UTC", "UTC0\n", 0644, NULL },
+    }, 2
+};
+
+static const Package PKG_TERMINFO = {
+    "ncurses", "6.4", "terminal handling",
+    {
+      { "/lib/libncurses.so.6", "\x7fELF (stub) ncurses 6.4\n", 0755, NULL },
+      { "/usr/share/terminfo/vt100", "vt100|dec vt100\n", 0644, NULL },
+      { "/usr/share/terminfo/linux", "linux|linux console\n", 0644, NULL },
+    }, 3
+};
+
+static const Package PKG_AUDIT = {
+    "audit", "3.1", "the audit trail",
+    {
+      { "/usr/sbin/auditd", "#!auditd\n", 0755, NULL },
+      { "/etc/audit/auditd.conf", "log_file = /var/log/audit.log\nmax_log_file = 8\n", 0644, NULL },
+      { "/etc/services.d/audit.svc",
+        "# /etc/services.d/audit.svc\n"
+        "name: audit\nexec: /usr/sbin/auditd\n"
+        "description: audit trail\nafter: syslog\n"
+        "restart: on-failure\nenabled: yes\nrunlevel: 3 5\n", 0644, NULL },
+    }, 3
+};
+
 static const Package *IMAGE[] = {
     &PKG_BASE, &PKG_USERS, &PKG_BOOTLOADER, &PKG_KERNEL, &PKG_SYSINIT,
     &PKG_SHELL, &PKG_UDEV, &PKG_SYSLOG, &PKG_NET, &PKG_SSH, &PKG_HAMDE,
-    &PKG_HOME,
+    &PKG_HOME, &PKG_LIBC, &PKG_ZLIB, &PKG_CRON, &PKG_LOGROTATE, &PKG_NTP,
+    &PKG_HTTPD, &PKG_FIREWALL, &PKG_MAN, &PKG_MAIL, &PKG_ACCT, &PKG_TZ,
+    &PKG_TERMINFO, &PKG_AUDIT,
 };
 #define IMAGE_N ((int)(sizeof IMAGE / sizeof IMAGE[0]))
 
 void image_generated(const Machine *m, const char *path, Buf *out);
+static void install_local_edits(Machine *m, uint64_t seed);
 
 /* ---------------------------------------------------------- the rescue --
  * A complete, separate system on its own medium. It is never corrupted: the
@@ -497,6 +705,8 @@ void image_generated(const Machine *m, const char *path, Buf *out)
         buf_put(out, (const char *)GUEST_PKG, GUEST_PKG_LEN);
     else if (strcmp(path, "/usr/bin/links") == 0)
         buf_put(out, (const char *)GUEST_LINKS, GUEST_LINKS_LEN);
+    else if (strcmp(path, "/usr/bin/man") == 0)
+        buf_put(out, (const char *)GUEST_MAN, GUEST_MAN_LEN);
     else if (strcmp(path, "/sbin/svcinit") == 0)
         buf_put(out, (const char *)GUEST_SVCINIT, GUEST_SVCINIT_LEN);
     else if (strcmp(path, "/sbin/login") == 0)
@@ -623,8 +833,11 @@ void machine_install(Machine *m, uint64_t seed)
         "/etc/udev/rules.d", "/home", "/home/hamowner", "/home/hamowner/bin", "/lib", "/lib/modules",
         "/lib/modules/6.4.11", "/proc", "/root", "/sbin", "/sys", "/tmp",
         "/mnt", "/media", "/usr", "/usr/bin", "/usr/lib", "/usr/lib/sysinit",
-        "/usr/sbin", "/usr/share", "/var", "/var/log", "/var/lib",
-        "/var/lib/pkg", "/var/cache", NULL
+        "/usr/sbin", "/usr/share", "/usr/share/man", "/usr/share/zoneinfo",
+        "/usr/share/terminfo", "/var", "/var/log", "/var/lib", "/var/lib/ntp",
+        "/var/lib/pkg", "/var/cache", "/var/spool", "/var/spool/cron",
+        "/etc/audit", "/etc/default", "/etc/httpd", "/etc/logrotate.d",
+        "/etc/postfix", "/srv", "/srv/www", NULL
     };
     for (int i = 0; DIRS[i]; i++) vfs_mkdir(&m->disk, DIRS[i]);
 
@@ -634,8 +847,75 @@ void machine_install(Machine *m, uint64_t seed)
             install_file(m, &IMAGE[i]->file[j]);
     }
     install_pkgdb(m);
+    install_local_edits(m, seed);
     install_rescue(m);
     m->next_pid = 1;
+}
+
+/* Every real machine has been touched by a human. These are the edits that
+ * admin made on purpose: a nameserver they changed, a service they turned
+ * off, a host they added. They are legitimate, they are NOT the fault, and
+ * `pkg verify` reports them as CHANGED because that is the truth.
+ *
+ * This is the single biggest thing standing between this game and a lookup
+ * table. Before it, verify named exactly one file and that file was always
+ * the answer. Now the player has to decide which difference MATTERS -- and
+ * `pkg reinstall` on the wrong package silently destroys somebody's work.
+ */
+static void install_local_edits(Machine *m, uint64_t seed)
+{
+    Rng r;
+    rng_seed(&r, seed ^ 0xc0ffee1234ULL);
+
+    struct { const char *path; const char *content; } EDITS[] = {
+      { "/etc/resolv.conf",
+        "# changed 12 March -- the .3 resolver was timing out at peak\n"
+        "nameserver 10.0.2.9\n"
+        "search hamnix.org\n" },
+      { "/etc/hosts",
+        "127.0.0.1       localhost nominal.local\n"
+        "10.0.2.20       wiki.hamnix.org wiki\n"
+        "10.0.2.30       support.internal support\n"
+        "10.0.2.44       bofh.hamnix.org bofh\n"
+        "# added for the migration, remove when dock-2 is retired\n"
+        "10.0.2.61       oldbilling.internal oldbilling\n" },
+      { "/etc/ssh/sshd_config",
+        "# hardened after the audit, do not revert\n"
+        "Port 2222\n"
+        "PermitRootLogin no\n"
+        "MaxAuthTries 3\n" },
+      { "/etc/syslog.conf",
+        "# quieten the udev chatter, it was filling the disk\n"
+        "*.info /var/log/messages\n"
+        "udev.* /dev/null\n" },
+      { "/etc/net/interfaces",
+        "# static since the dhcp lease kept moving us\n"
+        "iface eth0\n"
+        "  address 10.0.2.15\n"
+        "  gateway 10.0.2.2\n" },
+      { "/etc/profile",
+        "# login shell profile\n"
+        "PATH=/bin:/usr/bin:/sbin\n"
+        "# added by hamowner: I got tired of typing it\n"
+        "alias v=pkg verify\n" },
+    };
+    const int NEDITS = (int)(sizeof EDITS / sizeof EDITS[0]);
+
+    /* One to three of them, chosen by the seed, so two machines are not the
+     * same machine. */
+    int want = 1 + (int)(rng_next(&r) % 3);
+    for (int k = 0; k < want && m->nlocal < 8; k++) {
+        int i = (int)(rng_next(&r) % (uint64_t)NEDITS);
+        bool dup = false;
+        for (int j = 0; j < m->nlocal; j++)
+            if (strcmp(m->local[j], EDITS[i].path) == 0) dup = true;
+        if (dup) continue;
+        VNode *n = vfs_lookup(&m->disk, EDITS[i].path);
+        if (!n || n->kind != VN_FILE) continue;
+        buf_clear(&n->data);
+        buf_puts(&n->data, EDITS[i].content);
+        snprintf(m->local[m->nlocal++], NOM_PATH_MAX, "%s", EDITS[i].path);
+    }
 }
 
 void machine_free(Machine *m)

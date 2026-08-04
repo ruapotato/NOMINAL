@@ -146,7 +146,7 @@ void _start(void)
     g_getarg(arg, sizeof arg);
     char *v[GARGS];
     int n = g_argv(arg, v);
-    if (n < 1) { g_putln("usage: pkg list|owns|verify|reinstall"); g_exit(1); }
+    if (n < 1) { g_putln("usage: pkg list|owns|verify|diff|reinstall"); g_exit(1); }
 
     if (g_streq(v[0], "list")) { each_package(list_cb); g_exit(0); }
 
@@ -196,6 +196,56 @@ void _start(void)
         if (!found) g_putln("no package owns that path");
         else { g_puts("(packages owning files under "); g_puts(v[1]); g_putln(")"); }
         g_exit(found ? 0 : 1);
+    }
+
+    if (g_streq(v[0], "diff")) {
+        /* Show what a CHANGED file actually says, against what the package
+         * shipped. This is the tool that makes local edits fair: a diff that
+         * reads like an admin's deliberate change ("# hardened after the
+         * audit") is not the same as one that reads like damage, and only a
+         * person can tell the difference. */
+        if (n < 2) { g_putln("usage: pkg diff <path>"); g_exit(1); }
+        static char owner[64];
+        owner[0] = 0;
+        static char nm2[64];
+        for (int i = 0; i < 128 && !owner[0]; i++) {
+            if (g_readdir("/var/lib/pkg", i, nm2) < 0) break;
+            if (!read_manifest(nm2)) continue;
+            char *p = manifest;
+            while (*p) {
+                char *nl = p; while (*nl && *nl != '\n') nl++;
+                char save = *nl; *nl = 0;
+                static char line[300];
+                g_copy(line, p, sizeof line);
+                *nl = save; p = *nl ? nl + 1 : nl;
+                char *a, *b, *cc;
+                char *t = g_trim(line);
+                if (!*t || !split3(t, &a, &b, &cc)) continue;
+                if (g_streq(cc, v[1])) { g_copy(owner, nm2, sizeof owner); break; }
+            }
+        }
+        if (!owner[0]) { g_putln("pkg: no package owns that path"); g_exit(1); }
+
+        i64 want = g_repo(owner, v[1], filebuf);
+        if (want < 0) { g_putln("pkg: cannot fetch the shipped copy"); g_exit(1); }
+        static char shipped[65536];
+        for (i64 k = 0; k < want; k++) shipped[k] = filebuf[k];
+        shipped[want] = 0;
+
+        i64 have = g_slurp(v[1], filebuf, sizeof filebuf);
+        if (have < 0) { g_puts("pkg: "); g_puts(v[1]); g_putln(": cannot read what is installed"); g_exit(1); }
+
+        g_puts("--- shipped by ");
+        g_puts(owner);
+        g_puts(" (");
+        g_putn(want);
+        g_putln(" bytes)");
+        g_write(1, shipped, (u64)want);
+        g_puts("+++ installed now (");
+        g_putn(have);
+        g_putln(" bytes)");
+        g_write(1, filebuf, (u64)have);
+        g_exit(0);
     }
 
     if (g_streq(v[0], "verify")) {

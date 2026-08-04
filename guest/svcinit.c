@@ -9,7 +9,7 @@
  */
 #include "gsys.h"
 
-#define UNITS 24
+#define UNITS 32
 
 static char names[UNITS][64];
 static char execs[UNITS][160];

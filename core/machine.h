@@ -12,9 +12,9 @@
 
 #include "ns.h"
 
-#define PKG_MAX        24
+#define PKG_MAX        64
 #define PKGFILE_MAX    24
-#define UNIT_MAX       16
+#define UNIT_MAX       32
 #define CONSOLE_MAX    120
 #define PROC_MAX        32
 
@@ -106,6 +106,13 @@ typedef struct {
      * so they do not need copying per machine. */
     const Package *pkg[PKG_MAX];
     int   npkg;
+
+    /* Legitimate local edits this machine's admin made. They show up in
+     * `pkg verify` as CHANGED and they are NOT the fault -- reinstalling the
+     * package destroys real work and usually creates a second problem. This
+     * is what stops verify from being an oracle. */
+    char  local[8][NOM_PATH_MAX];
+    int   nlocal;
 
     ProcInfo proc[PROC_MAX];
     int      nproc;        /* high-water mark, so exited pids stay visible */
