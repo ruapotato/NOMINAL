@@ -99,6 +99,18 @@ static int is_text(const char *b, i64 n)
     return 1;
 }
 
+/* One byte, as a person reads it. */
+static void show_byte(char c, int present)
+{
+    if (!present) { g_puts("end of file"); return; }
+    unsigned char u = (unsigned char)c;
+    if (u == '\n')      g_puts("a newline");
+    else if (u == '\t') g_puts("a tab");
+    else if (u == ' ')  g_puts("a space");
+    else if (u < 32 || u > 126) { g_puts("byte "); g_putoct(u, 3); }
+    else { char b[4]; b[0] = '\''; b[1] = (char)u; b[2] = '\''; b[3] = 0; g_puts(b); }
+}
+
 static void diff_path(const char *owner, const char *path)
 {
     /* A symlink has no contents to compare, and pretending otherwise produced
@@ -165,6 +177,49 @@ static void diff_path(const char *owner, const char *path)
     /* A file with no trailing newline used to glue the next prompt onto the
      * end of its last line. */
     if (have && filebuf[have - 1] != '\n') g_puts("\n");
+
+    /* WHEN THE TWO HALVES LOOK THE SAME, SAY WHAT ACTUALLY DIFFERS.
+     * A file truncated by one byte printed two visually identical blocks and
+     * the only signal was the byte counts in the headers. A playtester lost
+     * ten minutes to that and called it -- rightly -- unfair, because a diff
+     * that cannot show you the difference is worse than no diff. */
+    int same = (want == have);
+    if (same) for (i64 k = 0; k < want; k++) if (shipped[k] != filebuf[k]) { same = 0; break; }
+    if (same) { g_putln("    (identical -- nothing to fix here)"); return; }
+
+    i64 lim = want < have ? want : have;
+    i64 k = 0;
+    while (k < lim && shipped[k] == filebuf[k]) k++;
+    if (k == lim && want != have) {
+        g_puts("    the two are identical for the first ");
+        g_putn(lim);
+        g_putln(" bytes and then one of them stops.");
+        if (have < want) {
+            g_puts("    the installed copy is ");
+            g_putn(want - have);
+            g_putln(" byte(s) SHORT -- it was truncated, not edited.");
+            if (want && shipped[want - 1] == '\n' &&
+                (!have || filebuf[have - 1] != '\n'))
+                g_putln("    what is missing is the trailing newline.");
+        } else {
+            g_puts("    the installed copy has ");
+            g_putn(have - want);
+            g_putln(" byte(s) MORE on the end.");
+        }
+    } else {
+        g_puts("    first difference at byte ");
+        g_putn(k);
+        g_putln(":");
+        /* Which LINE, because nobody counts bytes. */
+        i64 lineno = 1;
+        for (i64 q = 0; q < k; q++) if (shipped[q] == '\n') lineno++;
+        g_puts("    (line "); g_putn(lineno); g_putln(")");
+        g_puts("      shipped   has ");
+        show_byte(k < want ? shipped[k] : -1, k < want);
+        g_puts("\n      installed has ");
+        show_byte(k < have ? filebuf[k] : -1, k < have);
+        g_puts("\n");
+    }
 }
 
 static int verify_one(const char *pkg, int *bad)

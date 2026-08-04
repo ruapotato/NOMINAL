@@ -1129,6 +1129,10 @@ bool machine_break(Machine *m, uint64_t seed, int nfaults, char *what, size_t wh
         int dead = kernel_health(m, &sick);
         buf_free(&sick);
         if (!m->boot.running || dead > 0) {
+            /* The ticket is settled. Whatever the breaker did to a file that
+             * also carries a local edit is now part of what the player was
+             * handed, not something they destroyed. */
+            machine_rebaseline_local(m);
             if (what) {
                 if (m->boot.running && dead > 0) {
                     char tmp[512];

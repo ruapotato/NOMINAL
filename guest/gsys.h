@@ -136,7 +136,13 @@ static inline int g_argv(char *arg, char **v)
             if (*arg == '"' || *arg == '\'') {
                 char q = *arg++;
                 while (*arg && *arg != q) {
-                    if (q == '"' && *arg == '\\' && arg[1]) arg++;
+                    /* Inside double quotes only \" and \\ are escapes, as in
+                     * every real shell. Consuming ALL backslashes here ate the
+                     * ones meant for the program: `sed "s|a|x\ty|"` reached sed
+                     * as a literal t, so the tool could never see an escape the
+                     * user typed for it. Single quotes escape nothing at all. */
+                    if (q == '"' && *arg == '\\' &&
+                        (arg[1] == '"' || arg[1] == '\\')) arg++;
                     *w++ = *arg++;
                 }
                 if (*arg) arg++;      /* closing quote */

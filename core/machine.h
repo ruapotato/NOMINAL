@@ -234,6 +234,9 @@ int  pkg_reinstall(Machine *m, const char *name, Buf *out);
 /* Put ONE path back. Mutating; kept apart from pkg_file_content so that a
  * fetch can never change the machine. */
 bool pkg_restore_path(Machine *m, const char *pkgname, const char *path);
+/* Baseline the local edits against the disk as the PLAYER receives it, so the
+ * collateral report blames only the player. */
+void machine_rebaseline_local(Machine *m);
 /* The pristine bytes of one file, as its package shipped it. This is the
  * repository, and it deliberately lives OFF the machine: it is how a disk
  * with nothing good left on it can still be repaired. */

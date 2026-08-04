@@ -79,18 +79,45 @@ void _start(void)
     }
 
     if (expr[0] != 's' || !expr[1]) {
-        g_putln("sed: only s/old/new/ and /text/d are supported");
+        g_putln("sed: expected s<sep>old<sep>new<sep> or /text/d");
+        g_putln("  any delimiter works: s/a/b/  s|a|b|  s,a,b,");
+        g_putln("  and \\/ \\n \\t are understood in either half");
         g_exit(1);
     }
+    /* ANY delimiter, as real sed allows. It was hardcoded to whatever
+     * character followed the `s`, which sounds general and was not: the
+     * moment the text contains a `/` -- and on this machine almost every
+     * useful substitution is a file path -- there was no way to express it.
+     * `sed "s|a|b|"` now works, and so does escaping the delimiter. */
     char sep = expr[1];
     char *from = expr + 2;
-    char *to = from;
-    while (*to && *to != sep) to++;
-    if (!*to) { g_putln("sed: unterminated expression"); g_exit(1); }
-    *to++ = 0;
-    char *end = to;
-    while (*end && *end != sep) end++;
-    *end = 0;
+
+    /* Unescape in place: \<delim> becomes <delim>, \n a newline, \t a tab.
+     * Without this `\/dev\/null` silently vanished and `\n` came out as the
+     * letter n, which a playtester found the hard way. */
+    char *rd = from, *wr = from;
+    int part = 0;                      /* 0 = the FROM half, 1 = the TO half */
+    char *to = 0;
+    while (*rd) {
+        if (*rd == '\\' && rd[1]) {
+            char c = rd[1];
+            rd += 2;
+            if      (c == 'n') *wr++ = '\n';
+            else if (c == 't') *wr++ = '\t';
+            else               *wr++ = c;     /* \/ -> /, \\ -> \ */
+            continue;
+        }
+        if (*rd == sep) {
+            *wr++ = 0;
+            rd++;
+            if (part == 0) { to = wr; part = 1; }
+            else break;                       /* trailing delimiter: done */
+        } else {
+            *wr++ = *rd++;
+        }
+    }
+    *wr = 0;
+    if (!to) { g_putln("sed: unterminated expression"); g_exit(1); }
 
     i64 len = g_slurp(file, buf, sizeof buf);
     if (len < 0) { g_puts("sed: "); g_puts(file); g_putln(": cannot read"); g_exit(1); }

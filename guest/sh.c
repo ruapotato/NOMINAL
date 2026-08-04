@@ -73,7 +73,18 @@ static int run_pipeline(char *s2)
     char *stage = s2;
     while (stage) {
         char *bar = stage;
-        while (*bar && *bar != '|') bar++;
+        /* Quotes hide a pipe. Without this, `sed "s|a|b|" f` was torn into
+         * three "pipeline stages" and the shell reported the middle of a
+         * substitution as a command that could not be found -- which is why
+         * an alternate sed delimiter appeared not to work at all. */
+        {
+            char q = 0;
+            for (; *bar; bar++) {
+                if (q)                        { if (*bar == q) q = 0; continue; }
+                if (*bar == '"' || *bar == '\'') { q = *bar; continue; }
+                if (*bar == '|') break;
+            }
+        }
         char save = *bar;
         *bar = 0;
         char *one = g_trim(stage);
@@ -387,13 +398,33 @@ static int run_line(char *cmd0)
         return 0;
     }
     if (g_streq(cmd, "echo")) {
+        /* Quotes are removed and -n is honoured, exactly as /bin/echo does --
+         * this builtin shadows it, so fixing only the program fixed nothing.
+         * `echo "udev.* /dev/null" >> f` used to write the quote marks into
+         * the file, and there was no way to write a line containing a space
+         * without them. On a machine whose only editor is `echo >>` and
+         * `sed`, that decides whether a config file can be repaired at all. */
+        static char ebuf[1024];
+        g_copy(ebuf, rest, sizeof ebuf);
+        char *ev[GARGS];
+        int en = g_argv(ebuf, ev);
+        int ei = 0, enl = 1;
+        if (en > 0 && g_streq(ev[0], "-n")) { enl = 0; ei = 1; }
+
+        static char outb[1024];
+        u64 o = 0;
+        for (; ei < en; ei++) {
+            for (const char *q = ev[ei]; *q && o + 2 < sizeof outb; q++) outb[o++] = *q;
+            if (ei + 1 < en && o + 2 < sizeof outb) outb[o++] = ' ';
+        }
+        if (enl && o + 1 < sizeof outb) outb[o++] = '\n';
+
         if (redirect_fd >= 0) {
-            sysc(SYS_write, redirect_fd, (i64)rest, (i64)g_strlen(rest));
-            sysc(SYS_write, redirect_fd, (i64)"\n", 1);
+            sysc(SYS_write, redirect_fd, (i64)outb, (i64)o);
             g_close(redirect_fd);
             redirect_fd = -1;
         } else {
-            g_putln(rest);
+            g_write(1, outb, o);
         }
         return 0;
     }

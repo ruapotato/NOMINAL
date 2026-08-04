@@ -1230,14 +1230,39 @@ int machine_collateral(Machine *m, Buf *out)
                     (n->data.len &&
                      memcmp(n->data.p, m->local_orig[i].p, n->data.len) != 0);
         if (!gone) continue;
-        if (!lost) buf_puts(out, "\nlocal configuration that no longer survives:\n");
+        if (!lost) buf_puts(out,
+            "\nyou overwrote local configuration:\n");
         buf_printf(out, "  %s\n", m->local[i]);
         lost++;
     }
     if (lost)
-        buf_puts(out, "  someone chose those settings deliberately. `pkg diff`\n"
-                      "  before reinstalling would have shown you which.\n");
+        buf_puts(out,
+            "  this machine's own settings are gone and there is no undo.\n"
+            "  somebody chose them on purpose; `pkg diff` shows what a file\n"
+            "  says against what the package ships, and plain `pkg reinstall`\n"
+            "  (without --force) leaves edited config alone.\n");
     return lost;
+}
+
+/* Re-baseline the local edits against the disk AS THE PLAYER RECEIVES IT.
+ *
+ * The collateral report asks one question: did YOU destroy something that was
+ * there when you arrived. It compared against the edits as INSTALLED, which is
+ * a different question -- if the breaker then corrupted one of those files,
+ * the report fired before the player had typed a single command, blaming them
+ * for damage the ticket shipped with. A playtester spent twenty minutes trying
+ * to work out what it meant and concluded, reasonably, that the same message
+ * means both "you broke this" and "the customer broke this".
+ *
+ * Called once the machine is broken and before anyone touches it. */
+void machine_rebaseline_local(Machine *m)
+{
+    for (int i = 0; i < m->nlocal; i++) {
+        VNode *n = vfs_lookup(&m->disk, m->local[i]);
+        buf_clear(&m->local_orig[i]);
+        if (n && n->kind == VN_FILE && n->data.len)
+            buf_put(&m->local_orig[i], n->data.p, n->data.len);
+    }
 }
 
 void machine_free(Machine *m)
