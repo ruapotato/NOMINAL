@@ -1286,6 +1286,56 @@ void machine_rebaseline_local(Machine *m)
     }
 }
 
+/* DAMAGE THAT IS STILL THERE, whether or not the machine boots.
+ *
+ * A playtester took a three-fault ticket, repaired two, booted, and was told
+ * [UP at target] with no complaint -- while /etc/udev/rules.d/50-default.rules
+ * still read SUBSYSTEM=="bhock". The health check only ever asked whether the
+ * services were running, so a fault that has not broken anything YET signs off
+ * as fixed. That undercuts the whole premise: the ticket is "prove it is
+ * healthy", not "prove it starts today".
+ *
+ * A package file that no longer matches what the package ships, and that is
+ * not one of this machine's own local edits, is outstanding damage. That
+ * definition needs no cooperation from the faults and no list of what was
+ * injected -- it is just the truth about the disk.
+ */
+int machine_outstanding(Machine *m, Buf *out)
+{
+    int bad = 0;
+    for (int i = 0; i < m->npkg; i++) {
+        const Package *p = m->pkg[i];
+        for (int j = 0; j < p->nfiles; j++) {
+            const PkgFile *f = &p->file[j];
+            if (f->isdir || f->link) continue;
+
+            bool is_local = false;
+            for (int k = 0; k < m->nlocal; k++)
+                if (strcmp(m->local[k], f->path) == 0) is_local = true;
+            if (is_local) continue;
+
+            VNode *n = vfs_lookup(&m->disk, f->path);
+            Buf want = {0};
+            pristine(m, f, &want);
+            bool differs = !n || n->kind != VN_FILE ||
+                           n->data.len != want.len ||
+                           (want.len && memcmp(n->data.p, want.p, want.len) != 0);
+            buf_free(&want);
+            if (!differs) continue;
+
+            if (!bad) buf_puts(out,
+                "\nthe machine is up, but this is still not as its package "
+                "shipped it:\n");
+            if (bad < 6) buf_printf(out, "  %s  (%s)\n", f->path, p->name);
+            bad++;
+        }
+    }
+    if (bad) buf_puts(out,
+        "  a fault that has not broken anything yet is still a fault --\n"
+        "  `pkg diff <path>` to see it.\n");
+    return bad;
+}
+
 void machine_free(Machine *m)
 {
     for (int i = 0; i < 8; i++) buf_free(&m->local_orig[i]);

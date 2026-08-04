@@ -219,6 +219,9 @@ void customer_ask(Machine *m, const char *question, Buf *out);
 void customer_intro(Machine *m, Buf *out);
 /* Which local configuration decisions no longer survive. Returns how many. */
 int machine_collateral(Machine *m, Buf *out);
+/* Damage still on the disk, whether or not the machine boots. A ticket is
+ * "prove it is healthy", not "prove it starts today". */
+int machine_outstanding(Machine *m, Buf *out);
 /* Ask the customer to DO something. Returns false if the request was not
  * understood as an action, in which case it was a question. */
 bool customer_do(Machine *m, const char *request, Buf *out);

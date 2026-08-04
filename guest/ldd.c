@@ -16,6 +16,9 @@
 #include "gsys.h"
 
 static char needs[512];
+/* The root filesystem the program actually belongs to. Empty means "this
+ * one"; set when the binary lives under a mount. */
+static char rootpfx[128];
 static char conf[512];
 static char libbuf[4096];
 
@@ -41,7 +44,10 @@ static int lib_version(const char *path, char *out, u64 outsz)
  * the whole point of this tool. */
 static int find_lib(const char *soname, char *out, u64 outsz)
 {
-    if (g_slurp("/etc/ld.so.conf", conf, sizeof conf) < 0)
+    static char cpath[192];
+    g_copy(cpath, rootpfx, sizeof cpath);
+    g_cat(cpath, "/etc/ld.so.conf", sizeof cpath);
+    if (g_slurp(cpath, conf, sizeof conf) < 0)
         g_copy(conf, "/lib\n/usr/lib\n", sizeof conf);
     char *p = conf;
     while (*p) {
@@ -50,7 +56,8 @@ static int find_lib(const char *soname, char *out, u64 outsz)
         char *dir = g_trim(p);
         if (*dir && *dir != '#') {
             static char cand[256];
-            g_copy(cand, dir, sizeof cand);
+            g_copy(cand, rootpfx, sizeof cand);
+            g_cat(cand, dir, sizeof cand);
             g_cat(cand, "/", sizeof cand);
             g_cat(cand, soname, sizeof cand);
             NomStat st;
@@ -62,12 +69,54 @@ static int find_lib(const char *soname, char *out, u64 outsz)
     return 0;
 }
 
+/* WHICH ROOT DO WE RESOLVE AGAINST?
+ *
+ * `ldd /mnt/usr/sbin/httpd` was reading the dependency list out of the
+ * mounted disk and then looking for the libraries on the RESCUE medium --
+ * whose /lib holds two files. So it reported libz.so.1 as "not found" while
+ * the library sat in /mnt/lib, plainly visible in `ls`, and manufactured a
+ * fault that did not exist. A playtester lost time chasing it and was right
+ * to call it the worst bug in the game: a tool that invents faults is worse
+ * than no tool, and `man ldd` promises exactly this case works.
+ *
+ * A binary under a mounted root is resolved against THAT root. Found by
+ * walking the prefixes of the path and taking the longest one that looks like
+ * a root filesystem -- that is, one with an /etc/ld.so.conf in it. */
+static void find_root(const char *prog)
+{
+    rootpfx[0] = 0;
+    u64 n = g_strlen(prog);
+    for (u64 i = n; i > 1; i--) {
+        if (prog[i] != '/') continue;
+        static char cand[192];
+        u64 k = 0;
+        while (k < i && k < sizeof cand - 20) { cand[k] = prog[k]; k++; }
+        cand[k] = 0;
+        static char probe[256];
+        g_copy(probe, cand, sizeof probe);
+        g_cat(probe, "/etc/ld.so.conf", sizeof probe);
+        NomStat st;
+        if (g_stat(probe, &st) == 0) { g_copy(rootpfx, cand, sizeof rootpfx); return; }
+    }
+}
+
 void _start(void)
 {
     static char arg[256];
     g_getarg(arg, sizeof arg);
     char *v[GARGS];
-    if (g_argv(arg, v) < 1) { g_putln("usage: ldd <program>"); g_exit(1); }
+    int argn = g_argv(arg, v);
+    if (argn < 1) { g_putln("usage: ldd [-r <root>] <program>"); g_exit(1); }
+
+    int pi = 0;
+    for (int i = 0; i + 1 < argn; i++)
+        if (g_streq(v[i], "-r") || g_streq(v[i], "--root")) {
+            g_copy(rootpfx, v[i + 1], sizeof rootpfx);
+            pi = i + 2;
+        }
+    if (pi >= argn) { g_putln("usage: ldd [-r <root>] <program>"); g_exit(1); }
+    v[0] = v[pi];
+    if (!rootpfx[0]) find_root(v[0]);
 
     i64 got = sysc(SYS_needs, (i64)v[0], (i64)needs, sizeof needs - 1);
     if (got < 0) {
@@ -76,6 +125,11 @@ void _start(void)
         g_exit(1);
     }
     needs[got] = 0;
+    if (rootpfx[0]) {
+        g_puts("(resolving against the root filesystem at ");
+        g_puts(rootpfx);
+        g_putln(")");
+    }
     if (!got) { g_putln("\tstatically linked"); g_exit(0); }
 
     int bad = 0;

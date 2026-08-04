@@ -355,6 +355,14 @@ int main(int argc, char **argv)
                     }
                     buf_free(&sick);
                 }
+                /* Same claim as the socket and the one-shot path: the machine
+                 * started AND there is still something wrong with it. */
+                if (m.boot.running) {
+                    Buf left = {0};
+                    if (machine_outstanding(&m, &left) && left.len)
+                        fwrite(left.p, 1, left.len, stdout);
+                    buf_free(&left);
+                }
                 if (m.boot.running) {
                     Buf col = {0};
                     if (machine_collateral(&m, &col))
@@ -388,6 +396,15 @@ int main(int argc, char **argv)
         } else {
             printf("\n[%s at %s]\n", m.boot.running ? "UP" : "DOWN",
                    boot_stage_name(m.boot.failed_at));
+        }
+        /* Damage the boot has not tripped over yet -- same claim the socket
+         * makes, so the two front ends cannot disagree about whether a ticket
+         * is finished. */
+        if (m.boot.running) {
+            Buf left = {0};
+            if (machine_outstanding(&m, &left) && left.len)
+                fwrite(left.p, 1, left.len, stdout);
+            buf_free(&left);
         }
         buf_free(&sick);
     }

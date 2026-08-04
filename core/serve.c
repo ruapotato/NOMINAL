@@ -111,6 +111,15 @@ static void send_boot(Client *c)
                  c->m.boot.running ? "UP" : "DOWN",
                  boot_stage_name(c->m.boot.failed_at));
     send_str(c->fd, tail);
+    /* Damage the boot has not tripped over yet. Reported after the verdict,
+     * because it is a different claim: the machine started, AND there is
+     * still something wrong with it. */
+    if (c->m.boot.running) {
+        Buf left = {0};
+        if (machine_outstanding(&c->m, &left) && left.len)
+            send_all(c->fd, left.p, left.len);
+        buf_free(&left);
+    }
     if (dead) send_all(c->fd, sick.p, sick.len);
     buf_free(&sick);
 
