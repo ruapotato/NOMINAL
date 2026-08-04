@@ -46,11 +46,25 @@ void _start(void)
         g_putln(": cannot open for writing");
         g_exit(1);
     }
+    /* Check the write. A logger that cannot write its log is not running,
+     * whatever the process table says -- and on a full disk this is the FIRST
+     * thing to fail, which is almost never the interesting thing. What
+     * actually filled the disk is a log that has been growing since March. */
     const char *banner = "syslogd: started, logging to ";
-    sysc(SYS_write, fd, (i64)banner, (i64)g_strlen(banner));
-    sysc(SYS_write, fd, (i64)logfile, (i64)g_strlen(logfile));
-    sysc(SYS_write, fd, (i64)"\n", 1);
+    i64 w = sysc(SYS_write, fd, (i64)banner, (i64)g_strlen(banner));
     g_close(fd);
+    if (w < 0) {
+        g_puts("syslogd: ");
+        g_puts(logfile);
+        g_putln(": cannot write -- is the disk full?");
+        g_exit(1);
+    }
+    fd = g_open(logfile, O_WRONLY | O_APPEND);
+    if (fd >= 0) {
+        sysc(SYS_write, fd, (i64)logfile, (i64)g_strlen(logfile));
+        sysc(SYS_write, fd, (i64)"\n", 1);
+        g_close(fd);
+    }
 
     /* Up. A daemon spends its life here. */
     for (;;) { }

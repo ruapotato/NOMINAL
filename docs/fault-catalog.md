@@ -73,8 +73,20 @@ Legend: **[done]** built · **[next]** in progress or immediately next ·
   mount fails with "unknown filesystem type".
 - **[todo]** root mounted read-only and stuck that way, so everything that
   wants to write at boot fails in a cascade.
-- **[todo]** disk full at boot: services that need to write a pidfile or a log
-  fail one after another and the *first* error is not the interesting one.
+- **[done]** **disk full at boot.** A different mechanism from everything else
+  here: nothing is corrupt, every hash matches, and `pkg verify` will tell you
+  the machine is perfect. There is simply nowhere to put the next byte.
+
+  ```
+  rescue# df
+  FILESYSTEM       SIZE     USED    AVAIL  USE%
+  /dev/sda1     862K   862K   0K   100%
+  ```
+
+  The first thing to fail is syslogd, and the first failure is almost never
+  the interesting one — what filled the disk is a log that has been growing
+  quietly since March. The fix is not a package: it is `df`, then finding what
+  is big, then deleting it.
 - **[todo]** inode exhaustion — space free, still cannot create a file.
 
 ## 5. fstab and mounts
@@ -260,8 +272,9 @@ boot, so a repair that leaves a service dead is not a repair.
   a file:** `kill -HUP <pid>`. The fault has to be applied *after* boot by
   construction — reboot and the daemon reads the new file and it evaporates,
   which is exactly why it is so miserable to diagnose in real life.
-- **[todo]** a log filling the disk, so the machine boots today and will not
-  next week.
+- **[done]** a log filling the disk. See §4 — it now takes syslogd down with
+  it, because a logger that cannot write its log is not running whatever the
+  process table says.
 
 ## 13. Things that are wrong before you arrive
 

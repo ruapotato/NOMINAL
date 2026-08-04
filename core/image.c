@@ -965,8 +965,13 @@ void machine_install(Machine *m, uint64_t seed)
         for (int j = 0; j < IMAGE[i]->nfiles; j++)
             install_file(m, &IMAGE[i]->file[j]);
     }
+    /* Sized from what the installation actually takes, with room for a
+     * working machine and not much more -- which is what a real disk feels
+     * like and is what makes filling it possible. */
+    m->fs_capacity = 0;
     install_pkgdb(m);
     install_local_edits(m, seed);
+    m->fs_capacity = machine_disk_used(m) + 512u * 1024u;
     install_rescue(m);
     m->next_pid = 1;
 }

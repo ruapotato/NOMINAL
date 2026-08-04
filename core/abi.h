@@ -55,6 +55,7 @@ typedef unsigned long      uint64_t;
 #define SYS_umount   1037   /* (at) -> 0 or -1                              */
 #define SYS_chroot   1038   /* (path) -> 0 or -1                            */
 #define SYS_mounts   1039   /* (buf, len) -> bytes: the mount table         */
+#define SYS_dfused   1052   /* (which) -> bytes used (0) or capacity (1)    */
 #define SYS_kill     1050   /* (pid, sig) -> 0 or -1. Signals are DELIVERED by
                              * being left pending; a cooperative daemon polls
                              * for them, which is all this machine can offer

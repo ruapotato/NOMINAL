@@ -339,6 +339,16 @@ static int64_t sys_write(Proc *p, Cpu *c, int64_t fd, uint64_t buf, int64_t len)
     }
     Fd *f = &p->fd[fd];
     if (strncmp(f->path, "/proc", 5) == 0) { nom_free(tmp); return -1; }
+    /* ENOSPC. A full disk is not a corruption and no amount of verifying will
+     * find it: every file is exactly what it should be, there is simply
+     * nowhere to put the next one. */
+    if (p->m->fs_capacity && f->fs == &p->m->disk) {
+        uint64_t used = machine_disk_used(p->m);
+        if (used + (uint64_t)len > p->m->fs_capacity) {
+            nom_free(tmp);
+            return -1;
+        }
+    }
     if (f->pos != f->data.len) buf_clear(&f->data);   /* no seeking yet */
     buf_put(&f->data, tmp, (size_t)len);
     f->pos = f->data.len;
@@ -539,6 +549,9 @@ static int64_t kernel_syscall(Cpu *c, int64_t n, int64_t a0, int64_t a1,
         buf_free(&b);
         return r;
     }
+    case SYS_dfused:
+        return a0 ? (int64_t)p->m->fs_capacity
+                  : (int64_t)machine_disk_used(p->m);
     case SYS_kill: {
         /* Leave the signal pending on the target. Nothing is interrupted --
          * there is no preemption here -- so a daemon sees it the next time it
@@ -1350,6 +1363,27 @@ static bool link_check(Machine *m, Vfs *fs, const char *needs,
         }
     }
     return true;
+}
+
+/* ------------------------------------------------------------- capacity --
+ *
+ * Counted from the tree rather than tracked incrementally, because a running
+ * total is a thing that drifts out of step with reality and this one has to
+ * be trusted: it decides whether a write fails. */
+uint64_t machine_disk_used(const Machine *m)
+{
+    uint64_t total = 0;
+    VNode *stack[256];
+    int sp = 0;
+    if (m->disk.root) stack[sp++] = m->disk.root;
+    while (sp) {
+        VNode *n = stack[--sp];
+        for (VNode *k = n->child; k; k = k->next) {
+            if (k->kind == VN_DIR) { if (sp < 256) stack[sp++] = k; }
+            else total += k->data.len;
+        }
+    }
+    return total;
 }
 
 /* --------------------------------------------------------------- mount -- */

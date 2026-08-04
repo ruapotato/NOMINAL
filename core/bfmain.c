@@ -147,6 +147,10 @@ int main(int argc, char **argv)
                 snprintf(cmd, sizeof cmd, "pkg reinstall --force %s", m.pkg[k]->name);
                 kernel_run(&m, cmd, &o);
             }
+            /* A full disk is not a package problem and reinstalling cannot
+             * help: every file is exactly right, there is just nowhere to put
+             * the next one. Truncating a log is always safe. */
+            kernel_run(&m, "rm /var/log/messages", &o);
             kernel_run(&m, "mkinitrd", &o);
             kernel_run(&m, "zbl-mkconfig", &o);
             kernel_run(&m, "zbl-install /dev/sda", &o);

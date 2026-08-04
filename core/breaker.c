@@ -578,13 +578,60 @@ static void fault_daemon_directive(Machine *m, Rng *r, char *d, size_t ds)
     buf_free(&out);
 }
 
+/* The disk filled up.
+ *
+ * A different mechanism from everything else here: nothing is corrupt, no
+ * file is wrong, every hash matches, and `pkg verify` will tell you the
+ * machine is perfect. There is simply nowhere to put the next byte, so the
+ * first thing that needs to write fails -- and the first failure is almost
+ * never the interesting one, because what actually filled the disk is a log
+ * that has been growing quietly since March.
+ *
+ * The fix is not a package. It is `df`, then finding what is big, then
+ * deleting it. */
+static void fault_disk_full(Machine *m, Rng *r, char *d, size_t ds)
+{
+    (void)r;
+    VNode *n = vfs_lookup(&m->disk, "/var/log/messages");
+    if (!n) n = vfs_mkfile(&m->disk, "/var/log/messages", "");
+    if (!n || n->kind != VN_FILE) return;
+
+    uint64_t used = machine_disk_used(m);
+    if (m->fs_capacity <= used) return;
+    uint64_t room = m->fs_capacity - used;
+
+    /* Months of a daemon logging every failed attempt at something. Filling
+     * it to the brim rather than over, so the disk is full and not corrupt. */
+    static const char *LINES[] = {
+        "udevd: could not open /dev/input/event3: no such device\n",
+        "sshd: refused connect from 10.0.2.88\n",
+        "ntpd: no reply from 10.0.2.3, will retry\n",
+        "crond: (root) CMD (/usr/sbin/logrotate /etc/logrotate.conf)\n",
+    };
+    uint64_t before = n->data.len;
+    uint64_t k = 0;
+    for (; k < room; ) {
+        const char *l = LINES[k % 4];
+        size_t ll = strlen(l);
+        if (k + ll > room) break;
+        buf_puts(&n->data, l);
+        k += ll;
+    }
+    /* Fill the last few bytes too. Leaving even forty spare is enough for a
+     * daemon's one-line banner to fit, and then the disk is full in a way
+     * nothing notices -- which is a fault that does not exist. */
+    while (k < room) { buf_putc(&n->data, '.'); k++; }
+    snprintf(d, ds, "filled the disk: /var/log/messages grew from %llu to %llu bytes",
+             (unsigned long long)before, (unsigned long long)n->data.len);
+}
+
 typedef void (*StructuralFault)(Machine *, Rng *, char *, size_t);
 static const StructuralFault STRUCTURAL[] = {
     fault_bootsector, fault_stray_unit, fault_wrong_uuid, fault_missing_module,
     fault_bad_libc, fault_wrong_arch, fault_ldsoconf,
     fault_bad_shell, fault_no_root, fault_unclean_shutdown,
     fault_wrong_channel, fault_fstab, fault_daemon_config,
-    fault_daemon_directive,
+    fault_daemon_directive, fault_disk_full,
 };
 #define NSTRUCT ((int)(sizeof STRUCTURAL / sizeof STRUCTURAL[0]))
 

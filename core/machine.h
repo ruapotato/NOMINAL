@@ -100,6 +100,10 @@ typedef struct {
     /* An unclean shutdown leaves the filesystem marked dirty. Nothing will
      * mount it until fsck has been run, which is the point: the repair has to
      * happen BEFORE you can even look at the disk. */
+    /* The disk has a size. Everything up to now could write forever, so a log
+     * that grows was not a fault and could not become one -- and "the disk
+     * filled up" is one of the commonest real causes there is. */
+    uint64_t fs_capacity;
     bool  fs_dirty;
     int   fs_lost;           /* files fsck could not save                   */
     /* Which repository channel `pkg` pulls from. Read off the disk at
@@ -192,6 +196,8 @@ bool machine_mount(Machine *m, const char *dev, const char *at, int flags);
  * dirty filesystem is usually two repairs, not one. */
 int  machine_fsck(Machine *m, const char *dev, Buf *out);
 void machine_read_channel(Machine *m);
+/* Bytes in use on the customer's disk, counted from the tree. */
+uint64_t machine_disk_used(const Machine *m);
 
 /* Start a program as a long-lived service. Returns 0 if it is now running,
  * or a negative SPAWN_* if it could not be started at all. */
