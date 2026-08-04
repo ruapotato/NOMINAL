@@ -63,6 +63,7 @@ func reset(name: String) -> void:
 
 
 func _process(dt: float) -> void:
+	_collect()
 	blink += dt
 	if blink > 0.5:
 		blink -= 0.5
@@ -70,27 +71,51 @@ func _process(dt: float) -> void:
 
 
 # Ask contact `w`. Called by the desktop and by the terminal's ask/sam/boss.
+#
+# ON A WORKER THREAD, because the model takes seconds on a cpu and doing it on
+# the main thread freezes the whole desktop -- the clock stops, the cursor
+# stops blinking, and the game looks crashed every time you say hello. The
+# reply is collected in _process. One call at a time: the llama context is not
+# reentrant, and a support call is a conversation, not a broadcast.
+var _thread: Thread = null
+var _pending_who := 0
+
 func post(w: int, text: String) -> void:
 	if text.strip_edges() == "":
+		return
+	if thinking:
+		logs[who].append(["", "(still waiting for a reply -- one at a time)"])
+		queue_redraw()
 		return
 	who = clampi(w, 0, 2)
 	logs[who].append(["you", text])
 	thinking = true
+	_pending_who = who
 	queue_redraw()
 
-	var reply := ""
-	if who == 0:
-		reply = machine.ask(text)
-	else:
-		reply = machine.colleague(NAMES[who].to_lower() if who == 1 else "manager", text)
+	_thread = Thread.new()
+	var target := who
+	_thread.start(func() -> String:
+		if target == 0:
+			return machine.ask(text)
+		return machine.colleague("coworker" if target == 1 else "manager", text))
+
+
+func _collect() -> void:
+	if _thread == null or _thread.is_alive():
+		return
+	var reply: String = _thread.wait_to_finish()
+	_thread = null
 	thinking = false
 
 	reply = reply.strip_edges()
-	# The engine returns "  \"...\"" or "  Sam: \"...\"" -- strip the framing,
-	# because in a chat window the speaker is already a label.
+	# The engine frames replies as "  \"...\"" or "  Sam: \"...\"". In a chat
+	# window the speaker is already a label, so strip it.
 	reply = reply.trim_prefix("Sam:").trim_prefix("Rebecca:").strip_edges()
 	reply = reply.trim_prefix("\"").trim_suffix("\"")
-	logs[who].append([cust_name if who == 0 else NAMES[who], reply])
+	if reply == "":
+		reply = "(no reply)"
+	logs[_pending_who].append([cust_name if _pending_who == 0 else NAMES[_pending_who], reply])
 	queue_redraw()
 
 
@@ -183,7 +208,10 @@ func _draw() -> void:
 			rows.append("  " + l); cols.append(ink)
 		rows.append(""); cols.append(dim)
 	if thinking:
-		rows.append("  ..."); cols.append(dim)
+		var dots := ".".repeat(1 + int(blink * 6) % 3)
+		rows.append("  %s is typing%s" % [
+			cust_name if who == 0 else NAMES[who], dots])
+		cols.append(Color("#d3b06a"))
 
 	var visible := int((size.y - 34) / LINE_H)
 	var first: int = max(0, rows.size() - visible)
