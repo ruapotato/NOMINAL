@@ -113,6 +113,11 @@ typedef struct {
     char  channel[24];
     Mount mount[MOUNT_MAX];
     int   nmount;
+    /* The root filesystem is not in the mount table -- it is the thing the
+     * table is relative to -- so "mounted read-only" has to live here. Set by
+     * /sbin/mountall when the fstab entry for / carries the ro option, which
+     * is exactly the moment a real init decides whether to remount rw. */
+    bool  root_ro;
     char  root_uuid[40];     /* what the root partition actually IS        */
     bool  bootsector;        /* firmware can find something to chain to    */
     BootResult boot;

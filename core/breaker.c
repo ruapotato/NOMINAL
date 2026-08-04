@@ -649,6 +649,49 @@ static void fault_disk_full(Machine *m, Rng *r, char *d, size_t ds)
  * There IS no manifest line for a directory, so verify cannot hand this one
  * over, and the player has to notice that a file which reads as present is
  * still unreachable. */
+/* The root filesystem left read-only. One word in one line of fstab, and
+ * nothing on the disk is wrong: every hash matches, `pkg verify` reports a
+ * perfect machine, and every service that keeps state dies the moment it
+ * tries to write.
+ *
+ * This is what a half-finished repair looks like. Somebody hit a dirty
+ * filesystem, mounted it ro to be safe, edited fstab so it would stay that
+ * way while they investigated, and never put it back. The failure is a
+ * cascade of unrelated-looking errors from whichever daemon writes first,
+ * which is exactly how it reads on a real machine. */
+static void fault_root_ro(Machine *m, Rng *r, char *d, size_t ds)
+{
+    (void)r;
+    VNode *n = vfs_lookup(&m->disk, "/etc/fstab");
+    if (!n || n->kind != VN_FILE) return;
+    Buf out = {0};
+    bool hit = false;
+    const char *p = n->data.p ? n->data.p : "";
+    size_t len = n->data.len;
+    size_t i = 0;
+    while (i < len) {
+        size_t e = i; while (e < len && p[e] != '\n') e++;
+        char line[512];
+        size_t ll = e - i < sizeof line - 1 ? e - i : sizeof line - 1;
+        memcpy(line, p + i, ll); line[ll] = 0;
+        /* The root entry: second field is exactly "/". */
+        char a[128] = "", b[128] = "", c[64] = "", o[64] = "";
+        int got = sscanf(line, "%127s %127s %63s %63s", a, b, c, o);
+        if (!hit && got >= 3 && line[0] != '#' && strcmp(b, "/") == 0) {
+            buf_printf(&out, "%-31s %-6s %-5s %s\n", a, b, c, "ro");
+            hit = true;
+        } else {
+            buf_put(&out, line, strlen(line));
+            buf_puts(&out, "\n");
+        }
+        i = e < len ? e + 1 : len;
+    }
+    if (hit) { buf_clear(&n->data); buf_put(&n->data, out.p, out.len); }
+    buf_free(&out);
+    if (hit) snprintf(d, ds, "left the root filesystem mounted read-only in "
+                             "/etc/fstab");
+}
+
 static void fault_dir_mode(Machine *m, Rng *r, char *d, size_t ds)
 {
     static const char *VICTIMS[] = {
@@ -706,7 +749,7 @@ static const StructuralFault STRUCTURAL[] = {
     fault_bad_shell, fault_no_root, fault_unclean_shutdown,
     fault_wrong_channel, fault_fstab, fault_daemon_config,
     fault_daemon_directive, fault_disk_full, fault_bad_bind,
-    fault_dir_mode,
+    fault_dir_mode, fault_root_ro,
 };
 #define NSTRUCT ((int)(sizeof STRUCTURAL / sizeof STRUCTURAL[0]))
 

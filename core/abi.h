@@ -90,6 +90,7 @@ typedef unsigned long      uint64_t;
                              * a diagnosis you can actually reach.          */
 
 #define MNT_BIND  1         /* `at` is another path, not a device           */
+#define MNT_RO    2         /* mount read-only; on / it is a remount        */
 
 #define O_RDONLY  0
 #define O_WRONLY  1

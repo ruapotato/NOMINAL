@@ -71,8 +71,19 @@ Legend: **[done]** built · **[next]** in progress or immediately next ·
   feeling and still worth building.
 - **[todo]** filesystem type wrong in fstab (`ext4` vs something else), so the
   mount fails with "unknown filesystem type".
-- **[todo]** root mounted read-only and stuck that way, so everything that
-  wants to write at boot fails in a cascade.
+- **[done]** **root mounted read-only and stuck that way.** `fault_root_ro`.
+  One word in one line of `/etc/fstab`. Nothing on the disk is wrong -- every
+  hash matches -- and every service that keeps state dies the moment it first
+  tries to write. This is what a half-finished repair looks like: somebody hit
+  a dirty filesystem, mounted it `ro` to be safe while they investigated, and
+  never put it back.
+
+  It needed a real remount path, because `/` is deliberately not in the mount
+  table: `/sbin/mountall` now performs the root remount from the fstab options,
+  which is the moment a real init decides between `ro` and `rw`, and says so on
+  the console. The clue is early in the boot and the symptom is late -- a
+  respawn loop in whichever daemon writes first -- which is the shape of the
+  real thing.
 - **[done]** **disk full at boot.** A different mechanism from everything else
   here: nothing is corrupt, every hash matches, and `pkg verify` will tell you
   the machine is perfect. There is simply nowhere to put the next byte.

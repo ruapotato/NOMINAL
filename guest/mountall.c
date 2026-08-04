@@ -66,9 +66,25 @@ void _start(void)
             g_exit(1);
         }
 
-        /* The root is already mounted by the initrd; re-mounting it here
-         * would be wrong and mount() would refuse anyway. */
-        if (g_streq(at, "/")) continue;
+        /* The root is already mounted by the initrd, read-only, exactly as a
+         * real machine does it. What happens here is the REMOUNT: fstab says
+         * how the running system wants its root, and this is where that word
+         * takes effect. An fstab that says ro means the remount to read-write
+         * never happens and the machine comes up unable to write to its own
+         * disk -- nothing corrupt, every hash matching, and nothing working.
+         *
+         * Announcing it matters. A read-only root fails as a cascade of
+         * unrelated-looking errors from whichever daemon writes first, and
+         * without this line there is nothing tying them together. */
+        if (g_streq(at, "/")) {
+            if (has_opt(opts, "ro")) {
+                sysc(SYS_mount, (i64)dev, (i64)"/", MNT_RO);
+                g_putln("mountall: / is mounted read-only (fstab says ro)");
+            } else {
+                sysc(SYS_mount, (i64)dev, (i64)"/", 0);
+            }
+            continue;
+        }
 
         NomStat st;
         if (g_stat(at, &st) != 0) {

@@ -349,6 +349,11 @@ static int64_t sys_open(Proc *p, Cpu *c, uint64_t pathp, int64_t flags)
      * config file really does break the thing that reads it, and that is a
      * fault worth being able to have. */
     bool want_write = (flags & (O_WRONLY | O_RDWR | O_CREAT | O_TRUNC)) != 0;
+    /* A read-only root refuses every write, which is the point: nothing is
+     * corrupt, every hash matches, and the machine still cannot run. The
+     * failure is a cascade -- each daemon fails at the moment it first tries
+     * to write its state -- and the cause is one word in one line of fstab. */
+    if (want_write && !p->m->on_rescue && p->m->root_ro && fs == &p->m->disk) return -1;
     if (!want_write && !(n->mode & 0444)) return -1;
     if (want_write  && !(n->mode & 0222) && !(flags & O_CREAT)) return -1;
 
@@ -1476,7 +1481,16 @@ bool machine_mount(Machine *m, const char *dev, const char *at, int flags)
     /* Mounting at / would shadow the running system with itself and make
      * every subsequent lookup nonsense. Real mount(8) allows it; here it is
      * only ever a mistake, and one that is very hard to see afterwards. */
-    if (!at || strcmp(at, "/") == 0) return false;
+    if (!at) return false;
+    if (strcmp(at, "/") == 0) {
+        /* The single exception. Real init mounts / read-only from the initrd
+         * and then remounts it read-write once fsck is happy; an fstab that
+         * says ro means that second step never happens and the machine comes
+         * up unable to write to its own disk. */
+        if (flags & MNT_RO) { m->root_ro = true; return true; }
+        m->root_ro = false;
+        return true;
+    }
     if (!dev || !*dev) return false;
 
     Vfs *fs = NULL;
