@@ -90,6 +90,8 @@ struct Daemon {
  * Step 4 is what makes `mount /dev/sda1 /mnt` real: below /mnt, lookups stop
  * happening on the rescue medium and start happening on the customer's disk.
  */
+static const char *device_type(const char *dev);
+
 static Vfs *resolve_fs(Proc *p, const char *in, char *out, size_t outsz)
 {
     Machine *m = p->m;
@@ -761,6 +763,21 @@ static int64_t kernel_syscall(Cpu *c, int64_t n, int64_t a0, int64_t a1,
         snprintf(p->info->cwd, sizeof p->info->cwd, "/");
         return 0;
     }
+    case SYS_fstype: {
+        char dev[64];
+        if (!guest_str(c, (uint64_t)a0, dev, sizeof dev)) return -1;
+        const char *t = device_type(dev);
+        /* fstab names the root by UUID, not by device, so a probe that only
+         * understood /dev/... could never check the one line that matters. */
+        if (!t && strncmp(dev, "UUID=", 5) == 0)
+            t = strcmp(dev + 5, p->m->root_uuid) == 0 ? "ext4" : NULL;
+        if (!t) return -1;
+        size_t tl = strlen(t);
+        if (tl > (size_t)a2) tl = (size_t)a2;
+        if (!cpu_write(c, (uint64_t)a1, t, tl)) return -1;
+        return (int64_t)tl;
+    }
+
     case SYS_needs: {
         /* ldd's one job. The dependency list is read out of the ELF the same
          * way the loader reads it, so ldd cannot disagree with what actually
@@ -1486,6 +1503,17 @@ uint64_t machine_disk_used(const Machine *m)
 /* The block devices this machine has. The customer's disk is /dev/sda1 --
  * present as a device whether or not anything on it works, which is exactly
  * why you can rescue it. */
+/* What a device really is, as opposed to what fstab claims it is. mount(8)
+ * probes rather than trusting the file, which is why "wrong fs type" is a
+ * distinct and very recognisable error rather than a mysterious failure. */
+static const char *device_type(const char *dev)
+{
+    if (strcmp(dev, "/dev/sda1") == 0 || strcmp(dev, "/dev/sda") == 0)
+        return "ext4";
+    if (strcmp(dev, "/dev/sr0") == 0) return "iso9660";
+    return NULL;
+}
+
 static Vfs *device_fs(Machine *m, const char *dev)
 {
     if (strcmp(dev, "/dev/sda1") == 0 || strcmp(dev, "/dev/sda") == 0)

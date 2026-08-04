@@ -69,8 +69,16 @@ Legend: **[done]** built · **[next]** in progress or immediately next ·
   smaller toolbox than the rescue medium. Currently the initrd reports and the
   player goes to the live image; being stranded with fewer tools is a different
   feeling and still worth building.
-- **[todo]** filesystem type wrong in fstab (`ext4` vs something else), so the
-  mount fails with "unknown filesystem type".
+- **[done]** **filesystem type wrong in fstab.** `fault_fstype`. One word, and
+  the mount fails with the most recognisable error in Unix administration.
+
+  It needed the type to become real rather than decorative: `mount` ignored
+  the type field entirely, and `blkid` printed a hardcoded `TYPE="ext4"`,
+  which is an oracle agreeing with itself. `SYS_fstype` now probes the device
+  — including by `UUID=`, which is how fstab names the root and therefore the
+  only line that matters — and both `mountall` and `blkid` ask it. So the file
+  and the device disagree, both tools tell the same story, and the file is
+  visibly the odd one out.
 - **[done]** **root mounted read-only and stuck that way.** `fault_root_ro`.
   One word in one line of `/etc/fstab`. Nothing on the disk is wrong -- every
   hash matches -- and every service that keeps state dies the moment it first

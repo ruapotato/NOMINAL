@@ -713,6 +713,48 @@ static void fault_bad_libz(Machine *m, Rng *r, char *d, size_t ds)
                     "built against", v);
 }
 
+/* fstab claiming a filesystem type the device does not have. A single word,
+ * and the mount fails with the most recognisable error in the whole of Unix
+ * system administration: wrong fs type.
+ *
+ * It is a real mistake -- somebody rebuilt a disk, or copied a line from
+ * another machine's fstab, or guessed. Nothing is corrupt and `blkid` will
+ * tell the truth to anyone who asks it, which is the point: the file and the
+ * device disagree, and only one of them can be edited. */
+static void fault_fstype(Machine *m, Rng *r, char *d, size_t ds)
+{
+    static const char *WRONG[] = { "xfs", "btrfs", "ext3", "reiserfs", "vfat" };
+    const char *bad = WRONG[rng_next(r) % 5];
+    VNode *n = vfs_lookup(&m->disk, "/etc/fstab");
+    if (!n || n->kind != VN_FILE) return;
+    Buf out = {0};
+    bool hit = false;
+    const char *p = n->data.p ? n->data.p : "";
+    size_t len = n->data.len, i = 0;
+    while (i < len) {
+        size_t e = i; while (e < len && p[e] != '\n') e++;
+        char line[512];
+        size_t ll = e - i < sizeof line - 1 ? e - i : sizeof line - 1;
+        memcpy(line, p + i, ll); line[ll] = 0;
+        char a[128] = "", b[128] = "", c[64] = "", o[64] = "defaults";
+        int got = sscanf(line, "%127s %127s %63s %63s", a, b, c, o);
+        /* A real device only: a wrong type on `none` means nothing. */
+        if (!hit && got >= 3 && line[0] != '#' &&
+            (a[0] == '/' || strncmp(a, "UUID=", 5) == 0) &&
+            strcmp(c, "iso9660") != 0) {
+            buf_printf(&out, "%-31s %-6s %-5s %s\n", a, b, bad, o);
+            hit = true;
+        } else {
+            buf_put(&out, line, strlen(line));
+            buf_puts(&out, "\n");
+        }
+        i = e < len ? e + 1 : len;
+    }
+    if (hit) { buf_clear(&n->data); buf_put(&n->data, out.p, out.len); }
+    buf_free(&out);
+    if (hit) snprintf(d, ds, "changed a filesystem type in /etc/fstab to %s", bad);
+}
+
 static void fault_dir_mode(Machine *m, Rng *r, char *d, size_t ds)
 {
     static const char *VICTIMS[] = {
@@ -770,7 +812,7 @@ static const StructuralFault STRUCTURAL[] = {
     fault_bad_shell, fault_no_root, fault_unclean_shutdown,
     fault_wrong_channel, fault_fstab, fault_daemon_config,
     fault_daemon_directive, fault_disk_full, fault_bad_bind,
-    fault_dir_mode, fault_root_ro, fault_bad_libz,
+    fault_dir_mode, fault_root_ro, fault_bad_libz, fault_fstype,
 };
 #define NSTRUCT ((int)(sizeof STRUCTURAL / sizeof STRUCTURAL[0]))
 

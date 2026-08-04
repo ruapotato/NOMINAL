@@ -66,6 +66,27 @@ void _start(void)
             g_exit(1);
         }
 
+        /* What fstab CLAIMS versus what the device actually is. mount(8)
+         * probes rather than trusting the file, so a type that does not match
+         * fails with a specific and very recognisable complaint instead of a
+         * mysterious one. Virtual filesystems have no device to probe. */
+        if (dev[0] == '/' || (dev[0] == 'U' && dev[1] == 'U')) {
+            static char real[32];
+            i64 tl = sysc(SYS_fstype, (i64)dev, (i64)real, sizeof real - 1);
+            if (tl > 0) {
+                real[tl] = 0;
+                if (!g_streq(real, type)) {
+                    g_puts("mountall: ");
+                    g_puts(dev);
+                    g_puts(": wrong fs type: /etc/fstab says ");
+                    g_puts(type);
+                    g_puts(", the device is ");
+                    g_putln(real);
+                    g_exit(1);
+                }
+            }
+        }
+
         /* The root is already mounted by the initrd, read-only, exactly as a
          * real machine does it. What happens here is the REMOUNT: fstab says
          * how the running system wants its root, and this is where that word

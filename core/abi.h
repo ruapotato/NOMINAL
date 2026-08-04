@@ -68,6 +68,9 @@ typedef unsigned long      uint64_t;
                              * captures its stdout back into it, which is all
                              * a pipeline is.                              */
 #define SYS_pipeout  1049   /* () -> flush the pipe buffer to the console  */
+#define SYS_fstype   1056   /* (dev, buf, len) -> the type the DEVICE actually
+                             * carries, which is what mount probes for and
+                             * what fstab is only claiming.               */
 #define SYS_needs    1055   /* (path, buf, len) -> bytes of the .nomneed list,
                              * one "soname version" per line, or -1. This is
                              * what ldd reads.                               */

@@ -14,9 +14,22 @@ void _start(void)
         g_putln("blkid: cannot read the disk");
         g_exit(1);
     }
+    /* The type is asked for, not asserted. blkid that prints a constant is
+     * an oracle agreeing with itself; this one probes the device, so when
+     * fstab claims a type the device does not have, blkid and mount tell the
+     * same story and the file is the odd one out. */
+    static char t1[32], t2[32];
+    i64 n1 = sysc(SYS_fstype, (i64)"/dev/sda1", (i64)t1, sizeof t1 - 1);
+    i64 n2 = sysc(SYS_fstype, (i64)"/dev/sr0",  (i64)t2, sizeof t2 - 1);
+    t1[n1 > 0 ? n1 : 0] = 0;
+    t2[n2 > 0 ? n2 : 0] = 0;
     g_puts("/dev/sda1: UUID=\"");
     g_puts(uuid);
-    g_putln("\" TYPE=\"ext4\"");
-    g_putln("/dev/sr0:  TYPE=\"iso9660\"");
+    g_puts("\" TYPE=\"");
+    g_puts(t1);
+    g_putln("\"");
+    g_puts("/dev/sr0:  TYPE=\"");
+    g_puts(t2);
+    g_putln("\"");
     g_exit(0);
 }
