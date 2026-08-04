@@ -38,8 +38,11 @@ BIN = build/nominal
 # The new core. `make test-break` is the gate: random corruption must always
 # produce a ticket, that ticket must always be visible to pkg verify, and
 # repairing it must always get the machine booting again.
-BF_SRC = core/util.c core/value.c core/vfs.c core/cpu.c core/kernel.c \
-         core/image.c core/boot.c core/breaker.c core/bfmain.c
+# The machine, without a main(): this is what both the harness and the
+# GDExtension are built from, so the game and the tests run the same code.
+BF_SRC_LIB = core/util.c core/value.c core/vfs.c core/cpu.c core/kernel.c \
+             core/image.c core/boot.c core/breaker.c
+BF_SRC = $(BF_SRC_LIB) core/bfmain.c
 
 # Regenerate the embedded guest userland. Needs clang+lld for riscv; the
 # generated header is committed so nobody else does.
@@ -107,9 +110,9 @@ GDEXT_OUT = game/bin/libnominal.linux.x86_64.so
 
 gdext: $(GDEXT_OUT)
 
-$(GDEXT_OUT): $(CORE_SRC) gdext/nominal_gdext.c | build
+$(GDEXT_OUT): $(BF_SRC_LIB) gdext/nominal_gdext.c | build
 	@mkdir -p game/bin
-	$(CC) $(CFLAGS) -Igdext -fPIC -shared $(CORE_SRC) gdext/nominal_gdext.c -o $@
+	$(CC) $(CFLAGS) -Igdext -fPIC -shared $(BF_SRC_LIB) gdext/nominal_gdext.c -o $@
 
 # ------------------------------------------------------------------ Windows
 # Cross-compiled with mingw-w64. KICKOFF requires exporting to Linux AND
@@ -128,9 +131,9 @@ $(WIN_BIN): $(CORE_SRC) core/main.c
 	@mkdir -p build/win
 	$(WINCC) $(WINFLAGS) $(CORE_SRC) core/main.c -o $@ -lws2_32
 
-$(WIN_GDEXT): $(CORE_SRC) gdext/nominal_gdext.c
+$(WIN_GDEXT): $(BF_SRC_LIB) gdext/nominal_gdext.c
 	@mkdir -p game/bin
-	$(WINCC) $(WINFLAGS) -Igdext -shared $(CORE_SRC) gdext/nominal_gdext.c -o $@ -lws2_32
+	$(WINCC) $(WINFLAGS) -Igdext -shared $(BF_SRC_LIB) gdext/nominal_gdext.c -o $@ -lws2_32
 
 # ---------------------------------------------------------------------- tests
 check: $(BIN) test-lang test-scenario

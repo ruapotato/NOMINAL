@@ -116,6 +116,9 @@ VNode *vfs_mkdir(Vfs *fs, const char *path)
     char norm[NOM_PATH_MAX * 2];
     vfs_normalize("/", path, norm, sizeof norm);
     VNode *n = walk(fs, norm, true, VN_DIR);
+    /* A directory you cannot enter is a real fault, so directories carry a
+     * mode like everything else rather than reading as 0000. */
+    if (n->mode == 0) n->mode = 0755;
     return n;
 }
 
