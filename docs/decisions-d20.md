@@ -49,10 +49,30 @@ Requirements, in order:
 3. **Instruction-tuned.** A base model will not stay in character.
 4. **Fast on a CPU.** A reply should feel like a person typing, not a pause.
 
-Candidates, best first: **SmolLM2-360M-Instruct** (Apache-2.0, ~270 MB at
-Q4_K_M), **Qwen2.5-0.5B-Instruct** (Apache-2.0, ~400 MB), SmolLM2-135M if
-360M proves too slow. Quality at this size is poor in general and adequate
-here, because the task is narrow and the prompt does most of the work.
+### Measured, cpu-only, same prompt and same two questions
+
+| model | size | verdict |
+|---|---|---|
+| SmolLM2-360M-Instruct Q4_K_M | 258 MB | **fails** — echoes the instruction block back at the player, and answered "No." to the one question the brief says to admit |
+| **Qwen2.5-0.5B-Instruct Q4_K_M** | 379 MB | **works**, 1.3 s per reply. Keeps the secret on a general question, gives it up on the specific one |
+| Qwen3-0.6B Q4_K_M | 378 MB | **fails as shipped** — volunteers the secret unprompted, and emits its `<think>` reasoning into the dialogue |
+
+The winner is **Qwen2.5-0.5B-Instruct**, and the transcript is the reason:
+
+```
+"Has anything changed recently?"        -> "No, nothing has changed."
+"Did you delete any files to free space?"
+                    -> "I only deleted old files from the boot folder."
+```
+
+That is exactly the mechanic: it keeps the secret when it should and gives it
+up when asked the right question.
+
+Qwen3-0.6B is newer and scores better on benchmarks, and is worse here — it
+has a thinking mode that leaks into the reply and it is less obedient about
+withholding. Worth retrying with thinking explicitly disabled before it is
+ruled out. This is a good reminder that benchmark rank is not the metric; the
+metric is whether it can keep one secret for five minutes.
 
 ## The prompt is where the quality comes from
 
