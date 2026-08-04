@@ -114,6 +114,19 @@ typedef struct {
     char  local[8][NOM_PATH_MAX];
     int   nlocal;
 
+    /* The person whose machine it is. Briefed with ground truth from the
+     * breaker, and unwilling to volunteer it. See customer.c. */
+    struct {
+        char truth[256];      /* exactly what the breaker did              */
+        int  cause;           /* their version of it                       */
+        int  mood;
+        int  asked;
+        char told[16];        /* topics already covered                    */
+        bool deflected;       /* denied it once, as people do              */
+        bool confessed;
+        bool gave_password;
+    } cust;
+
     ProcInfo proc[PROC_MAX];
     int      nproc;        /* high-water mark, so exited pids stay visible */
     int      next_pid;
@@ -131,6 +144,13 @@ void machine_boot(Machine *m);
  * a complete, separate installation that is never corrupted, so this always
  * gets you a shell -- which is the entire reason a live image exists. */
 void machine_boot_rescue(Machine *m);
+
+/* The customer. customer_brief is given the breaker's own description of what
+ * it did -- that string is the ground truth the persona is working from, and
+ * is exactly the brief an LLM backend would receive. */
+void customer_brief(Machine *m, const char *what);
+void customer_ask(Machine *m, const char *question, Buf *out);
+void customer_intro(Machine *m, Buf *out);
 
 bool machine_mount(Machine *m, const char *dev, const char *at, int flags);
 bool machine_umount(Machine *m, const char *at);

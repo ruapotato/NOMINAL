@@ -1,0 +1,243 @@
+/* customer.c — the person whose machine it is.
+ *
+ * The machine tells you WHAT is wrong. Only the customer knows what CHANGED,
+ * and they are not going to volunteer it. That asymmetry is the other half of
+ * break-fix and it is missing from every game about computers.
+ *
+ * DESIGN. The customer is briefed with ground truth: the breaker reports
+ * exactly what it did, and that string is what this persona knows. But
+ * knowing is not telling. A customer answers the question you asked, not the
+ * question you meant, and the useful admission -- "I deleted it to free up
+ * space" -- only arrives if you ask about the right thing.
+ *
+ * WHY THIS IS NOT AN LLM (yet). The rest of NOMINAL is deterministic by
+ * construction: same seed, byte-identical replay, Linux and Windows agreeing
+ * to the byte. A language model in the loop ends that, and shipping one means
+ * weights and a runtime inside a Godot export. So the default persona is
+ * scripted and deterministic, and `customer_ask` is the seam an LLM backend
+ * plugs into later without anything else changing. The brief it would receive
+ * is exactly the brief below.
+ */
+#include <string.h>
+#include <stdio.h>
+#include "nom.h"
+#include "machine.h"
+
+/* How the customer is feeling about this. It moves: ask a decent question and
+ * they warm up, ask the same thing twice and they do not. */
+typedef enum { MOOD_WARY, MOOD_OK, MOOD_HELPFUL } Mood;
+
+/* Topics a question can be about. Matching is by keyword because that is what
+ * a person does -- they hear a word they recognise and answer that. */
+typedef enum {
+    T_NONE = 0, T_WHATCHANGED, T_WHEN, T_UPGRADE, T_DELETE, T_DISK,
+    T_POWER, T_NETWORK, T_PASSWORD, T_BACKUP, T_WHOELSE, T_HELLO, T_COUNT
+} Topic;
+
+static Topic topic_of(const char *q)
+{
+    /* words[8]: six keywords plus the NULL terminator has to FIT. At [6]
+     * the terminator on the longest row was silently dropped and the scan
+     * ran off the end of the array. */
+    struct { Topic t; const char *words[8]; } MAP[] = {
+      { T_HELLO,       { "hello", "hi ", "morning", "afternoon", 0 } },
+      { T_WHATCHANGED, { "change", "different", "do you", "did you do",
+                         "what happened", 0 } },
+      { T_WHEN,        { "when", "last work", "yesterday", "how long",
+                         "start", 0 } },
+      { T_UPGRADE,     { "upgrade", "update", "patch", "install", "new version", 0 } },
+      { T_DELETE,      { "delete", "remove", "clean", "space", "full", "rm ", 0 } },
+      { T_DISK,        { "disk", "drive", "hardware", "noise", "click", 0 } },
+      { T_POWER,       { "power", "shut", "crash", "unplug", "outage", "reboot", 0 } },
+      { T_NETWORK,     { "network", "dns", "resolve", "internet", "ping", 0 } },
+      { T_PASSWORD,    { "password", "root", "credential", "login as", 0 } },
+      { T_BACKUP,      { "backup", "snapshot", "restore", "copy of", 0 } },
+      { T_WHOELSE,     { "who else", "anyone else", "colleague", "vendor",
+                         "contractor", 0 } },
+    };
+    char low[512];
+    size_t n = 0;
+    for (; q[n] && n < sizeof low - 1; n++)
+        low[n] = (q[n] >= 'A' && q[n] <= 'Z') ? (char)(q[n] + 32) : q[n];
+    low[n] = '\0';
+
+    for (size_t i = 0; i < sizeof MAP / sizeof MAP[0]; i++)
+        for (int w = 0; MAP[i].words[w]; w++)
+            if (strstr(low, MAP[i].words[w])) return MAP[i].t;
+    return T_NONE;
+}
+
+/* What the breaker did, reduced to the thing a human would have noticed. The
+ * brief is ground truth; this is the customer's version of it. */
+typedef enum {
+    C_TIDIED,      /* they deleted something to free space   */
+    C_UPGRADED,    /* they ran an upgrade                    */
+    C_CONFIGURED,  /* they edited a config                   */
+    C_VENDOR,      /* somebody else installed something      */
+    C_INNOCENT,    /* genuinely nothing: it just stopped     */
+} Cause;
+
+static Cause cause_of(const char *what)
+{
+    if (!what) return C_INNOCENT;
+    if (strstr(what, "deleted") || strstr(what, "removed") ||
+        strstr(what, "wiped")) return C_TIDIED;
+    if (strstr(what, "upgraded libc") || strstr(what, "wrong architecture"))
+        return C_UPGRADED;
+    if (strstr(what, "stray unit")) return C_VENDOR;
+    if (strstr(what, "ld.so.conf") || strstr(what, "uuid") ||
+        strstr(what, "typo") || strstr(what, "line")) return C_CONFIGURED;
+    return C_INNOCENT;
+}
+
+void customer_brief(Machine *m, const char *what)
+{
+    snprintf(m->cust.truth, sizeof m->cust.truth, "%s", what ? what : "");
+    m->cust.cause = (int)cause_of(what);
+    m->cust.mood = MOOD_WARY;
+    m->cust.asked = 0;
+    memset(m->cust.told, 0, sizeof m->cust.told);
+}
+
+/* The admission: what they will eventually own up to, if asked about the
+ * right thing. Deliberately vague about paths -- a customer does not read
+ * filenames back to you, they tell you what they were trying to achieve. */
+static const char *admission(Cause c)
+{
+    switch (c) {
+    case C_TIDIED:
+        return "...alright. The disk was nearly full and I went through /boot\n"
+               "  deleting things that looked like old versions. It was fine\n"
+               "  afterwards. I did reboot it later though.";
+    case C_UPGRADED:
+        return "...I did run the updater on Friday. It said something about\n"
+               "  a newer library being available and I said yes. It finished\n"
+               "  without complaining, so I assumed it was fine.";
+    case C_CONFIGURED:
+        return "...I was in the config editing something and I might have\n"
+               "  fat-fingered a line. I was fairly sure I put it back.";
+    case C_VENDOR:
+        return "...the monitoring people were on it last week. They said they\n"
+               "  were installing an agent. I did not watch what they did.";
+    default:
+        return "...no. Honestly, nothing. It was working when I left.";
+    }
+}
+
+/* Which topic unlocks the admission. */
+static Topic key_topic(Cause c)
+{
+    switch (c) {
+    case C_TIDIED:     return T_DELETE;
+    case C_UPGRADED:   return T_UPGRADE;
+    case C_CONFIGURED: return T_WHATCHANGED;
+    case C_VENDOR:     return T_WHOELSE;
+    default:           return T_NONE;
+    }
+}
+
+void customer_ask(Machine *m, const char *question, Buf *out)
+{
+    Topic t = topic_of(question);
+    Cause c = (Cause)m->cust.cause;
+    m->cust.asked++;
+
+    /* Warm up with the number of questions asked, not with flattery: a person
+     * who is clearly working the problem gets more out of people. */
+    if (m->cust.asked >= 3 && m->cust.mood < MOOD_OK)   m->cust.mood = MOOD_OK;
+    if (m->cust.asked >= 6 && m->cust.mood < MOOD_HELPFUL) m->cust.mood = MOOD_HELPFUL;
+
+    if (t != T_NONE && t < T_COUNT && m->cust.told[t]) {
+        buf_puts(out, "  \"I already told you about that.\"\n");
+        return;
+    }
+    if (t != T_NONE && t < T_COUNT) m->cust.told[t] = 1;
+
+    switch (t) {
+    case T_HELLO:
+        buf_puts(out, "  \"Hello. Look, I really need this back today.\"\n");
+        return;
+    case T_WHEN:
+        buf_puts(out, "  \"It was working yesterday. I shut it down normally\n"
+                      "  last night and this morning it just... did not come\n"
+                      "  back.\"\n");
+        if (c == C_TIDIED)
+            buf_puts(out, "  \"Well -- it had been up for weeks before that.\"\n");
+        return;
+    case T_PASSWORD:
+        if (m->cust.mood >= MOOD_OK) {
+            buf_puts(out, "  \"Fine. It is on a sticky note here. hunter2.\n"
+                          "  Please do not put that in the ticket.\"\n");
+            m->cust.gave_password = true;
+        } else {
+            buf_puts(out, "  \"I am not giving you the root password over the\n"
+                          "  phone to someone I have never spoken to.\"\n");
+        }
+        return;
+    case T_BACKUP:
+        buf_puts(out, "  \"There is a backup. I think. It might be from before\n"
+                      "  the migration. I would rather not find out.\"\n");
+        return;
+    case T_DISK:
+        buf_puts(out, "  \"No noises, no. It is a fairly new machine.\"\n");
+        if (c == C_TIDIED)
+            buf_puts(out, "  \"It did keep telling me it was low on space.\"\n");
+        return;
+    case T_POWER:
+        buf_puts(out, "  \"No outages. It was shut down properly.\"\n");
+        return;
+    case T_NETWORK:
+        buf_puts(out, "  \"I would not know, I cannot get that far. It does not\n"
+                      "  get to a login.\"\n");
+        return;
+    case T_NONE:
+        buf_puts(out, "  \"I am not sure what you are asking me, sorry. I am\n"
+                      "  not really a computer person.\"\n");
+        return;
+    default:
+        break;
+    }
+
+    /* The right area. Whether they own up depends on how the conversation has
+     * gone -- a wary customer deflects once and then tells you. */
+    if (t == key_topic(c)) {
+        if (m->cust.mood == MOOD_WARY && !m->cust.deflected) {
+            m->cust.deflected = true;
+            m->cust.told[t] = 0;          /* they will answer it properly next time */
+            buf_puts(out, "  \"No. I have not touched it.\"\n");
+            return;
+        }
+        buf_puts(out, "  \"");
+        buf_puts(out, admission(c));
+        buf_puts(out, "\"\n");
+        m->cust.confessed = true;
+        return;
+    }
+
+    /* Right question, wrong area. */
+    switch (t) {
+    case T_WHATCHANGED:
+        buf_puts(out, "  \"Nothing that I know of. It just stopped.\"\n");
+        break;
+    case T_UPGRADE:
+        buf_puts(out, "  \"I do not do the updates. That is not my job.\"\n");
+        break;
+    case T_DELETE:
+        buf_puts(out, "  \"I have not deleted anything, no.\"\n");
+        break;
+    case T_WHOELSE:
+        buf_puts(out, "  \"Just me. Nobody else has the password.\"\n");
+        break;
+    default:
+        buf_puts(out, "  \"I could not tell you, sorry.\"\n");
+        break;
+    }
+}
+
+void customer_intro(Machine *m, Buf *out)
+{
+    (void)m;
+    buf_puts(out,
+        "  the customer is on the line. `ask <question>` to talk to them.\n"
+        "  they know what changed. they are not going to lead with it.\n");
+}

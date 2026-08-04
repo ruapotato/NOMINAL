@@ -41,7 +41,7 @@ BIN = build/nominal
 # The machine, without a main(): this is what both the harness and the
 # GDExtension are built from, so the game and the tests run the same code.
 BF_SRC_LIB = core/util.c core/value.c core/vfs.c core/ns.c core/cpu.c \
-             core/kernel.c core/image.c core/net_sites.c core/boot.c core/breaker.c
+             core/kernel.c core/image.c core/net_sites.c core/customer.c core/boot.c core/breaker.c
 BF_SRC = $(BF_SRC_LIB) core/serve.c core/bfmain.c
 
 # Regenerate the embedded guest userland. Needs clang+lld for riscv; the

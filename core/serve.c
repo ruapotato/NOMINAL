@@ -108,6 +108,12 @@ static void new_ticket(Client *c, uint64_t seed, int faults)
     snprintf(hdr, sizeof hdr,
              "\n--- ticket %s: this machine will not boot ---\n", c->m.id);
     send_str(c->fd, hdr);
+    {
+        Buf i = {0};
+        customer_intro(&c->m, &i);
+        send_all(c->fd, i.p, i.len);
+        buf_free(&i);
+    }
     send_boot(c);
 }
 
@@ -127,6 +133,14 @@ static bool client_line(Client *c)
         c->m.on_rescue = false;
         c->m.nmount = 0;
         send_boot(c);
+        return true;
+    }
+
+    if (strncmp(cmd, "ask", 3) == 0 && (cmd[3] == ' ' || !cmd[3])) {
+        Buf a = {0};
+        customer_ask(&c->m, cmd[3] ? cmd + 4 : "", &a);
+        send_all(c->fd, a.p, a.len);
+        buf_free(&a);
         return true;
     }
 
@@ -155,6 +169,8 @@ static bool client_line(Client *c)
             "  boot              try to boot the customer's disk\n"
             "  rescue            boot the rescue medium -- this always works\n"
             "  ticket [seed] [n] take a new ticket (n = how many faults)\n"
+            "  ask <question>    talk to the customer -- they know what\n"
+            "                    changed and will not lead with it\n"
             "  quit              hang up (exit leaves a chroot, it does not disconnect)\n"
             "\n"
             "everything else runs on the machine. after `rescue`:\n"

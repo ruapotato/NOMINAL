@@ -416,6 +416,10 @@ bool machine_break(Machine *m, uint64_t seed, int nfaults, char *what, size_t wh
         machine_boot(m);
         if (!m->boot.running) {
             if (what) snprintf(what, whatsz, "%s", all);
+            /* Brief the customer with what actually happened. They will not
+             * volunteer it, but they cannot tell you something that is not
+             * true either. */
+            customer_brief(m, all);
             return true;
         }
         /* It still boots. That is not a ticket — try again. */
