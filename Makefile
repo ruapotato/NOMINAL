@@ -32,7 +32,7 @@ BIN = build/nominal
 # determinism gate compare a binary it had not rebuilt).
 .DEFAULT_GOAL := all
 
-.PHONY: all check clean gdext test-lang test-scenario bf test-break cpu test-cpu
+.PHONY: all check clean gdext test-lang test-scenario bf test-break cpu test-cpu persona-eval
 
 # --- break-fix (D17) ---------------------------------------------------
 # The new core. `make test-break` is the gate: random corruption must always
@@ -84,6 +84,19 @@ LLM_LINK =
 LINKER   = $(CC)
 endif
 
+# Score a model on the one job it has here: keep a secret, give it up to the
+# right question, stay in character, stay short. Benchmarks measure none of
+# that. `make persona-eval MODEL=game/models/x.gguf`
+persona-eval: build/persona_eval
+	@for m in $(or $(MODEL),game/models/*.gguf); do \
+	  echo "=== $$m"; ./build/persona_eval $$m; echo; \
+	done
+
+build/persona_eval: tools/persona_eval.c build/llm.o | build
+	$(CC) $(CSTD) -O2 -c tools/persona_eval.c -o build/persona_eval.o
+	$(CXX) -o $@ build/persona_eval.o build/llm.o $(LLAMA_LIBS) \
+	  -fopenmp -lstdc++ -lm -lpthread -ldl
+
 build/llm.o: core/llm.cpp | build
 	$(CXX) -std=c++17 -O2 -I$(LLAMA_DIR)/include -I$(LLAMA_DIR)/ggml/include \
 	  -c $< -o $@
@@ -123,7 +136,20 @@ all: $(BIN)
 build:
 	@mkdir -p build
 
-build/%.o: core/%.c | build
+# Objects depend on the FLAGS, not just the sources. Toggling NOM_LLM changes
+# CFLAGS and make cannot see that, so a build with the model silently linked
+# objects compiled without it and the scripted persona answered instead. The
+# stamp file makes the flags a real dependency.
+# `force` makes this rule run every time. Without it the stamp is a file with
+# no changing prerequisites, so make considers it up to date forever and the
+# whole mechanism does nothing -- which is exactly what happened.
+.PHONY: force
+force:
+
+build/.flags: force | build
+	@echo '$(CFLAGS)' | cmp -s - $@ || echo '$(CFLAGS)' > $@
+
+build/%.o: core/%.c build/.flags | build
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BIN): $(CORE_OBJ) build/main.o

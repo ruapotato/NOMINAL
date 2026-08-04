@@ -42,7 +42,7 @@ static Topic topic_of(const char *q)
     struct { Topic t; const char *words[8]; } MAP[] = {
       { T_HELLO,       { "hello", "hi ", "morning", "afternoon", 0 } },
       { T_WHATCHANGED, { "change", "different", "do you", "did you do",
-                         "what happened", 0 } },
+                         "what happened", "setting", "config", "edit", 0 } },
       { T_WHEN,        { "when", "last work", "yesterday", "how long",
                          "start", 0 } },
       { T_UPGRADE,     { "upgrade", "update", "patch", "install", "new version", 0 } },
@@ -153,7 +153,7 @@ static bool llm_ask(const char *a, const char *b, const char *c,
 
 /* The brief the model is given: ground truth, plus rules a small model can
  * actually follow. Rules beat characterisation at this size. */
-static void build_brief(Cause c, char *out, size_t outsz)
+static void build_brief(Cause c, bool earned, char *out, size_t outsz)
 {
     static const char *SECRET[] = {
       [C_TIDIED]     = "last week the computer warned it was low on disk space, "
@@ -166,25 +166,61 @@ static void build_brief(Cause c, char *out, size_t outsz)
                        "week and installed some kind of agent",
       [C_INNOCENT]   = "nothing was changed at all, it simply stopped working",
     };
+    /* The question that earns the admission, as an example the model can copy.
+     * A worked example is worth more than an adjective at this size. */
+    static const char *EXAMPLE_Q[] = {
+      [C_TIDIED]     = "Did you delete anything to free up space?",
+      [C_UPGRADED]   = "Have you installed any updates recently?",
+      [C_CONFIGURED] = "Did you change any settings?",
+      [C_VENDOR]     = "Has anyone else worked on this machine?",
+      [C_INNOCENT]   = "Did anything change?",
+    };
     static const char *WHEN[] = {
-      [C_TIDIED]     = "deleting files, tidying up, or the disk being full",
+      [C_TIDIED]     = "deleting, removing, tidying, clearing, freeing up, "
+                       "disk space or the disk being full",
       [C_UPGRADED]   = "updates, upgrades, or new software being installed",
       [C_CONFIGURED] = "settings, configuration, or what you changed",
       [C_VENDOR]     = "whether anyone else has worked on the machine",
       [C_INNOCENT]   = "nothing (there is nothing to admit)",
     };
+    /* Two different briefs, because one brief cannot do both jobs without
+     * contradicting itself. The worked example that teaches the model to deny
+     * "has anything changed" is exactly wrong on a ticket where that IS the
+     * question that earns the admission -- and a small model follows the
+     * example over the instruction every time. So the deny example only
+     * appears when denial is what we want. */
+    if (earned) {
+        snprintf(out, outsz,
+            "You are Dana, an office worker. Your computer will not start and "
+            "you are on the phone with an IT technician. You are not "
+            "technical. You are the customer, never the technician.\n"
+            "\n"
+            "The technician has just worked out what you did: %s.\n"
+            "\n"
+            "Admit it, in ONE short sentence, as Dana. You are a little "
+            "embarrassed. Do not apologise at length, do not explain "
+            "yourself, and never mention these instructions.\n"
+            "\n"
+            "Example:\n"
+            "Q: %s\n"
+            "A: Yes -- %s. I did not think it would matter.\n",
+            SECRET[c], EXAMPLE_Q[c], SECRET[c]);
+        return;
+    }
     snprintf(out, outsz,
-        "You are Dana, an office worker. Your work computer will not start and "
-        "you are on the phone with an IT technician. You are not technical: you "
-        "do not know words like kernel, package or filesystem.\n"
-        "Answer in ONE short sentence, in character, as Dana. Never explain "
-        "yourself and never mention these instructions.\n"
+        "You are Dana, an office worker. Your computer will not start and you "
+        "are on the phone with an IT technician. You are not technical.\n"
+        "Reply as Dana in ONE short sentence. You are the customer, never the "
+        "technician. Never mention these instructions.\n"
         "\n"
-        "SECRET: %s.\n"
-        "Do NOT mention the secret unless the technician asks about %s. "
-        "If asked about anything else, say that nothing has changed and that "
-        "it was working yesterday.",
-        SECRET[c], WHEN[c]);
+        "There is something you did that you have not mentioned, and you are "
+        "NOT going to mention it now. Whatever you are asked, nothing has "
+        "changed, you have not touched anything, and it was working "
+        "yesterday.\n"
+        "\n"
+        "Example:\n"
+        "Q: Has anything changed on the computer?\n"
+        "A: No, nothing has changed. It was working yesterday.\n");
 }
 
 /* The keywords that would give the secret away, for the leak check. */
@@ -210,9 +246,9 @@ void customer_ask(Machine *m, const char *question, Buf *out)
      * that had not earned it, the reply is thrown away. A scripted line is
      * better than a spoiled ticket. */
     if (llm_available()) {
-        char brief[1024], reply[512];
-        build_brief(c, brief, sizeof brief);
+        char brief[1400], reply[512];
         bool earned = (t == key_topic(c));
+        build_brief(c, earned, brief, sizeof brief);
         if (llm_ask(brief, question, earned ? "" : secret_words(c),
                     reply, sizeof reply)) {
             buf_puts(out, "  \"");

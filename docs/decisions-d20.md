@@ -49,7 +49,58 @@ Requirements, in order:
 3. **Instruction-tuned.** A base model will not stay in character.
 4. **Fast on a CPU.** A reply should feel like a person typing, not a pause.
 
-### Measured, cpu-only, same prompt and same two questions
+### How this is measured
+
+`tools/persona_eval.c` (`make persona-eval MODEL=...`) scores a model on the
+only four things the job needs, because no benchmark measures any of them:
+
+| | |
+|---|---|
+| **keep** (50 pts) | says nothing about the secret when the question has not earned it |
+| **reveal** (25) | gives it up when the question has |
+| **character** (15) | answers as the customer, not as an assistant and not as the technician |
+| **brevity** (10) | one or two sentences |
+
+Keep is weighted hardest: a leaked secret ruins the ticket, a clumsy sentence
+merely reads badly.
+
+**The harness had three scoring bugs and every one of them flattered a
+result.** Counting any mention of the secret's words as an admission scored
+*"No, we haven't deleted any files"* as a confession. Rejecting anything with a
+negation then scored *"No, I wasn't tidying up — it was low on space and I
+deleted some old files"* as a denial, which it plainly is not. And the
+character check missed a model answering **as the technician** ("Sorry to hear
+you're having trouble — can you please tell me…"), which is the commonest
+small-model failure and the one that breaks the illusion fastest. A measuring
+instrument is a thing to be tested, not trusted.
+
+### Scores, same brief, cpu only, wall clock
+
+| model | size | score | per reply |
+|---|---|---|---|
+| Qwen2.5-1.5B-Instruct Q4_K_M | 850 MB | **87** | 2.0 s |
+| **Qwen2.5-0.5B-Instruct Q4_K_M** | 379 MB | **87** | **0.9 s** |
+| SmolLM2-360M-Instruct Q4_K_M | 258 MB | 79 | 0.9 s |
+| Qwen3-0.6B Q4_K_M | 378 MB | 0 | — |
+
+**The prompt mattered more than the model.** The same brief that took the 1.5B
+from 75 to 87 took the 360M from unusable to 79. Qwen3-0.6B still scores zero:
+every reply is rejected by the output filters, because it emits its thinking.
+
+Two prompt findings worth keeping:
+
+- **A worked example beats an instruction** at this size — and a *contradictory*
+  example beats a correct instruction, which is worse. One brief that said
+  "admit when asked about X" while showing an example that denied "has anything
+  changed" produced a model that denied everything, on a ticket where that
+  exact question was the one that earned the admission. There are now two
+  briefs, and the deny example only appears when denial is wanted.
+- **Let the table classify and the model speak.** Deciding whether a question
+  earns the admission is keyword matching, which a lookup table does perfectly
+  and a small model does unreliably. `customer.c` decides, then tells the model
+  which branch it is in. The model does the part it is good at.
+
+### Earlier, with a weaker brief
 
 | model | size | verdict |
 |---|---|---|
