@@ -88,14 +88,24 @@ static void send_boot(Client *c)
 {
     machine_boot(&c->m);
     send_all(c->fd, c->m.boot.console.p, c->m.boot.console.len);
+    /* UP is not the same as WORKING, and the console has already scrolled
+     * past whatever gave up. Say it at the end, where it will be read. */
+    Buf sick = {0};
+    int dead = kernel_health(&c->m, &sick);
     char tail[256];
-    snprintf(tail, sizeof tail, "\n[%s at %s]\n",
-             c->m.boot.running ? "UP" : "DOWN",
-             boot_stage_name(c->m.boot.failed_at));
+    if (c->m.boot.running && dead)
+        snprintf(tail, sizeof tail, "\n[UP at target, but %d service(s) are not running]\n",
+                 dead);
+    else
+        snprintf(tail, sizeof tail, "\n[%s at %s]\n",
+                 c->m.boot.running ? "UP" : "DOWN",
+                 boot_stage_name(c->m.boot.failed_at));
     send_str(c->fd, tail);
+    if (dead) send_all(c->fd, sick.p, sick.len);
+    buf_free(&sick);
 
     /* The machine booting is not the whole of the job. */
-    if (c->m.boot.running) {
+    if (c->m.boot.running && !dead) {
         Buf col = {0};
         if (machine_collateral(&c->m, &col)) send_all(c->fd, col.p, col.len);
         buf_free(&col);

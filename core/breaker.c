@@ -656,8 +656,24 @@ bool machine_break(Machine *m, uint64_t seed, int nfaults, char *what, size_t wh
         if (applied < nfaults) continue;
 
         machine_boot(m);
-        if (!m->boot.running) {
-            if (what) snprintf(what, whatsz, "%s", all);
+        /* A ticket is a machine that is NOT HEALTHY, which is a wider and
+         * truer thing than a machine that will not boot. "It comes up and the
+         * firewall is not running" is a real call, and a nastier one, because
+         * nothing announces it. */
+        Buf sick = {0};
+        int dead = kernel_health(m, &sick);
+        buf_free(&sick);
+        if (!m->boot.running || dead > 0) {
+            if (what) {
+                if (m->boot.running && dead > 0) {
+                    char tmp[512];
+                    snprintf(tmp, sizeof tmp, "%s (boots, %d service(s) dead)",
+                             all, dead);
+                    snprintf(what, whatsz, "%s", tmp);
+                } else {
+                    snprintf(what, whatsz, "%s", all);
+                }
+            }
             /* Brief the customer with what actually happened. They will not
              * volunteer it, but they cannot tell you something that is not
              * true either. */

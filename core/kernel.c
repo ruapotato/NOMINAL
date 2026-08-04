@@ -970,6 +970,29 @@ static struct Daemon *daemons(Machine *m)
     return (struct Daemon *)m->daemon;
 }
 
+/* Is this machine actually WORKING?
+ *
+ * Booting to a login prompt is not the same thing. A service that gave up
+ * after five restarts leaves the machine up and useless in a specific way,
+ * and the boot console scrolled past it twenty lines ago. Widening a ticket
+ * from "will not boot" to "is not healthy" is what lets that be a ticket at
+ * all -- and it is the commoner kind of call. */
+int kernel_health(Machine *m, Buf *out)
+{
+    if (!m->daemon) return 0;
+    struct Daemon *d = daemons(m);
+    int dead = 0;
+    for (int i = 0; i < m->ndaemon; i++) {
+        if (d[i].running) continue;
+        if (!dead) buf_puts(out, "services that should be running and are not:\n");
+        buf_printf(out, "  %-14s %s\n", d[i].name,
+                   d[i].gave_up ? "gave up after repeated failures"
+                                : (d[i].died[0] ? d[i].died : "not running"));
+        dead++;
+    }
+    return dead;
+}
+
 void kernel_stop_daemons(Machine *m)
 {
     if (!m->daemon) return;

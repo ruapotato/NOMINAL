@@ -201,6 +201,9 @@ int64_t kernel_start_daemon(Machine *m, const char *path, const char *arg,
  * faults during its slice has crashed, and says so. */
 void kernel_tick(Machine *m, int slices, Buf *console);
 void kernel_stop_daemons(Machine *m);
+/* How many services that should be running are not, and which. A machine can
+ * boot perfectly and still be broken; this is the difference. */
+int  kernel_health(Machine *m, Buf *out);
 bool machine_umount(Machine *m, const char *at);
 
 /* --- the package database, which is the fix verb ---------------------- */

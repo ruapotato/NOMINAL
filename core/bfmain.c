@@ -32,8 +32,11 @@ int main(int argc, char **argv)
             machine_boot(&m);
             const char *c = m.boot.console.p ? m.boot.console.p : "";
             bool up = m.boot.running;
-            bool died = strstr(c, "died --") || strstr(c, "respawning too fast")
+            Buf sick = {0};
+            bool died = kernel_health(&m, &sick) > 0
+                     || strstr(c, "died --") || strstr(c, "respawning too fast")
                      || strstr(c, "refusing to start");
+            buf_free(&sick);
             if (!up || died) {
                 bad++;
                 printf("UNHEALTHY seed %d%s%s\n", 3000 + i,
@@ -151,9 +154,16 @@ int main(int argc, char **argv)
             m.on_rescue = false;
             m.nmount = 0;
             machine_boot(&m);
-            if (m.boot.running) fixed++;
-            else printf("UNFIXABLE seed %d: %s\n           %s\n",
-                        5000 + i, what, m.boot.reason);
+            Buf sick = {0};
+            int dead = kernel_health(&m, &sick);
+            if (m.boot.running && dead == 0) fixed++;
+            else if (!m.boot.running)
+                printf("UNFIXABLE seed %d: %s\n           %s\n",
+                       5000 + i, what, m.boot.reason);
+            else
+                printf("STILL SICK seed %d: %s\n%.*s",
+                       5000 + i, what, (int)sick.len, sick.p);
+            buf_free(&sick);
             buf_free(&v); buf_free(&o); machine_free(&m);
         }
         printf("\n%d tickets: %d visible to pkg verify, %d repaired by the tools\n",
@@ -270,8 +280,19 @@ int main(int argc, char **argv)
                 m.nmount = 0;
                 machine_boot(&m);
                 fwrite(m.boot.console.p, 1, m.boot.console.len, stdout);
-                printf("[%s at %s]\n", m.boot.running ? "UP" : "DOWN",
-                       boot_stage_name(m.boot.failed_at));
+                {
+                    Buf sick = {0};
+                    int dead = kernel_health(&m, &sick);
+                    if (m.boot.running && dead) {
+                        printf("[UP at target, but %d service(s) are not running]\n",
+                               dead);
+                        fwrite(sick.p, 1, sick.len, stdout);
+                    } else {
+                        printf("[%s at %s]\n", m.boot.running ? "UP" : "DOWN",
+                               boot_stage_name(m.boot.failed_at));
+                    }
+                    buf_free(&sick);
+                }
                 if (m.boot.running) {
                     Buf col = {0};
                     if (machine_collateral(&m, &col))

@@ -217,18 +217,24 @@ Legend: **[done]** built · **[next]** in progress or immediately next ·
 
 ## 12. Faults that leave the machine UP
 
-The catalogue has been biased toward machines that will not boot, because
-that is how a ticket is currently defined. The nastier half of real support
-is the machine that boots perfectly and is still wrong, and every one of
-these is now *mechanically possible* — services are real processes, so they
-can be running, dead, or looping.
+**The ticket contract is now "is it healthy", not "does it boot".** A machine
+that reaches a login prompt with a service dead is a ticket, and about one in
+six now is. The bench says so where it will be read, after the console has
+already scrolled past whatever gave up:
 
-What it needs first: **widen the ticket contract from "does it boot" to "is it
-healthy"**, and add `svc status` so the player can see the difference.
+```
+node-4823 login:
+[UP at target, but 1 service(s) are not running]
+services that should be running and are not:
+  httpd          gave up after repeated failures
+```
 
-- **[todo]** a non-critical daemon in a respawn loop. "It boots, the firewall
-  is just not running." The console scrolls past it at boot and nothing
-  complains afterwards.
+`svc` is how you see it, and the solve gate requires health rather than a
+boot, so a repair that leaves a service dead is not a repair.
+
+- **[done]** a non-critical daemon in a respawn loop. "It boots, the firewall
+  is just not running." The console scrolls past it and nothing complains
+  afterwards — except the bench, at the end.
 - **[todo]** a service that starts and then dies an hour later, so the boot
   console is clean and `ps` is the only evidence.
 - **[todo]** two services that both start, where one silently depends on the
