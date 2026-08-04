@@ -102,6 +102,11 @@ typedef struct {
      * happen BEFORE you can even look at the disk. */
     bool  fs_dirty;
     int   fs_lost;           /* files fsck could not save                   */
+    /* Which repository channel `pkg` pulls from. Read off the disk at
+     * /etc/pkg/repos.d/*.repo, so pointing it at the wrong one is a
+     * configuration fault and the packages that arrive are genuinely
+     * different. */
+    char  channel[24];
     Mount mount[MOUNT_MAX];
     int   nmount;
     char  root_uuid[40];     /* what the root partition actually IS        */
@@ -171,6 +176,7 @@ bool machine_mount(Machine *m, const char *dev, const char *at, int flags);
  * could not save. Metadata is repairable, contents are not -- which is why a
  * dirty filesystem is usually two repairs, not one. */
 int  machine_fsck(Machine *m, const char *dev, Buf *out);
+void machine_read_channel(Machine *m);
 bool machine_umount(Machine *m, const char *at);
 
 /* --- the package database, which is the fix verb ---------------------- */

@@ -172,7 +172,7 @@ void _start(void)
         n -= 2;
     }
     if (n < 1) {
-        g_putln("usage: pkg [--root DIR] list|owns|verify|diff|reinstall");
+        g_putln("usage: pkg [--root DIR] list|owns|verify|diff|reinstall|upgrade");
         g_putln("  --root repairs a filesystem mounted elsewhere, without");
         g_putln("         chrooting into it -- which you cannot do when the");
         g_putln("         disk's own libc is broken");
@@ -230,6 +230,48 @@ void _start(void)
         if (!found) g_putln("no package owns that path");
         else { g_puts("(packages owning files under "); g_puts(v[1]); g_putln(")"); }
         g_exit(found ? 0 : 1);
+    }
+
+    if (g_streq(v[0], "upgrade")) {
+        /* Refetch every file from the repository. What arrives depends on the
+         * CHANNEL in /etc/pkg/repos.d, so this is exactly as safe or as
+         * dangerous as that configuration is. */
+        static char rp[192], nm3[64];
+        int files = 0, pkgs = 0;
+        rooted("/var/lib/pkg");
+        static char pdir[192];
+        g_copy(pdir, path, sizeof pdir);
+        for (int i = 0; i < 128; i++) {
+            if (g_readdir(pdir, i, nm3) < 0) break;
+            if (!read_manifest(nm3)) continue;
+            pkgs++;
+            char *p = manifest;
+            while (*p) {
+                char *nl = p; while (*nl && *nl != '\n') nl++;
+                char save = *nl; *nl = 0;
+                static char line[300];
+                g_copy(line, p, sizeof line);
+                *nl = save; p = *nl ? nl + 1 : nl;
+                char *mode, *hash, *fp;
+                char *t = g_trim(line);
+                if (!*t || !split3(t, &mode, &hash, &fp)) continue;
+                if (g_streq(mode, "link")) continue;
+                i64 got = g_repo(nm3, fp, filebuf);
+                if (got < 0) continue;
+                g_copy(rp, root, sizeof rp);
+                g_cat(rp, fp, sizeof rp);
+                int fd = g_open(rp, O_WRONLY | O_CREAT | O_TRUNC);
+                if (fd < 0) continue;
+                sysc(SYS_write, fd, (i64)filebuf, got);
+                g_close(fd);
+                sysc(SYS_chmod, (i64)rp, (i64)parse_oct(mode), 0);
+                files++;
+            }
+        }
+        g_putn(pkgs); g_puts(" packages, "); g_putn(files);
+        g_putln(" files fetched from the configured repository");
+        g_putln("(what you get depends on the channel in /etc/pkg/repos.d)");
+        g_exit(0);
     }
 
     if (g_streq(v[0], "diff")) {

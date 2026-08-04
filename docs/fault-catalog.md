@@ -107,10 +107,17 @@ Legend: **[done]** built · **[next]** in progress or immediately next ·
 
 ## 7. Packaging and repositories
 
-- **[next]** **a misconfigured repository pulling incompatible packages.**
-  `/etc/pkg/repos.d/*.repo` names a channel; point it at the wrong one and
-  `pkg upgrade` genuinely breaks a working machine. The fix is noticing the
-  repo is wrong, not fighting the symptoms.
+- **[done]** **a misconfigured repository pulling incompatible packages.**
+  `/etc/pkg/repos.d/main.repo` names a channel and `pkg upgrade` fetches
+  whatever that channel serves. Point it at `testing` and the libc that
+  arrives is 12.0's — perfectly valid, correctly signed, and nothing on the
+  machine is linked against it.
+
+  The reason this is the best puzzle in the catalogue so far: **`pkg verify`
+  reports the file as CHANGED and `pkg reinstall` fetches the same wrong
+  version straight back.** "4 files restored" and the machine still will not
+  boot. The fault is three lines away in a config nobody thinks to look at,
+  and the fix is to correct the *source* and then reinstall.
 - **[todo]** an interrupted upgrade: half the package's files are the new
   version and half are the old. `pkg verify` shows a scatter of CHANGED files
   in one package, which reads very differently from one damaged file.

@@ -329,6 +329,26 @@ static const Package PKG_SHELL = {
  * real machine.
  * ------------------------------------------------------------------ */
 
+/* The repository. `stable` is what this machine is built from; `testing`
+ * carries a newer libc that nothing installed here is linked against. Point
+ * the config at it, run `pkg upgrade`, and the machine breaks in a way that
+ * is entirely the administrator's own doing -- which is what makes it fair. */
+static const Package PKG_PKGCONF = {
+    "pkg-config-data", "1.4", "the package manager's repositories",
+    {
+      { "/etc/pkg/repos.d/main.repo",
+        "# the repository this machine is built from.\n"
+        "# channels: stable (11.4) | testing (12.0-pre)\n"
+        "name = main\n"
+        "channel = stable\n"
+        "url = https://packages.hamnix.org/11.4\n", 0644, NULL },
+      { "/etc/pkg/pkg.conf",
+        "# how aggressive upgrades are allowed to be\n"
+        "allow_downgrade = no\n"
+        "check_signatures = yes\n", 0644, NULL },
+    }, 2
+};
+
 static const Package PKG_LIBC = {
     "libc", "2.38", "the C library",
     {
@@ -528,7 +548,7 @@ static const Package PKG_AUDIT = {
 static const Package *IMAGE[] = {
     &PKG_BASE, &PKG_USERS, &PKG_BOOTLOADER, &PKG_KERNEL, &PKG_SYSINIT,
     &PKG_SHELL, &PKG_UDEV, &PKG_SYSLOG, &PKG_NET, &PKG_SSH, &PKG_HAMDE,
-    &PKG_HOME, &PKG_LIBC, &PKG_ZLIB, &PKG_CRON, &PKG_LOGROTATE, &PKG_NTP,
+    &PKG_HOME, &PKG_PKGCONF, &PKG_LIBC, &PKG_ZLIB, &PKG_CRON, &PKG_LOGROTATE, &PKG_NTP,
     &PKG_HTTPD, &PKG_FIREWALL, &PKG_MAN, &PKG_MAIL, &PKG_ACCT, &PKG_TZ,
     &PKG_TERMINFO, &PKG_AUDIT,
 };
@@ -857,7 +877,7 @@ void machine_install(Machine *m, uint64_t seed)
         "/usr/share/terminfo", "/var", "/var/log", "/var/lib", "/var/lib/ntp",
         "/var/lib/pkg", "/var/cache", "/var/spool", "/var/spool/cron",
         "/etc/audit", "/etc/default", "/etc/httpd", "/etc/logrotate.d",
-        "/etc/postfix", "/srv", "/srv/www", NULL
+        "/etc/postfix", "/srv", "/srv/www", "/etc/pkg", "/etc/pkg/repos.d", NULL
     };
     for (int i = 0; DIRS[i]; i++) vfs_mkdir(&m->disk, DIRS[i]);
 
@@ -1020,6 +1040,23 @@ bool pkg_file_content(const Machine *m, const char *pkgname, const char *path,
 {
     const Package *p = pkg_find(m, pkgname);
     if (!p) return false;
+
+    /* THE CHANNEL DECIDES WHAT THE REPOSITORY SERVES. On `testing` the libc
+     * is 12.0's, which nothing on this machine is linked against -- so an
+     * upgrade from the wrong channel installs a perfectly valid library that
+     * every binary refuses to run with. The fault is the config, not the
+     * file, and `pkg verify` will happily report the file as wrong when the
+     * real problem is where it came from. */
+    if (m->channel[0] && strcmp(m->channel, "stable") != 0) {
+        if (strcmp(path, "/lib/libc.so.6") == 0) {
+            buf_puts(out, "stub libc 2.41\n");
+            return true;
+        }
+        if (strcmp(path, "/lib/libm.so.6") == 0) {
+            buf_puts(out, "stub libm 2.41\n");
+            return true;
+        }
+    }
     for (int j = 0; j < p->nfiles; j++) {
         if (strcmp(p->file[j].path, path) != 0) continue;
         if (p->file[j].link) {

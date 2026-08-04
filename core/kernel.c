@@ -588,6 +588,9 @@ static int64_t kernel_syscall(Cpu *c, int64_t n, int64_t a0, int64_t a1,
     }
     case SYS_repo: {
         char pkg[64], path[NOM_PATH_MAX];
+        /* Re-read the channel from the disk on every fetch, because the
+         * player can edit the repo file and the next fetch must honour it. */
+        machine_read_channel(p->m);
         if (!guest_str(c, (uint64_t)a0, pkg, sizeof pkg)) return -1;
         if (!guest_str(c, (uint64_t)a1, path, sizeof path)) return -1;
         Buf b = {0};
@@ -1036,4 +1039,44 @@ bool machine_umount(Machine *m, const char *at)
         return true;
     }
     return false;
+}
+
+/* The configured repository channel, read off the machine's own disk. A
+ * machine with no repo configuration falls back to `stable`, which is the
+ * safe reading and matches what pkg would do. */
+void machine_read_channel(Machine *m)
+{
+    snprintf(m->channel, sizeof m->channel, "stable");
+    Buf names = {0};
+    if (vfs_list(&m->disk, "/etc/pkg/repos.d", &names) != IO_OK) {
+        buf_free(&names);
+        return;
+    }
+    const char *p = names.p, *end = names.p + names.len;
+    while (p && p < end) {
+        const char *nl = memchr(p, '\n', (size_t)(end - p));
+        size_t len = nl ? (size_t)(nl - p) : (size_t)(end - p);
+        char path[NOM_PATH_MAX];
+        snprintf(path, sizeof path, "/etc/pkg/repos.d/%.*s", (int)len, p);
+        VNode *n = vfs_resolve(&m->disk, path, NULL);
+        if (n && n->kind == VN_FILE) {
+            const char *q = n->data.p, *qe = n->data.p + n->data.len;
+            while (q && q < qe) {
+                const char *ql = memchr(q, '\n', (size_t)(qe - q));
+                size_t l = ql ? (size_t)(ql - q) : (size_t)(qe - q);
+                char line[160];
+                if (l < sizeof line) {
+                    memcpy(line, q, l);
+                    line[l] = 0;
+                    char key[40] = "", val[40] = "";
+                    if (sscanf(line, " %39[^= ] = %39s", key, val) == 2 &&
+                        strcmp(key, "channel") == 0)
+                        snprintf(m->channel, sizeof m->channel, "%s", val);
+                }
+                q = ql ? ql + 1 : NULL;
+            }
+        }
+        p = nl ? nl + 1 : NULL;
+    }
+    buf_free(&names);
 }

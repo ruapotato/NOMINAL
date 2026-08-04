@@ -428,11 +428,41 @@ static void fault_unclean_shutdown(Machine *m, Rng *r, char *d, size_t ds)
     }
 }
 
+/* Someone pointed the repository at the pre-release channel and ran an
+ * upgrade. Every file that arrived is a perfectly valid, correctly signed,
+ * up-to-date file -- and nothing installed on this machine is built against
+ * it. `pkg verify` reports the library as CHANGED, reinstalling fetches the
+ * same wrong version straight back, and the fault is three lines away in a
+ * config file nobody thinks to look at. */
+static void fault_wrong_channel(Machine *m, Rng *r, char *d, size_t ds)
+{
+    (void)r;
+    VNode *n = vfs_lookup(&m->disk, "/etc/pkg/repos.d/main.repo");
+    if (!n || n->kind != VN_FILE) return;
+    buf_clear(&n->data);
+    buf_puts(&n->data,
+        "# the repository this machine is built from.\n"
+        "# channels: stable (11.4) | testing (12.0-pre)\n"
+        "name = main\n"
+        "channel = testing\n"
+        "url = https://packages.hamnix.org/12.0-pre\n");
+    snprintf(m->channel, sizeof m->channel, "testing");
+
+    /* and the upgrade that was run afterwards */
+    VNode *libc = vfs_lookup(&m->disk, "/lib/libc.so.6");
+    if (libc && libc->kind == VN_FILE) {
+        buf_clear(&libc->data);
+        buf_puts(&libc->data, "stub libc 2.41\n");
+    }
+    snprintf(d, ds, "repo pointed at testing and upgraded: libc is 12.0's");
+}
+
 typedef void (*StructuralFault)(Machine *, Rng *, char *, size_t);
 static const StructuralFault STRUCTURAL[] = {
     fault_bootsector, fault_stray_unit, fault_wrong_uuid, fault_missing_module,
     fault_bad_libc, fault_wrong_arch, fault_ldsoconf,
     fault_bad_shell, fault_no_root, fault_unclean_shutdown,
+    fault_wrong_channel,
 };
 #define NSTRUCT ((int)(sizeof STRUCTURAL / sizeof STRUCTURAL[0]))
 
