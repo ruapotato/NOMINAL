@@ -194,6 +194,10 @@ VNode *vfs_bind(Vfs *fs, const char *target, const char *path)
     char norm[NOM_PATH_MAX * 2], tnorm[NOM_PATH_MAX * 2];
     vfs_normalize("/", path, norm, sizeof norm);
     vfs_normalize("/", target, tnorm, sizeof tnorm);
+    if (strlen(tnorm) >= NOM_PATH_MAX) {
+        snprintf(fs->err, sizeof fs->err, "%s: path too long to bind", target);
+        return NULL;
+    }
     if (!walk(fs, tnorm, false, VN_FILE)) {
         snprintf(fs->err, sizeof fs->err, "%s: no such file to bind", target);
         return NULL;

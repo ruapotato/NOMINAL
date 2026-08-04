@@ -12,127 +12,42 @@
  *    and the interpreter fails on the damaged line.
  *
  * Layout follows Hamnix: /etc/inittab names what PID 1 runs, /etc/rc.boot is
- * the bootstrap rc, /etc/rc.d/rc.N are the runlevels, /etc/services.d/*.svc
- * are the services.
+ * the bootstrap rc, /etc/rc.d/rc.N are the runlevels, and the .svc files
+ * under /etc/services.d are the services.
  */
 #include <string.h>
 #include <stdio.h>
 #include "nom.h"
 #include "machine.h"
+#include "guestbin.h"
 
 #define ROOT_UUID "8f41-2c07-a19d-5be3"
 
 /* ------------------------------------------------------------ userland --
- * These are programs, not data. They run.
+ * The scripts below are interpreted by /bin/rc, which is a COMPILED PROGRAM
+ * running on our cpu. The binaries themselves live in guestbin.h. Both are
+ * real files on the disk: a corrupted script fails in rc's parser, a
+ * corrupted binary fails in the ELF loader or traps mid-execution.
  */
 
-/* PID 1. Exactly the Hamnix shape: a shim that reads inittab and execs the
- * last non-comment line. */
-static const char *SRC_INIT =
-"# /sbin/init -- pid 1.\n"
-"# Reads /etc/inittab and execs the last non-comment line, which is what\n"
-"# Hamnix's init2 does. Everything the machine becomes follows from here.\n"
-"print(\"init: pid 1 starting\")\n"
-"cmd = \"\"\n"
-"for line in split(read(\"/etc/inittab\"), \"\\n\"):\n"
-"    line = strip(line)\n"
-"    if len(line) == 0:\n"
-"        continue\n"
-"    if startswith(line, \"#\"):\n"
-"        continue\n"
-"    cmd = line\n"
-"if len(cmd) == 0:\n"
-"    panic(\"init: /etc/inittab: nothing to run\")\n"
-"exec(cmd)\n";
-
-/* The bootstrap rc. Mounts what fstab asks for, then hands off to the
- * runlevel named in /etc/rc.conf. */
 static const char *SRC_RCBOOT =
-"# /etc/rc.boot -- the bootstrap rc, interpreted by pid 1.\n"
-"# Brings the filesystems online and hands off to the runlevel rc.\n"
-"print(\"rc.boot: bootstrap rc starting\")\n"
-"\n"
-"for line in split(read(\"/etc/fstab\"), \"\\n\"):\n"
-"    line = strip(line)\n"
-"    if len(line) == 0:\n"
-"        continue\n"
-"    if startswith(line, \"#\"):\n"
-"        continue\n"
-"    f = split(line)\n"
-"    if len(f) < 3:\n"
-"        panic(\"rc.boot: /etc/fstab: bad entry: \" + line)\n"
-"    mount(f[0], f[1])\n"
-"    print(\"rc.boot: mounted \" + f[0] + \" on \" + f[1])\n"
-"\n"
-"level = strip(read(\"/etc/rc.conf\"))\n"
-"target = \"/etc/rc.d/rc.\" + level\n"
-"if exists(target) == false:\n"
-"    panic(\"rc.boot: \" + target + \": no such runlevel\")\n"
-"print(\"rc.boot: entering runlevel \" + level)\n"
-"exec(target)\n";
+"# /etc/rc.boot -- the bootstrap rc, run by pid 1.\n"
+"# Brings the filesystems online and enters the default runlevel.\n"
+"echo rc.boot: bootstrap rc starting\n"
+"need /sbin/svcinit\n"
+"mount none /proc\n"
+"mount none /tmp\n"
+"run /etc/rc.d/rc.3\n";
 
-/* Runlevel 3: multi-user. Starts every unit in /etc/services.d in dependency
- * order, which it works out itself from the unit files. */
 static const char *SRC_RC3 =
 "# /etc/rc.d/rc.3 -- multi-user runlevel.\n"
-"# Reads every unit in /etc/services.d, filters by `enabled` and `runlevel`,\n"
-"# and starts what is left in dependency order.\n"
-"\n"
-"level = \"3\"\n"
-"units = {}\n"
-"for name in ls(\"/etc/services.d\"):\n"
-"    if endswith(name, \".svc\") == false:\n"
-"        continue\n"
-"    u = parse(read(\"/etc/services.d/\" + name))\n"
-"    if lookup(u, \"enabled\", \"yes\") != \"yes\":\n"
-"        print(\"rc.3: \" + name + \": disabled\")\n"
-"        continue\n"
-"    on = str(lookup(u, \"runlevel\", \"3\"))\n"
-"    want = false\n"
-"    for r in split(on):\n"
-"        if r == level:\n"
-"            want = true\n"
-"    if want == false:\n"
-"        continue\n"
-"    units[name] = u\n"
-"\n"
-"started = {}\n"
-"for round in range(20):\n"
-"    moved = 0\n"
-"    for name in keys(units):\n"
-"        if has(started, name):\n"
-"            continue\n"
-"        u = units[name]\n"
-"        dep = lookup(u, \"after\", \"\")\n"
-"        if len(dep) > 0:\n"
-"            if has(started, dep + \".svc\") == false:\n"
-"                continue\n"
-"        run = lookup(u, \"exec\", \"\")\n"
-"        if len(run) == 0:\n"
-"            panic(\"rc.3: \" + name + \": no exec line\")\n"
-"        svc(run)\n"
-"        print(\"rc.3: started \" + lookup(u, \"name\", name) +\n"
-"              \" -- \" + lookup(u, \"description\", \"\"))\n"
-"        started[name] = \"up\"\n"
-"        moved = 1\n"
-"    if moved == 0:\n"
-"        break\n"
-"\n"
-"for name in keys(units):\n"
-"    if has(started, name):\n"
-"        continue\n"
-"    u = units[name]\n"
-"    print(\"rc.3: \" + name + \": waiting for \" + lookup(u, \"after\", \"?\"))\n"
-"    panic(\"rc.3: \" + name + \" never started\")\n"
-"\n"
-"print(\"\")\n"
-"print(strip(read(\"/etc/issue\")))\n"
-"print(strip(read(\"/etc/hostname\")) + \" login:\")\n";
+"echo rc.3: entering multi-user\n"
+"exec /sbin/svcinit 3\n"
+"exec /sbin/login\n";
 
 static const char *SRC_RC0 =
 "# /etc/rc.d/rc.0 -- halt.\n"
-"print(\"rc.0: stopping services\")\n"
-"print(\"rc.0: system halted\")\n";
+"echo rc.0: system halted\n";
 
 /* ------------------------------------------------------------- packages -- */
 
@@ -169,17 +84,17 @@ static const Package PKG_KERNEL = {
 static const Package PKG_SYSINIT = {
     "sysinit", "254", "pid 1, the rc scripts and the runlevels",
     {
-      { "/usr/lib/sysinit/init", NULL, 0755, NULL },   /* SRC_INIT */
+      { "/usr/lib/sysinit/init", NULL, 0755, NULL },   /* GUEST_INIT */
       { "/sbin/init", NULL, 0777, "/usr/lib/sysinit/init" },
+      { "/sbin/svcinit", NULL, 0755, NULL },           /* GUEST_SVCINIT */
+      { "/sbin/login",   NULL, 0755, NULL },           /* GUEST_LOGIN   */
       { "/etc/inittab",
-        "# /etc/inittab -- the last non-comment line is exec'd by /sbin/init.\n"
-        "/etc/rc.boot\n", 0644, NULL },
+        "# /etc/inittab -- the last non-comment line is run by /sbin/init.\n"
+        "/bin/rc /etc/rc.boot\n", 0644, NULL },
       { "/etc/rc.boot",   NULL, 0755, NULL },          /* SRC_RCBOOT */
       { "/etc/rc.d/rc.3", NULL, 0755, NULL },          /* SRC_RC3 */
       { "/etc/rc.d/rc.0", NULL, 0755, NULL },          /* SRC_RC0 */
       { "/etc/rc.conf", "3\n", 0644, NULL },
-      { "/usr/bin/svc", "#!svc\n", 0755, NULL },
-      { "/usr/sbin/mount-all", "#!mount-all\n", 0755, NULL },
     }, 9
 };
 
@@ -307,6 +222,7 @@ static const Package PKG_HAMDE = {
 static const Package PKG_SHELL = {
     "hamsh", "1.9", "the shell and the base tools",
     {
+      { "/bin/rc",    NULL, 0755, NULL },              /* GUEST_RC */
       { "/bin/hamsh", "#!hamsh\n", 0755, NULL },
       { "/bin/ls",    "#!ls\n",    0755, NULL },
       { "/bin/cat",   "#!cat\n",   0755, NULL },
@@ -314,7 +230,7 @@ static const Package PKG_SHELL = {
       { "/bin/mount", "#!mount\n", 0755, NULL },
       { "/bin/false", "#!false\n", 0755, NULL },
       { "/bin/true",  "#!true\n",  0755, NULL },
-    }, 7
+    }, 8
 };
 
 static const Package *IMAGE[] = {
@@ -329,7 +245,14 @@ static const Package *IMAGE[] = {
  * there, and `pkg reinstall` restores them from here. */
 void image_generated(const Machine *m, const char *path, Buf *out)
 {
-    if (strcmp(path, "/usr/lib/sysinit/init") == 0)   buf_puts(out, SRC_INIT);
+    if (strcmp(path, "/usr/lib/sysinit/init") == 0)
+        buf_put(out, (const char *)GUEST_INIT, GUEST_INIT_LEN);
+    else if (strcmp(path, "/bin/rc") == 0)
+        buf_put(out, (const char *)GUEST_RC, GUEST_RC_LEN);
+    else if (strcmp(path, "/sbin/svcinit") == 0)
+        buf_put(out, (const char *)GUEST_SVCINIT, GUEST_SVCINIT_LEN);
+    else if (strcmp(path, "/sbin/login") == 0)
+        buf_put(out, (const char *)GUEST_LOGIN, GUEST_LOGIN_LEN);
     else if (strcmp(path, "/etc/rc.boot") == 0)       buf_puts(out, SRC_RCBOOT);
     else if (strcmp(path, "/etc/rc.d/rc.3") == 0)     buf_puts(out, SRC_RC3);
     else if (strcmp(path, "/etc/rc.d/rc.0") == 0)     buf_puts(out, SRC_RC0);
@@ -363,11 +286,18 @@ static void install_file(Machine *m, const PkgFile *f)
         if (n) n->mode = f->mode;
         return;
     }
+    /* Generated content may be a BINARY (the guest programs are ELF images
+     * with embedded NULs), so it is written by length, never as a C string.
+     * Going through vfs_mkfile's char* would truncate every binary at its
+     * first zero byte. */
     Buf b = {0};
     image_generated(m, f->path, &b);
-    buf_putc(&b, '\0');
-    VNode *n = vfs_mkfile(&m->disk, f->path, b.p ? b.p : "");
-    if (n) n->mode = f->mode;
+    VNode *n = vfs_mkfile(&m->disk, f->path, "");
+    if (n) {
+        buf_clear(&n->data);
+        buf_put(&n->data, b.p, b.len);
+        n->mode = f->mode;
+    }
     buf_free(&b);
 }
 

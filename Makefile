@@ -38,9 +38,14 @@ BIN = build/nominal
 # The new core. `make test-break` is the gate: random corruption must always
 # produce a ticket, that ticket must always be visible to pkg verify, and
 # repairing it must always get the machine booting again.
-BF_SRC = core/util.c core/value.c core/vfs.c core/lex.c core/compile.c \
-         core/vm.c core/natives.c core/image.c core/boot.c core/bootrt.c \
-         core/breaker.c core/bfstub.c core/bfmain.c
+BF_SRC = core/util.c core/value.c core/vfs.c core/cpu.c core/kernel.c \
+         core/image.c core/boot.c core/breaker.c core/bfmain.c
+
+# Regenerate the embedded guest userland. Needs clang+lld for riscv; the
+# generated header is committed so nobody else does.
+.PHONY: guest
+guest:
+	@./tools/mkguest.sh
 
 # --- the cpu (D18) -----------------------------------------------------
 # Our machine, RV64IM instruction set. `make test-cpu` is the gate: it
@@ -56,10 +61,14 @@ test-cpu: build/cpu
 	@./tools/test_cpu.sh 40
 
 bf: build/bf
-build/bf: $(BF_SRC) core/machine.h core/nom.h | build
+# guestbin.h must be a prerequisite: it is generated, and without it here
+# make keeps a binary with a stale guest userland embedded in it.
+build/bf: $(BF_SRC) core/machine.h core/nom.h core/abi.h core/cpu.h \
+          core/kernel.h core/guestbin.h | build
 	$(CC) $(CFLAGS) -o $@ $(BF_SRC)
 
-build/bf_asan: $(BF_SRC) core/machine.h core/nom.h | build
+build/bf_asan: $(BF_SRC) core/machine.h core/nom.h core/abi.h core/cpu.h \
+               core/kernel.h core/guestbin.h | build
 	$(CC) $(CSTD) $(WARN) $(FPFLAGS) -O1 -g -fsanitize=address,undefined \
 	  -Icore -o $@ $(BF_SRC)
 

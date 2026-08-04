@@ -15,8 +15,26 @@
 #include "nom.h"
 #include "machine.h"
 
-bool boot_userland(Machine *m, const char *initpath, Buf *console,
-                   char *err, size_t errsz);
+#include "kernel.h"
+
+/* The last non-blank line the machine printed, which is what it was
+ * complaining about when it stopped. Returned in a static buffer: this is
+ * called once, at the end of a boot. */
+static const char *last_line(const Buf *b)
+{
+    static char out[NOM_ERR_MAX];
+    if (!b->len) return NULL;
+    size_t end = b->len;
+    while (end && (b->p[end-1] == '\n' || b->p[end-1] == '\r')) end--;
+    if (!end) return NULL;
+    size_t start = end;
+    while (start && b->p[start-1] != '\n') start--;
+    size_t n = end - start;
+    if (n >= sizeof out) n = sizeof out - 1;
+    memcpy(out, b->p + start, n);
+    out[n] = '\0';
+    return out;
+}
 
 /* Did the console print this yet? Used only to say WHICH stage a failure
  * happened in, which is an observation about the output, not a flag the
@@ -337,15 +355,36 @@ void machine_boot(Machine *m)
     m->boot.reached = BOOT_INIT;
     {
         char uerr[NOM_ERR_MAX] = "";
-        bool ok = boot_userland(m, "/sbin/init", &m->boot.console, uerr, sizeof uerr);
-        if (!ok) {
+        int64_t rc = kernel_spawn(m, "/sbin/init", "", &m->boot.console, 0,
+                                  uerr, sizeof uerr);
+        if (rc != 0) {
+            /* When a guest program fails it says why, on the console, in its
+             * own words. That line IS the reason -- synthesising "init exited
+             * with status 1" over the top would throw away the only evidence
+             * the player has. Only fall back if nothing was said. */
+            /* Every level already printed its own reason. The last thing
+             * said is the reason the machine is down. */
+            const char *last = last_line(&m->boot.console);
+            bool from_console = (last != NULL);
+            if (last) snprintf(uerr, sizeof uerr, "%s", last);
+            else snprintf(uerr, sizeof uerr,
+                          "init exited with status %lld -- nothing left to run",
+                          (long long)rc);
             /* Which stage the machine died in is a fact about how far the
              * console got, not something the runtime was told. */
             BootStage at = BOOT_INIT;
             if (buf_contains(&m->boot.console, "rc.boot:")) at = BOOT_SERVICES;
             if (buf_contains(&m->boot.console, "rc.3:") ||
                 buf_contains(&m->boot.console, "entering runlevel")) at = BOOT_SERVICES;
-            fail(m, c, at, "%s", uerr[0] ? uerr : "init failed");
+            /* The reason was taken FROM the console, so echoing it back would
+             * print it twice. Record it without re-saying it. */
+            if (from_console) {
+                snprintf(m->boot.reason, sizeof m->boot.reason, "%s", uerr);
+                m->boot.failed_at = at;
+                m->boot.running = false;
+            } else {
+                fail(m, c, at, "%s", uerr[0] ? uerr : "init failed");
+            }
             goto done;
         }
     }
