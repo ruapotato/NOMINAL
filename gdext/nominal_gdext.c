@@ -403,6 +403,27 @@ static void m_ask(Station *st, const GDExtensionConstTypePtr *args, void *ret)
     buf_free(&out);
 }
 
+/* colleague(String who, String question) -> String
+ * customer_name() -> String
+ *
+ * The other two people in the chat window, and the name of the first. */
+static void m_colleague(Station *st, const GDExtensionConstTypePtr *args, void *ret)
+{
+    char who[32], q[1024];
+    gdstring_to_c(args[0], who, sizeof who);
+    gdstring_to_c(args[1], q, sizeof q);
+    Buf out; buf_init(&out);
+    colleague_ask(&st->m, who, q, &out);
+    c_to_gdstring(ret, out.p ? out.p : "");
+    buf_free(&out);
+}
+
+static void m_customer_name(Station *st, const GDExtensionConstTypePtr *args, void *ret)
+{
+    (void)args;
+    c_to_gdstring(ret, customer_name(&st->m));
+}
+
 /* chmod(String path, int mode) -> bool */
 static void m_chmod(Station *st, const GDExtensionConstTypePtr *args, void *ret)
 {
@@ -443,6 +464,8 @@ static const MethodDef METHODS[] = {
     { "on_rescue",   m_on_rescue,   0, { 0 },                              GDEXTENSION_VARIANT_TYPE_BOOL },
     { "sh",          m_sh,          1, { GDEXTENSION_VARIANT_TYPE_STRING }, GDEXTENSION_VARIANT_TYPE_STRING },
     { "ask",         m_ask,         1, { GDEXTENSION_VARIANT_TYPE_STRING }, GDEXTENSION_VARIANT_TYPE_STRING },
+    { "colleague",   m_colleague,   2, { GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_STRING }, GDEXTENSION_VARIANT_TYPE_STRING },
+    { "customer_name", m_customer_name, 0, { 0 },            GDEXTENSION_VARIANT_TYPE_STRING },
 };
 #define NMETHODS ((int)(sizeof METHODS / sizeof METHODS[0]))
 
