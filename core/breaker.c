@@ -300,13 +300,18 @@ static void fault_missing_module(Machine *m, Rng *r, char *d, size_t ds)
  * which repairs a filesystem without chrooting into it. */
 static void fault_bad_libc(Machine *m, Rng *r, char *d, size_t ds)
 {
-    static const char *VERS[] = { "2.41", "2.39", "2.35", "2.28" };
+    /* Older than the 2.38 everything on this disk was built against. A
+     * DOWNGRADE, not an upgrade: a newer libc satisfies an older requirement,
+     * so "upgraded to 2.41 and nothing runs" was a failure mode that does not
+     * exist on a real machine. What does happen, constantly, is a package from
+     * the wrong release pulling libc backwards. */
+    static const char *VERS[] = { "2.36", "2.35", "2.31", "2.28" };
     const char *v = VERS[rng_next(r) % 4];
     VNode *n = vfs_lookup(&m->disk, "/lib/libc.so.6");
     if (!n || n->kind != VN_FILE) return;
     buf_clear(&n->data);
     buf_printf(&n->data, "stub libc %s\n", v);
-    snprintf(d, ds, "upgraded libc to %s, which nothing on the disk is built for", v);
+    snprintf(d, ds, "pulled libc backwards to %s, older than the 2.38 the system is built against", v);
 }
 
 /* A package built for the wrong architecture. The file is a perfectly valid

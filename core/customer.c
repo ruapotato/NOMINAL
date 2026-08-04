@@ -63,10 +63,24 @@ static Topic topic_of(const char *q)
         low[n] = (q[n] >= 'A' && q[n] <= 'Z') ? (char)(q[n] + 32) : q[n];
     low[n] = '\0';
 
+    /* LONGEST match wins, not first-in-table. First-in-table made the answer
+     * depend on the order I happened to write the rows in, and "do you" -- a
+     * T_WHATCHANGED keyword sitting near the top -- swallowed "do you have a
+     * backup", "do you know the root password", and anything else phrased as
+     * a plain question. The customer then answered a question nobody asked,
+     * which reads as a non-sequitur and was reported as exactly that.
+     * Specificity is the right tie-break and it does not care about order. */
+    Topic best = T_NONE;
+    size_t bestlen = 0;
     for (size_t i = 0; i < sizeof MAP / sizeof MAP[0]; i++)
-        for (int w = 0; w < 12 && MAP[i].words[w]; w++)
-            if (strstr(low, MAP[i].words[w])) return MAP[i].t;
-    return T_NONE;
+        for (int w = 0; w < 12 && MAP[i].words[w]; w++) {
+            size_t wl = strlen(MAP[i].words[w]);
+            if (wl > bestlen && strstr(low, MAP[i].words[w])) {
+                best = MAP[i].t;
+                bestlen = wl;
+            }
+        }
+    return best;
 }
 
 /* What the breaker did, reduced to the thing a human would have noticed. The
@@ -176,7 +190,14 @@ static const char *admission(Cause c)
 static bool unlocks(Cause c, Topic t)
 {
     switch (c) {
-    case C_TIDIED:     return t == T_DELETE || t == T_DISK;
+    /* "What has changed recently?" is THE question a technician opens with,
+     * and C_TIDIED -- the commonest cause in the game -- was the single cause
+     * that denied it. Every other cause unlocked on it. A playtester asked it
+     * on ticket after ticket, got "Not that I remember" every time, and
+     * concluded the customer was decoration. They were right about the
+     * symptom and this was the cause. */
+    case C_TIDIED:     return t == T_DELETE || t == T_DISK ||
+                              t == T_WHATCHANGED;
     case C_UPGRADED:   return t == T_UPGRADE || t == T_WHATCHANGED;
     case C_CONFIGURED: return t == T_WHATCHANGED || t == T_UPGRADE;
     case C_VENDOR:     return t == T_WHOELSE || t == T_UPGRADE ||
@@ -586,5 +607,13 @@ void customer_intro(Machine *m, Buf *out)
     (void)m;
     buf_puts(out,
         "  the customer is on the line. `ask <question>` to talk to them.\n"
-        "  they know what changed. they are not going to lead with it.\n");
+        "  they know what changed. they are not going to lead with it.\n"
+        /* A playtester burned five tickets before working out that hanging up
+         * loses the machine: they would read the ticket, disconnect to think,
+         * reconnect to act, and be handed a different fault without being
+         * told. The rule is fine -- one call, one machine, like a real call --
+         * but it was nowhere in the help, and an undocumented rule that costs
+         * you your work is just a trap. */
+        "  this call IS the ticket: hang up and this machine is gone, and the\n"
+        "  next connection is a different fault. do the whole job in one go.\n");
 }

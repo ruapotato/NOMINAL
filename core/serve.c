@@ -21,6 +21,10 @@
 #include <errno.h>
 #include <stdlib.h>
 
+#ifndef _WIN32
+#  include <signal.h>
+#endif
+
 #ifdef _WIN32
 #  include <winsock2.h>
 #  include <ws2tcpip.h>
@@ -69,7 +73,13 @@ static void send_all(sock_t fd, const char *data, size_t len)
 {
     size_t sent = 0;
     while (sent < len) {
+        /* MSG_NOSIGNAL as well as the handler: belt and braces, and it is the
+         * portable-ish way to say "a dead peer is an error, not a death". */
+#ifdef MSG_NOSIGNAL
+        int n = (int)send(fd, data + sent, (int)(len - sent), MSG_NOSIGNAL);
+#else
         int n = (int)send(fd, data + sent, (int)(len - sent), 0);
+#endif
         if (n <= 0) return;
         sent += (size_t)n;
     }
@@ -215,6 +225,16 @@ static bool client_line(Client *c)
 int bench_serve(int port, bool verbose, uint64_t seed0)
 {
     if (!net_platform_init()) { fprintf(stderr, "serve: winsock failed\n"); return 1; }
+#ifndef _WIN32
+    /* THE BUG THAT KILLED THREE PLAYTESTS. Writing to a socket whose peer has
+     * gone raises SIGPIPE, and the default action for SIGPIPE is to kill the
+     * process. Every client that hangs up while the server is mid-reply --
+     * which is every client, because they hang up after each session -- had a
+     * chance of taking the whole bench down with it, mid-diagnosis, for
+     * somebody else. Three blind playtests ended early on this and I blamed
+     * my own rebuilds for two of them. */
+    signal(SIGPIPE, SIG_IGN);
+#endif
 
     sock_t ls = socket(AF_INET, SOCK_STREAM, 0);
     if (ls == BAD_SOCK) { fprintf(stderr, "serve: socket failed\n"); return 1; }

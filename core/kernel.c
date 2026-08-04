@@ -219,6 +219,22 @@ static bool proc_read(Machine *m, Proc *self, const char *path, Buf *out)
 
 static const char *PROC_FILES[] = { "status", "cmdline", "cwd", "ns", NULL };
 
+/* A shared library satisfies a requirement when it is AT LEAST the version
+ * asked for. This was string equality, which meant a binary needing 2.38
+ * failed against an installed 2.41 -- backwards from every real dynamic
+ * linker, where a newer libc is a superset of the older one and the whole
+ * point of symbol versioning is that upgrading does not break what is already
+ * built. A playtester who administers Linux for a living spotted it in one
+ * line of output and said so. The fault it belongs to is a DOWNGRADE. */
+static bool version_older(const char *have, const char *want)
+{
+    int hmaj = 0, hmin = 0, wmaj = 0, wmin = 0;
+    if (sscanf(have, "%d.%d", &hmaj, &hmin) < 1) return false;
+    if (sscanf(want, "%d.%d", &wmaj, &wmin) < 1) return false;
+    if (hmaj != wmaj) return hmaj < wmaj;
+    return hmin < wmin;
+}
+
 static bool link_check(Machine *m, Vfs *fs, const char *needs,
                        char *err, size_t errsz);
 static int64_t spawn_fail(Buf *console, char *err, size_t errsz, int64_t code,
@@ -1354,7 +1370,7 @@ static bool link_check(Machine *m, Vfs *fs, const char *needs,
         }
         char have[40] = "";
         if (want[0] && lib_version(fs, path, have, sizeof have) &&
-            strcmp(have, want) != 0) {
+            version_older(have, want)) {
             snprintf(err, errsz,
                      "error while loading shared libraries: %s: "
                      "version %s not found (installed: %s)",

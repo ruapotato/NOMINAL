@@ -73,8 +73,49 @@ static void finding(const char *pkg, const char *path, const char *what)
     g_puts(pkg);
     for (u64 k = g_strlen(pkg); k < 16; k++) g_puts(" ");
     g_puts(path);
-    for (u64 k = g_strlen(path); k < 34; k++) g_puts(" ");
+    /* A path longer than the column ran straight into the status word:
+     * "/etc/udev/rules.d/50-default.rulesCHANGED". Pad to the column when it
+     * fits, and always emit at least one space when it does not. */
+    u64 pl = g_strlen(path);
+    if (pl < 34) { for (u64 k = pl; k < 34; k++) g_puts(" "); }
+    else g_puts(" ");
     g_putln(what);
+}
+
+/* Print one file's shipped bytes against its installed bytes. Reachable two
+ * ways -- by path, and by package name, which diffs every file that moved. */
+static void diff_path(const char *owner, const char *path)
+{
+    i64 want = g_repo(owner, path, filebuf);
+    if (want < 0) {
+        g_puts("pkg: "); g_puts(path);
+        g_putln(": cannot fetch the shipped copy");
+        return;
+    }
+    static char shipped[65536];
+    for (i64 k = 0; k < want; k++) shipped[k] = filebuf[k];
+    shipped[want] = 0;
+
+    /* Read the INSTALLED copy through --root, so this works on a disk mounted
+     * elsewhere. It did not, which meant diff was unusable on exactly the
+     * machines --root exists for: the ones whose own libc is broken, where
+     * chroot is not an option at all. */
+    static char rpath[300];
+    g_copy(rpath, root, sizeof rpath);
+    g_cat(rpath, path, sizeof rpath);
+    i64 have = g_slurp(rpath, filebuf, sizeof filebuf);
+    if (have < 0) {
+        g_puts("pkg: "); g_puts(rpath);
+        g_putln(": cannot read what is installed");
+        return;
+    }
+
+    g_puts("--- "); g_puts(path); g_puts("  shipped by ");
+    g_puts(owner); g_puts(" ("); g_putn(want); g_putln(" bytes)");
+    g_write(1, shipped, (u64)want);
+    g_puts("+++ "); g_puts(path); g_puts("  installed now (");
+    g_putn(have); g_putln(" bytes)");
+    g_write(1, filebuf, (u64)have);
 }
 
 static int verify_one(const char *pkg, int *bad)
@@ -172,7 +213,7 @@ void _start(void)
         n -= 2;
     }
     if (n < 1) {
-        g_putln("usage: pkg [--root DIR] list|owns|verify|diff|reinstall [--force]|upgrade");
+        g_putln("usage: pkg [--root DIR] list|owns|verify|diff <path>|<pkg>|reinstall [--force]|upgrade");
         g_putln("  --root repairs a filesystem mounted elsewhere, without");
         g_putln("         chrooting into it -- which you cannot do when the");
         g_putln("         disk's own libc is broken");
@@ -289,7 +330,53 @@ void _start(void)
          * reads like an admin's deliberate change ("# hardened after the
          * audit") is not the same as one that reads like damage, and only a
          * person can tell the difference. */
-        if (n < 2) { g_putln("usage: pkg diff <path>"); g_exit(1); }
+        if (n < 2) { g_putln("usage: pkg diff <path>|<package>"); g_exit(1); }
+
+        /* An argument with no slash in it is a PACKAGE, not a path. The game's
+         * own advice says "`pkg diff` first, then `pkg reinstall --force
+         * <name>`", which reads -- correctly -- as though both take a package.
+         * A playtester ran `pkg diff shadow` three times, got "no package owns
+         * that path", and wrote the feature off as broken. It was not broken;
+         * it only answered a question nobody was asking. So: diff a name and
+         * you get every file in that package that no longer matches. */
+        int by_name = 1;
+        for (const char *q = v[1]; *q; q++) if (*q == 0x2f) by_name = 0;
+        if (by_name) {
+            if (!read_manifest(v[1])) {
+                g_puts("pkg: "); g_puts(v[1]);
+                g_putln(": no such package, and not a path either");
+                g_exit(1);
+            }
+            static char paths[64][160];
+            int np = 0;
+            char *p = manifest;
+            while (*p && np < 64) {
+                char *nl = p; while (*nl && *nl != '\n') nl++;
+                char save = *nl; *nl = 0;
+                static char line[300];
+                g_copy(line, p, sizeof line);
+                *nl = save; p = *nl ? nl + 1 : nl;
+                char *mode, *hash, *fp;
+                char *t = g_trim(line);
+                if (!*t || *t == '#' || !split3(t, &mode, &hash, &fp)) continue;
+                if (g_streq(mode, "link")) continue;
+                static char rp[300];
+                g_copy(rp, root, sizeof rp);
+                g_cat(rp, fp, sizeof rp);
+                i64 hn = g_slurp(rp, filebuf, sizeof filebuf);
+                if (hn < 0) continue;
+                if (g_hash(filebuf, (u64)hn) != parse_hex(hash))
+                    g_copy(paths[np++], fp, sizeof paths[0]);
+            }
+            if (!np) {
+                g_puts("pkg: every file in "); g_puts(v[1]);
+                g_putln(" matches what was shipped -- nothing to diff");
+                g_exit(0);
+            }
+            for (int i = 0; i < np; i++) diff_path(v[1], paths[i]);
+            g_exit(0);
+        }
+
         static char owner[64];
         owner[0] = 0;
         static char nm2[64], ddir[192];
@@ -313,34 +400,10 @@ void _start(void)
         }
         if (!owner[0]) { g_putln("pkg: no package owns that path"); g_exit(1); }
 
-        i64 want = g_repo(owner, v[1], filebuf);
-        if (want < 0) { g_putln("pkg: cannot fetch the shipped copy"); g_exit(1); }
-        static char shipped[65536];
-        for (i64 k = 0; k < want; k++) shipped[k] = filebuf[k];
-        shipped[want] = 0;
-
-        /* Read the INSTALLED copy through --root, so this works on a disk
-         * mounted elsewhere. It did not, which meant diff was unusable on
-         * exactly the machines --root exists for: the ones whose own libc is
-         * broken, where chroot is not an option at all. */
-        static char rpath[300];
-        g_copy(rpath, root, sizeof rpath);
-        g_cat(rpath, v[1], sizeof rpath);
-        i64 have = g_slurp(rpath, filebuf, sizeof filebuf);
-        if (have < 0) { g_puts("pkg: "); g_puts(rpath); g_putln(": cannot read what is installed"); g_exit(1); }
-
-        g_puts("--- shipped by ");
-        g_puts(owner);
-        g_puts(" (");
-        g_putn(want);
-        g_putln(" bytes)");
-        g_write(1, shipped, (u64)want);
-        g_puts("+++ installed now (");
-        g_putn(have);
-        g_putln(" bytes)");
-        g_write(1, filebuf, (u64)have);
+        diff_path(owner, v[1]);
         g_exit(0);
     }
+
 
     if (g_streq(v[0], "verify")) {
         g_bad = 0;
