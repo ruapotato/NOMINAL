@@ -215,6 +215,43 @@ Legend: **[done]** built · **[next]** in progress or immediately next ·
 
 ---
 
+## 12. Faults that leave the machine UP
+
+The catalogue has been biased toward machines that will not boot, because
+that is how a ticket is currently defined. The nastier half of real support
+is the machine that boots perfectly and is still wrong, and every one of
+these is now *mechanically possible* — services are real processes, so they
+can be running, dead, or looping.
+
+What it needs first: **widen the ticket contract from "does it boot" to "is it
+healthy"**, and add `svc status` so the player can see the difference.
+
+- **[todo]** a non-critical daemon in a respawn loop. "It boots, the firewall
+  is just not running." The console scrolls past it at boot and nothing
+  complains afterwards.
+- **[todo]** a service that starts and then dies an hour later, so the boot
+  console is clean and `ps` is the only evidence.
+- **[todo]** two services that both start, where one silently depends on the
+  other having finished, and the order is wrong only sometimes.
+- **[todo]** a daemon running with a stale config because nothing reloaded it
+  — the file on disk is right and the running process disagrees. `ps` says
+  running, the config says correct, and the behaviour is wrong. This is the
+  best argument for signals.
+- **[todo]** a log filling the disk, so the machine boots today and will not
+  next week.
+
+## 13. Things that are wrong before you arrive
+
+- **[todo]** a machine that was already broken when it was handed over, and the
+  customer's story is about something else entirely — the reported symptom and
+  the fault are unrelated. Real support is full of this and nothing here
+  currently produces it.
+- **[todo]** a "fix" a previous technician applied that is itself the fault: a
+  package reinstalled that clobbered a local edit, a permission opened up to
+  make something work.
+- **[todo]** two faults where repairing the first makes the second *look* like
+  a new problem you caused.
+
 ## What makes a fault good
 
 1. **The evidence is on the machine.** The console says what it tried and what
