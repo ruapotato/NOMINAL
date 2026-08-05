@@ -79,7 +79,33 @@ static int room_arg(const Session *ses, const char *spec)
     if (r >= 0) return r;
     int d = site_dev_by_name(&ses->s, spec);
     if (d >= 0 && ses->s.dev[d].room != BLD_NOROOM) return ses->s.dev[d].room;
-    return -1;
+
+    /* THE NEAREST ONE, WHEREVER IT IS. `go mdf` worked on the ground floor
+     * and failed on the eighth, because there is only one MDF and it is not
+     * on your floor -- and the same is true of goods in and the lobby. A
+     * player standing on floor 8 who types `go mdf` means the MDF. So: the
+     * room of that kind with the shortest walk from here, which is also
+     * what `go comms` should mean in a tower with nine of them. The
+     * spellings are site.c's, because two spellings of one room is a bug. */
+    static const struct { const char *n; int k; } K[] = {
+        { "comms", RM_COMMS }, { "mdf", RM_MDF }, { "riser", RM_RISER },
+        { "goods", RM_GOODS }, { "lobby", RM_LOBBY }, { "plant", RM_PLANT },
+        { "server", RM_SERVER }, { "office", RM_OFFICE },
+        { "residence", RM_RESIDENCE }, { "retail", RM_RETAIL },
+        { "stair", RM_STAIR }, { "liftlobby", RM_LIFTLOBBY },
+        { "toilet", RM_TOILET }, { "corridor", RM_CORRIDOR }, { NULL, 0 }
+    };
+    int kind = -1;
+    for (int i = 0; K[i].n; i++) if (strcmp(K[i].n, spec) == 0) kind = K[i].k;
+    if (kind < 0) return -1;
+    double *dist = nom_alloc(sizeof(double) * (size_t)ses->b.nrooms);
+    if (!bld_walk_all(&ses->b, ses->room, dist)) { nom_free(dist); return -1; }
+    int best = -1;
+    double bd = BLD_INF;
+    for (int i = 0; i < ses->b.nrooms; i++)
+        if (ses->b.rooms[i].kind == kind && dist[i] < bd) { bd = dist[i]; best = i; }
+    nom_free(dist);
+    return best;
 }
 
 static bool dev_here(const Session *ses, int dev)
@@ -741,10 +767,41 @@ static bool is_config(const char *v)
            strcmp(v, "dhcp") == 0;
 }
 
-static void after_config(Session *ses, const char *verb, int dev)
+static void after_config(Session *ses, const char *verb, int dev, Buf *out)
 {
-    if (!is_config(verb)) return;
-    if (dev >= 0 && dev < ses->s.ndev && ses->mach[dev]) sync_disk(ses, dev);
+    if (!is_config(verb) && strcmp(verb, "router") != 0) return;
+    if (dev < 0 || dev >= ses->s.ndev) return;
+    if (ses->mach[dev]) sync_disk(ses, dev);
+    /* `set` IS NOT A CONFIRMATION. site_cmd answers a configuration line
+     * with one word, which tells a player who cannot see the box nothing at
+     * all -- not what was set, not on which card, not what it now is. Say
+     * what the box says about itself now, which is the same line `look`
+     * prints, so the two cannot disagree. */
+    if (out->len && out->p && strncmp(out->p, "set", 3) == 0 && out->len < 6) {
+        buf_clear(out);
+        /* A SUBINTERFACE IS NOT THE FIRST CARD. dev_line prints eth0, so
+         * `subif edge 1 1 0 10.0.1.1/24` answered with edge's WAN address
+         * and looked as though it had done nothing, or worse, the wrong
+         * thing. Print every interface it now has. */
+        if (strcmp(verb, "subif") == 0) {
+            buf_printf(out, "%s:\n", ses->s.dev[dev].name);
+            net_dump_ifaces(ses->s.net, ses->s.dev[dev].node, out);
+            return;
+        }
+        if (strcmp(verb, "router") == 0) {
+            Buf p = {0};
+            net_dump_routes(ses->s.net, ses->s.dev[dev].node, &p);
+            buf_printf(out, "%s now %s between its interfaces:\n", ses->s.dev[dev].name,
+                       p.p && strstr(p.p, "ip_forward 1") ? "forwards" : "does NOT forward");
+            if (p.len) buf_put(out, p.p, p.len);
+            buf_free(&p);
+            return;
+        }
+        dev_line(ses, dev, out);
+        if (ses->mach[dev])
+            buf_printf(out, "    (written onto its disk: it has an OS and netd "
+                            "reads that file)\n");
+    }
 }
 
 /* --------------------------------------------------------------- day one */
@@ -892,7 +949,7 @@ bool session_line(Session *ses, const char *line, Buf *out)
         } else snprintf(cmd, sizeof cmd, "%s", raw);
         if (!site_cmd(&ses->s, cmd, out))
             buf_puts(out, "  `help` lists what this line takes.\n");
-        after_config(ses, t[0], ses->plugged);
+        after_config(ses, t[0], ses->plugged, out);
         return true;
     }
 
@@ -1020,7 +1077,7 @@ bool session_line(Session *ses, const char *line, Buf *out)
         int d;
         if (!need_here(ses, t[1], &d, out)) return true;
         site_cmd(&ses->s, raw, out);
-        after_config(ses, t[0], d);
+        after_config(ses, t[0], d, out);
         return true;
     }
 
