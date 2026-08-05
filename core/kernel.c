@@ -74,6 +74,14 @@ struct Daemon {
     int      restarts;
     bool     gave_up;
     int      pending_sig;      /* delivered when the daemon next asks */
+    /* THE NAMESPACE IT WAS STARTED IN. A child inherits its parent's view of
+     * the filesystem -- that is the whole of the Plan 9 model and the reason
+     * `bind` is worth having -- and daemons were the one kind of process that
+     * did not: every service started with an empty namespace, so a bind made
+     * before the services came up applied to everything except the services.
+     * Kept here as well as in the process record because a restart has to
+     * come back into the same view it died in. */
+    Ns       ns;
     int64_t  exit_code;
     char     died[NOM_ERR_MAX];
 };
@@ -802,7 +810,8 @@ static int64_t kernel_syscall(Cpu *c, int64_t n, int64_t a0, int64_t a1,
         char rp[NOM_PATH_MAX];
         resolve(p, path, rp, sizeof rp);
         return kernel_start_daemon(p->m, rp, "", name[0] ? name : path,
-                                   (int)a2, p->console);
+                                   (int)a2, p->console,
+                                   p->info ? &p->info->ns : NULL);
     }
     case SYS_fsck: {
         char dev[64];
@@ -815,7 +824,13 @@ static int64_t kernel_syscall(Cpu *c, int64_t n, int64_t a0, int64_t a1,
     }
     case SYS_bootsec:
         /* a0 != 0 writes one, which is what zbl-install does */
-        if (a0) p->m->bootsector = true;
+        /* AND POINTS THE FIRMWARE AT THAT DISK. grub-install rewrites the
+         * firmware's boot entry as well as the sector, for the reason it
+         * matters here: a machine whose boot order names an empty optical
+         * drive has a perfect disk and nothing to boot, and installing the
+         * loader without telling the firmware where it went would be half a
+         * job. `rcon boot disk` is the other way to say it. */
+        if (a0) { p->m->bootsector = true; p->m->sp_bootdev = 0; }
         return p->m->bootsector ? 1 : 0;
     case SYS_rootuuid: {
         const char *u = p->m->root_uuid;
@@ -1546,12 +1561,14 @@ void kernel_stop_daemons(Machine *m)
 static int64_t daemon_launch(Machine *m, struct Daemon *d, Buf *console);
 
 int64_t kernel_start_daemon(Machine *m, const char *path, const char *arg,
-                            const char *name, int restart, Buf *console)
+                            const char *name, int restart, Buf *console,
+                            const Ns *inherit)
 {
     struct Daemon *ds = daemons(m);
     if (m->ndaemon >= DAEMON_MAX) return SPAWN_EDEPTH;
     struct Daemon *d = &ds[m->ndaemon];
     memset(d, 0, sizeof *d);
+    if (inherit) ns_copy(&d->ns, inherit); else ns_init(&d->ns);
     snprintf(d->name, sizeof d->name, "%s", name ? name : path);
     snprintf(d->path, sizeof d->path, "%s", path);
     d->restart_policy = restart;
@@ -1607,7 +1624,7 @@ static int64_t daemon_launch(Machine *m, struct Daemon *d, Buf *console)
         pi->alive = true;
         snprintf(pi->name, sizeof pi->name, "%s", path);
         snprintf(pi->arg, sizeof pi->arg, "%s", d->proc.arg);
-        ns_init(&pi->ns);
+        ns_copy(&pi->ns, &d->ns);
         snprintf(pi->cwd, sizeof pi->cwd, "/");
     }
 
