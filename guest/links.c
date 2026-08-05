@@ -194,6 +194,7 @@ static char *do_pre(char *p)
 {
     blank_now();
     int col = 0;
+    if (*p == '\n') p++;      /* a newline right after <pre> is not a blank line */
     while (*p) {
         if (p[0]=='<' && p[1]=='/' && p[2]=='p' && p[3]=='r' && p[4]=='e') {
             while (*p && *p != '>') p++;
@@ -201,7 +202,9 @@ static char *do_pre(char *p)
             break;
         }
         if (*p == '\n') {
-            if (col) o_ch('\n');           /* the newline after <pre> is not a line */
+            /* Blank lines inside a block are content: they separate stanzas
+             * of a poem and rows of a table, and eating them ruined both. */
+            o_ch('\n');
             col = 0; p++;
             continue;
         }
@@ -256,8 +259,16 @@ static void render(char *p)
                 cur_ind = cont_ind = 0;
                 continue;
             }
-            if (tag_is(tag, "ul") || tag_is(tag, "/ul") || tag_is(tag, "/li")) {
+            if (tag_is(tag, "ul") || tag_is(tag, "/ul")) {
                 block_end();
+                cur_ind = cont_ind = 0;
+                continue;
+            }
+            if (tag_is(tag, "/li")) {
+                /* A list is one block: items sit on consecutive lines. Ending
+                 * an item owes no blank line, or every list on the network
+                 * would be double spaced. */
+                w_end(); line_end();
                 cur_ind = cont_ind = 0;
                 continue;
             }
@@ -286,10 +297,18 @@ static void render(char *p)
                 for (int i = 0; alt[i]; ) {
                     int s = i;
                     while (alt[i] && alt[i] != ' ') i++;
-                    if (i > s) wput(alt + s, i - s);
+                    int n2 = i - s;
                     while (alt[i] == ' ') i++;
+                    if (n2 <= 0) continue;
+                    if (alt[i]) { wput(alt + s, n2); continue; }
+                    /* The bracket belongs to the last word, not beside it:
+                     * "[image: a coffee pot]", never "... pot ]". */
+                    static char last[176];
+                    int k = 0;
+                    while (k < n2 && k < (int)sizeof last - 2) { last[k] = alt[s + k]; k++; }
+                    last[k++] = ']';
+                    wput(last, k);
                 }
-                wput("]", 1);
                 continue;
             }
             if (tag_is(tag, "a")) {

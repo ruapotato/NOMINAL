@@ -325,7 +325,177 @@ static const Package PKG_HOME = {
         "\n"
         "-- but the root password is on a sticker under the desk, which is\n"
         "   worse, and I am sorry.\n", 0644, NULL },
-    }, 10
+
+      /* THE POSTMORTEM. Every command in it is a command this machine has,
+       * and the sequence is the actual repair for the disk-full fault --
+       * which the breaker really produces. A player who reads this has been
+       * handed the March outage as a worked example. */
+      { "/home/nomowner/Documents/postmortem-march.txt",
+        "POSTMORTEM -- 14 March -- \"the machine is dead\" (it was not)\n"
+        "\n"
+        "SYMPTOM. Boot reached the services and syslog would not start. Two\n"
+        "hours were spent on syslogd, which was innocent, because the first\n"
+        "thing to fail is never the thing that is wrong -- it is just the\n"
+        "first thing that tried to write.\n"
+        "\n"
+        "CAUSE. /var/log/messages had been growing since January. The disk\n"
+        "was full. Nothing was corrupt. `pkg verify` said the machine was\n"
+        "perfect and it was telling the truth.\n"
+        "\n"
+        "WHAT WOULD HAVE FOUND IT IN THIRTY SECONDS:\n"
+        "  df\n"
+        "  find /var -type f\n"
+        "  wc /var/log/messages\n"
+        "  rm /var/log/messages\n"
+        "  svc\n"
+        "\n"
+        "NOTE FOR NEXT TIME. `df` and `df -i` are two different questions.\n"
+        "Space and inodes run out independently, and when the inodes go, df\n"
+        "with no arguments swears blind there is plenty of room.\n"
+        "\n"
+        "ACTION ITEMS. Rotate the logs. (Not done.) Alert on disk usage.\n"
+        "(Not done.) Write this postmortem. (Done, obviously, it is the only\n"
+        "one that costs nothing.)\n", 0644, NULL },
+
+      /* The chmod 000 saga from the TODO, closed out. It names the exact
+       * command that repairs a mode, and the exact one that finds it. */
+      { "/home/nomowner/Documents/ticket-8841.txt",
+        "TICKET 8841 -- sshd keeps coming back mode 000\n"
+        "\n"
+        "It was R. It was always going to be R. He runs a \"hardening\"\n"
+        "script from a laptop and it walks /usr/sbin taking the execute bit\n"
+        "off anything it does not recognise.\n"
+        "\n"
+        "Symptom: svc says sshd is not running, the binary is present, and\n"
+        "`pkg verify openssh` reports it as `mode` and NOT as `changed` --\n"
+        "the bytes are perfect, the permission is not. That one word in the\n"
+        "verify output is the whole diagnosis.\n"
+        "\n"
+        "  ls /usr/sbin            the mode is in the first column\n"
+        "  chmod 755 /usr/sbin/sshd\n"
+        "  svc status sshd\n"
+        "\n"
+        "Resolution: told R. Reopened twice. I have stopped counting.\n", 0644, NULL },
+
+      /* THE QUIETLY OMINOUS ONE. It is also entirely true: a directory the
+       * display server needs, that no other package can put back. */
+      { "/home/nomowner/Desktop/DO-NOT-DELETE.txt",
+        "Please do not tidy /run.\n"
+        "\n"
+        "I know it looks like rubbish. It is where every daemon writes what it\n"
+        "actually loaded -- /run/crond.state, /run/ntpd.state and the rest --\n"
+        "and it is the only place on this machine that knows the difference\n"
+        "between a service that is running and a service that is running the\n"
+        "config you can see in the file.\n"
+        "\n"
+        "The desktop keeps its own directory in there, /run/nomde. If that\n"
+        "goes, the display server does not come back, and nothing tells you\n"
+        "why. I have written this three times. The third time was after I\n"
+        "did it myself.\n", 0644, NULL },
+
+      /* Saved off the network, back when someone still read it. */
+      { "/home/nomowner/Downloads/bofh-excuses.txt",
+        "(saved from bofh.nomnix.org/excuse -- `links bofh.nomnix.org/excuse`\n"
+        " if the network is up and you want the current list)\n"
+        "\n"
+        "  it is a layer 8 problem\n"
+        "  the cleaning contractor unplugged something to charge their phone\n"
+        "  the previous administrator left and took the knowledge with them\n"
+        "  we upgraded from the testing channel by accident\n"
+        "  it is DNS\n"
+        "  it is not DNS\n"
+        "  it was DNS\n"
+        "\n"
+        "The last three are a joke everywhere except here, where /etc/hosts\n"
+        "is consulted before dns -- /etc/nsswitch.conf says so, in that\n"
+        "order -- so it is usually a line somebody typed by hand. Which is\n"
+        "worse.\n", 0644, NULL },
+
+      /* A README in an odd place. There is no image viewer and no images. */
+      { "/home/nomowner/Pictures/README",
+        "There are no pictures on this machine and there never were.\n"
+        "\n"
+        "The directory came with the account and I have left it alone,\n"
+        "because deleting an empty directory is exactly the kind of tidying\n"
+        "that ends up in a postmortem.\n"
+        "\n"
+        "If you want art: links asciiart.nomnix.org\n"
+        "If you want a cow: cowsay -f tux hello\n", 0644, NULL },
+
+      /* THE ABANDONED SCRIPT, which explains its own abandonment: /bin/rc is
+       * the only interpreter here, rc has five verbs, and rc stops at the
+       * first failure -- all three true, all three checkable in rc.c. What is
+       * left is a genuinely good checklist in the right order, which is what
+       * half-finished automation always turns out to have been. */
+      { "/home/nomowner/bin/checkboot",
+        "# checkboot -- half a script, and it is staying that way.\n"
+        "#\n"
+        "# /bin/rc is the only thing here that runs a script file, and rc knows\n"
+        "# five verbs: echo, mount, run, exec, need. Everything below would\n"
+        "# need `exec` in front of it, and rc stops at the FIRST failure --\n"
+        "# which is precisely wrong for a checklist, where the whole point is\n"
+        "# to keep going and see which line answers oddly. So it is all\n"
+        "# comments. Read it and type them.\n"
+        "#\n"
+        "# The order matters. It goes down the boot chain, and the first line\n"
+        "# that answers wrong is the stage that broke.\n"
+        "#\n"
+        "#   dmesg                     what the last boot actually said\n"
+        "#   svc                       what should be up and is not\n"
+        "#   df                        space, before anything clever\n"
+        "#   df -i                     inodes, which is a different question\n"
+        "#   blkid                     what the disk really is\n"
+        "#   cat /etc/fstab            what we told it the disk was\n"
+        "#   cat /boot/zbl/zbl.cfg     what the bootloader was told\n"
+        "#   stat /boot/vmnomuz        the symlink, not the listing\n"
+        "#   ldd /usr/sbin/httpd       one dead service, one live one\n"
+        "#   pkg verify <the suspect>  not all of it. you will drown.\n"
+        "#   ns                        in case none of the above was real\n"
+        "#\n"
+        "# TODO: turn this into something that runs. (It is fine. Leave it.)\n",
+        0644, NULL },
+
+      { "/home/nomowner/bin/README",
+        "Nothing in here is executable and that is not an accident.\n"
+        "\n"
+        "The one script that WAS executable removed a kernel in March. See\n"
+        "~/TODO, and see /etc/crontab, where its job is commented out and is\n"
+        "staying commented out.\n", 0644, NULL },
+
+      /* Funny, and every question is answerable on the machine in front of
+       * you -- which makes it a tutorial wearing a joke's clothing. */
+      { "/home/nomowner/Documents/interview-questions.txt",
+        "Questions I ask, and what the answer tells me\n"
+        "\n"
+        "1. `ls /boot` looks perfect and the machine will not boot. Next?\n"
+        "   (`stat` it. ls shows a symlink; stat follows it.)\n"
+        "\n"
+        "2. `pkg verify` says every file matches and it still will not boot.\n"
+        "   (Then it is something no package owns: the boot sector, a bind,\n"
+        "    a full disk, or the repository it all came from.)\n"
+        "\n"
+        "3. Two services dead, eleven fine. Where do you look?\n"
+        "   (`ldd` on one of each, and ask what the dead two have in common.)\n"
+        "\n"
+        "4. The config plainly says port 80 and the daemon is on 8080.\n"
+        "   (Nobody reloaded it. The file is not the process. kill -HUP.)\n"
+        "\n"
+        "5. You have fixed it. How do you know?\n"
+        "   (This is the only question. `svc`, and then `pkg verify` on what\n"
+        "    you touched, and then say what you changed and why.)\n"
+        "\n"
+        "Nobody has ever got 5 first. I did not either.\n", 0644, NULL },
+
+      { "/root/Desktop/if-you-are-here.txt",
+        "You are logged in as root on a machine you did not build.\n"
+        "\n"
+        "Before you change anything: `pkg diff` the file. Somebody chose what\n"
+        "is in it, and `pkg reinstall --force` will take their afternoon away\n"
+        "without asking. Plain `pkg reinstall` leaves edited config alone,\n"
+        "which is the whole reason the flag exists.\n"
+        "\n"
+        "-- nomowner, who did not do that, once, for about ten minutes\n", 0644, NULL },
+    }, 19
 };
 
 static const Package PKG_SSH = {
@@ -437,6 +607,67 @@ static const Package PKG_HAMDE = {
         "Exec=gworms\n"
         "Icon=game\n"
         "Comment=Two worms, one hill\n", 0644, NULL },
+      { "/usr/share/applications/gsnake.desktop",
+        "[Desktop Entry]\n"
+        "Name=Snake\n"
+        "Exec=gsnake\n"
+        "Icon=snake\n"
+        "Comment=Do not eat yourself\n", 0644, NULL },
+      { "/usr/share/applications/gmines.desktop",
+        "[Desktop Entry]\n"
+        "Name=Minesweeper\n"
+        "Exec=gmines\n"
+        "Icon=mines\n"
+        "Comment=The first click is always safe\n", 0644, NULL },
+      { "/usr/share/applications/gblocks.desktop",
+        "[Desktop Entry]\n"
+        "Name=Blocks\n"
+        "Exec=gblocks\n"
+        "Icon=blocks\n"
+        "Comment=Seven shapes, one well\n", 0644, NULL },
+      { "/usr/share/applications/gsolitaire.desktop",
+        "[Desktop Entry]\n"
+        "Name=Solitaire\n"
+        "Exec=gsolitaire\n"
+        "Icon=cards\n"
+        "Comment=Klondike, draw one or three\n", 0644, NULL },
+      { "/usr/share/applications/gliquid.desktop",
+        "[Desktop Entry]\n"
+        "Name=Liquid War\n"
+        "Exec=gliquid\n"
+        "Icon=liquid\n"
+        "Comment=Three hundred fighters follow your cursor\n", 0644, NULL },
+      { "/usr/share/applications/calc.desktop",
+        "[Desktop Entry]\n"
+        "Name=Calculator\n"
+        "Exec=calc\n"
+        "Icon=calc\n"
+        "Comment=Arithmetic, with precedence\n", 0644, NULL },
+      /* THE THREE THAT LOOK AT A MACHINE.
+       *
+       * These are graphical front ends to ps, svc, df, and pkg -- they run
+       * the same commands you would type and show you what came back. That
+       * is deliberate: nothing here can tell you something the shell would
+       * not, so a player who prefers the terminal loses no information, and
+       * a player who prefers the window is never shown a comforting lie. */
+      { "/usr/share/applications/sysmon.desktop",
+        "[Desktop Entry]\n"
+        "Name=System Monitor\n"
+        "Exec=sysmon\n"
+        "Icon=sysmon\n"
+        "Comment=Processes, services and storage\n", 0644, NULL },
+      { "/usr/share/applications/pkgman.desktop",
+        "[Desktop Entry]\n"
+        "Name=Package Manager\n"
+        "Exec=pkgman\n"
+        "Icon=pkg\n"
+        "Comment=What is installed, and what has changed\n", 0644, NULL },
+      { "/usr/share/applications/svcman.desktop",
+        "[Desktop Entry]\n"
+        "Name=Service Manager\n"
+        "Exec=svcman\n"
+        "Icon=svc\n"
+        "Comment=Start, stop and read what died\n", 0644, NULL },
       /* Where the display server takes requests. A file, because a file can
        * be looked at: `cat /run/nomde/requests` shows what was asked for,
        * which is the debuggability the socket version would not have. */
@@ -454,7 +685,7 @@ static const Package PKG_HAMDE = {
        * the directories it needs, or it cannot be repaired. */
       { "/run/nomde", NULL, 0755, NULL, true },
       { "/usr/share/applications", NULL, 0755, NULL, true },
-    }, 18
+    }, 27
 };
 
 static const Package PKG_SHELL = {
@@ -581,6 +812,12 @@ static const Package PKG_CRON = {
         "restart: on-failure\nenabled: yes\nrunlevel: 3 5\n", 0644, NULL },
       { "/etc/crontab",
         "# m h dom mon dow  command\n"
+        "#\n"
+        "# Rules of this file, learned expensively:\n"
+        "#   1. a job that has no log has never run\n"
+        "#   2. a job you cannot run by hand is not a job, it is a rumour\n"
+        "#   3. the line below with DISABLED on it is disabled. Read ~/TODO\n"
+        "#      before you decide it looks harmless. -- nomowner\n"
         "17 *  * * *  /usr/sbin/logrotate /etc/logrotate.conf\n"
         "0  4  * * *  /home/nomowner/bin/cleanup   # DISABLED, see TODO\n", 0644, NULL },
       { "/var/spool/cron/root", "# no personal jobs\n", 0600, NULL },
@@ -624,12 +861,30 @@ static const Package PKG_HTTPD = {
         "this machine\n============\n\n"
         "if you are reading this over the network, httpd is up and the\n"
         "document root is intact.\n", 0644, NULL },
+      /* A README in the document root, which is where every real web server
+       * has one. It is also the only place a note about httpd is certain to
+       * be found by somebody who is already looking at httpd. */
+      { "/srv/www/README",
+        "This is DocumentRoot. /etc/httpd/httpd.conf says so, and httpd checks\n"
+        "that this directory exists before it will start -- so if the web\n"
+        "server is refusing to come up and the config looks perfect, ask\n"
+        "whether the directory the config NAMES is still here.\n"
+        "\n"
+        "  grep DocumentRoot /etc/httpd/httpd.conf\n"
+        "  ls /srv/www\n"
+        "  svc status httpd\n"
+        "\n"
+        "Do not put anything secret in here. That is the entire point of the\n"
+        "directory and people forget it about twice a year.\n"
+        "\n"
+        "-- nomowner. If the Listen line surprises you, read\n"
+        "   /home/nomowner/Documents/handover.txt before you \"fix\" it.\n", 0644, NULL },
       { "/etc/services.d/httpd.svc",
         "# /etc/services.d/httpd.svc\n"
         "name: httpd\nexec: /usr/sbin/httpd\n"
         "description: web server\nafter: net\n"
         "restart: on-failure\nenabled: yes\nrunlevel: 3 5\n", 0644, NULL },
-    }, 4
+    }, 5
 };
 
 static const Package PKG_FIREWALL = {
@@ -727,6 +982,129 @@ static const Package PKG_MAN = {
     }, 6
 };
 
+/* THE JOKE PACKAGE, built exactly like the serious ones.
+ *
+ * It is here for two reasons beyond being funny. The first is that a machine
+ * with nothing pointless on it does not feel like a machine anyone used; every
+ * box that has ever had an administrator has a cow on it somewhere. The second
+ * is that these are ORDINARY packages and ORDINARY binaries -- `pkg owns
+ * /usr/bin/sl` answers, `ldd /usr/bin/cowsay` lists libc, a bad libc kills the
+ * train along with everything else -- so poking at the toys teaches exactly
+ * the same tools as poking at sshd, with none of the fear.
+ *
+ * The fortunes are DATA, in a file, not strings inside the binary. That is the
+ * difference between something you can `cat`, `grep`, `wc`, damage, verify and
+ * repair, and something you can only run. */
+static const Package PKG_FUN = {
+    "nomfun", "1.4", "the fortune cookie, the cow and the train",
+    {
+      { "/usr/bin/fortune", NULL, 0755, NULL },
+      { "/usr/bin/cowsay",  NULL, 0755, NULL },
+      { "/usr/bin/sl",      NULL, 0755, NULL },
+      /* One per line, because `fortune` reads a line and because that makes
+       * the file greppable. Blank lines and #comments are skipped, and an
+       * indented line continues the one above it -- which is the same shape
+       * ~nomowner's own fortunes file already had. */
+      { "/usr/share/fortunes",
+        "# /usr/share/fortunes -- read by /usr/bin/fortune, one per line.\n"
+        "# An indented line continues the one above it. Comments and blank\n"
+        "# lines are skipped. Add your own; nothing here is compiled in.\n"
+        "Backups are a theory. Restores are a fact.\n"
+        "There is no cloud. There is only somebody else's /dev/sda1.\n"
+        "ls sees the arrow. stat follows it. Only one of them is your friend.\n"
+        "The machine is always right. The machine is describing what you did.\n"
+        "Any sufficiently enthusiastic cleanup script is an attacker with a\n"
+        "  crontab entry.\n"
+        "It is not a bug, it is an undocumented feature of the initrd.\n"
+        "df first. It is free, it takes two seconds, and it has been the\n"
+        "  answer twice.\n"
+        "A service can be running and still wrong. Ask /run for what it loaded.\n"
+        "\"Nothing changed\" means nothing changed that they wish to discuss.\n"
+        "The uptime record and the patch level are the same conversation.\n"
+        "Nobody wants a backup. Everybody wants a restore.\n"
+        "pkg verify is clean and it still will not boot: the boot sector is\n"
+        "  not a file.\n"
+        "Every well-formed UUID belongs to some disk. Not necessarily this one.\n"
+        "To err is human. To blame the previous administrator is systems\n"
+        "  administration.\n"
+        "The fastest way to learn who owns a file is pkg owns. The second\n"
+        "  fastest is to delete it.\n"
+        "Reinstalling a package you have not diffed is how you get two problems.\n"
+        "Read the console before the wiki. The console was there.\n"
+        "A reboot is a diagnostic, not a repair. It only destroys the evidence\n"
+        "  faster.\n"
+        "Log rotation is a chore right up until the morning it is an outage.\n"
+        "The correct number of critical services a monitoring agent may add to\n"
+        "  your boot is zero.\n"
+        "Everything broken means libc. Two things broken means asking what\n"
+        "  those two have in common.\n"
+        "ldd never disagrees with the loader. People do.\n"
+        "Documentation is a love letter you write to yourself at four in the\n"
+        "  morning.\n"
+        "The severity of an outage is proportional to how recently somebody\n"
+        "  said \"it's fine\".\n"
+        "Never trust a config you have not cat'ed today.\n"
+        "There are two hard problems in this job: naming things, cache\n"
+        "  invalidation, and off-by-one errors.\n"
+        "A mode of 000 is not a mystery. It is a person, and they will do it\n"
+        "  again.\n"
+        "The disk is never full of anything interesting.\n"
+        "df -i exists for the one day a year when it is the only answer.\n"
+        "Do not rm in anger. rm does not care and cannot be argued with.\n"
+        "A migration is complete when the old machine is switched off, and not\n"
+        "  one day before.\n"
+        "Every temporary mount outlives the person who made it.\n"
+        "If you did not write it down it did not happen, and if you wrote it in\n"
+        "  /tmp, ask yourself who cleans /tmp.\n"
+        "Nine tickets in ten are one word in one line of one file.\n"
+        "It is always DNS, except here, where it is /etc/hosts and you typed it\n"
+        "  yourself.\n"
+        "A machine that boots is not the same thing as a machine that is well.\n"
+        "The bootloader has one job and reads one file. Read the same file.\n"
+        "Somebody's local edit is somebody's afternoon. Do not --force without\n"
+        "  looking.\n"
+        "Yes, it worked in testing. Testing is where the wrong libc lives.\n"
+        "Two administrators, one /etc, no agreement. This is why ns exists.\n"
+        "The train has cost me more hours than any outage and I regret nothing.\n"
+        "Root is not a skill level.\n"
+        "The last person who touched it is not the person who broke it, but\n"
+        "  they are the person you can still telephone.\n", 0644, NULL },
+      { "/usr/share/man/fortune",
+        "fortune(6)\n\n"
+        "  fortune            one line from /usr/share/fortunes\n"
+        "  fortune FILE       one line from FILE\n"
+        "\n"
+        "One fortune per line; an indented line continues the one above, and\n"
+        "#comments and blank lines are skipped.\n"
+        "\n"
+        "The quotes are a file, not part of the program: cat, grep and wc all\n"
+        "work on /usr/share/fortunes, and pkg verify nomfun notices when it has\n"
+        "been damaged. Try `fortune /home/nomowner/fortunes` for the previous\n"
+        "administrator's own list.\n"
+        "\n"
+        "There is no clock on this machine, so the choice is made from the\n"
+        "process id. Two runs in a row give different lines; the same pid would\n"
+        "give the same line, which nothing here can arrange.\n", 0644, NULL },
+      { "/usr/share/man/cowsay",
+        "cowsay(6)\n\n"
+        "  cowsay <words>     a cow says it\n"
+        "  cowsay -f <face>   cow (default), tux, dragon, daemon\n"
+        "  ... | cowsay       with no words it reads stdin, which is the point\n"
+        "\n"
+        "  fortune | cowsay -f tux\n"
+        "\n"
+        "The balloon is measured: the text wraps at 40 columns and the box is\n"
+        "as wide as the longest line that came out of the wrap.\n", 0644, NULL },
+      { "/usr/share/man/sl",
+        "sl(6)\n\n"
+        "  sl                 a steam locomotive, because you meant ls\n"
+        "\n"
+        "It does not animate. Nothing on this machine redraws the screen, and a\n"
+        "program that pretended to would be the only dishonest thing in\n"
+        "/usr/bin, so the train is drawn all at once with its smoke behind it.\n", 0644, NULL },
+    }, 7
+};
+
 static const Package PKG_MAIL = {
     "postfix", "3.8", "mail transport",
     {
@@ -785,12 +1163,13 @@ static const Package *IMAGE[] = {
     &PKG_SHELL, &PKG_UDEV, &PKG_SYSLOG, &PKG_NET, &PKG_SSH, &PKG_HAMDE,
     &PKG_HOME, &PKG_PKGCONF, &PKG_LIBC, &PKG_ZLIB, &PKG_CRON, &PKG_LOGROTATE, &PKG_NTP,
     &PKG_HTTPD, &PKG_FIREWALL, &PKG_MAN, &PKG_MAIL, &PKG_ACCT, &PKG_TZ,
-    &PKG_TERMINFO, &PKG_AUDIT,
+    &PKG_TERMINFO, &PKG_AUDIT, &PKG_FUN,
 };
 #define IMAGE_N ((int)(sizeof IMAGE / sizeof IMAGE[0]))
 
 void image_generated(const Machine *m, const char *path, Buf *out);
 static void install_local_edits(Machine *m, uint64_t seed);
+static void install_history(Machine *m);
 
 /* ---------------------------------------------------------- the rescue --
  * A complete, separate system on its own medium. It is never corrupted: the
@@ -1043,6 +1422,12 @@ void image_generated(const Machine *m, const char *path, Buf *out)
         buf_put(out, (const char *)GUEST_NOMDE, GUEST_NOMDE_LEN);
     else if (strcmp(path, "/usr/bin/open") == 0)
         buf_put(out, (const char *)GUEST_OPEN, GUEST_OPEN_LEN);
+    else if (strcmp(path, "/usr/bin/fortune") == 0)
+        buf_put(out, (const char *)GUEST_FORTUNE, GUEST_FORTUNE_LEN);
+    else if (strcmp(path, "/usr/bin/cowsay") == 0)
+        buf_put(out, (const char *)GUEST_COWSAY, GUEST_COWSAY_LEN);
+    else if (strcmp(path, "/usr/bin/sl") == 0)
+        buf_put(out, (const char *)GUEST_SL, GUEST_SL_LEN);
     else if (strcmp(path, "/sbin/telinit") == 0)
         buf_put(out, (const char *)GUEST_INIT, GUEST_INIT_LEN);
     else if (strcmp(path, "/sbin/reboot") == 0 ||
@@ -1245,6 +1630,7 @@ void machine_install(Machine *m, uint64_t seed)
      * like and is what makes filling it possible. */
     m->fs_capacity = 0;
     install_pkgdb(m);
+    install_history(m);
     install_local_edits(m, seed);
     m->fs_capacity = machine_disk_used(m) + 512u * 1024u;
     /* Headroom in inodes as well as bytes, so a healthy machine can create
@@ -1252,6 +1638,56 @@ void machine_install(Machine *m, uint64_t seed)
     m->fs_inodes_max = machine_inodes_used(m) + 400u;
     install_rescue(m);
     m->next_pid = 1;
+}
+
+/* THINGS NO PACKAGE OWNS, because in life no package owns them: logs.
+ *
+ * A machine that has been running since January has a log with January in it.
+ * These are written straight onto the disk rather than shipped by a package,
+ * which is not a shortcut -- it is the truth about what a log is, and `pkg
+ * owns /var/log/messages` answering "nothing" is a fact worth being able to
+ * discover. It also keeps them out of `pkg verify`: a log that matched a hash
+ * would be a log nothing had written to.
+ *
+ * syslogd appends its own banner to /var/log/messages at every boot, so this
+ * is history and the newest line is always the machine's own.
+ */
+static void install_history(Machine *m)
+{
+    VNode *n = vfs_mkfile(&m->disk, "/var/log/messages",
+        "syslogd: started, logging to /var/log/messages\n"
+        "netd: eth0 configured\n"
+        "sshd: refused connect from 10.0.2.88\n"
+        "sshd: refused connect from 10.0.2.88\n"
+        "sshd: refused connect from 10.0.2.88 (this went on for a week)\n"
+        "ntpd: no reply from 10.0.2.3, will retry\n"
+        "crond: (root) CMD (/usr/sbin/logrotate /etc/logrotate.conf)\n"
+        "udevd: could not open /dev/input/event3: no such device\n"
+        "httpd: document root /srv/www ok\n"
+        "auditd: log opened\n"
+        "nomde: display server ready\n");
+    if (n) n->mode = 0644;
+
+    /* The rotated one. logrotate.conf says weekly, rotate 8; this is what
+     * came before, and it is the March outage as the machine saw it. */
+    n = vfs_mkfile(&m->disk, "/var/log/messages.1",
+        "syslogd: started, logging to /var/log/messages\n"
+        "crond: (root) CMD (/usr/sbin/logrotate /etc/logrotate.conf)\n"
+        "crond: (root) CMD (/home/nomowner/bin/cleanup)\n"
+        "cleanup: removing stale kernel images\n"
+        "cleanup: /boot/vmnomuz-6.4.11 removed\n"
+        "cleanup: done, 1 file removed, 0 errors\n"
+        "-- machine did not come back. 6 hours. See ~/TODO, item 3.\n"
+        "syslogd: started, logging to /var/log/messages\n"
+        "ntpd: no reply from 10.0.2.3, will retry\n"
+        "ntpd: no reply from 10.0.2.3, will retry\n"
+        "sshd: refused connect from 10.0.2.88\n"
+        "udevd: could not open /dev/input/event3: no such device\n"
+        "syslogd: /var/log/messages: cannot write -- is the disk full?\n"
+        "-- it was. df said 100%, every hash matched, nothing was corrupt.\n"
+        "-- growing since January. ~/Documents/postmortem-march.txt.\n"
+        "syslogd: started, logging to /var/log/messages\n");
+    if (n) n->mode = 0644;
 }
 
 /* Every real machine has been touched by a human. These are the edits that

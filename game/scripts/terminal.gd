@@ -14,7 +14,11 @@
 #
 # The control never interprets a command. It hands the line to on_command and
 # prints whatever comes back, so this file cannot know anything the machine
-# does not.
+# does not. Tab completion obeys the same rule: the FIRST word is completed
+# against the list of programs the guest is built with, and every later word
+# is completed by asking the machine to `ls` the directory in question. No
+# guessed filenames, ever -- a terminal that offers you a path the machine
+# does not have is lying to you about the machine.
 
 extends Control
 
@@ -47,9 +51,35 @@ var busy := false
 # terminal keeps it and shows a continuation prompt instead of running it.
 var pending := ""
 
+# Reverse history search, Ctrl-R. It is not a mode with its own widget: the
+# line being typed IS the match, and only the prompt in front of it changes.
+var rsearch := ""          # what has been typed into the search
+var rsearch_on := false
+var rsearch_at := 0        # index in history the current match came from
+var rsearch_saved := ""    # the line to put back if the search is abandoned
+
 const LINE_H := 15
 const PAD := 6
 const MAX_LINES := 4000
+
+# EVERY PROGRAM THE GUEST IS BUILT WITH. Copied by hand from the `for p in
+# ...` loop in tools/mkguest.sh, which is the authority: that loop is what
+# compiles the userland onto the disk. THIS LIST MUST BE UPDATED WHEN
+# mkguest.sh CHANGES -- add a guest program there and it will not complete
+# here until you add it here too.
+const COMMANDS := [
+	"init", "rc", "svcinit", "login", "sh", "ls", "cat", "ps", "ns", "pkg",
+	"stat", "chmod", "mount", "umount", "chroot", "links", "cp", "mv", "rm",
+	"touch", "grep", "head", "uname", "whoami", "df", "man", "zbl-install",
+	"zbl-mkconfig", "mkinitrd", "getty", "fsck", "mountall", "sed", "wc",
+	"echo", "blkid", "svc", "kill", "syslogd", "netd", "udevd", "crond",
+	"ntpd", "httpd", "nft", "auditd", "sshd", "postfix", "ldd", "dmesg",
+	"rcon", "find", "netstat", "reboot", "open", "nomde",
+]
+
+# Words after which the next word is a command again, so `... && ls fo<Tab>`
+# completes a program name and not a file in the current directory.
+const CMD_AFTER := ["|", "||", "&&", ";", "&", "(", "do", "then", "else"]
 
 
 func _ready() -> void:
@@ -95,6 +125,7 @@ func clear() -> void:
 	cur = ""
 	caret = 0
 	pending = ""
+	rsearch_on = false
 	scroll = 0
 	queue_redraw()
 
@@ -181,6 +212,12 @@ func _gui_input(e: InputEvent) -> void:
 	if str(prompt_fn.call()) == "":
 		return
 
+	# A search in progress eats most keys; the ones it does not want end the
+	# search and are then handled below exactly as they always were.
+	if rsearch_on and _rsearch_key(k):
+		queue_redraw()
+		return
+
 	match k.keycode:
 		KEY_ENTER, KEY_KP_ENTER:
 			_enter()
@@ -232,6 +269,43 @@ func _gui_input(e: InputEvent) -> void:
 				lines.append(prompt_fn.call() + cur + "^C")
 				cur = ""; caret = 0
 				queue_redraw(); return
+		KEY_A:
+			if k.ctrl_pressed:
+				caret = 0; queue_redraw(); return
+		KEY_E:
+			if k.ctrl_pressed:
+				caret = cur.length(); queue_redraw(); return
+		KEY_K:
+			if k.ctrl_pressed:
+				cur = cur.substr(0, caret)
+				queue_redraw(); return
+		KEY_W:
+			if k.ctrl_pressed:
+				# Back over the spaces, then over the word they follow.
+				var i := caret
+				while i > 0 and cur[i - 1] == " ":
+					i -= 1
+				while i > 0 and cur[i - 1] != " ":
+					i -= 1
+				cur = cur.substr(0, i) + cur.substr(caret)
+				caret = i
+				queue_redraw(); return
+		KEY_L:
+			if k.ctrl_pressed:
+				# The screen goes; the line you are halfway through does not.
+				# clear() drops it on purpose -- a power cycle really does take
+				# your typing with it -- so this must not call clear().
+				lines = PackedStringArray()
+				scroll = 0
+				queue_redraw(); return
+		KEY_R:
+			if k.ctrl_pressed:
+				if history.size() > 0:
+					rsearch_on = true
+					rsearch = ""
+					rsearch_saved = cur
+					rsearch_at = history.size() - 1
+				queue_redraw(); return
 
 	# TAB AND FRIENDS ARE NOT TEXT. Godot reports Tab with unicode 0, and the
 	# old guard let anything >= 32 through -- but the keycode branch below
@@ -239,8 +313,7 @@ func _gui_input(e: InputEvent) -> void:
 	# refused to render it: "Unicode parsing error... Unexpected NUL
 	# character". Filter on the CODE POINT being printable, not on the key.
 	if k.keycode == KEY_TAB:
-		# No completion yet; at least do not corrupt the line.
-		accept_event()
+		_tab()
 		return
 	var ch := char(k.unicode)
 	if k.unicode >= 32 and k.unicode != 127 and ch != "" and ch != "\u0000":
@@ -248,6 +321,211 @@ func _gui_input(e: InputEvent) -> void:
 		caret += 1
 		scroll = 0
 		queue_redraw()
+
+
+# -------------------------------------------------------------- completion --
+
+# Tab. Complete the word the caret is sitting in the middle (or the end) of.
+# One match goes straight in; several are pushed as far as they agree and then
+# listed; none does nothing at all, quietly, which is what a shell does.
+func _tab() -> void:
+	var start := _word_start()
+	var word := cur.substr(start, caret - start)
+
+	# A word with a slash in it is a path even in command position -- typing
+	# `/bin/l<Tab>` means the file, not the program name.
+	var cands: PackedStringArray
+	if word.find("/") < 0 and _at_command(start):
+		cands = _command_matches(word)
+	else:
+		cands = _path_matches(word)
+	if cands.is_empty():
+		return
+
+	# Only the last segment of a path is ours to replace: `ls` named the
+	# entries in the directory, not the directory itself.
+	var cut := word.rfind("/")
+	var stem := word.substr(0, cut + 1)
+	var base := word.substr(cut + 1)
+
+	if cands.size() == 1:
+		var only := cands[0]
+		# A directory gets a slash so you can carry on into it; anything else
+		# gets a space, because you are done with that word -- unless there is
+		# already a space there, completing in the middle of a line.
+		var tail := ""
+		if not only.ends_with("/") and not cur.substr(caret).begins_with(" "):
+			tail = " "
+		_replace_word(start, stem + only + tail)
+		return
+
+	var common := _common_prefix(cands)
+	if common.length() > base.length():
+		_replace_word(start, stem + common)
+		return
+
+	# They agree on nothing more. Show them, above the prompt, and leave the
+	# line exactly as it was -- the prompt below is redrawn with it intact.
+	lines.append(_live_prompt() + cur)
+	for row in _columns(cands):
+		lines.append(row)
+	_trim()
+	scroll = 0
+	queue_redraw()
+
+
+func _word_start() -> int:
+	var i := caret
+	while i > 0 and cur[i - 1] != " ":
+		i -= 1
+	return i
+
+
+# Is the word starting at `start` the command, rather than an argument to one?
+func _at_command(start: int) -> bool:
+	var before := cur.substr(0, start).strip_edges()
+	if before == "":
+		return true
+	var words := before.split(" ", false)
+	return CMD_AFTER.has(words[words.size() - 1])
+
+
+func _command_matches(prefix: String) -> PackedStringArray:
+	var out := PackedStringArray()
+	for c in COMMANDS:
+		if c.begins_with(prefix):
+			out.append(c)
+	out.sort()
+	return out
+
+
+# ASK THE MACHINE. The terminal has no idea what is on the disk and must not
+# pretend to: it runs `ls` on the directory being completed and reads the
+# answer, so a completion is proof the file is there.
+func _path_matches(word: String) -> PackedStringArray:
+	var cut := word.rfind("/")
+	var dir := word.substr(0, cut + 1)   # "" when the word has no slash
+	var base := word.substr(cut + 1)
+	var out := PackedStringArray()
+
+	var listing := str(on_command.call("ls " + (dir if dir != "" else ".")))
+	for line in listing.split("\n"):
+		var f := line.split(" ", false)
+		# ls prints `d0755  <size>  name`. Anything that does not start with a
+		# type-and-mode field is not an entry -- it is an error, or the path
+		# echoed back because it was not a directory at all.
+		if f.size() < 3 or f[0].length() != 5 or "dl-".find(f[0][0]) < 0:
+			continue
+		var name := f[2]
+		if not name.begins_with(base):
+			continue
+		# A symlink is left as a plain name: ls says `l` for a link to a
+		# directory as much as for a link to a file, and finding out which
+		# would mean a second command per candidate.
+		out.append((name + "/") if f[0][0] == "d" else name)
+	out.sort()
+	return out
+
+
+func _replace_word(start: int, text: String) -> void:
+	cur = cur.substr(0, start) + text + cur.substr(caret)
+	caret = start + text.length()
+	scroll = 0
+	queue_redraw()
+
+
+func _common_prefix(items: PackedStringArray) -> String:
+	var out: String = items[0]
+	for s in items:
+		while out != "" and not s.begins_with(out):
+			out = out.substr(0, out.length() - 1)
+	return out
+
+
+# Candidates across the screen the way a shell lays them out: down the first
+# column, then the next, sized to the window we are actually drawn in.
+func _columns(items: PackedStringArray) -> PackedStringArray:
+	var w := 0
+	for s in items:
+		w = max(w, s.length())
+	w += 2
+	var avail := 80
+	if mono != null and size.x > 0:
+		var cw := mono.get_string_size("M", HORIZONTAL_ALIGNMENT_LEFT, -1, 13).x
+		if cw > 0:
+			avail = int((size.x - PAD * 2) / cw)
+	var cols: int = max(1, avail / w)
+	var rows: int = (items.size() + cols - 1) / cols
+	var out := PackedStringArray()
+	for r in range(rows):
+		var line := ""
+		for c in range(cols):
+			var i := c * rows + r
+			if i < items.size():
+				line += items[i].rpad(w)
+		out.append(line.strip_edges(false, true))
+	return out
+
+
+# ------------------------------------------------------------ history search --
+
+# The prompt in front of the line being typed. During a Ctrl-R it says so,
+# which is the whole of the search's user interface.
+func _live_prompt() -> String:
+	if rsearch_on:
+		return "(reverse-i-search)`%s': " % rsearch
+	return "> " if pending != "" else str(prompt_fn.call())
+
+
+# Walk backwards from `from` for a history entry containing the search text.
+# No match leaves the line alone, the way a shell just stops moving.
+func _rsearch_find(from: int) -> void:
+	var i: int = min(from, history.size() - 1)
+	while i >= 0:
+		if history[i].find(rsearch) >= 0:
+			rsearch_at = i
+			cur = history[i]
+			caret = cur.length()
+			return
+		i -= 1
+
+
+# True if the search consumed the key. False ends the search -- with the match
+# still in the line -- and lets the normal handling have it, so Enter runs what
+# you found and the arrows start editing it.
+func _rsearch_key(k: InputEventKey) -> bool:
+	match k.keycode:
+		KEY_BACKSPACE:
+			if rsearch != "":
+				rsearch = rsearch.substr(0, rsearch.length() - 1)
+				_rsearch_find(history.size() - 1)
+			return true
+		KEY_ESCAPE:
+			rsearch_on = false
+			return true
+		KEY_R:
+			if k.ctrl_pressed:
+				_rsearch_find(rsearch_at - 1)
+				return true
+		KEY_G:
+			if k.ctrl_pressed:
+				# Abandoned: you get back the line you were typing.
+				cur = rsearch_saved
+				caret = cur.length()
+				rsearch_on = false
+				return true
+		KEY_C:
+			if k.ctrl_pressed:
+				cur = rsearch_saved
+				caret = cur.length()
+				rsearch_on = false
+				return false
+	if k.unicode >= 32 and k.unicode != 127:
+		rsearch += char(k.unicode)
+		_rsearch_find(history.size() - 1)
+		return true
+	rsearch_on = false
+	return false
 
 
 # ------------------------------------------------------------------ render --
@@ -261,8 +539,12 @@ func _draw() -> void:
 
 	# The prompt line is part of the screen, not a separate widget below it.
 	var screen: PackedStringArray = lines.duplicate()
-	var prompt: String = "> " if pending != "" else prompt_fn.call()
-	screen.append(prompt + cur)
+	var prompt: String = "> " if pending != "" else str(prompt_fn.call())
+	# What sits in front of the line being typed is not always the prompt --
+	# during a Ctrl-R it is the search. The transcript colouring below still
+	# wants the real prompt, so they are two different strings.
+	var live := _live_prompt()
+	screen.append(live + cur)
 
 	var last := screen.size() - scroll
 	var first := max(0, last - rows)
@@ -272,12 +554,12 @@ func _draw() -> void:
 		var col := fg
 		if i == screen.size() - 1 and scroll == 0:
 			# the line being typed: prompt in the accent colour
-			draw_string(mono, Vector2(PAD, y), prompt,
+			draw_string(mono, Vector2(PAD, y), live,
 				HORIZONTAL_ALIGNMENT_LEFT, -1, 13, accent)
-			var pw := mono.get_string_size(prompt, HORIZONTAL_ALIGNMENT_LEFT, -1, 13).x
+			var pw := mono.get_string_size(live, HORIZONTAL_ALIGNMENT_LEFT, -1, 13).x
 			draw_string(mono, Vector2(PAD + pw, y), cur,
 				HORIZONTAL_ALIGNMENT_LEFT, -1, 13, fg)
-			if has_focus() and blink < 0.25 and prompt != "":
+			if has_focus() and blink < 0.25 and live != "":
 				var cw := mono.get_string_size(cur.substr(0, caret),
 					HORIZONTAL_ALIGNMENT_LEFT, -1, 13).x
 				var w := mono.get_string_size("M", HORIZONTAL_ALIGNMENT_LEFT, -1, 13).x

@@ -1,15 +1,35 @@
 # browser.gd — a window onto the machine's own web.
 #
 # The rule this app is built to obey: it contains no page content. Every byte
-# it draws came back from `links` running on the emulated machine, through the
-# machine's own resolver and its own /etc/hosts. So if the player breaks name
-# resolution, this window breaks in exactly the same way the terminal does,
-# and for the same reason. The desktop is a view, never a second source of
-# truth.
+# it draws came back from `links --raw` running on the emulated machine,
+# through the machine's own resolver and its own /etc/hosts. So if the player
+# breaks name resolution, this window breaks in exactly the same way the
+# terminal does, and for the same reason. The desktop is a view, never a
+# second source of truth.
 #
-# The only thing it knows by itself is a bookmark list -- addresses, not pages.
-# That is chrome, the same as a browser's bookmarks bar, and a bookmark to a
-# host that is unreachable will fail honestly when you click it.
+# The only thing it knows by itself is a bookmark list -- addresses, not
+# pages. That is chrome, the same as a browser's bookmarks bar, and a bookmark
+# to a host that is unreachable will fail honestly when you click it.
+#
+# WHAT IT RENDERS. Pages are markup, stored once in core/net_sites.c and read
+# by two renderers: /usr/bin/links draws it as text at a prompt, this draws it
+# with type sizes and clickable links. The subset is small on purpose --
+# anything either renderer could not parse honestly would have become two
+# different webs.
+#
+#   <h1> <h2>   headings, in larger type
+#   <p>         a paragraph, wrapped to the window
+#   <ul> <li>   bullets, with the wrapped text hanging under them
+#   <pre>       verbatim, never wrapped: commands, logs, ASCII art
+#   <hr>        a rule
+#   <b> <i>     emphasis
+#   <a href>    a link, clickable, resolved from the href and NOT guessed
+#               from the shape of the text
+#   <img>       a coloured box with the alt text in it, which is as much as
+#               a machine with no image files can honestly show
+#
+# `links` on the terminal renders the same page, so a player with no desktop
+# is never locked out of anything on this network.
 
 extends Control
 
@@ -20,22 +40,33 @@ var machine: Object = null
 var url := ""                  # "" is the bookmarks page
 var addr := ""                 # what is typed in the address bar
 var editing := false           # is the address bar taking keys
-var lines: PackedStringArray = PackedStringArray()
-var links: Array = []          # { row, col, text, url }
+var raw := ""                  # the markup, exactly as the machine sent it
+var rows: Array = []           # laid-out lines, see _layout()
 var history: Array = []        # urls, most recent last
 var scroll := 0
 var status := ""
+var _laid_w := -1.0            # window width the current layout was made for
+var _hits: Array = []          # { rect, url }, rebuilt every draw
 
-const FS := 12                 # page font size
-const ROW := 15.0              # page line height
+const FS := 13                 # body text
+const FS_PRE := 12             # verbatim text
+const FS_H1 := 20
+const FS_H2 := 15
+const ROW := 17.0              # body line height
 const CHROME := 32.0           # toolbar height
 const FOOT := 18.0             # status bar height
-const PAD := 10.0
+const PAD := 12.0
+const BULLET := 10.0           # where the bullet sits
+const LI_IND := 24.0           # where a list item's text sits
 
 const PAGE_BG   := Color("#ffffff")
 const TEXT      := Color("#1c1c1c")
-const HEAD      := Color("#1a1a1a")
+const HEAD      := Color("#101820")
 const LINK      := Color("#1a4fa0")
+const ITALIC    := Color("#4a4438")   # one font, so slant becomes hue
+const PRE_BG    := Color("#f2f0ea")
+const PRE_TX    := Color("#23303a")
+const RULE      := Color("#c9c5bd")
 const GREY      := Color("#d6d3ce")   # MATE-ish chrome
 const GREY_DK   := Color("#9a968f")
 const GREY_TX   := Color("#2b2b2b")
@@ -44,22 +75,25 @@ const DIM       := Color("#6b6b6b")
 
 # Addresses only. No page bodies -- those come from the machine.
 const BOOKMARKS := [
-	["wiki.nomnix.org",     "NomnixOS documentation"],
-	["intranet.internal",   "staff intranet"],
-	["helpdesk.internal",   "the ticket queue"],
-	["status.internal",     "service status board"],
-	["notices.internal",    "all-staff notices"],
-	["cafeteria.internal",  "this week's menu"],
-	["home.internal",       "staff pages"],
-	["blog.internal",       "the previous admin's notes"],
-	["oldwiki.internal",    "Project HALYARD (archived)"],
-	["support.internal",    "the support desk"],
-	["bofh.nomnix.org",     "not for customers"],
-	["nominal.local",       "this machine"],
+	["wiki.nomnix.org",       "NomnixOS documentation"],
+	["intranet.internal",     "staff intranet"],
+	["helpdesk.internal",     "the ticket queue"],
+	["status.internal",       "service status board"],
+	["notices.internal",      "all-staff notices"],
+	["blog.internal",         "the previous admin's notes"],
+	["oldwiki.internal",      "Project HALYARD (archived)"],
+	["support.internal",      "the support desk"],
+	["coffee.internal",       "the kitchen camera"],
+	["nomnix.org",            "the operating system's own site"],
+	["forums.nomnix.org",     "the forums"],
+	["bugs.nomnix.org",       "the bug tracker"],
+	["rfc.nomnix.org",        "standards, allegedly"],
+	["asciiart.nomnix.org",   "the ASCII art archive"],
+	["bofh.nomnix.org",       "not for customers"],
+	["www.tripodal.net",      "free homepages"],
+	["altavistula.com",       "search the entire web"],
+	["nominal.local",         "this machine"],
 ]
-
-var _re_url: RegEx = null      # host[/path] anywhere in a line
-var _re_path: RegEx = null     # a leading /path as the first word of a line
 
 
 func _ready() -> void:
@@ -67,10 +101,6 @@ func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_STOP
 	if mono == null:
 		mono = ThemeDB.fallback_font
-	_re_url = RegEx.new()
-	_re_url.compile("[a-z0-9][a-z0-9-]*(\\.[a-z0-9-]+)+(/[A-Za-z0-9._~/-]*)?")
-	_re_path = RegEx.new()
-	_re_path.compile("^\\s+(/[a-z0-9][a-z0-9._-]*(/[a-z0-9._-]+)?)(\\s|$)")
 	_home()
 
 
@@ -80,17 +110,22 @@ func take_focus() -> void:
 
 # --- fetching ---------------------------------------------------------
 
+# The bookmarks page is written here, in the same markup, because it is the
+# one page that is genuinely about this window and not about the network. It
+# contains addresses and nothing else: click one and the machine is asked.
 func _home() -> void:
 	url = ""
 	addr = ""
 	scroll = 0
-	var out := "bookmarks\n=========\n\n"
+	var m := "<h1>bookmarks</h1><ul>"
 	for b in BOOKMARKS:
-		out += "  %s%s%s\n" % [b[0], " ".repeat(max(1, 24 - b[0].length())), b[1]]
-	out += "\nEvery page here is fetched by running `links` on the machine, so a\n"
-	out += "bookmark that will not load is the machine telling you something.\n"
-	lines = out.split("\n")
-	_scan_links()
+		m += "<li><a href=\"%s\">%s</a> -- %s</li>" % [b[0], b[0], b[1]]
+	m += "</ul><p>Every page here is fetched by running <b>links</b> on the "
+	m += "machine, so a bookmark that will not load is the machine telling "
+	m += "you something. The same pages read fine at a prompt: "
+	m += "<b>links wiki.nomnix.org</b>.</p>"
+	raw = m
+	_relayout()
 	status = "%d bookmarks" % BOOKMARKS.size()
 	queue_redraw()
 
@@ -107,19 +142,18 @@ func _fetch(u: String) -> void:
 	addr = u
 	scroll = 0
 	if machine == null:
-		lines = PackedStringArray(["browser: no machine attached."])
-		links = []
+		raw = "<p>browser: no machine attached.</p>"
+		_relayout()
 		status = "offline"
 		queue_redraw()
 		return
 	# The real browser, on the real machine, through the real resolver.
-	var out: String = machine.sh_on(0, "links " + u)
-	lines = out.replace("\t", "    ").split("\n")
-	while lines.size() > 1 and lines[lines.size() - 1] == "":
-		lines.remove_at(lines.size() - 1)
-	_scan_links()
-	status = "%s -- %d lines" % [u, lines.size()]
-	if out.find("cannot resolve") >= 0 or out.find("nothing responded") >= 0:
+	# --raw hands back the markup; the rendering below is this window's only
+	# contribution, and it is a rendering, not a source.
+	raw = machine.sh_on(0, "links --raw " + u)
+	_relayout()
+	status = "%s -- %d lines" % [u, rows.size()]
+	if raw.find("cannot resolve") >= 0 or raw.find("nothing responded") >= 0:
 		status = "failed: " + u
 	queue_redraw()
 
@@ -139,77 +173,264 @@ func _back() -> void:
 
 
 func _host_of(u: String) -> String:
-	var s := u
-	var i := s.find("/")
-	return s.substr(0, i) if i >= 0 else s
+	var i := u.find("/")
+	return u.substr(0, i) if i >= 0 else u
 
 
-# --- link discovery ---------------------------------------------------
+# An href of "/faq" means this host, exactly as it does at the prompt, where
+# `links` prints the same link resolved. Nothing here guesses: a link exists
+# because the page said <a href>, and it goes where the href says.
+func _resolve(href: String) -> String:
+	if href.begins_with("/"):
+		return _host_of(url) + href
+	return href
+
+
+# --- layout -----------------------------------------------------------
 #
-# `links` prints plain text, so there is no markup to trust. What there IS,
-# reliably, is the way these pages are written: an address appears as itself
-# (wiki.nomnix.org/boot) and an index entry appears as an indented path as the
-# first word of its line (  /boot   how this system boots). Both are worth
-# making clickable; anything else is left as text.
+# One pass over the markup, exactly the passes `links` makes, producing rows.
+# A row is { kind, h, items } where an item is a drawn run:
+#   { t, x, fs, col, bold, under, url }
+# Wrapping is done in pixels here and in columns there, which is the only
+# difference between the two renderers.
 
-# A dotted word is only an address if it ends in a domain this network uses,
-# or if it is entirely numeric -- otherwise zbl.cfg and boot.log.1 turn blue
-# and the page starts lying about what you can click.
-const TLDS := ["internal", "local", "org", "com", "net"]
+var _items: Array = []
+var _x := 0.0
+var _ind := 0.0
+var _cont := 0.0
+var _fs := FS
+var _col := TEXT
+var _lh := ROW
+var _bold := false
+var _ital := false
+var _href := ""
+var _open := false
+var _blank := false
+var _wrap := 400.0
 
-func _looks_like_site(t: String) -> bool:
-	var host := _host_of(t)
-	var parts := host.split(".")
-	if parts.size() < 2:
+
+func _relayout() -> void:
+	_laid_w = size.x
+	_wrap = max(160.0, size.x - PAD * 2.0)
+	rows = []
+	_items = []
+	_x = 0.0; _ind = 0.0; _cont = 0.0
+	_fs = FS; _col = TEXT; _lh = ROW
+	_bold = false; _ital = false; _href = ""
+	_open = false; _blank = false
+	_parse(raw)
+	scroll = min(scroll, max(0, rows.size() - 1))
+
+
+func _line_end() -> void:
+	if not _open:
+		return
+	rows.append({"kind": "text", "h": _lh, "items": _items})
+	_items = []
+	_open = false
+
+
+# The blank line between blocks is owed, not spent, until a block actually
+# draws something -- so an empty <p> leaves no hole and no page starts with a
+# gap at the top.
+func _blank_now() -> void:
+	if _blank and not rows.is_empty():
+		rows.append({"kind": "gap", "h": _lh * 0.55, "items": []})
+	_blank = false
+
+
+func _wof(t: String, fs: int) -> float:
+	return mono.get_string_size(t, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x
+
+
+func _word(t: String) -> void:
+	if t == "":
+		return
+	_blank_now()
+	var w := _wof(t, _fs)
+	var sp := _wof(" ", _fs) if (_open and _x > _ind) else 0.0
+	if _open and _x > _ind and _x + sp + w > _wrap:
+		_line_end()
+		_x = _cont
+		sp = 0.0
+	if not _open:
+		_open = true
+		if _x < _ind:
+			_x = _ind
+	_items.append({"t": t, "x": _x + sp, "fs": _fs, "col": _col,
+		"bold": _bold, "under": _href != "", "url": _resolve(_href) if _href != "" else ""})
+	_x += sp + w
+
+
+func _block_end() -> void:
+	_line_end()
+	_blank = true
+	_x = 0.0
+
+
+func _body_style() -> void:
+	_fs = FS; _col = TEXT; _lh = ROW; _bold = false; _ital = false
+	_ind = 0.0; _cont = 0.0; _x = 0.0
+
+
+func _ent(s: String) -> String:
+	if s.find("&") < 0:
+		return s
+	return s.replace("&lt;", "<").replace("&gt;", ">") \
+		.replace("&quot;", "\"").replace("&amp;", "&")
+
+
+func _attr(tag: String, name: String) -> String:
+	var i := tag.findn(name + "=")
+	if i < 0:
+		return ""
+	var j := i + name.length() + 1
+	if j >= tag.length():
+		return ""
+	var q := tag[j]
+	if q == "\"" or q == "'":
+		var e := tag.find(q, j + 1)
+		return _ent(tag.substr(j + 1, (e if e >= 0 else tag.length()) - j - 1))
+	var e2 := tag.find(" ", j)
+	return _ent(tag.substr(j, (e2 if e2 >= 0 else tag.length()) - j))
+
+
+func _tag_is(tag: String, name: String) -> bool:
+	if not tag.begins_with(name):
 		return false
-	var numeric := true
-	for p in parts:
-		if not p.is_valid_int():
-			numeric = false
-			break
-	if numeric:
-		return parts.size() == 4
-	return TLDS.has(parts[parts.size() - 1])
+	if tag.length() == name.length():
+		return true
+	var c := tag[name.length()]
+	return c == " " or c == "/"
 
 
-func _scan_links() -> void:
-	links = []
-	var host := _host_of(url)
-	for r in range(lines.size()):
-		var line: String = lines[r]
-		if line == "":
-			continue
-		for m in _re_url.search_all(line):
-			var t: String = m.get_string()
-			while t.length() > 0 and ".,:;)".find(t[t.length() - 1]) >= 0:
-				t = t.substr(0, t.length() - 1)
-			if not _looks_like_site(t):
+func _parse(src: String) -> void:
+	var i := 0
+	var n := src.length()
+	while i < n:
+		if src[i] == "<":
+			var e := src.find(">", i)
+			if e < 0:
+				break
+			var tag := src.substr(i + 1, e - i - 1)
+			i = e + 1
+			if _tag_is(tag, "pre"):
+				var close := src.find("</pre>", i)
+				if close < 0:
+					close = n
+				_do_pre(src.substr(i, close - i))
+				i = min(n, close + 6)
 				continue
-			# a filesystem path that happens to contain a dot is not a site
-			if m.get_start() > 0 and "/.-_".find(line[m.get_start() - 1]) >= 0:
-				continue
-			links.append({"row": r, "col": m.get_start(), "text": t, "url": t})
-		if host != "":
-			var p := _re_path.search(line)
-			if p:
-				var path: String = p.get_string(1)
-				links.append({"row": r, "col": p.get_start(1),
-					"text": path, "url": host + path})
-
-
-func _link_at(pos: Vector2) -> Dictionary:
-	var r := int((pos.y - CHROME - 4.0) / ROW) + scroll
-	for l in links:
-		if int(l["row"]) != r:
+			_do_tag(tag)
 			continue
-		var line: String = lines[int(l["row"])]
-		var x0: float = PAD + mono.get_string_size(line.substr(0, int(l["col"])),
-			HORIZONTAL_ALIGNMENT_LEFT, -1, FS).x
-		var w: float = mono.get_string_size(String(l["text"]),
-			HORIZONTAL_ALIGNMENT_LEFT, -1, FS).x
-		if pos.x >= x0 and pos.x <= x0 + w:
-			return l
-	return {}
+		var t := src.find("<", i)
+		if t < 0:
+			t = n
+		_do_text(src.substr(i, t - i))
+		i = t
+
+
+func _do_text(s: String) -> void:
+	# Newlines in the source are how a C string literal is kept readable, not
+	# line breaks in the page: whitespace of every kind just ends a word.
+	var flat := s.replace("\n", " ").replace("\r", " ").replace("\t", " ")
+	for w in flat.split(" ", false):
+		var t := w.strip_edges()
+		if t != "":
+			_word(_ent(t))
+
+
+# The colour text goes back to when a link or an italic run closes -- which
+# depends on the block, since a link inside a heading must return to heading
+# colour and not to body colour.
+func _base_col() -> Color:
+	if _fs == FS_H1 or _fs == FS_H2:
+		return HEAD
+	return ITALIC if _ital else TEXT
+
+
+func _do_tag(tag: String) -> void:
+	if _tag_is(tag, "h1") or _tag_is(tag, "h2"):
+		_block_end()
+		var one := _tag_is(tag, "h1")
+		_fs = FS_H1 if one else FS_H2
+		_lh = 26.0 if one else 21.0
+		_col = HEAD
+		_bold = true
+		_ind = 0.0; _cont = 0.0; _x = 0.0
+	elif _tag_is(tag, "/h1") or _tag_is(tag, "/h2"):
+		_block_end()
+		_body_style()
+	elif _tag_is(tag, "p") or _tag_is(tag, "/p"):
+		_block_end()
+		_body_style()
+	elif _tag_is(tag, "ul") or _tag_is(tag, "/ul"):
+		_block_end()
+		_body_style()
+	elif _tag_is(tag, "li"):
+		# A list is one block: no owed blank between items, or every list on
+		# the network would be double spaced.
+		_line_end()
+		_blank_now()
+		_body_style()
+		_ind = LI_IND; _cont = LI_IND; _x = LI_IND
+		_open = true
+		_items.append({"t": "•", "x": BULLET, "fs": FS, "col": TEXT,
+			"bold": false, "under": false, "url": ""})
+	elif _tag_is(tag, "/li"):
+		_line_end()
+		_body_style()
+	elif _tag_is(tag, "hr"):
+		_block_end()
+		_blank_now()
+		rows.append({"kind": "hr", "h": 11.0, "items": []})
+		_blank = true
+	elif _tag_is(tag, "img"):
+		# Nothing on this machine has an image file in it, and inventing one
+		# in the desktop would be inventing content. A box with the alt text
+		# is the honest amount of picture available.
+		_block_end()
+		_blank_now()
+		var alt := _attr(tag, "alt")
+		if alt == "":
+			alt = _attr(tag, "src")
+		rows.append({"kind": "img", "h": 46.0, "items": [], "alt": alt,
+			"src": _attr(tag, "src")})
+		_blank = true
+	elif _tag_is(tag, "a"):
+		_href = _attr(tag, "href")
+		_col = LINK
+	elif _tag_is(tag, "/a"):
+		_href = ""
+		_col = _base_col()
+	elif _tag_is(tag, "b"):
+		_bold = true
+	elif _tag_is(tag, "/b"):
+		_bold = _fs == FS_H1 or _fs == FS_H2
+	elif _tag_is(tag, "i"):
+		_ital = true
+		if _href == "":
+			_col = _base_col()
+	elif _tag_is(tag, "/i"):
+		_ital = false
+		if _href == "":
+			_col = _base_col()
+
+
+func _do_pre(body: String) -> void:
+	_block_end()
+	_blank_now()
+	var lines := body.split("\n")
+	var first := 0
+	if lines.size() > 0 and lines[0].strip_edges() == "":
+		first = 1        # the newline right after <pre> is not a blank line
+	for k in range(first, lines.size()):
+		var t: String = _ent(lines[k]).replace("\t", "    ")
+		rows.append({"kind": "pre", "h": 15.0, "items": [
+			{"t": t, "x": PAD, "fs": FS_PRE, "col": PRE_TX,
+			 "bold": false, "under": false, "url": ""}]})
+	_blank = true
+	_body_style()
 
 
 # --- chrome geometry --------------------------------------------------
@@ -229,7 +450,7 @@ func _gui_input(e: InputEvent) -> void:
 		if mb.button_index == MOUSE_BUTTON_WHEEL_UP:
 			scroll = max(0, scroll - 3); queue_redraw(); return
 		if mb.button_index == MOUSE_BUTTON_WHEEL_DOWN:
-			scroll = min(max(0, lines.size() - 2), scroll + 3); queue_redraw(); return
+			scroll = min(max(0, rows.size() - 2), scroll + 3); queue_redraw(); return
 		if mb.button_index != MOUSE_BUTTON_LEFT:
 			return
 		if _r_back().has_point(mb.position):
@@ -241,11 +462,11 @@ func _gui_input(e: InputEvent) -> void:
 		if _r_addr().has_point(mb.position):
 			editing = true; queue_redraw(); return
 		editing = false
-		var l := _link_at(mb.position)
-		if not l.is_empty():
-			_go(String(l["url"]))
-		else:
-			queue_redraw()
+		for h in _hits:
+			if (h["rect"] as Rect2).has_point(mb.position):
+				_go(String(h["url"]))
+				return
+		queue_redraw()
 		return
 
 	if not (e is InputEventKey) or not e.pressed:
@@ -294,13 +515,13 @@ func _gui_input(e: InputEvent) -> void:
 		KEY_HOME:
 			scroll = 0
 		KEY_END:
-			scroll = max(0, lines.size() - _rows())
+			scroll = max(0, rows.size() - _rows())
 		KEY_DOWN:
-			scroll = min(max(0, lines.size() - 2), scroll + 2)
+			scroll = min(max(0, rows.size() - 2), scroll + 2)
 		KEY_UP:
 			scroll = max(0, scroll - 2)
 		KEY_PAGEDOWN:
-			scroll = min(max(0, lines.size() - 2), scroll + _rows() - 2)
+			scroll = min(max(0, rows.size() - 2), scroll + _rows() - 2)
 		KEY_PAGEUP:
 			scroll = max(0, scroll - (_rows() - 2))
 		KEY_ESCAPE:
@@ -308,8 +529,18 @@ func _gui_input(e: InputEvent) -> void:
 	queue_redraw()
 
 
+# How many rows fit, counted for real: rows are not all the same height once
+# a page has headings and pictures in it.
 func _rows() -> int:
-	return max(1, int((size.y - CHROME - FOOT - 6.0) / ROW))
+	var avail: float = max(1.0, size.y - CHROME - FOOT - 8.0)
+	var n := 0
+	var y := 0.0
+	for i in range(scroll, rows.size()):
+		y += float(rows[i]["h"])
+		if y > avail:
+			break
+		n += 1
+	return max(1, n)
 
 
 # --- drawing ----------------------------------------------------------
@@ -323,6 +554,9 @@ func _button(r: Rect2, label: String, on: bool) -> void:
 
 
 func _draw() -> void:
+	if size.x != _laid_w:
+		_relayout()
+
 	# toolbar
 	draw_rect(Rect2(0, 0, size.x, CHROME), GREY)
 	draw_line(Vector2(0, CHROME - 1), Vector2(size.x, CHROME - 1), GREY_DK)
@@ -353,49 +587,76 @@ func _draw() -> void:
 	var bot: float = max(top + ROW, size.y - FOOT)
 	draw_rect(Rect2(0, top, size.x, bot - top), PAGE_BG)
 
-	var rows := _rows()
-	var first: int = clampi(scroll, 0, max(0, lines.size() - 1))
-	var y := top + 4.0 + ROW - 4.0
-	for i in range(first, min(lines.size(), first + rows)):
-		var line: String = lines[i]
-		var col := TEXT
-		if line.length() > 3 and line.strip_edges() != "" \
-				and (line.begins_with("=") or line.begins_with("-")) \
-				and line.strip_edges().replace("=", "").replace("-", "") == "":
-			col = DIM
-		elif i == 0 or (line != "" and not line.begins_with(" ") \
-				and line == line.to_upper() and line.length() > 6):
-			col = HEAD
-		draw_string(mono, Vector2(PAD, y), line,
-			HORIZONTAL_ALIGNMENT_LEFT, -1, FS, col)
-		y += ROW
-
-	# links, drawn over the text in blue and underlined
-	for l in links:
-		var r: int = int(l["row"])
-		if r < first or r >= first + rows:
-			continue
-		var line2: String = lines[r]
-		var x0: float = PAD + mono.get_string_size(line2.substr(0, int(l["col"])),
-			HORIZONTAL_ALIGNMENT_LEFT, -1, FS).x
-		var ly: float = top + 4.0 + (r - first) * ROW + ROW - 4.0
-		var txt: String = String(l["text"])
-		draw_rect(Rect2(x0, ly - ROW + 4.0,
-			mono.get_string_size(txt, HORIZONTAL_ALIGNMENT_LEFT, -1, FS).x,
-			ROW - 1.0), PAGE_BG)
-		draw_string(mono, Vector2(x0, ly), txt,
-			HORIZONTAL_ALIGNMENT_LEFT, -1, FS, LINK)
-		draw_line(Vector2(x0, ly + 2),
-			Vector2(x0 + mono.get_string_size(txt,
-				HORIZONTAL_ALIGNMENT_LEFT, -1, FS).x, ly + 2), LINK)
+	_hits = []
+	var y := top + 4.0
+	var first: int = clampi(scroll, 0, max(0, rows.size() - 1))
+	var shown_rows := 0
+	for i in range(first, rows.size()):
+		var r: Dictionary = rows[i]
+		var h: float = float(r["h"])
+		if y + h > bot:
+			break
+		shown_rows += 1
+		match String(r["kind"]):
+			"hr":
+				draw_line(Vector2(PAD, y + h * 0.5),
+					Vector2(size.x - PAD, y + h * 0.5), RULE)
+			"img":
+				# A stable colour per image, so the same picture is the same
+				# box every visit and a page keeps its own look.
+				var src := String(r.get("src", ""))
+				var hue: float = float(abs(src.hash()) % 360) / 360.0
+				var box := Rect2(PAD, y + 2.0, min(size.x - PAD * 2.0, 420.0), h - 6.0)
+				draw_rect(box, Color.from_hsv(hue, 0.30, 0.86))
+				draw_rect(box, Color.from_hsv(hue, 0.35, 0.55), false)
+				var alt := String(r.get("alt", ""))
+				var maxw := box.size.x - 12.0
+				while alt.length() > 3 and _wof(alt, 11) > maxw:
+					alt = alt.substr(0, alt.length() - 2)
+				draw_string(mono, Vector2(box.position.x + 6, box.position.y + 17),
+					alt, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color("#22262b"))
+				draw_string(mono, Vector2(box.position.x + 6, box.position.y + 31),
+					"[image]", HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color("#4a4f55"))
+			"pre":
+				draw_rect(Rect2(PAD * 0.5, y, size.x - PAD, h), PRE_BG)
+				_draw_items(r["items"], y, h)
+			"gap":
+				pass
+			_:
+				_draw_items(r["items"], y, h)
+		y += h
 
 	# status bar
 	draw_rect(Rect2(0, bot, size.x, size.y - bot), GREY)
 	draw_line(Vector2(0, bot), Vector2(size.x, bot), GREY_DK)
 	draw_string(mono, Vector2(6, bot + 13), status,
 		HORIZONTAL_ALIGNMENT_LEFT, -1, 10, GREY_TX)
-	if lines.size() > rows:
-		draw_string(mono, Vector2(size.x - 210, bot + 13),
+	if rows.size() > shown_rows:
+		draw_string(mono, Vector2(size.x - 230, bot + 13),
 			"%d/%d  wheel or arrows, backspace goes back"
-				% [first + 1, lines.size()],
+				% [first + 1, rows.size()],
 			HORIZONTAL_ALIGNMENT_LEFT, -1, 10, DIM)
+
+
+func _draw_items(items: Array, y: float, h: float) -> void:
+	for it in items:
+		var t: String = String(it["t"])
+		if t == "":
+			continue
+		var fs: int = int(it["fs"])
+		var x: float = PAD + float(it["x"])
+		var base := y + h - 5.0
+		var col: Color = it["col"]
+		draw_string(mono, Vector2(x, base), t,
+			HORIZONTAL_ALIGNMENT_LEFT, -1, fs, col)
+		if bool(it["bold"]):
+			# One font in the whole desktop, so weight is faked the way early
+			# terminals faked it: draw it again, a hair to the right.
+			draw_string(mono, Vector2(x + 0.7, base), t,
+				HORIZONTAL_ALIGNMENT_LEFT, -1, fs, col)
+		var w := _wof(t, fs)
+		if bool(it["under"]):
+			draw_line(Vector2(x, base + 2.0), Vector2(x + w, base + 2.0), col)
+		var u := String(it["url"])
+		if u != "":
+			_hits.append({"rect": Rect2(x, y, w, h), "url": u})

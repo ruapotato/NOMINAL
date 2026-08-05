@@ -334,6 +334,19 @@ int main(int argc, char **argv)
             "svcinit","login","getty","mountall","whoami","uname","for",
             NULL
         };
+        /* WITHOUT A MODEL THIS GATE PASSES, WHICH IS WORSE THAN FAILING.
+         *
+         * It scores answers for naming only real commands, and a binary with
+         * no model gives no answers at all -- so it scored a clean 12/12 by
+         * saying nothing. A green light from an unplugged instrument is the
+         * most expensive kind of wrong. */
+#ifndef NOM_LLM
+        printf("--jsoncheck needs the model: this binary was built without "
+               "it.\n  rebuild with `make bf NOM_LLM=1` -- with no model "
+               "there are no answers\n  to check, and it would score a "
+               "perfect and completely empty pass.\n");
+        return 2;
+#endif
         /* Things a model reaches for that are not here. */
         static const char *FAKE[] = {
             "systemctl","journalctl","less","more","tail","vi","vim",
@@ -437,6 +450,21 @@ int main(int argc, char **argv)
         };
         int n = (int)(sizeof T / sizeof T[0]);
         int ok = 0;
+        /* A GATE THAT CANNOT RUN MUST SAY SO, NOT SCORE ZERO.
+         *
+         * `make bf` without NOM_LLM=1 links no model, every classification
+         * comes back NONE, and this printed 4/22 -- the four cases whose
+         * right answer happens to be NONE. That reads as the model having
+         * catastrophically regressed, and I spent real time hunting a bug
+         * that was a missing build flag. A measurement taken with the
+         * instrument unplugged is not a low number, it is not a number. */
+#ifndef NOM_LLM
+        printf("--toolcheck needs the model: this binary was built without "
+               "it.\n  rebuild with `make bf NOM_LLM=1` -- without a model "
+               "every answer is NONE\n  and the score is meaningless, not "
+               "bad.\n");
+        return 2;
+#endif
         Machine m;
         machine_install(&m, 1);
         machine_boot(&m);

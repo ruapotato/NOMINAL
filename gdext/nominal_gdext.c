@@ -420,6 +420,23 @@ static void m_sh_on(Station *st, const GDExtensionConstTypePtr *args, void *ret)
     buf_free(&out);
 }
 
+/* healthy() -> bool
+ *
+ * The customer's machine is up AND everything that should be running is.
+ * The desktop needs this to know when a ticket is actually finished --
+ * David: "After you fix the computer it should be FAR more apparent." */
+static void m_healthy(Station *st, const GDExtensionConstTypePtr *args, void *ret)
+{
+    (void)args;
+    bool ok = false;
+    if (st->installed && st->m.boot.running) {
+        Buf sick; buf_init(&sick);
+        ok = kernel_health(&st->m, &sick) == 0;
+        buf_free(&sick);
+    }
+    *(GDExtensionBool *)ret = ok;
+}
+
 /* de_requests() -> String
  *
  * Everything written to /run/nomde/requests since the last call, and it
@@ -590,6 +607,7 @@ static const MethodDef METHODS[] = {
     { "ask",         m_ask,         1, { GDEXTENSION_VARIANT_TYPE_STRING }, GDEXTENSION_VARIANT_TYPE_STRING },
     { "sh_on",       m_sh_on,       2, { GDEXTENSION_VARIANT_TYPE_INT, GDEXTENSION_VARIANT_TYPE_STRING }, GDEXTENSION_VARIANT_TYPE_STRING },
     { "peer_addr",   m_peer_addr,   0, { 0 },                              GDEXTENSION_VARIANT_TYPE_STRING },
+    { "healthy",     m_healthy,     0, { 0 },                              GDEXTENSION_VARIANT_TYPE_BOOL },
     { "de_requests", m_de_requests, 0, { 0 },                              GDEXTENSION_VARIANT_TYPE_STRING },
     { "de_apps",     m_de_apps,     0, { 0 },                              GDEXTENSION_VARIANT_TYPE_STRING },
     { "colleague",   m_colleague,   2, { GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_STRING }, GDEXTENSION_VARIANT_TYPE_STRING },

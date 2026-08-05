@@ -91,7 +91,11 @@ func _load_apps() -> void:
 	LAUNCHERS = got
 const TITLES := {"term": "terminal - your", "chat": "chat", "files": "files",
 	"notes": "notes", "log": "log viewer", "manual": "manual", "g2048": "2048",
-	"gflappy": "flappy", "gworms": "worms", "browser": "browser"}
+	"gflappy": "flappy", "gworms": "worms", "browser": "browser",
+	"gsnake": "snake", "gmines": "minesweeper", "gblocks": "blocks",
+	"gsolitaire": "solitaire", "gliquid": "liquid war",
+	"calc": "calculator", "sysmon": "system monitor",
+	"pkgman": "package manager", "svcman": "service manager"}
 
 
 func _ready() -> void:
@@ -150,10 +154,11 @@ func _draw_wall() -> void:
 		var t := float(i) / 71.0
 		wall.draw_rect(Rect2(0, h * t, wall.size.x, h / 71.0 + 1),
 			WALL_TOP.lerp(WALL_BOT, t))
-	var y := PANEL_H + 14.0
-	for spec in LAUNCHERS:
-		_draw_icon(wall, Vector2(24, y), spec[0], spec[2] if spec.size() > 2 else spec[1])
-		y += 62
+	var slots := _desk_slots()
+	for i in range(LAUNCHERS.size()):
+		var spec: Array = LAUNCHERS[i]
+		_draw_icon(wall, slots[i].position + Vector2(10, 4), spec[0],
+			spec[2] if spec.size() > 2 else spec[1])
 
 	if false:
 		var r := _menu_rect()
@@ -168,71 +173,47 @@ func _draw_wall() -> void:
 			my += MENU_ROW
 
 
+# THE ICONS ARE A SET, AND THEY LIVE SOMEWHERE ELSE.
+#
+# This used to be two `match` statements: eight hand-drawn shapes at 34px,
+# eight flat coloured squares at 16px, and a grey box with an asterisk for
+# everything else -- which, once there were twenty apps, was most of them.
+# `icons.gd` draws all twenty-one from one palette in normalised coordinates,
+# so the launcher, the Applications menu and the window list ask for the same
+# icon at three sizes and get three sizes of the same drawing.
+const Icons := preload("res://scripts/icons.gd")
+
+# WHERE THE DESKTOP ICONS SIT.
+#
+# They used to march straight down the left edge at 62px a step, which was
+# fine for the six apps that existed then and walks off the bottom of the
+# screen now that the system ships more than twenty. Icons wrap into a second
+# column, and a third, the way every desktop has since 1984. One function
+# owns the geometry so the click test cannot disagree with the drawing --
+# they were two copies of the same arithmetic before, which is how you get an
+# icon that launches its neighbour.
+const CELL := Vector2(78, 62)
+
+func _desk_slots() -> Array:
+	var out: Array = []
+	var top := PANEL_H + 10.0
+	var usable: float = max(CELL.y, wall.size.y - top - FOOT_H - 6.0)
+	var per_col := int(usable / CELL.y)
+	for i in range(LAUNCHERS.size()):
+		out.append(Rect2(
+			Vector2(14 + float(i / per_col) * CELL.x, top + float(i % per_col) * CELL.y),
+			CELL))
+	return out
+
 func _draw_icon(c: Control, at: Vector2, label: String, kind: String) -> void:
-	var r := Rect2(at.x, at.y, 34, 30)
-	match kind:
-		"term":
-			c.draw_rect(r, Color("#1c1c1c"))
-			c.draw_rect(r, Color("#5a5a5a"), false, 1.0)
-			c.draw_string(mono, at + Vector2(5, 21), ">_",
-				HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Color("#79d17a"))
-		"chat":
-			c.draw_rect(r, Color("#f2f2f2"))
-			c.draw_rect(r, Color("#8b929b"), false, 1.0)
-			c.draw_rect(Rect2(at.x + 5, at.y + 6, 24, 12), Color("#3c6eb4"))
-		"files":
-			c.draw_rect(Rect2(at.x, at.y + 4, 34, 24), Color("#e0a338"))
-			c.draw_rect(Rect2(at.x, at.y, 15, 6), Color("#e0a338"))
-		"notes":
-			c.draw_rect(r, Color("#fbfbf4"))
-			c.draw_rect(r, Color("#8b929b"), false, 1.0)
-			for i in range(4):
-				c.draw_line(at + Vector2(5, 8 + i * 5), at + Vector2(29, 8 + i * 5),
-					Color("#9fb4cc"))
-		"log":
-			c.draw_rect(r, Color("#1c1c1c"))
-			c.draw_rect(r, Color("#5a5a5a"), false, 1.0)
-			c.draw_line(at + Vector2(5, 22), at + Vector2(14, 10), Color("#79d17a"))
-			c.draw_line(at + Vector2(14, 10), at + Vector2(22, 18), Color("#79d17a"))
-			c.draw_line(at + Vector2(22, 18), at + Vector2(30, 7), Color("#79d17a"))
-		"game":
-			c.draw_rect(r, Color("#f0e6d2"))
-			c.draw_rect(r, Color("#8b929b"), false, 1.0)
-			c.draw_rect(Rect2(at.x + 5, at.y + 5, 10, 9), Color("#e0a338"))
-			c.draw_rect(Rect2(at.x + 18, at.y + 14, 10, 9), Color("#c96f4a"))
-		"browser":
-			c.draw_rect(r, Color("#ffffff"))
-			c.draw_rect(r, Color("#8b929b"), false, 1.0)
-			c.draw_rect(Rect2(at.x + 1, at.y + 1, 32, 6), Color("#3c6eb4"))
-			c.draw_line(at + Vector2(5, 16), at + Vector2(29, 16), Color("#9fb4cc"))
-			c.draw_line(at + Vector2(5, 21), at + Vector2(24, 21), Color("#9fb4cc"))
-		"manual":
-			c.draw_rect(r, Color("#f6f6f6"))
-			c.draw_rect(r, Color("#8b929b"), false, 1.0)
-			c.draw_string(mono, at + Vector2(11, 21), "M",
-				HORIZONTAL_ALIGNMENT_LEFT, -1, 13, INK)
-		_:
-			c.draw_rect(r, Color("#f6f6f6"))
-			c.draw_rect(r, Color("#8b929b"), false, 1.0)
-			c.draw_string(mono, at + Vector2(12, 21), "*",
-				HORIZONTAL_ALIGNMENT_LEFT, -1, 14, INK)
+	Icons.draw_icon(c, at, 34.0, kind)
 	c.draw_string(mono, Vector2(at.x - 8, at.y + 44), label,
 		HORIZONTAL_ALIGNMENT_CENTER, 50, 11, Color("#ffffff"))
 
 
 # A 16px version of the launcher icon, for the menu.
 func _draw_icon_small(c: Control, at: Vector2, kind: String) -> void:
-	var r := Rect2(at.x, at.y, 16, 14)
-	match kind:
-		"term": c.draw_rect(r, Color("#1c1c1c"))
-		"chat": c.draw_rect(r, Color("#3c6eb4"))
-		"files": c.draw_rect(r, Color("#e0a338"))
-		"notes": c.draw_rect(r, Color("#fbfbf4"))
-		"log": c.draw_rect(r, Color("#1c1c1c"))
-		"game": c.draw_rect(r, Color("#e0a338"))
-		"browser": c.draw_rect(r, Color("#3c6eb4"))
-		_: c.draw_rect(r, Color("#dcdcdc"))
-	c.draw_rect(r, Color("#8b929b"), false, 1.0)
+	Icons.draw_icon(c, at, 16.0, kind)
 
 
 func _draw_panel() -> void:
@@ -296,21 +277,18 @@ func _draw_foot() -> void:
 func _wall_input(e: InputEvent) -> void:
 	if e is InputEventMouseButton and e.pressed and e.button_index == MOUSE_BUTTON_LEFT:
 		if menu_open:
-			var r := _menu_rect()
-			if r.has_point(e.position):
-				var idx := int((e.position.y - r.position.y - 6) / MENU_ROW)
-				if idx >= 0 and idx < LAUNCHERS.size():
-					_launch(LAUNCHERS[idx][1])
+			var idx := _menu_hit(e.position)
+			if idx >= 0:
+				_launch(LAUNCHERS[idx][1])
 			menu_open = false
 			if menu_layer:
 				menu_layer.queue_redraw()
 			return
-		var y := PANEL_H + 14.0
-		for spec in LAUNCHERS:
-			if Rect2(14, y - 4, 70, 58).has_point(e.position):
-				_launch(spec[1])
+		var slots := _desk_slots()
+		for i in range(LAUNCHERS.size()):
+			if slots[i].has_point(e.position):
+				_launch(LAUNCHERS[i][1])
 				return
-			y += 62
 
 
 func _panel_input(e: InputEvent) -> void:
@@ -357,6 +335,11 @@ func _win(title: String, rect: Rect2, content: Control) -> Control:
 	w.add_child(grip)
 	w.set_meta("grip", grip)
 
+	# CLIP. Without this a control paints wherever it likes, and an app that
+	# draws past its own rect scribbles on the desktop -- which is how Flappy
+	# came to have pipes visibly falling off the back of its window and across
+	# the wallpaper. A window is a window because it has edges.
+	content.clip_contents = true
 	content.position = Vector2(3, 22)
 	content.size = Vector2(rect.size.x - 6, rect.size.y - 25)
 	w.add_child(content)
@@ -440,18 +423,50 @@ func _draw_menu_layer() -> void:
 	menu_layer.draw_rect(Rect2(r.position + Vector2(3, 3), r.size), Color(0, 0, 0, 0.18))
 	menu_layer.draw_rect(r, Color("#f6f6f6"))
 	menu_layer.draw_rect(r, Color("#8b929b"), false, 1.0)
-	var my := r.position.y + 6
-	for spec in LAUNCHERS:
-		menu_layer.draw_string(mono, Vector2(r.position.x + 30, my + 17), spec[0],
+	var rows := _menu_rows()
+	for i in range(LAUNCHERS.size()):
+		var spec: Array = LAUNCHERS[i]
+		var mx: float = r.position.x + float(i / rows) * MENU_W
+		var my: float = r.position.y + 6 + float(i % rows) * MENU_ROW
+		if i >= rows:
+			menu_layer.draw_line(Vector2(mx, r.position.y + 2),
+				Vector2(mx, r.position.y + r.size.y - 2), Color("#dfe1e5"))
+		menu_layer.draw_string(mono, Vector2(mx + 30, my + 17), spec[0],
 			HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color("#1b1b1b"))
-		_draw_icon_small(menu_layer, Vector2(r.position.x + 6, my + 4),
+		_draw_icon_small(menu_layer, Vector2(mx + 6, my + 4),
 			spec[2] if spec.size() > 2 else spec[1])
-		my += MENU_ROW
 const MENU_W := 190.0
 const MENU_ROW := 26.0
 
+# The menu has the same problem the desktop had: twenty-eight rows is taller
+# than the screen. It grows sideways instead, and _menu_rows() is the single
+# answer to "how many fit in a column", used by the drawing and by the hit
+# test so the two cannot drift apart.
+func _menu_rows() -> int:
+	var usable: float = max(MENU_ROW, size.y - PANEL_H - FOOT_H - 12.0)
+	return max(1, int(usable / MENU_ROW))
+
+
 func _menu_rect() -> Rect2:
-	return Rect2(4, PANEL_H, MENU_W, MENU_ROW * LAUNCHERS.size() + 8)
+	var rows := _menu_rows()
+	var cols := int(ceil(float(LAUNCHERS.size()) / float(rows)))
+	var used: int = min(LAUNCHERS.size(), rows)
+	return Rect2(4, PANEL_H, MENU_W * float(max(1, cols)),
+		MENU_ROW * float(used) + 8)
+
+
+# Which entry is under the pointer, or -1. Column-major, matching the draw.
+func _menu_hit(p: Vector2) -> int:
+	var r := _menu_rect()
+	if not r.has_point(p):
+		return -1
+	var rows := _menu_rows()
+	var col := int((p.x - r.position.x) / MENU_W)
+	var row := int((p.y - r.position.y - 6) / MENU_ROW)
+	if row < 0 or row >= rows:
+		return -1
+	var idx := col * rows + row
+	return idx if idx >= 0 and idx < LAUNCHERS.size() else -1
 
 
 func _draw_menu() -> void:
@@ -537,7 +552,13 @@ const EXEC_MAP := {
 	"terminal": "term", "term": "term", "chat": "chat", "files": "files",
 	"notes": "notes", "logview": "log", "log": "log", "manual": "manual",
 	"browser": "browser", "g2048": "g2048", "gflappy": "gflappy",
-	"gworms": "gworms",
+	"gworms": "gworms", "gsnake": "gsnake", "snake": "gsnake",
+	"gmines": "gmines", "minesweeper": "gmines",
+	"gblocks": "gblocks", "blocks": "gblocks",
+	"gsolitaire": "gsolitaire", "solitaire": "gsolitaire",
+	"gliquid": "gliquid", "liquid": "gliquid",
+	"calc": "calc", "calculator": "calc",
+	"sysmon": "sysmon", "pkgman": "pkgman", "svcman": "svcman",
 }
 
 func _launch(kind0: String) -> void:
@@ -622,6 +643,64 @@ func _launch(kind0: String) -> void:
 			b.mono = mono
 			b.machine = machine
 			_win("browser", _cascade_at(720, 520), b)
+		"gsnake":
+			var g4 := preload("res://scripts/gsnake.gd").new()
+			g4.mono = mono
+			g4.machine = machine
+			_win("snake", _cascade_at(560, 420), g4)
+		"gmines":
+			var g5 := preload("res://scripts/gmines.gd").new()
+			g5.mono = mono
+			g5.machine = machine
+			_win("minesweeper", _cascade_at(560, 440), g5)
+		"gblocks":
+			var g6 := preload("res://scripts/gblocks.gd").new()
+			g6.mono = mono
+			g6.machine = machine
+			_win("blocks", _cascade_at(520, 560), g6)
+		"gsolitaire":
+			var g7 := preload("res://scripts/gsolitaire.gd").new()
+			g7.mono = mono
+			g7.machine = machine
+			_win("solitaire", _cascade_at(760, 520), g7)
+		"gliquid":
+			var g8 := preload("res://scripts/gliquid.gd").new()
+			g8.mono = mono
+			g8.machine = machine
+			_win("liquid war", _cascade_at(760, 520), g8)
+		"calc":
+			var ca := preload("res://scripts/calc.gd").new()
+			ca.mono = mono
+			ca.machine = machine
+			_win("calculator", _cascade_at(420, 420), ca)
+		"sysmon":
+			_win_tool("system monitor", "res://scripts/sysmon.gd",
+				_cascade_at(720, 460))
+		"pkgman":
+			_win_tool("package manager", "res://scripts/pkgman.gd",
+				_cascade_at(760, 480))
+		"svcman":
+			_win_tool("service manager", "res://scripts/svcman.gd",
+				_cascade_at(740, 460))
+
+
+# The three apps that INSPECT A MACHINE, rather than being a machine's toy.
+#
+# They all want the same thing: a way to run a command on whichever box is
+# actually interesting. That is the customer's, whenever the customer's is
+# up -- your own workstation is healthy, and a package manager showing you
+# twenty-eight intact packages on a box nobody reported is the log viewer's
+# old sin in a new window. It falls back to the workstation when theirs is
+# dark, and the app says which it is looking at because `_sh` is asked fresh
+# every refresh: when their machine comes back, the next poll follows it.
+func _win_tool(title: String, script: String, rect: Rect2) -> Control:
+	var a: Control = load(script).new()
+	a.mono = mono
+	a.machine = machine
+	a.sh = func(cmd: String) -> String:
+		return str(machine.sh_on(1 if machine.booted() else 0, cmd))
+	_win(title, rect, a)
+	return a
 
 
 # A text file, in a window, editable. Clicking a .txt in the file manager

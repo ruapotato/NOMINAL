@@ -15,6 +15,10 @@
 # shell exactly the way 2048 writes its high score, so `cat /root/.worms` in
 # the terminal shows the same numbers the HUD is showing. Even the toy is
 # honest.
+#
+# Player 2 is a computer by default (C hands the gun back to a human). It is a
+# real gunner, not a dice roll: see the "computer" section near the bottom for
+# how it searches for a firing solution and then walks its shots in.
 
 extends Control
 
@@ -51,7 +55,7 @@ var angle := 45.0                  # degrees from +x, 90 is straight up
 var power := 60.0                  # 10..100
 var wind := 0.0                    # virtual units / s^2, sideways
 
-var state := "aim"                 # aim | fly | boom | over
+var state := "aim"                 # aim | think | fly | boom | over
 var shot := Vector2.ZERO
 var vel := Vector2.ZERO
 var trail: Array = []
@@ -62,6 +66,28 @@ var msg := ""
 
 var wins := [0, 0]
 var rng := RandomNumberGenerator.new()
+
+# --- the computer gunner (implementation is at the bottom of the file) -------
+# Difficulty is two numbers that matter and three that follow from them: how
+# wide the random jitter is, and how much of its own systematic error it can
+# read back out of a miss.
+const SKILLS := ["rookie", "veteran"]
+const AI_THINK := [1.1, 0.8]       # seconds of "aiming" before the shot
+const AI_JIT := [5.5, 2.0]         # degrees, 1 sigma, on the first shot
+const AI_PJIT := [6.0, 2.5]        # power units, 1 sigma, on the first shot
+const AI_BIAS := [7.0, 3.5]        # degrees of fixed per-match mis-calibration
+const AI_GAIN := [0.55, 0.85]      # how much of an observed miss it corrects
+const AI_DECAY := [0.72, 0.60]     # jitter multiplier per shot taken
+
+var ai_on := [false, true]         # player 2 is the computer unless you say so
+var ai_skill := 1
+var ai_wait := 0.0
+var ai_bias := [0.0, 0.0]          # the error it has and does not know about
+var ai_fix := [0.0, 0.0]           # the error it has worked out so far
+var ai_sens := [0.0, 0.0]          # virtual units of impact per degree of aim
+var ai_pred := [0.0, 0.0]          # where the numbers it dialled said it would land
+var ai_pred_ok := [false, false]
+var ai_shots := [0, 0]
 
 
 func _ready() -> void:
@@ -96,11 +122,17 @@ func _new_game() -> void:
 	turn = rng.randi_range(0, 1)
 	angle = 45.0 if turn == 0 else 135.0
 	power = 60.0
-	state = "aim"
 	winner = -1
 	msg = ""
 	trail = []
 	_new_wind()
+	# A fresh gun for each side: the mis-calibration is rolled per match, not
+	# per shot, so it is something a gunner can actually learn during a match.
+	for i in range(2):
+		ai_bias[i] = rng.randf_range(-AI_BIAS[ai_skill], AI_BIAS[ai_skill])
+		ai_fix[i] = 0.0
+		ai_shots[i] = 0
+	_begin_turn()
 	queue_redraw()
 
 
@@ -161,6 +193,15 @@ func _fire() -> void:
 
 
 func _process(dt: float) -> void:
+	# The computer already picked its angle when the turn started, so the gun is
+	# visibly swinging onto target through this pause. The delay is only so a
+	# human can see it happen; instant fire reads as the game cheating.
+	if state == "think":
+		ai_wait -= dt
+		if ai_wait <= 0.0:
+			_fire()
+		queue_redraw()
+		return
 	if state == "boom":
 		boom_t -= dt
 		if boom_t <= 0.0:
@@ -226,6 +267,8 @@ func _explode(at: Vector2) -> void:
 			w["hp"] = max(0, int(w["hp"]) - max(dmg, 4))
 	for w2 in worms:
 		_settle(w2)
+	if ai_on[turn]:
+		_ai_observe(at)
 	queue_redraw()
 
 
@@ -251,7 +294,7 @@ func _after_boom() -> void:
 	turn = 1 - turn
 	angle = clamp(angle, 0.0, 180.0)
 	_new_wind()
-	state = "aim"
+	_begin_turn()
 	queue_redraw()
 
 
@@ -272,6 +315,21 @@ func _gui_input(e: InputEvent) -> void:
 	accept_event()
 	if k.keycode == KEY_R:
 		_new_game(); return
+	# C and K are live even while the computer is aiming, so taking the gun off
+	# it does not mean sitting through a shot you did not want.
+	if k.keycode == KEY_C:
+		ai_on[1] = not ai_on[1]
+		if state == "think" and not ai_on[turn]:
+			state = "aim"
+		elif state == "aim" and ai_on[turn]:
+			_begin_turn()
+		queue_redraw(); return
+	if k.keycode == KEY_K:
+		ai_skill = (ai_skill + 1) % SKILLS.size()
+		for i in range(2):
+			ai_bias[i] = rng.randf_range(-AI_BIAS[ai_skill], AI_BIAS[ai_skill])
+			ai_fix[i] = 0.0
+		queue_redraw(); return
 	if state != "aim":
 		return
 	# Shift is the fine adjustment, because the difference between hitting and
@@ -374,7 +432,7 @@ func _draw_worms() -> void:
 		draw_rect(Rect2(c.x - bw / 2, c.y - r * 2.4, bw, 4), Color(1, 1, 1, 0.7))
 		draw_rect(Rect2(c.x - bw / 2, c.y - r * 2.4, bw * float(w["hp"]) / 100.0, 4),
 			Color("#4f8f4f") if w["hp"] > 35 else Color("#b4562f"))
-		if i == turn and state == "aim":
+		if i == turn and (state == "aim" or state == "think"):
 			var rad := deg_to_rad(angle)
 			var dir := Vector2(cos(rad), -sin(rad))
 			var tip: Vector2 = c + Vector2(_sx(dir.x * (18.0 + power * 0.5)),
@@ -394,11 +452,19 @@ func _draw_hud() -> void:
 	var pad := 8.0
 	draw_rect(Rect2(0, 0, size.x, 40), Color(1, 1, 1, 0.72))
 	var who := "player 1" if turn == 0 else "player 2"
+	if ai_on[turn]:
+		who = "computer (%s)" % SKILLS[ai_skill]
+		if state == "think":
+			who += " aiming"
 	var col: Color = P1 if turn == 0 else P2
 	draw_string(mono, Vector2(pad, 17), "gworms", HORIZONTAL_ALIGNMENT_LEFT, -1, 14, INK)
-	draw_string(mono, Vector2(pad, 33),
-		"left/right angle   up/down power   space fires   R restarts",
-		HORIZONTAL_ALIGNMENT_LEFT, -1, 10, FAINT)
+	# The full hint does not fit a narrow window, and a hint that runs off the
+	# edge is worse than a short one.
+	var p2 := "computer" if ai_on[1] else "human"
+	var hint := "C player2 %s   K %s   R restarts" % [p2, SKILLS[ai_skill]]
+	if size.x >= 620.0:
+		hint = "left/right angle   up/down power   space fires   " + hint
+	draw_string(mono, Vector2(pad, 33), hint, HORIZONTAL_ALIGNMENT_LEFT, -1, 10, FAINT)
 
 	var wtxt := "calm"
 	if wind > 0.0:
@@ -446,3 +512,202 @@ func _bar(x: float, y: float, hp: int, col: Color, label: String, right: bool) -
 	draw_rect(Rect2(x, y, w, 10), Color(0, 0, 0, 0.25), false, 1.0)
 	draw_string(mono, Vector2(x, y + 22), "%s  %d" % [label, max(0, hp)],
 		HORIZONTAL_ALIGNMENT_RIGHT if right else HORIZONTAL_ALIGNMENT_LEFT, w, 10, INK)
+
+
+# ---------------------------------------------------------------- computer --
+#
+# The gunner works the way a person with a mortar and no calculator does. It
+# does not solve the trajectory on paper -- wind is a constant sideways
+# acceleration, which turns the closed form into a mess, and the closed form
+# would still not know that there is a hill in the way. Instead it fires the
+# shot in its head: the same integrator the real shell uses, run over the same
+# heightmap, a few hundred times, and keeps whichever angle and power put the
+# imaginary shell nearest the enemy. That is why it copes with wind, gravity,
+# and a ridge that appeared two turns ago without any of those being special
+# cases in the code.
+#
+# A gunner that good is not a game, so it is given a handicap with a shape:
+#   * ai_bias -- a fixed mis-calibration rolled once per match. Its first shots
+#     are wrong in a consistent direction, the way a real gun is.
+#   * jitter  -- random spread, widest on the first shot of a match and shrunk
+#     by AI_DECAY every time it fires.
+# After every shot it measures how far it landed from the target and divides by
+# the sensitivity it computed while aiming (how many units the impact moves per
+# degree of elevation), which turns a miss into a correction in degrees. That
+# correction goes into ai_fix and cancels the bias over two or three rounds.
+# The result is an opponent that lands the first shell in the wrong postcode,
+# the second one close, and the third one on you -- which is a far better
+# thing to play against than one that is perfect until a random number says
+# otherwise.
+
+# Two step sizes. The coarse sweep only has to tell a lob from a flat shot, so
+# it runs at 0.025 s and eats the odd hill it should have clipped; the fine
+# sweep runs at 0.008 s (about six virtual units, close to one heightmap
+# column) and is the one whose answer gets fired. Doing the whole sweep at the
+# fine step would be five times the work for the same shot.
+const AI_H_ROUGH := 0.025
+const AI_H_FINE := 0.008
+const AI_MAX_T := 12.0             # abandon a shell still airborne after this
+
+
+func _begin_turn() -> void:
+	if ai_on[turn] and worms[turn]["hp"] > 0:
+		_ai_plan()
+		ai_wait = AI_THINK[ai_skill]
+		state = "think"
+	else:
+		state = "aim"
+
+
+# One imaginary shell. Returns where it hit, or a sentinel far off the map.
+#
+# Position is advanced with the exact constant-acceleration term rather than
+# plain Euler, so a coarse step here lands in the same place as the game's very
+# fine step. Without that the AI would be aiming at a parabola nobody else is
+# flying and would sit systematically short.
+func _ai_sim(a_deg: float, pw: float, from: Vector2, h: float) -> Vector2:
+	var r := deg_to_rad(a_deg)
+	var dir := Vector2(cos(r), -sin(r))
+	var p := from + dir * MUZZLE
+	var v := dir * (pw * 8.0)
+	var acc := Vector2(wind, GRAV)
+	var half := acc * (0.5 * h * h)
+	for _i in range(int(AI_MAX_T / h)):
+		p += v * h + half
+		v += acc * h
+		if p.y > VH + 40.0 or p.x < -300.0 or p.x > VW + 300.0:
+			return Vector2(-9999, -9999)
+		if p.x >= 0.0 and p.x <= VW and p.y >= _ground_at(p.x):
+			return p
+		for i in range(2):
+			var wm: Dictionary = worms[i]
+			if wm["hp"] > 0 and p.distance_to(Vector2(wm["x"], wm["y"])) < WORM_R + 3.0:
+				return p
+	return Vector2(-9999, -9999)
+
+
+func _ai_score(a_deg: float, pw: float, from: Vector2, to: Vector2, h: float) -> float:
+	var hit := _ai_sim(a_deg, pw, from, h)
+	if hit.x < -5000.0:
+		return 1.0e9                 # off the map is never the plan
+	var d := hit.distance_to(to)
+	# Landing on your own head scores worse than missing by the same distance.
+	if hit.distance_to(from) < BLAST:
+		d += 400.0
+	return d
+
+
+func _ai_plan() -> void:
+	var me: Dictionary = worms[turn]
+	var tgt: Dictionary = worms[1 - turn]
+	var from := Vector2(me["x"], me["y"])
+	var to := Vector2(tgt["x"], tgt["y"])
+	# Only the hemisphere that faces the enemy is worth scanning; the other half
+	# doubles the work to find shots that fly away from the target.
+	var lo := 5.0
+	var hi := 88.0
+	if to.x < from.x:
+		lo = 92.0
+		hi = 175.0
+
+	# Coarse sweep: five powers across the range, four degrees apart. Enough to
+	# find which arc works -- high lob over the hill, or flat and fast.
+	var best_a := (lo + hi) * 0.5
+	var best_p := 60.0
+	var best := 1.0e18
+	for pw in [35.0, 50.0, 65.0, 80.0, 95.0]:
+		var a := lo
+		while a <= hi:
+			var s := _ai_score(a, pw, from, to, AI_H_ROUGH)
+			if s < best:
+				best = s
+				best_a = a
+				best_p = pw
+			a += 4.0
+	# Fine sweep around the winner, at the step that is trusted. Half a degree
+	# is the same resolution the human gets with shift held down, so the
+	# computer is not using a finer dial than the player has.
+	best = 1.0e18
+	var pw2: float = max(10.0, best_p - 10.0)
+	var fa := best_a
+	var fp := best_p
+	while pw2 <= min(100.0, best_p + 10.0):
+		var a2: float = max(lo, best_a - 4.0)
+		while a2 <= min(hi, best_a + 4.0):
+			var s2 := _ai_score(a2, pw2, from, to, AI_H_FINE)
+			if s2 < best:
+				best = s2
+				fa = a2
+				fp = pw2
+			a2 += 0.5
+		pw2 += 5.0
+	best_a = fa
+	best_p = fp
+
+	# The numbers it dials: the solution, minus the correction it has learned,
+	# plus this shot's share of nerves. The gun then adds ai_bias on top, which
+	# is the part it cannot see.
+	var n: int = ai_shots[turn]
+	var spread: float = AI_JIT[ai_skill] * pow(AI_DECAY[ai_skill], n)
+	var pspread: float = AI_PJIT[ai_skill] * pow(AI_DECAY[ai_skill], n)
+	var dialed := clamp(best_a - ai_fix[turn] + rng.randfn(0.0, spread), lo, hi)
+	power = clamp(best_p + rng.randfn(0.0, pspread), 10.0, 100.0)
+	angle = clamp(dialed + ai_bias[turn], lo, hi)
+	# Nobody fires a shell they can see leaving the county. Measured before this
+	# check, a fifth of all shots sailed off the map: they taught the gunner
+	# nothing, hit nothing, and were dull to watch. If the shot flies off, halve
+	# the error and look again -- it stays a bad shot, it just stays on the
+	# board while it is bad.
+	for _t in range(3):
+		if _ai_sim(angle, power, from, AI_H_ROUGH).x > -5000.0:
+			break
+		dialed = lerp(dialed, best_a, 0.5)
+		power = lerp(power, best_p, 0.5)
+		angle = clamp(dialed + ai_bias[turn], lo, hi)
+
+	# Where the numbers it dialled say the shell will land, and how far that
+	# moves per degree of elevation. Both are measured at the dialled aim, not
+	# at the ideal one, and that distinction is the whole trick: the difference
+	# between this prediction and the real impact is the mis-calibration on its
+	# own, with the power it happened to choose divided out. Comparing the
+	# impact against the *target* instead -- the obvious version, and the first
+	# one written here -- feeds its own power jitter back in as if it were aim
+	# error, and measured over 646 shots the correction then random-walked and
+	# learned nothing at all.
+	var pred := _ai_sim(dialed, power, from, AI_H_FINE)
+	var probe := _ai_sim(dialed + 1.0, power, from, AI_H_FINE)
+	ai_pred_ok[turn] = pred.x > -5000.0 and probe.x > -5000.0
+	if ai_pred_ok[turn]:
+		ai_pred[turn] = pred.x
+		ai_sens[turn] = probe.x - pred.x
+	ai_shots[turn] += 1
+
+
+# Called with the impact point of a shot the computer fired. Walking the next
+# one in is one division: how far the shell went past where its own numbers
+# said it would, over units-per-degree, times a gain below 1 so the correction
+# converges instead of swinging past the target every other shot.
+func _ai_observe(at: Vector2) -> void:
+	if not ai_pred_ok[turn]:
+		return
+	var sens: float = ai_sens[turn]
+	if abs(sens) < 1.0:
+		return                       # a near-vertical lob tells you nothing useful
+	var delta: float = at.x - ai_pred[turn]
+	var implied := delta / sens          # degrees of gun error the impact suggests
+	# A shell that clipped the ridge in front of you did not land where any
+	# elevation error put it, and believing it wrecks a correction that was
+	# already good: without this gate the residual error climbed back from 1.5
+	# to 4 degrees over the later shots of a match. Fifteen degrees is far more
+	# than any mis-calibration this gun has, so anything past it is the terrain
+	# talking, not the sights.
+	if abs(implied) > 15.0:
+		return
+	# The gain fades with every shot for the same reason a gunner stops
+	# re-zeroing once he is on target: by the third round the correction is
+	# right, and the only thing left to learn from is noise. Left at full gain
+	# the calibration drifted back out to six degrees by the sixth shot of a
+	# match -- worse than never having corrected at all.
+	var settle: float = pow(AI_DECAY[ai_skill], max(0, ai_shots[turn] - 1))
+	var corr: float = clamp(AI_GAIN[ai_skill] * settle * implied, -5.0, 5.0)
+	ai_fix[turn] = clamp(ai_fix[turn] + corr, -30.0, 30.0)
