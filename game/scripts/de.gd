@@ -480,15 +480,50 @@ func _run(which: int, line: String) -> String:
 	var s := line.strip_edges()
 	if s == "":
 		return ""
-	var out: String = machine.sh_on(which, s)
-	if which == 0 and s.begins_with("rcon connect") and out.find("attached") >= 0:
-		var W := size.x
-		var H := size.y
+
+	# `rcon` ALWAYS RUNS ON YOUR WORKSTATION, whichever terminal you typed it
+	# in. The service processor belongs to the machine you are reaching FROM;
+	# the customer's box has no route to itself. Without this, `rcon power
+	# cycle` typed into the console -- the obvious place to type it -- went to
+	# a machine with no peer and did nothing at all, which is exactly what
+	# David saw.
+	var is_rcon := s.begins_with("rcon") and (s.length() == 4 or s[4] == " ")
+	var target := 0 if is_rcon else which
+
+	# A CONSOLE ON A DEAD MACHINE HAS NO SHELL. Attaching to a box that died
+	# at initrd used to hand you a working prompt, because the shell is on the
+	# disk whatever the boot did. A service processor shows you the machine's
+	# screen; if it never reached a shell, there is no shell to type at, and
+	# that IS the diagnosis.
+	if target == 1 and not machine.booted():
+		return "\n[no shell here -- this machine did not finish booting]\n" \
+			+ "  what it managed to say is above. from YOUR terminal:\n" \
+			+ "    rcon console                what it said\n" \
+			+ "    rcon media insert           put the rescue medium in\n" \
+			+ "    rcon boot media             boot from it next time\n" \
+			+ "    rcon power cycle            restart it\n"
+
+	var out: String = machine.sh_on(target, s)
+
+	if is_rcon and s.begins_with("rcon connect") and out.find("attached") >= 0:
 		var t := _open_terminal(1, "console - %s (%s)" % [addr, cust],
 			_cascade_at(700, 420))
 		t.call("write", machine.sh_on(0, "rcon console"))
-		t.call("write",
-			"\n-- this terminal is on THEIR machine. yours is still open. --\n")
+		if machine.booted():
+			t.call("write", "\n-- their machine is up. this is its console. --\n")
+		else:
+			t.call("write",
+				"\n-- their machine is NOT up: there is no shell to type at. --\n" \
+				+ "-- drive it from your own terminal with `rcon`. --\n")
+
+	# Anything that changes the customer's power state changes what the
+	# console shows, so repaint it.
+	if is_rcon and (s.find("power") >= 0 or s.find("boot") >= 0):
+		var con := _find("console - ")
+		if con:
+			var c2: Control = con.get_meta("content")
+			c2.call("write", "\n" + machine.sh_on(0, "rcon console"))
+
 	for w in windows:
 		if not is_instance_valid(w):
 			continue

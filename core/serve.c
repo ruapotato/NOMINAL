@@ -361,6 +361,25 @@ static bool client_line(Client *c)
     bool is_rcon = strncmp(cmd, "rcon", 4) == 0 &&
                    (cmd[4] == 0 || cmd[4] == ' ');
     Machine *on = (c->desk.sp_connected && !is_rcon) ? &c->m : &c->desk;
+
+    /* A CONSOLE ON A DEAD MACHINE HAS NO SHELL.
+     *
+     * David: "rcon boot disk, then power cycle, then connect gets me to the
+     * same working shell, not a broken box I need to fix." He is right and it
+     * was the worst thing in the build: kernel_run spawns /bin/sh off the
+     * disk whatever the boot did, so attaching to a machine that died at
+     * initrd still gave you a prompt. A service processor shows you the
+     * machine's screen. If the machine never got to a shell, the screen has
+     * no shell on it, and that IS the diagnosis. */
+    if (on == &c->m && !c->m.boot.running) {
+        send_str(c->fd,
+            "\n[no shell here -- this machine did not finish booting]\n"
+            "  the console shows what it managed to say. `rcon console` to\n"
+            "  re-read it, `rcon media insert` + `rcon boot media` +\n"
+            "  `rcon power cycle` to bring it up on the rescue medium.\n");
+        send_str(c->fd, prompt_for(c));
+        return true;
+    }
     kernel_run(on, cmd, &out);
     if (out.len) send_all(c->fd, out.p, out.len);
     buf_free(&out);

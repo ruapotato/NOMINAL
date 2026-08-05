@@ -48,18 +48,16 @@ void _start(void)
             if (alive) g_putoct((unsigned)st2.mode, 4);
             else       g_puts("????");
             g_puts("  ");
-            g_putn(tl);
-            g_puts("\t");
+            g_putpad(tl, 8);
         } else if (g_stat(full, &s2) == 0) {
             g_puts(s2.kind == NOM_KIND_DIR ? "d" : "-");
             g_putoct((unsigned)s2.mode, 4);
             g_puts("  ");
-            g_putn(s2.size);
-            g_puts("\t");
+            g_putpad(s2.size, 8);
         } else {
             /* stat failing on a name that readdir just returned means a
              * dangling link -- worth showing, not worth hiding. */
-            g_puts("l????     ?\t");   /* dangling: readlink still works */
+            g_puts("l????         ?  ");   /* dangling: readlink still works */
         }
         g_puts(name);
         if (tl > 0) {

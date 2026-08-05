@@ -110,6 +110,17 @@ func post(w: int, text: String) -> void:
 		return machine.colleague("coworker" if target == 1 else "manager", text))
 
 
+# GODOT WILL NOT EXIT WITH A THREAD STILL RUNNING.
+#
+# David: "Closing godot does not seem to exit the game right." The model call
+# runs on a worker, and a Thread that is never joined keeps the process alive
+# after the window is gone. Join it on the way out.
+func _exit_tree() -> void:
+	if _thread != null:
+		_thread.wait_to_finish()
+		_thread = null
+
+
 func _collect() -> void:
 	if _thread == null or _thread.is_alive():
 		return

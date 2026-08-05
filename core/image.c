@@ -382,7 +382,11 @@ static const Package PKG_SHELL = {
        * missing, the answer is to build it, not to explain its absence. */
       { "/usr/bin/find", NULL, 0755, NULL },
       { "/bin/netstat",  NULL, 0755, NULL },
-    }, 36
+      /* `init 6` worked and `reboot` did not. Nobody types `init 6` first. */
+      { "/sbin/reboot",   NULL, 0755, NULL },
+      { "/sbin/halt",     NULL, 0755, NULL },
+      { "/sbin/poweroff", NULL, 0755, NULL },
+    }, 39
 };
 
 
@@ -904,6 +908,10 @@ void image_generated(const Machine *m, const char *path, Buf *out)
         buf_put(out, (const char *)GUEST_FIND, GUEST_FIND_LEN);
     else if (strcmp(path, "/bin/netstat") == 0)
         buf_put(out, (const char *)GUEST_NETSTAT, GUEST_NETSTAT_LEN);
+    else if (strcmp(path, "/sbin/reboot") == 0 ||
+             strcmp(path, "/sbin/halt") == 0 ||
+             strcmp(path, "/sbin/poweroff") == 0)
+        buf_put(out, (const char *)GUEST_REBOOT, GUEST_REBOOT_LEN);
     else if (strcmp(path, "/usr/sbin/zbl-install") == 0)
         buf_put(out, (const char *)GUEST_ZBL_INSTALL, GUEST_ZBL_INSTALL_LEN);
     else if (strcmp(path, "/usr/sbin/zbl-mkconfig") == 0)

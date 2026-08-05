@@ -39,6 +39,13 @@ var hpos := -1
 var scroll := 0            # how many lines up from the bottom we are looking
 var blink := 0.0
 var busy := false
+# A COMMAND THAT IS NOT FINISHED YET.
+#
+# Typing `for i in dev sys proc` and pressing enter answered "expected do",
+# so you could not type the chroot line the way the boot output prints it --
+# across lines, like every shell on earth. If a line opens a construct, the
+# terminal keeps it and shows a continuation prompt instead of running it.
+var pending := ""
 
 const LINE_H := 15
 const PAD := 6
@@ -97,11 +104,36 @@ func feed(s: String) -> void:
 	queue_redraw()
 
 
+func _incomplete(s2: String) -> bool:
+	var t := s2.strip_edges()
+	if t.ends_with("\\"):
+		return true
+	# `for` is open until `done`; a trailing `do` or `;` is also unfinished.
+	var has_for := t.begins_with("for ") or t.find("; for ") >= 0
+	if has_for and t.find("done") < 0:
+		return true
+	if t.ends_with(";") or t.ends_with("do") or t.ends_with("&&") or t.ends_with("||"):
+		return true
+	return false
+
+
 func _enter() -> void:
 	var line := cur
-	lines.append(prompt_fn.call() + line)
+	lines.append((prompt_fn.call() if pending == "" else "> ") + line)
 	cur = ""
 	caret = 0
+
+	# Join it to whatever came before, and if the whole thing is still open,
+	# ask for more rather than running a fragment.
+	var whole := line if pending == "" else pending + "; " + line
+	if whole.strip_edges().ends_with("\\"):
+		whole = whole.strip_edges().substr(0, whole.strip_edges().length() - 1)
+	if _incomplete(whole):
+		pending = whole
+		queue_redraw()
+		return
+	pending = ""
+	line = whole
 	if line.strip_edges() != "":
 		history.append(line)
 	hpos = -1
@@ -184,8 +216,17 @@ func _gui_input(e: InputEvent) -> void:
 				cur = ""; caret = 0
 				queue_redraw(); return
 
+	# TAB AND FRIENDS ARE NOT TEXT. Godot reports Tab with unicode 0, and the
+	# old guard let anything >= 32 through -- but the keycode branch below
+	# never ran for Tab, so a NUL went into the line buffer and Godot then
+	# refused to render it: "Unicode parsing error... Unexpected NUL
+	# character". Filter on the CODE POINT being printable, not on the key.
+	if k.keycode == KEY_TAB:
+		# No completion yet; at least do not corrupt the line.
+		accept_event()
+		return
 	var ch := char(k.unicode)
-	if k.unicode >= 32 and ch != "":
+	if k.unicode >= 32 and k.unicode != 127 and ch != "" and ch != "\u0000":
 		cur = cur.insert(caret, ch)
 		caret += 1
 		scroll = 0
@@ -203,7 +244,7 @@ func _draw() -> void:
 
 	# The prompt line is part of the screen, not a separate widget below it.
 	var screen: PackedStringArray = lines.duplicate()
-	var prompt: String = prompt_fn.call()
+	var prompt: String = "> " if pending != "" else prompt_fn.call()
 	screen.append(prompt + cur)
 
 	var last := screen.size() - scroll

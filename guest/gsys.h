@@ -156,6 +156,24 @@ static inline int g_argv(char *arg, char **v)
     return n;
 }
 
+/* A number in a fixed-width right-aligned column, then two spaces.
+ *
+ * `ls` separated the size from the name with a TAB, and the terminal in the
+ * desktop does not expand tabs -- so every line read as "0bin", "4096etc",
+ * and David reasonably asked why all his folders started with a zero. A
+ * column that is always the same width needs no tab. */
+static inline void g_putpad(i64 v, int width)
+{
+    char b[24];
+    int n = 0;
+    if (v == 0) b[n++] = '0';
+    i64 t = v;
+    while (t > 0) { b[n++] = (char)('0' + (t % 10)); t /= 10; }
+    for (int i = n; i < width; i++) g_puts(" ");
+    for (int i = n - 1; i >= 0; i--) { char c[2] = { b[i], 0 }; g_puts(c); }
+    g_puts("  ");
+}
+
 /* Does `hay` contain `needle`? */
 static inline int g_contains(const char *hay, const char *needle)
 {

@@ -68,6 +68,8 @@ typedef unsigned long      uint64_t;
                              * captures its stdout back into it, which is all
                              * a pipeline is.                              */
 #define SYS_pipeout  1049   /* () -> flush the pipe buffer to the console  */
+#define SYS_reboot   1060   /* (halt) -> restarts THIS machine, the way the
+                             * power button does. Never returns usefully.  */
 #define SYS_sp       1059   /* (op, arg, buf) -> the service processor of the
                              * machine this one can reach. How a technician
                              * touches a box that will not boot.          */

@@ -804,6 +804,23 @@ static int64_t kernel_syscall(Cpu *c, int64_t n, int64_t a0, int64_t a1,
         snprintf(p->info->cwd, sizeof p->info->cwd, "/");
         return 0;
     }
+    case SYS_reboot: {
+        /* The machine restarts itself. `init 6` reached this by accident of
+         * the runlevel code and `reboot` did not exist at all, which is
+         * backwards -- nobody types `init 6` first. */
+        Machine *m = p->m;
+        if (a0) {
+            kernel_stop_daemons(m);
+            m->boot.running = false;
+            buf_clear(&m->boot.console);
+            buf_puts(&m->boot.console, "[halted]\n");
+            return 0;
+        }
+        if (m->on_rescue) machine_boot_rescue(m);
+        else              machine_boot(m);
+        return 0;
+    }
+
     case SYS_sp: {
         /* THE SERVICE PROCESSOR of the machine this one can reach.
          *
