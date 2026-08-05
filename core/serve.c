@@ -502,31 +502,15 @@ static bool client_line(Client *c)
      * initrd still gave you a prompt. A service processor shows you the
      * machine's screen. If the machine never got to a shell, the screen has
      * no shell on it, and that IS the diagnosis. */
-    if (on == &c->m && !c->m.boot.running) {
-        /* EXCEPT blkid, WHICH THE SERVICE PROCESSOR CAN ANSWER ITSELF.
-         *
-         * mountall's own error names blkid as the next step, and then the
-         * refusal below took it away -- the console recommending a command
-         * the console had just made unreachable. Everything else here needs a
-         * program running off the disk and stays refused; the identity of a
-         * block device does not. kernel_sp_blkid says whose answer it is. */
-        if (strncmp(cmd, "blkid", 5) == 0 && (cmd[5] == 0 || cmd[5] == ' ')) {
-            Buf b = {0};
-            send_str(c->fd, "\n");
-            kernel_sp_blkid(&c->m, &b);
+    if (on == &c->m) {
+        Buf b = {0};
+        if (kernel_console_dead(&c->m, cmd, &b)) {
             send_all(c->fd, b.p, b.len);
             buf_free(&b);
             send_str(c->fd, prompt_for(c));
             return true;
         }
-        {
-            Buf b = {0};
-            kernel_no_shell(&b);          /* the desktop says the same words */
-            send_all(c->fd, b.p, b.len);
-            buf_free(&b);
-        }
-        send_str(c->fd, prompt_for(c));
-        return true;
+        buf_free(&b);
     }
     kernel_run(on, cmd, &out);
     if (out.len) send_all(c->fd, out.p, out.len);

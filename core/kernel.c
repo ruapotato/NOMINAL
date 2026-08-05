@@ -2140,6 +2140,29 @@ void kernel_sp_blkid(Machine *m, Buf *out)
  *
  * It lives here so that a console cannot be honest in one window and mute in
  * another, which is the same rule as blkid above: one machine, one answer. */
+/* WHAT A CONSOLE ON A MACHINE THAT NEVER BOOTED DOES WITH A COMMAND.
+ *
+ * Returns true if it handled the line. The refusal itself was already shared,
+ * and the two front ends STILL disagreed, because the socket had learned an
+ * exception the extension had not: blkid is answered by the service processor
+ * reading the drives, so it must work on a box with no shell -- mountall's own
+ * error names it as the next step. The desktop refused it and the socket
+ * answered it. Sharing the WORDS but not the DECISION is not sharing.
+ *
+ * So the whole decision lives here, and a front end asks one question. */
+bool kernel_console_dead(Machine *m, const char *cmd, Buf *out)
+{
+    if (m->boot.running) return false;
+    if (strncmp(cmd, "blkid", 5) == 0 && (cmd[5] == 0 || cmd[5] == ' ')) {
+        buf_puts(out, "\n");
+        kernel_sp_blkid(m, out);
+        return true;
+    }
+    kernel_no_shell(out);
+    return true;
+}
+
+
 void kernel_no_shell(Buf *out)
 {
     buf_puts(out,

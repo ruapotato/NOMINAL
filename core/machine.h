@@ -353,6 +353,7 @@ int  kernel_svc_reload(Machine *m, const char *name, Buf *console);
 /* How many services that should be running are not, and which. A machine can
  * boot perfectly and still be broken; this is the difference. */
 int  kernel_health(Machine *m, Buf *out);
+bool kernel_console_dead(Machine *m, const char *cmd, Buf *out);
 bool machine_umount(Machine *m, const char *at);
 
 /* --- the package database, which is the fix verb ---------------------- */

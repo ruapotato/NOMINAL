@@ -980,13 +980,24 @@ func _open_terminal(which: int, title: String, rect: Rect2) -> Control:
 		"`rcon connect <address>` reaches a customer's machine.", ""])
 	var target := which
 	t.prompt_fn = func() -> String:
+		# THE EMPTY PROMPT SWALLOWED THE KEYSTROKE, AND THE ANSWER WITH IT.
+		#
+		# I made this return "" on a machine that had not booted, reasoning
+		# that a prompt is a promise and a dead box has no shell to promise.
+		# But terminal.gd refuses to collect input at all when the prompt is
+		# empty, so every command typed at the customer's console produced
+		# nothing: no echo, no output, no explanation. A playtester typed
+		# `ls`, `cat /etc/fstab`, `stat /boot/vmnomuz`, `blkid` and `svc` into
+		# that window and got five silences, while the socket console printed
+		# the full "[no shell here]" block for each one. Two views of one
+		# machine, disagreeing -- the exact bug the architecture exists to
+		# prevent, introduced by the fix for a smaller one.
+		#
+		# The machine refuses in words now, so the prompt does not have to
+		# carry the message. It matches the socket, which shows the prompt and
+		# lets the machine do the talking.
 		if target == 1:
-			# NO PROMPT ON A MACHINE THAT DID NOT BOOT. Showing `root@node#`
-			# and then answering every command with "no shell here" is worse
-			# than showing nothing: the prompt is a promise. A console
-			# attached to a dead box shows the screen, and the screen has no
-			# shell on it.
-			return "root@node# " if machine.booted() else ""
+			return "root@node# "
 		return "you@desk# "
 	t.on_command = func(line: String) -> String:
 		return _run(target, line)
@@ -1007,6 +1018,21 @@ func _run(which: int, line: String) -> String:
 	# cycle` typed into the console -- the obvious place to type it -- went to
 	# a machine with no peer and did nothing at all, which is exactly what
 	# David saw.
+	# `done` IS A VERB OF THE JOB, NOT OF A MACHINE.
+	#
+	# I added it to the socket console and to --desk and forgot the desktop,
+	# which is where most people will play. A playtester went looking for it,
+	# found `done: command not found` on the workstation, on the customer's
+	# console and as an `rcon` subcommand, and reported that nothing tells you
+	# how a ticket ends. It runs on neither machine -- it is you telling the
+	# customer you are finished -- so it is handled here, before anything is
+	# sent anywhere.
+	if s == "done" or s == "handback":
+		var verdict: String = machine.handback()
+		if machine.healthy():
+			_check_closed()
+		return verdict
+
 	var is_rcon := s.begins_with("rcon") and (s.length() == 4 or s[4] == " ")
 	var target := 0 if is_rcon else which
 

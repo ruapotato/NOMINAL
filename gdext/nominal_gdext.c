@@ -423,13 +423,25 @@ static void m_sh_on(Station *st, const GDExtensionConstTypePtr *args, void *ret)
      * one thing worse than a fake prompt: `stat /mnt/etc/fstab` came back
      * blank and blank reads as "the file is fine". Same words as the socket,
      * from the same function, so the two consoles cannot disagree. */
-    if (which && !st->m.boot.running) {
-        kernel_no_shell(&out);
+    if (which && kernel_console_dead(&st->m, line, &out)) {
         c_to_gdstring(ret, out.p ? out.p : "");
         buf_free(&out);
         return;
     }
     kernel_run(which ? &st->m : &st->desk, line, &out);
+    c_to_gdstring(ret, out.p ? out.p : "");
+    buf_free(&out);
+}
+
+/* handback() -> String — hand the machine back, and check the claim.
+ *
+ * The same machine_handback() the socket console and --desk call, so the
+ * three front ends cannot disagree about whether a job is finished. */
+static void m_handback(Station *st, const GDExtensionConstTypePtr *args, void *ret)
+{
+    (void)args;
+    Buf out = {0};
+    if (st->installed) machine_handback(&st->m, &out);
     c_to_gdstring(ret, out.p ? out.p : "");
     buf_free(&out);
 }
@@ -674,6 +686,7 @@ static const MethodDef METHODS[] = {
     { "ask",         m_ask,         1, { GDEXTENSION_VARIANT_TYPE_STRING }, GDEXTENSION_VARIANT_TYPE_STRING },
     { "sh_on",       m_sh_on,       2, { GDEXTENSION_VARIANT_TYPE_INT, GDEXTENSION_VARIANT_TYPE_STRING }, GDEXTENSION_VARIANT_TYPE_STRING },
     { "peer_addr",   m_peer_addr,   0, { 0 },                              GDEXTENSION_VARIANT_TYPE_STRING },
+    { "handback",    m_handback,    0, { 0 },                              GDEXTENSION_VARIANT_TYPE_STRING },
     { "healthy",     m_healthy,     0, { 0 },                              GDEXTENSION_VARIANT_TYPE_BOOL },
     { "de_requests", m_de_requests, 0, { 0 },                              GDEXTENSION_VARIANT_TYPE_STRING },
     { "de_apps",     m_de_apps,     0, { 0 },                              GDEXTENSION_VARIANT_TYPE_STRING },
