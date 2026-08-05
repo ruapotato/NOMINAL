@@ -231,6 +231,14 @@ uint32_t net_if_get_mask(const Net *n, int node, int ifx);
 void  net_route_add(Net *n, int node, uint32_t dst, uint32_t mask, uint32_t gw, int ifx);
 void  net_route_clear(Net *n, int node);
 void  net_set_gateway(Net *n, int node, uint32_t gw);
+/* WHAT IS ON THE BOX NOW, so that something else can write it down. A site
+ * device that grows a real operating system has to have the address, the
+ * mask and the gateway the player already gave it copied onto its disk --
+ * otherwise its own netd would configure the card from a file that says
+ * something else, and the machine would disagree with the network it is
+ * plugged into. 0 when there is no default route. */
+uint32_t net_get_gateway(const Net *n, int node);
+uint32_t net_get_resolver(const Net *n, int node);
 void  net_forwarding(Net *n, int node, bool on);
 void  net_arp_flush(Net *n, int node);
 int   net_arp_count(const Net *n, int node);

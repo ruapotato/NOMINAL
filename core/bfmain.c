@@ -15,6 +15,7 @@
 #include "building.h"
 #include "netstack.h"
 #include "site.h"
+#include "session.h"
 
 /* The network's own gate. See core/netcheck.c. */
 int net_selfcheck(void);
@@ -458,6 +459,41 @@ int main(int argc, char **argv)
      * terminal. `--sitesh <seed>` reads one operation per line on stdin and
      * is the same set of calls the view will make; `--site <seed>` shows an
      * empty tower and what its tenants are going to ask for. */
+    /* THE WHOLE SESSION, OVER A PIPE. `--sitesh` drives site_cmd() and
+     * nothing else: it can cable two boxes together without anybody walking
+     * anywhere, which is not the game the 3D shell plays. `--towersh` is the
+     * game: a person standing in a room, with the same verbs the socket
+     * serves, so a script and a playtester exercise identical code. */
+    if (argc > 2 && strcmp(argv[1], "--towersh") == 0) {
+        Session ses;
+        uint64_t seed = strtoull(argv[2], NULL, 10);
+        long budget = argc > 3 ? strtol(argv[3], NULL, 10) : 60000;
+        if (!session_start(&ses, seed, budget)) {
+            printf("seed %llu makes no building with an MDF in it\n",
+                   (unsigned long long)seed);
+            return 1;
+        }
+        Buf o = {0};
+        session_line(&ses, "look", &o);
+        fwrite(o.p, 1, o.len, stdout);
+        char line[NOM_ARG_MAX];
+        while (fgets(line, sizeof line, stdin)) {
+            size_t n = strlen(line);
+            while (n && (line[n - 1] == '\n' || line[n - 1] == '\r')) line[--n] = 0;
+            if (strcmp(line, "quit") == 0 || strcmp(line, "exit") == 0) break;
+            buf_clear(&o);
+            char p[64];
+            session_prompt(&ses, p, sizeof p);
+            printf("%s%s\n", p, line);
+            session_line(&ses, line, &o);
+            fwrite(o.p, 1, o.len, stdout);
+            fflush(stdout);
+        }
+        buf_free(&o);
+        session_end(&ses);
+        return 0;
+    }
+
     if (argc > 2 && (strcmp(argv[1], "--sitesh") == 0 ||
                      strcmp(argv[1], "--site") == 0)) {
         uint64_t seed = strtoull(argv[2], NULL, 10);

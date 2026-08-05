@@ -145,6 +145,28 @@ static Net *site(void)
     return SITE;
 }
 
+/* WHICH NETWORK THIS MACHINE IS ON. Its own tower's, if it stands in one;
+ * otherwise the single world this file keeps for the break-fix game. Every
+ * syscall below goes through here, so a shell on a server in the player's
+ * building reads and writes the player's network and nothing else. */
+static Net *homenet(Machine *m)
+{
+    return (m && m->net_home) ? (Net *)m->net_home : site();
+}
+
+/* Put this machine on a node that already exists, in a network somebody else
+ * owns. The cable is already in it -- the player ran it -- so there is no
+ * port to allocate and nothing to plug in. */
+void netsite_pin(Machine *m, struct Net *n, int node)
+{
+    if (!m || !n || node < 0) return;
+    m->net_home = n;
+    m->net_node = node;
+    m->net_port = -1;
+    m->net_gen  = SITE_GEN;
+    m->net_cfg  = 0;          /* so the next syscall re-reads the disk */
+}
+
 /* ------------------------------------------------------ the machine's own */
 /* One value that changes whenever anything the network depends on changes.
  * Cheaper than re-reading four files on every syscall, and it means an edit
@@ -255,13 +277,15 @@ static bool cfg_field(Machine *m, const char *path, const char *key,
  * Returns the node id, or 0 if it could not be plugged in at all. */
 static int attach(Machine *m)
 {
-    Net *n = site();
+    Net *n = homenet(m);
     uint32_t want = cfg_hash(m);
-    /* A node id only means anything in the world it was allocated in. */
-    if (m->net_gen != SITE_GEN) { m->net_node = 0; m->net_cfg = 0; }
+    /* A node id only means anything in the world it was allocated in -- but
+     * a pinned node was allocated in a world this file did not build, and
+     * its generation counter has nothing to say about it. */
+    if (!m->net_home && m->net_gen != SITE_GEN) { m->net_node = 0; m->net_cfg = 0; }
     if (m->net_node && m->net_cfg == want) return m->net_node;
 
-    if (!m->net_node) {
+    if (!m->net_node && !m->net_home) {
         /* Somebody else's old slot, if there is one: same node, same card,
          * same port, and therefore the same lease. */
         if (nfreed) {
@@ -272,7 +296,7 @@ static int attach(Machine *m)
             net_cable(n, m->net_node, 0, SW, m->net_port, 14, CAB_CAT5E);
         }
     }
-    if (!m->net_node) {
+    if (!m->net_node && !m->net_home) {
         if (next_port >= 24) {
             /* The switch is full. In a building that is a real limit and the
              * player buys another switch; in the harness, which works a
@@ -351,7 +375,7 @@ bool netsite_dns(Machine *m, const char *name, char *out, size_t cap)
     int node = attach(m);
     if (!node) return false;
     uint32_t ip = 0;
-    if (!net_resolve(site(), node, name, &ip)) return false;
+    if (!net_resolve(homenet(m), node, name, &ip)) return false;
     net_fmt_ip(ip, out, cap);
     return true;
 }
@@ -363,7 +387,7 @@ bool netsite_http(Machine *m, const char *ipstr, const char *path, Buf *out)
     if (!node) return false;
     uint32_t ip = 0;
     if (!net_parse_ip(ipstr, &ip)) return false;
-    int status = net_http_get(site(), node, ip, 80, path, out);
+    int status = net_http_get(homenet(m), node, ip, 80, path, out);
     return status == 200;
 }
 
@@ -371,7 +395,7 @@ bool netsite_http(Machine *m, const char *ipstr, const char *path, Buf *out)
 void netsite_info(Machine *m, int op, Buf *out)
 {
     int node = attach(m);
-    Net *n = site();
+    Net *n = homenet(m);
     if (!node) { buf_puts(out, "no network interface\n"); return; }
     switch (op) {
     case NETINFO_IFACE:  net_dump_ifaces(n, node, out); break;
@@ -392,7 +416,7 @@ int netsite_ping(Machine *m, const char *dst, int *rtt)
     if (!node) return PING_IF_DOWN;
     uint32_t ip = 0;
     if (!net_parse_ip(dst, &ip)) return PING_NO_ROUTE;
-    return (int)net_ping(site(), node, ip, rtt);
+    return (int)net_ping(homenet(m), node, ip, rtt);
 }
 const char *netsite_ping_text(int r) { return net_ping_text((PingResult)r); }
 
@@ -402,13 +426,13 @@ const char *netsite_ping_text(int r) { return net_ping_text((PingResult)r); }
 void netsite_fw_clear(Machine *m)
 {
     int node = attach(m);
-    if (node) net_fw_clear(site(), node);
+    if (node) net_fw_clear(homenet(m), node);
 }
 void netsite_fw_add(Machine *m, int chain, int proto, int dport, int drop)
 {
     int node = attach(m);
     if (!node) return;
-    net_fw_add(site(), node, (FwChain)chain, proto, (uint16_t)dport, 0, 0,
+    net_fw_add(homenet(m), node, (FwChain)chain, proto, (uint16_t)dport, 0, 0,
                drop ? FW_DROP : FW_ACCEPT);
 }
 
@@ -417,8 +441,8 @@ void netsite_fw_add(Machine *m, int chain, int proto, int dport, int drop)
 void netsite_trace(Machine *m, int on)
 {
     (void)attach(m);
-    net_trace(site(), on != 0);
-    if (on) net_trace_clear(site());
+    net_trace(homenet(m), on != 0);
+    if (on) net_trace_clear(homenet(m));
 }
 
 /* Forget the world. Called when the harness starts a fresh ticket, so one
@@ -428,6 +452,11 @@ void netsite_trace(Machine *m, int on)
 void netsite_detach(Machine *m)
 {
     if (!m) return;
+    /* A PINNED NODE IS NOT OURS TO GIVE BACK. It is a switch port in
+     * somebody's building with a cable in it; the box being freed does not
+     * unplug it, and handing it to the free list would let the next
+     * break-fix machine be issued a node in a network it has never seen. */
+    if (m->net_home) { m->net_home = NULL; m->net_node = 0; m->net_cfg = 0; return; }
     if (!m->net_node || !SITE || m->net_gen != SITE_GEN) {
         m->net_node = 0; m->net_cfg = 0;
         return;

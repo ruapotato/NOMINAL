@@ -298,6 +298,20 @@ typedef struct Machine_ {
     int      net_port;     /* which port of the switch the cable is in */
     uint32_t net_cfg;
     uint32_t net_gen;
+    /* PINNED TO A NETWORK SOMEBODY ELSE BUILT.
+     *
+     * A break-fix machine is plugged into the one network this process keeps
+     * for it, on a port netsite.c chose. A machine standing in the player's
+     * own tower is not: it is a box in a rack with the player's cable in it,
+     * on a switch the player bought, and the node already exists before the
+     * operating system does. When `net_home` is set, netsite.c stops
+     * allocating and cabling and only does the other half of its job --
+     * reading the config off this disk and applying it to that node -- so
+     * `ping` inside the shell goes over the copper the player paid for.
+     *
+     * NULL on every machine that is not in a tower, which is every machine
+     * the break-fix game has ever made. See core/session.c. */
+    struct Net *net_home;
 } Machine;
 
 /* Build a pristine installation. Deterministic: same seed, same machine. */

@@ -16,6 +16,7 @@
 #include "cpu.h"
 #include "machine.h"
 #include "kernel.h"
+#include "session.h"
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
@@ -79,6 +80,16 @@ typedef struct {
     Machine  desk;
     bool     desk_up;
     bool     live;
+    /* THE OTHER HALF OF THE GAME, IN THE SAME SESSION.
+     *
+     * D23 said ordering, carrying, cabling and configuring all had to be
+     * drivable through a scriptable interface, and they were -- through a
+     * DIFFERENT PROCESS. `--sitesh` played the tower and `--serve` played
+     * the break-fix desk, so a blind playtester could have one or the other
+     * and never both, and nobody could test the seam between them. `tower`
+     * stands you up out of this chair and into the building; `desk` walks
+     * you back. It is one session and one player. See core/session.c. */
+    Session  ses;
     char     line[LINE_CAP];
     size_t   len;
     bool     line_over;  /* this line was longer than the buffer */
@@ -92,6 +103,11 @@ typedef struct {
  * wrong about, because it is in front of every command you type. */
 static const char *prompt_for(const Client *c)
 {
+    static char p[64];
+    if (c->ses.where != SES_DESK) {
+        session_prompt(&c->ses, p, sizeof p);
+        return p;
+    }
     if (c->desk.sp_connected) return "root@node# ";
     return "you@desk# ";
 }
@@ -119,6 +135,7 @@ static void client_close(Client *c)
     if (c->fd != BAD_SOCK) sock_close(c->fd);
     c->fd = BAD_SOCK;
     if (c->live) { machine_free(&c->m); c->live = false; }
+    session_end(&c->ses);
 }
 
 static void send_boot(Client *c)
@@ -273,6 +290,22 @@ static bool client_line(Client *c)
      * the documented flow. Hanging up on it stranded the player. */
     if (strcmp(cmd, "quit") == 0) return false;
 
+    /* THE TOWER GETS FIRST REFUSAL, AND ONLY WHEN YOU ARE IN IT.
+     *
+     * At the desk session_line() answers exactly one word -- `tower` -- so
+     * everything four playtests were run on reaches the code below
+     * untouched. Once you have stood up, you are a person in a building and
+     * every line is the building's, including the shell on the box you just
+     * cabled: the session owns that machine and runs it through the same
+     * kernel_run() this file uses. */
+    {
+        Buf o = {0};
+        bool took = session_line(&c->ses, cmd, &o);
+        if (o.len) send_all(c->fd, o.p, o.len);
+        buf_free(&o);
+        if (took) return true;
+    }
+
     /* THERE WAS NO WAY TO FINISH A JOB.
      *
      * A blind playtester repaired seven machines and wrote: "The customer
@@ -425,6 +458,13 @@ static bool client_line(Client *c)
 
     if (strcmp(cmd, "help") == 0) {
         send_str(c->fd,
+            "THERE ARE TWO HALVES TO THIS JOB and you are sitting in one of them.\n"
+            "  `tower`   stand up and walk into the building you look after: buy\n"
+            "            the kit, carry it to a room, run the copper, address it,\n"
+            "            and get a shell on the server you just cabled. `help` in\n"
+            "            there lists that half. `desk` comes back to this chair.\n"
+            "  the rest of this page is the support ticket in front of you now.\n"
+            "\n"
             "you are at YOUR OWN workstation -- a healthy machine. the\n"
             "customer's is somewhere else. the prompt tells you which is which:\n"
             "  you@desk#    your machine\n"
@@ -572,7 +612,10 @@ int bench_serve(int port, bool verbose, uint64_t seed0)
     if (verbose) fprintf(stderr, "serve: listening on 127.0.0.1:%d\n", port);
 
     Client cl[MAX_CLIENTS];
-    for (int i = 0; i < MAX_CLIENTS; i++) { cl[i].fd = BAD_SOCK; cl[i].live = false; }
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        cl[i].fd = BAD_SOCK; cl[i].live = false;
+        memset(&cl[i].ses, 0, sizeof cl[i].ses);
+    }
     uint64_t seq = seed0;
 
     for (;;) {
@@ -599,7 +642,15 @@ int bench_serve(int port, bool verbose, uint64_t seed0)
                 else {
                     Client *c = &cl[slot];
                     c->fd = fd; c->len = 0; c->live = false;
-                    send_str(fd, "NOMINAL support bench. `help` for what you can do.\n");
+                    memset(&c->ses, 0, sizeof c->ses);
+                    /* The tower this connection's building is generated from.
+                     * Same seed, same tower, every time. */
+                    c->ses.seed = seq + 1;
+                    send_str(fd,
+                        "NOMINAL. You are the IT department of a growing building.\n"
+                        "  you are at your desk, and there is a support ticket on it.\n"
+                        "  `help`   what you can do here\n"
+                        "  `tower`  stand up and walk into the building you look after\n");
                     new_ticket(c, ++seq, 1);
                     send_str(fd, prompt_for(c));
                 }

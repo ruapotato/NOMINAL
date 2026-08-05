@@ -1160,6 +1160,19 @@ void net_set_gateway(Net *n, int node, uint32_t gw)
         if (h->rt[i].used && h->rt[i].mask == 0) h->rt[i].used = false;
     net_route_add(n, node, 0, 0, gw, -1);
 }
+uint32_t net_get_gateway(const Net *n, int node)
+{
+    const Host *h = host_of((Net *)n, node);
+    if (!h) return 0;
+    for (int i = 0; i < NET_ROUTE_MAX; i++)
+        if (h->rt[i].used && h->rt[i].mask == 0) return h->rt[i].gw;
+    return 0;
+}
+uint32_t net_get_resolver(const Net *n, int node)
+{
+    const Host *h = host_of((Net *)n, node);
+    return h ? h->resolver : 0;
+}
 void net_forwarding(Net *n, int node, bool on)
 {
     Host *h = host_of(n, node);
