@@ -98,11 +98,64 @@ int main(int argc, char **argv)
             if (machine_break(&m, (uint64_t)(1000 + i), nf, what, sizeof what)) {
                 made++;
                 stage[m.boot.failed_at]++;
+                /* A MACHINE THAT BOOTS STILL HAS SOMETHING TO SAY.
+                 *
+                 * This counted distinct `boot.reason` strings, and a machine
+                 * that comes UP has an empty one -- it did not fail at a
+                 * stage, it reached the target with something sick on it. So
+                 * every UP-but-sick ticket collapsed into one bucket, and as
+                 * that class grew from nothing to thirty of a hundred and
+                 * fifty, the number this gate reports sat perfectly still.
+                 *
+                 * An agent that had just doubled the fault set reported "57
+                 * before, 57 after, and I did not touch the counter to make
+                 * it move" -- which was the honest answer and also the
+                 * diagnosis. The metric could not see a whole class of
+                 * ticket, so it would have gone on reporting no progress
+                 * while the game got better. What the customer complains
+                 * about on a booted machine is the health complaint; count
+                 * that. */
+                char msg[160];
+                if (m.boot.reason[0]) {
+                    snprintf(msg, sizeof msg, "%s", m.boot.reason);
+                } else {
+                    Buf sick = {0};
+                    kernel_health(&m, &sick);
+                    if (!sick.len) machine_outstanding(&m, &sick);
+                    /* THE FIRST LINE IS A HEADING, NOT A COMPLAINT.
+                     *
+                     * Taking it verbatim moved this count from 57 to 58,
+                     * because both health and outstanding open with a fixed
+                     * sentence ending in a colon -- so thirty tickets went
+                     * from sharing an empty boot.reason to sharing one
+                     * heading. Same bucket, new label, and I nearly reported
+                     * it as progress. Skip the headings and take the first
+                     * line that names something. */
+                    size_t at = 0, n1 = 0;
+                    msg[0] = 0;
+                    while (at < sick.len) {
+                        size_t e = at;
+                        while (e < sick.len && sick.p[e] != '\n') e++;
+                        size_t s2 = at;
+                        while (s2 < e && sick.p[s2] == ' ') s2++;
+                        size_t len = e - s2;
+                        bool heading = len == 0 || sick.p[e - 1] == ':';
+                        if (!heading) {
+                            n1 = len > sizeof msg - 1 ? sizeof msg - 1 : len;
+                            memcpy(msg, sick.p + s2, n1);
+                            msg[n1] = 0;
+                            break;
+                        }
+                        at = e + 1;
+                    }
+                    if (!n1) snprintf(msg, sizeof msg, "(up, and nothing said why)");
+                    buf_free(&sick);
+                }
                 bool dup = false;
                 for (int k = 0; k < nseen; k++)
-                    if (strcmp(seen[k], m.boot.reason) == 0) dup = true;
+                    if (strcmp(seen[k], msg) == 0) dup = true;
                 if (!dup && nseen < 4096)
-                    snprintf(seen[nseen++], 160, "%s", m.boot.reason);
+                    snprintf(seen[nseen++], 160, "%s", msg);
                 if (i < 12)
                     printf("seed %-5d %-10s %s\n           %s\n",
                            1000 + i, boot_stage_name(m.boot.failed_at), what,
