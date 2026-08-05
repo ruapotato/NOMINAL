@@ -128,7 +128,7 @@ build/bf_asan: $(BF_SRC) core/machine.h core/nom.h core/abi.h core/cpu.h \
 	$(CC) $(CSTD) $(WARN) $(FPFLAGS) -O1 -g -fsanitize=address,undefined \
 	  -Icore -o $@ $(BF_SRC)
 
-test-break: build/bf build/bf_asan
+test-break: build/bf build/bf_asan build/faulthist
 	@./build/bf --health 20 | tail -1
 	@echo
 	@./build/bf --survey 300 | tail -9
@@ -136,6 +136,11 @@ test-break: build/bf build/bf_asan
 	@./build/bf --solve 200 | tail -1
 	@echo
 	@./build/bf --peel 60 3 | tail -2
+	@echo
+	@# Is every designed fault reachable, and can any ticket be closed with
+	@# no repair? This exits non-zero on the second, which is the failure a
+	@# playtester described as teaching you to distrust your own diagnosis.
+	@./build/faulthist 150 1 1 | tail -5
 	@echo
 	@echo "--- under asan/ubsan (slower now: every boot runs a real cpu):"
 	@for n in 1 3; do \
