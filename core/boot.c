@@ -284,6 +284,7 @@ void machine_boot(Machine *m)
     m->nmount = 0;
 
     buf_clear(&m->boot.console);
+    m->powered        = true;    /* something is running the boot chain */
     m->boot.running   = false;
     m->boot.emergency = 0;
     m->boot.reason[0] = '\0';

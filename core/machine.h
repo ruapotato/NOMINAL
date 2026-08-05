@@ -130,6 +130,14 @@ typedef struct Machine_ {
      * they see, badly. It is a real support scenario and a genuinely
      * different puzzle -- every command costs a round trip through somebody
      * who does not know what any of it means. */
+    /* IS THERE ELECTRICITY IN IT.
+     *
+     * Not the same question as "did it boot", and conflating the two made the
+     * service processor lie: a machine that powered on and died at initrd
+     * reported "power off", which is what you would see if it were unplugged.
+     * A real BMC tells you those apart, and telling them apart is the whole
+     * reason you trust it. */
+    bool  powered;
     bool  airgapped;
     bool  sp_connected;      /* has the technician attached to the console  */
     bool  sp_media;          /* is the rescue medium in the virtual drive   */

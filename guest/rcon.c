@@ -61,13 +61,27 @@ void _start(void)
     }
 
     i64 st = sysc(SYS_sp, SP_STATUS, 0, 0);
+    if (st == -3) {
+        g_putln("rcon: that machine is not on any network you can reach.");
+        g_exit(1);
+    }
     if (st < 0) {
         g_putln("rcon: no machine is reachable from here.");
         g_exit(1);
     }
+    /* A service processor answers nobody who has not attached to it. */
+    if (!(st & 2)) {
+        g_putln("rcon: not attached to anything.");
+        g_putln("  `rcon connect <address>` first -- the customer can read the");
+        g_putln("  address off the sticker on the front of the machine.");
+        g_exit(1);
+    }
 
     if (g_streq(v[0], "status")) {
-        g_puts("power   "); g_putln((st & 1) ? "on" : "off");
+        g_puts("power   ");
+        if (!(st & 1))      g_putln("OFF -- nothing is running in it");
+        else if (st & 16)   g_putln("on, and it finished booting");
+        else                g_putln("on, but it did NOT finish booting");
         g_puts("console "); g_putln((st & 2) ? "attached" : "not attached");
         g_puts("media   "); g_putln((st & 4) ? "rescue medium inserted" : "empty");
         g_puts("boot    "); g_putln((st & 8) ? "the attached medium" : "the disk");
@@ -87,7 +101,12 @@ void _start(void)
         if (!g_streq(v[1], "off") && !g_streq(v[1], "on") && !g_streq(v[1], "cycle")) {
             usage(); g_exit(1);
         }
-        sysc(SYS_sp, SP_POWER, a, 0);
+        i64 prc = sysc(SYS_sp, SP_POWER, a, 0);
+        if (prc == -4) {
+            g_putln("rcon: it is already powered on.");
+            g_putln("  `rcon power cycle` restarts it; `rcon power off` stops it.");
+            g_exit(1);
+        }
         if (a == 0) { g_putln("rcon: powered off."); g_exit(0); }
         g_putln(a == 1 ? "rcon: powered on." : "rcon: power cycled.");
         /* Show what it said coming up: that is the whole point of a console. */

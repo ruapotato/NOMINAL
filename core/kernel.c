@@ -843,7 +843,10 @@ static int64_t kernel_syscall(Cpu *c, int64_t n, int64_t a0, int64_t a1,
         int op = (int)a0, arg = (int)a1;
         switch (op) {
         case SP_STATUS:
-            return (t->boot.running ? 1 : 0)
+            /* Bit 0 is POWER, bit 4 is "it got all the way up". They are
+             * different facts and the console must not merge them. */
+            return (t->powered ? 1 : 0)
+                 | (t->boot.running ? 16 : 0)
                  | (p->m->sp_connected ? 2 : 0)
                  | (p->m->sp_media ? 4 : 0)
                  | (p->m->sp_bootdev ? 8 : 0);
@@ -853,10 +856,17 @@ static int64_t kernel_syscall(Cpu *c, int64_t n, int64_t a0, int64_t a1,
         case SP_POWER:
             if (arg == 0) {                       /* off */
                 kernel_stop_daemons(t);
+                t->powered = false;
                 t->boot.running = false;
                 buf_clear(&t->boot.console);
-                buf_puts(&t->boot.console, "[power off]\n");
+                buf_puts(&t->boot.console,
+                    "[powered off -- the screen is black and the fans have "
+                    "stopped]\n");
                 return 0;
+            }
+            if (arg == 1 && t->powered) {
+                /* Already on. Real hardware ignores the power-on request. */
+                return -4;
             }
             /* on, or cycle: boot whatever the boot device says */
             if (p->m->sp_bootdev == 1 && p->m->sp_media) machine_boot_rescue(t);
