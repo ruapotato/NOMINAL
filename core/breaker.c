@@ -1928,6 +1928,31 @@ static void fault_boot_symlink_swap(Machine *m, Rng *r, char *d, size_t ds)
                     "images");
 }
 
+/* THE FIRST HINT IN THE PREVIOUS ADMINISTRATOR'S NOTES, AND THE GAME HAD NO
+ * FAULT THAT PRODUCED IT.
+ *
+ * "1. /boot/vmnomuz is a SYMLINK. When somebody deletes the versioned image,
+ * `ls /boot` looks completely fine. stat it." There is a haiku about it on
+ * the wiki as well. Three playtesters have quoted that note back; none of
+ * them ever drew it, because the only way to get there was for the random
+ * mutation to happen to delete one particular file out of a hundred and
+ * twenty-eight.
+ *
+ * `ls /boot` shows the name. `stat` shows there is nothing at the end of it,
+ * and the loader says which path it could not follow. The versioned image is
+ * package content, so `pkg verify kernel-default` names it and a reinstall
+ * puts it back -- the symlink was never wrong. */
+static void fault_dangling_kernel(Machine *m, Rng *r, char *d, size_t ds)
+{
+    (void)r;
+    VNode *l = vfs_lookup(&m->disk, "/boot/vmnomuz");
+    if (!l || l->kind != VN_LINK) return;
+    if (!vfs_lookup(&m->disk, "/boot/vmnomuz-6.4.11")) return;
+    vfs_remove(&m->disk, "/boot/vmnomuz-6.4.11");
+    snprintf(d, ds, "deleted /boot/vmnomuz-6.4.11: the symlink is still there "
+                    "and points at nothing");
+}
+
 /* AN INITRD BUILT FOR ANOTHER KERNEL.
  *
  * Not empty, not corrupt, not foreign hardware: a complete image full of the
@@ -2258,6 +2283,7 @@ static const struct { const char *name; StructuralFault fn; } STRUCTURAL[] = {
     { "module_mismatch", fault_module_mismatch },
     { "kernel_version", fault_kernel_version },
     { "boot_symlink_swap", fault_boot_symlink_swap },
+    { "dangling_kernel", fault_dangling_kernel },
     { "initrd_version", fault_initrd_version },
     { "inittab_second", fault_inittab_second },
     { "shells", fault_shells }, { "getty_user", fault_getty_user },
