@@ -48,8 +48,8 @@
 #include "building.h"
 #include "netstack.h"
 
-#define SITE_MAX_DEV      64
-#define SITE_MAX_LINK    128
+#define SITE_MAX_DEV     400
+#define SITE_MAX_LINK    600
 #define SITE_MAX_TENANT  200
 #define SITE_PATCH_M       3     /* a patch lead at each end of every run   */
 
@@ -63,6 +63,13 @@ typedef enum {
     SDEV_ROUTER,
     SDEV_PC,
     SDEV_SERVER,
+    /* A DESK. The tenant's own computer, on the tenant's own desk, which
+     * they carried in themselves the day they got the keys. It is not for
+     * sale and it is not the player's: what the player sells is the port it
+     * is plugged into. It is a real card in a real broadcast domain and it
+     * generates real frames, which is the only reason any of the rest of
+     * this file has anything to do. */
+    SDEV_DESK,
     SDEV_KIND_COUNT
 } SiteDevKind;
 
@@ -133,7 +140,37 @@ typedef struct {
     uint8_t  wants_server;     /* and they want a machine of their own      */
     int      day;              /* when they move in                         */
     int      rent;             /* pounds a month                            */
+    /* ------------------------------------------------- once they are in */
+    uint8_t  moved;            /* they have the keys and their desks are in */
+    uint8_t  strikes;          /* consecutive days their work did not finish*/
+    uint8_t  complained;       /* they have filed one. It does not un-file. */
+    int      desk0, ndesk;     /* their desks, as devices in dev[]          */
+    /* What the last busy period actually did. Measured from the sessions
+     * that really ran, not predicted from anything. */
+    int      tried, finished;
+    int      worst_ms;         /* the slowest desk's transfer               */
+    long     bytes;            /* what their people pulled that day         */
 } SiteTenant;
+
+/* HOW A DAY WENT, for the whole site. Every number in here was counted
+ * during the busy period; none of it is a model sitting beside the netstack.
+ * `site_dump_day` prints it and `--loadcheck` asserts on it. */
+typedef struct {
+    int  day;
+    int  tenants_in;        /* moved in                                    */
+    int  tenants_served;    /* connected, addressed and finishing work     */
+    int  desks, connected;
+    int  sessions, finished;
+    long bytes;
+    long rent;              /* taken today                                 */
+    int  worst_ms;
+    uint64_t frames, drops; /* frames the site handled; frames it lost     */
+    /* The port that was asked for the most, and how hard. This is the
+     * summary; `netstat -P` on that box is the evidence. */
+    char hot[NET_NAME_MAX + 8];
+    int  hot_util;          /* percent of the busy period it was clocking  */
+    int  complaints_today;
+} SiteDay;
 
 typedef struct {
     const Building *b;         /* borrowed: the caller owns the tower       */
@@ -148,6 +185,18 @@ typedef struct {
     int      ntenant;
     SiteTenant tenant[SITE_MAX_TENANT];
     int      err;              /* why the last operation refused            */
+    /* ------------------------------------------------------- the clock */
+    /* Nothing in this game came back for the player because nothing ever
+     * advanced. A day is the unit: tenants move in on their day, their
+     * people do a day's work over the network the player built, and the
+     * rent for a day that worked arrives that evening. */
+    int      day;
+    int      isp_mb;           /* what the circuit carries, in megabits     */
+    int      complaints;       /* filed, cumulative                         */
+    long     rent_taken;
+    uint8_t  over;             /* the run ended                             */
+    char     over_why[128];
+    SiteDay  last;             /* how the last day went                     */
 } Site;
 
 /* ------------------------------------------------------------- day one */
@@ -257,6 +306,76 @@ uint64_t site_dev_frames(const Site *s, int dev);
 /* The order tenancies move in, and what each of them wants. */
 int  site_demand_upto(const Site *s, int day, int *out, int cap);
 void site_dump_demand(const Site *s, Buf *out);
+
+/* ============================================================== THE LOOP
+ *
+ * The first blind playtester of the tower counted fifteen decisions an hour
+ * and then said the thing that mattered: *"They felt like MY decisions; they
+ * did not yet feel like decisions that would come back for me."* Nothing
+ * came back because nothing advanced. This is the clock, and everything it
+ * turns.
+ *
+ * A DAY: tenancies whose day has come move in and their desks arrive; the
+ * desks ask for addresses the way a computer asks for one; then the busy
+ * period runs -- every desk in the building doing a real day's work through
+ * the real stack at the same time -- and what finished is what the tenant
+ * pays for.
+ *
+ * WHY THE BUSY PERIOD AND NOT THE WHOLE DAY. Four seconds of wire time, at
+ * the moment of the day when everybody is doing something. A network is
+ * sized for its peak and fails at its peak; simulating the other 86,396
+ * seconds would be the same arithmetic with more zeroes in it. The window
+ * is `SITE_BUSY_MS` and it is the same for everybody, so a comparison
+ * between two builds is a comparison of the builds.
+ */
+#define SITE_BUSY_MS      4000
+/* WHAT ONE DESK DOES IN THAT WINDOW, and where it goes. These two numbers
+ * are the demand side of the whole difficulty curve, and they are the only
+ * numbers in the loop that were chosen rather than derived -- so they are
+ * chosen to be a defensible busy-period figure for one person at one desk
+ * and nothing else. Two megabytes off a file server in four seconds is four
+ * megabits a second, which is one video call or one ordinary document being
+ * opened; three hundred kilobytes off the internet is another half a megabit.
+ *
+ * WHICH WIRES CARRY THEM IS THE PLAYER'S ARCHITECTURE, and that is where the
+ * curve actually comes from. File traffic goes to the nearest server the
+ * player has put up -- their own tenancy's if they have one, otherwise
+ * whichever one exists -- so a server on the floor keeps a floor's worth of
+ * megabits off the riser and a server in the basement does not. Internet
+ * traffic crosses the ISP circuit whatever anybody does. */
+#define SITE_DESK_FILE_KB 2048
+#define SITE_DESK_WEB_KB   300
+/* What the landlord's circuit carries until somebody buys a bigger one. */
+#define SITE_ISP_MB_DEFAULT 500
+
+/* THE DESKS ARRIVE WITH THE TENANT. `serve` is the player's half: it runs
+ * copper from a box they own to the tenancy's desks, as many as there are
+ * free ports for, and charges for every metre. Returns how many desks got a
+ * port, or -1 with s->err set. */
+int  site_serve(Site *s, int tenant, int dev, CableKind k);
+/* How many of a tenancy's desks have a cable in them and an address on the
+ * card. Service is this, and then whether the work finishes. */
+int  site_tenant_connected(const Site *s, int tenant);
+int  site_tenant_addressed(const Site *s, int tenant);
+
+/* ONE DAY. Moves people in, runs the busy period, takes the rent, counts the
+ * strikes and files the complaints. Returns false once the run is over --
+ * `s->over_why` says which way. */
+bool site_day(Site *s, SiteDay *rep);
+/* Several, stopping early if the run ends. */
+bool site_advance(Site *s, int days, Buf *out);
+
+/* What a circuit costs: the ISP's price for `mb` megabits a month. */
+long site_isp_price(int mb);
+bool site_isp(Site *s, int mb);
+
+void site_dump_day(const Site *s, Buf *out);
+/* Every tenancy that is in, how many desks are up, and how their last day
+ * went. This is the page a player reads to see a complaint coming. */
+void site_dump_service(const Site *s, Buf *out);
+/* The busiest ports in the building, most-used first: the summary whose
+ * evidence is `netstat -P` on the box named in it. */
+void site_dump_load(const Site *s, Buf *out);
 
 /* ------------------------------------------------------------ inspection */
 void site_dump(const Site *s, Buf *out);

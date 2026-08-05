@@ -148,11 +148,21 @@ typedef struct {
     bool     pending;      /* a request is out and nothing has answered yet */
     /* One packet held while we wait for the answer, exactly as a real host
      * does. Without it the FIRST packet to any new neighbour is always lost,
-     * which is a bug that looks like intermittent packet loss. */
-    uint8_t  hold[NET_FRAME_MAX];
+     * which is a bug that looks like intermittent packet loss.
+     *
+     * THE FRAME ITSELF IS NOT HERE. It used to be, and it made an ARP cache
+     * entry fifteen hundred bytes wide: sixty-four of them on each of four
+     * hundred hosts is forty megabytes of the world spent on packets that
+     * are almost never held. At any instant a handful of neighbours anywhere
+     * are unresolved, so the held frames are a pool for the world and this
+     * is an index into it, -1 when there is nothing waiting. */
+    int      hold;
     int      holdlen;
     int      holdif;
 } ArpEntry;
+
+/* Frames waiting on an ARP answer, anywhere in the world. */
+#define NET_HOLD_MAX  96
 
 typedef struct {
     uint32_t dst, mask, gw;
@@ -315,9 +325,22 @@ typedef struct {
     uint32_t due;          /* tick it lands                                 */
     uint16_t len;
     uint32_t seq;          /* enqueue order: ties in `due` break by this    */
+    int      next;         /* the next frame due in the same millisecond    */
     bool     used;
     uint8_t  data[NET_FRAME_MAX];
 } InFlight;
+
+/* WHEN A FRAME LANDS, INDEXED BY THE MILLISECOND IT LANDS IN. The queue used
+ * to be swept end to end on every delivery looking for the oldest frame that
+ * was due, which is fine for the dozen frames a ping makes and quadratic for
+ * the half million a tenanted floor makes in its busy period. A frame's
+ * delay is bounded and small -- one tick of propagation, at most eight more
+ * for two kilometres of fibre, and at most four of egress queue, because a
+ * port with more than its buffer behind it drops instead of queueing -- so
+ * "which millisecond" is a ring of buckets and delivery is a list walk.
+ * Order within a millisecond is still enqueue order, so the trace is the
+ * trace it always was. */
+#define NET_DUE_RING  64
 
 struct Net {
     Rng      rng;
@@ -336,7 +359,11 @@ struct Net {
     /* Extra addresses a host answers for. Pooled, because one machine in the
      * world has thirty of them and every other machine has none. */
     struct { int node; uint32_t ip; bool used; } alias[NET_ALIAS_MAX];
+    struct { uint8_t data[NET_FRAME_MAX]; bool used; } hold[NET_HOLD_MAX];
     InFlight q[NET_QUEUE_MAX];
+    int      qfree;                    /* head of the unused list           */
+    int      qhead[NET_DUE_RING];      /* frames due in that millisecond    */
+    int      qtail[NET_DUE_RING];
     uint32_t qseq;
     uint64_t qdrops;
     /* Frames handled in a sliding window, which is how a storm becomes
@@ -400,6 +427,10 @@ Net *net_new(uint64_t seed)
     rng_seed(&n->rng, seed ^ 0x6e65747374616b31ull);
     n->next_mac = 1;
     for (int i = 0; i < NET_PORTS_MAX; i++) n->port[i].cable = -1;
+    for (int i = 0; i < NET_QUEUE_MAX; i++) n->q[i].next = i + 1;
+    n->q[NET_QUEUE_MAX - 1].next = -1;
+    n->qfree = 0;
+    for (int i = 0; i < NET_DUE_RING; i++) n->qhead[i] = n->qtail[i] = -1;
     return n;
 }
 void net_free(Net *n) { if (n) nom_free(n); }
@@ -604,11 +635,21 @@ void net_uncable(Net *n, int cable)
     /* Frames already on this wire are gone. They are electricity in a cable
      * somebody just pulled out; nothing delivers them and nothing reports
      * them. That is the whole difference between unplugging and a flag. */
-    for (int i = 0; i < NET_QUEUE_MAX; i++)
-        if (n->q[i].used) {
+    for (int b = 0; b < NET_DUE_RING; b++) {
+        int prev = -1, i = n->qhead[b];
+        while (i >= 0) {
+            int next = n->q[i].next;
             int ip = n->q[i].inport;
-            if (ip == c->a || ip == c->b) n->q[i].used = false;
+            if (ip == c->a || ip == c->b) {
+                if (prev < 0) n->qhead[b] = next; else n->q[prev].next = next;
+                if (n->qtail[b] == i) n->qtail[b] = prev;
+                n->q[i].used = false;
+                n->q[i].next = n->qfree;
+                n->qfree = i;
+            } else prev = i;
+            i = next;
         }
+    }
     n->port[c->a].cable = -1;
     n->port[c->b].cable = -1;
     /* The wire is gone, so whatever was still being clocked onto it is gone
@@ -737,9 +778,9 @@ static void port_tx(Net *n, int p, const uint8_t *data, int len)
     /* Find a slot. A full queue is a saturated network, and a saturated
      * network drops -- which is exactly what a broadcast storm looks like
      * from inside, and it is why we do not need a storm detector. */
-    int slot = -1;
-    for (int i = 0; i < NET_QUEUE_MAX; i++) if (!n->q[i].used) { slot = i; break; }
+    int slot = n->qfree;
     if (slot < 0) { n->qdrops++; pt->drops++; return; }
+    n->qfree = n->q[slot].next;
 
     pt->tx++;
     pt->busy_us = start + serial_us;
@@ -769,8 +810,17 @@ static void port_tx(Net *n, int p, const uint8_t *data, int len)
      * player reads off ping. */
     uint32_t delay = 1 + (uint32_t)(c->metres / 250)
                        + (uint32_t)((wait + serial_us) / 1000);
+    /* The ring holds every delay this stack can produce. A frame that
+     * somehow wanted longer would land in the wrong millisecond rather than
+     * be lost, so it is clamped where the arithmetic is, not hidden. */
+    if (delay >= NET_DUE_RING) delay = NET_DUE_RING - 1;
     f->due = (uint32_t)(n->now + delay);
     memcpy(f->data, data, (size_t)len);
+    f->next = -1;
+    int b = (int)(f->due % NET_DUE_RING);
+    if (n->qtail[b] < 0) n->qhead[b] = slot;
+    else n->q[n->qtail[b]].next = slot;
+    n->qtail[b] = slot;
 }
 
 /* ====================================================================== L2
@@ -1216,22 +1266,23 @@ static void frame_land(Net *n, int p, uint8_t *fr, int len)
 static void net_tick(Net *n)
 {
     n->now++;
-    for (;;) {
-        int best = -1;
-        for (int i = 0; i < NET_QUEUE_MAX; i++) {
-            if (!n->q[i].used || n->q[i].due > n->now) continue;
-            if (best < 0 || n->q[i].seq < n->q[best].seq) best = i;
-        }
-        if (best < 0) break;
-        InFlight *f = &n->q[best];
+    int b = (int)(n->now % NET_DUE_RING);
+    int i = n->qhead[b];
+    n->qhead[b] = n->qtail[b] = -1;
+    while (i >= 0) {
+        InFlight *f = &n->q[i];
+        int next = f->next;
         f->used = false;
         uint8_t data[NET_FRAME_MAX];
         int len = f->len;
         int p = f->inport;
         memcpy(data, f->data, (size_t)len);
+        f->next = n->qfree;
+        n->qfree = i;
         /* A frame lands on a port whose cable has since been pulled: it is
          * gone, and the count above already forgot it. */
         if (port_state(n, p) == PORT_UP) frame_land(n, p, data, len);
+        i = next;
     }
 }
 
@@ -1395,6 +1446,30 @@ static int route_pick(Net *n, Host *h, uint32_t dst, uint32_t *nh)
 }
 
 /* ------------------------------------------------------------------- ARP */
+/* The pool of frames waiting on an answer. Take one, put it back, and copy
+ * it out when the answer arrives -- and if the pool is empty the packet is
+ * simply not held, which is the same first-packet loss a real host has when
+ * its own queue is full. */
+static void arp_unhold(Net *n, ArpEntry *e)
+{
+    if (e->hold >= 0) n->hold[e->hold].used = false;
+    e->hold = -1;
+    e->holdlen = 0;
+}
+static void arp_hold(Net *n, ArpEntry *e, const uint8_t *pkt, int len, int ifx)
+{
+    arp_unhold(n, e);
+    if (len <= 0 || len > NET_FRAME_MAX) return;
+    for (int i = 0; i < NET_HOLD_MAX; i++)
+        if (!n->hold[i].used) {
+            n->hold[i].used = true;
+            memcpy(n->hold[i].data, pkt, (size_t)len);
+            e->hold = i;
+            e->holdlen = len;
+            e->holdif = ifx;
+            return;
+        }
+}
 static ArpEntry *arp_find(Host *h, uint32_t ip)
 {
     for (int i = 0; i < NET_ARP_MAX; i++)
@@ -1410,8 +1485,9 @@ static ArpEntry *arp_slot(Net *n, Host *h, uint32_t ip)
         if (!h->arp[i].used) { e = &h->arp[i]; break; }
         if (oldest < 0 || h->arp[i].seen < h->arp[oldest].seen) oldest = i;
     }
-    if (!e) e = &h->arp[oldest];
+    if (!e) { e = &h->arp[oldest]; arp_unhold(n, e); }
     memset(e, 0, sizeof *e);
+    e->hold = -1;
     e->used = true;
     e->ip = ip;
     e->seen = n->now;
@@ -1420,7 +1496,10 @@ static ArpEntry *arp_slot(Net *n, Host *h, uint32_t ip)
 void net_arp_flush(Net *n, int node)
 {
     Host *h = host_of(n, node);
-    if (h) for (int i = 0; i < NET_ARP_MAX; i++) h->arp[i].used = false;
+    if (h) for (int i = 0; i < NET_ARP_MAX; i++) {
+        if (h->arp[i].used) arp_unhold(n, &h->arp[i]);
+        h->arp[i].used = false;
+    }
 }
 int net_arp_count(const Net *n, int node)
 {
@@ -1628,7 +1707,7 @@ static PingResult ip_output_if(Net *n, int node, int force_if, uint32_t dst,
     e = arp_slot(n, h, nh);
     e->pending = true;
     e->seen = n->now;
-    if (len <= NET_FRAME_MAX) { memcpy(e->hold, pkt, (size_t)len); e->holdlen = len; e->holdif = ifx; }
+    arp_hold(n, e, pkt, len, ifx);
     arp_emit(n, node, h, ifx, 1, nh, MAC_ZERO, MAC_BCAST);
     return PING_OK;
 }
@@ -1815,9 +1894,7 @@ static void ip_input(Net *n, int node, int ifx, uint8_t *pkt, int len)
     if (!e->pending || n->now - e->seen > 1000) {
         e->pending = true;
         e->seen = n->now;
-        memcpy(e->hold, pkt, (size_t)total);
-        e->holdlen = total;
-        e->holdif = oif;
+        arp_hold(n, e, pkt, total, oif);
         arp_emit(n, node, h, oif, 1, nh, MAC_ZERO, MAC_BCAST);
     }
 }
@@ -1839,11 +1916,11 @@ static void arp_input(Net *n, int node, int ifx, const uint8_t *a, int len)
         memcpy(e->mac, smac, 6);
         e->pending = false;
         e->seen = n->now;
-        if (e->holdlen) {
+        if (e->holdlen && e->hold >= 0) {
             uint8_t held[NET_FRAME_MAX];
             int hl = e->holdlen, hi = e->holdif;
-            memcpy(held, e->hold, (size_t)hl);
-            e->holdlen = 0;
+            memcpy(held, n->hold[e->hold].data, (size_t)hl);
+            arp_unhold(n, e);
             ip_send_frame(n, node, h, hi, held, hl, e->mac);
         }
     }

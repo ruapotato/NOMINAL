@@ -65,17 +65,17 @@
  * NET_PORTS_MAX with nothing plugged into any of them. */
 #define NET_HOST_NICS     4     /* physical sockets on one host             */
 #define NET_IF_MAX       34     /* interfaces, incl. tagged subinterfaces   */
-#define NET_ARP_MAX      16
+#define NET_ARP_MAX      64
 #define NET_ROUTE_MAX     8
 #define NET_FW_MAX       12
-#define NET_FDB_MAX      64     /* forwarding entries on one switch         */
+#define NET_FDB_MAX     512     /* forwarding entries on one switch         */
 #define NET_SWITCH_MAX   48     /* how many nodes may be switches           */
 /* Sockets are no longer rare. A floor of desks pulling files at the same
  * moment is a hundred connections, each with a client end, a server end and
  * a listener above it, and the busy period is precisely when they all exist
  * at once. */
-#define NET_SOCK_MAX    600
-#define NET_LEASE_MAX    32
+#define NET_SOCK_MAX   1024
+#define NET_LEASE_MAX   254     /* a /24 of pool, which is what one is     */
 #define NET_ZONE_MAX     64
 #define NET_ALIAS_MAX    64     /* extra addresses, pooled across the world */
 #define NET_QUEUE_MAX  4096     /* frames in flight anywhere in the world   */

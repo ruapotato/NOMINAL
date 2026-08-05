@@ -23,6 +23,12 @@ static const struct { const char *name; int ports; int price; } KIT[SDEV_KIND_CO
     { "router",   4,  650 },   /* four sockets; as many vlans as you like  */
     { "pc",       1,  480 },
     { "server",   2, 1350 },
+    /* A DESK IS NOT FOR SALE. It is the tenant's own computer and it costs
+     * the landlord nothing; what the landlord sells is the port it is
+     * plugged into and the network behind that port. It is here in the
+     * catalogue anyway because it is a device in the site with a card in it
+     * and a name, and everything else in this file has to be able to say so. */
+    { "desk",     1,    0 },
 };
 
 const char *site_kind_name(int kind)
@@ -59,6 +65,9 @@ static const struct { const char *name; int per_100m; int ends; } SPOOL[CAB_KIND
     { "cat5e",  38, 12 },
     { "cat6",   66, 16 },
     { "fibre", 210, 90 },
+    /* The cheapest drum on the shelf, and a hundred megabit for the rest of
+     * its life. Buying the tower out in this is a decision that comes back. */
+    { "cat5",   21,  9 },
 };
 const char *site_cable_name(CableKind k)
 {
