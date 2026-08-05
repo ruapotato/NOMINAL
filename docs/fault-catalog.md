@@ -81,8 +81,12 @@ Legend: **[done]** built · **[next]** in progress or immediately next ·
 
 ## 3. Kernel and initrd
 
-- **[done]** kernel image deleted — surfaces as a *dangling symlink*, and
-  `ls /boot` looks perfectly healthy. `stat` tells the truth.
+- **[done]** **kernel image deleted.** `fault_dangling_kernel`. Surfaces as a
+  *dangling symlink*: the link is untouched and correct, `ls /boot` looks
+  perfectly healthy, `stat` tells the truth and the loader names the path it
+  could not follow. It was reachable only by chance until the draw histogram
+  showed that note 1 in the previous administrator's notes -- the first hint
+  in the game -- had no fault behind it.
 - **[done]** initrd missing the root-device or filesystem driver: rebuilding
   cannot invent a module that is gone, so it is reinstall-then-`mkinitrd`,
   two repairs in sequence.
