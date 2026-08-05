@@ -73,6 +73,91 @@ func _init() -> void:
 	else:
 		ok("stands on the ground floor, y = %.2f" % rest.y)
 
+	# ---- THE SPAWN IS THE MDF, and there is a rack in it to face.
+	if t.rooms[rid].kind != t.K_MDF:
+		fail("the day starts in the %s, not the main frame room" % t.rooms[rid].name)
+	else:
+		ok("the day starts in the MDF")
+	var mdf: int = t.find_room(0, t.K_MDF)
+	if t.racks_in(mdf).is_empty():
+		fail("the MDF has no racks in it")
+	else:
+		ok("%d racks in the MDF" % t.racks_in(mdf).size())
+
+	# ---- THE LIFT. It has to physically carry a body between floors, and it
+	# has to refuse a floor that is not in service -- which is the whole of how
+	# this tower grows.
+	if t.lifts.is_empty():
+		fail("no lift was built, and the shafts are on every floor")
+	else:
+		var lift = t.lifts[0]
+		var closed: int = t.nfloors - 1
+		if t.in_service(closed):
+			fail("every floor is in service at the start: the tower does not grow")
+		else:
+			ok("%d of %d floors in service at the start" % [t.floors_in_service, t.nfloors])
+		var refused: String = t.lift_go(closed)
+		if refused.find("not in service") < 0:
+			fail("the lift went to a floor that is not in service: " + refused)
+		else:
+			ok("the lift refuses floor %d: %s" % [closed, refused])
+
+		# ride it, with a body in it, under the same physics as the stairs
+		var start: Vector3 = lift.car_centre()
+		t.teleport(start + Vector3(0, 0.4, 0))
+		for i in range(20):
+			await process_frame
+		if not lift.inside(t.player.global_position):
+			fail("the car did not hold the player: y = %.2f" % t.player.global_position.y)
+		var want := 1
+		while want < t.floors_in_service and not lift.floors.has(want):
+			want += 1
+		var said: String = t.lift_go(want)
+		var arrived := false
+		for i in range(900):
+			await process_frame
+			if not t.lift_busy() and lift.at == want:
+				arrived = true
+				break
+		var py: float = t.player.global_position.y
+		if not arrived:
+			fail("the lift never got to floor %d (%s)" % [want, said])
+		elif absf(py - want * t.fheight) > 0.6:
+			fail("the lift arrived at floor %d and left the player at y = %.2f"
+				% [want, py])
+		else:
+			ok("the lift carried a walking body from floor 0 to %d, y = %.2f" % [want, py])
+		# and back down, so it is not a one-way trip
+		t.lift_go(0)
+		for i in range(900):
+			await process_frame
+			if not t.lift_busy() and lift.at == 0:
+				break
+		if absf(t.player.global_position.y) > 0.6:
+			fail("the lift would not come back down: y = %.2f" % t.player.global_position.y)
+		else:
+			ok("and back down to the ground floor")
+
+		# ---- OPENING A FLOOR MAKES IT REACHABLE. Before, the button is dead.
+		var before: int = t.floors_in_service
+		if before < t.nfloors:
+			var opened: String = t.open_next_floor()
+			if t.floors_in_service != before + 1:
+				fail("open_next_floor did not open one: " + opened)
+			elif t.lift_go(before).find("not in service") >= 0:
+				fail("floor %d opened and the lift still refuses it" % before)
+			else:
+				ok("opening floor %d makes it reachable: %s" % [before, opened.strip_edges()])
+			for i in range(900):
+				await process_frame
+				if not t.lift_busy():
+					break
+			t.lift_go(0)
+			for i in range(900):
+				await process_frame
+				if not t.lift_busy():
+					break
+
 	# ---- the stairs carry a body up, every floor, under real physics
 	for s in t.stairs:
 		var f: int = s.floor
