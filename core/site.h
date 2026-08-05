@@ -214,5 +214,7 @@ bool site_cmd(Site *s, const char *line, Buf *out);
 
 /* The gate. See core/sitecheck.c. */
 int  site_selfcheck(void);
+/* And the session on top of it, scored into the same total. */
+int  session_selfcheck(int *passed, int *total);
 
 #endif /* NOM_SITE_H */

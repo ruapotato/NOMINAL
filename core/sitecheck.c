@@ -26,6 +26,7 @@
 #include <string.h>
 #include "nom.h"
 #include "site.h"
+#include "session.h"
 
 static int passed, total;
 
@@ -515,6 +516,9 @@ int site_selfcheck(void)
     check_flat(&b);
     check_demand(&b);
     check_shell(&b);
+    /* AND THAT A PERSON CAN PLAY ALL OF IT OVER A SOCKET, which is the
+     * claim that had quietly stopped being true. See core/sessioncheck.c. */
+    session_selfcheck(&passed, &total);
 
     /* WHAT A FULLY EQUIPPED TOWER COSTS, measured rather than guessed. The
      * building is %.1f KB and the site's own bookkeeping is %.1f KB; the

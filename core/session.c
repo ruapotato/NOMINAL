@@ -28,7 +28,14 @@ static int split(char *line, char *tok[MAXTOK])
     char *p = line;
     while (*p && n < MAXTOK) {
         while (*p == ' ' || *p == '\t') p++;
-        if (!*p || *p == '#') break;
+        /* '#' STARTS A COMMENT, AND '#41' IS A ROOM.
+         *
+         * This broke on the first token as well as the rest, so `go #12` and
+         * `install switch8 #41` parsed as an empty line -- and #41 is the
+         * spelling site_room_by_name() documents. A comment is only a
+         * comment at the start of a line, where nobody means a room. */
+        if (!*p) break;
+        if (*p == '#' && p == line) break;
         tok[n++] = p;
         while (*p && *p != ' ' && *p != '\t') p++;
         if (*p) *p++ = 0;
@@ -717,10 +724,26 @@ static bool is_devverb(const char *v)
     return false;
 }
 
-/* A configuration verb changed this box. If it has an operating system in
- * it, the disk has to be told, or netd will overwrite what was just set. */
-static void after_config(Session *ses, int dev)
+/* A CONFIGURATION verb changed this box -- not a diagnostic one. If it has
+ * an operating system in it, the disk has to be told, or netd will overwrite
+ * what was just set.
+ *
+ * The list matters. This used to fire on every verb that names a box, so
+ * `ping files 10.0.1.1` rewrote the disk, which invalidated the applied
+ * config, which flushed the ARP cache -- and `netstat -A` on the machine
+ * then said nothing had ever answered on that wire, immediately after
+ * something had. A diagnostic that erases the evidence it is being used to
+ * find is worse than no diagnostic. */
+static bool is_config(const char *v)
 {
+    return strcmp(v, "addr") == 0 || strcmp(v, "gw") == 0 ||
+           strcmp(v, "resolver") == 0 || strcmp(v, "subif") == 0 ||
+           strcmp(v, "dhcp") == 0;
+}
+
+static void after_config(Session *ses, const char *verb, int dev)
+{
+    if (!is_config(verb)) return;
     if (dev >= 0 && dev < ses->s.ndev && ses->mach[dev]) sync_disk(ses, dev);
 }
 
@@ -869,7 +892,7 @@ bool session_line(Session *ses, const char *line, Buf *out)
         } else snprintf(cmd, sizeof cmd, "%s", raw);
         if (!site_cmd(&ses->s, cmd, out))
             buf_puts(out, "  `help` lists what this line takes.\n");
-        after_config(ses, ses->plugged);
+        after_config(ses, t[0], ses->plugged);
         return true;
     }
 
@@ -971,6 +994,10 @@ bool session_line(Session *ses, const char *line, Buf *out)
                    ses->s.money);
         return true;
     }
+    if (strcmp(t[0], "uncable") == 0 && n < 2) {
+        buf_puts(out, "uncable which one? `links` numbers them.\n");
+        return true;
+    }
     if (strcmp(t[0], "cable") == 0) {
         if (n < 3) { buf_puts(out, "cable <box> <box> [cat5e|cat6|fibre]\n"); return true; }
         do_cable(ses, n, t, out);
@@ -993,7 +1020,7 @@ bool session_line(Session *ses, const char *line, Buf *out)
         int d;
         if (!need_here(ses, t[1], &d, out)) return true;
         site_cmd(&ses->s, raw, out);
-        after_config(ses, d);
+        after_config(ses, t[0], d);
         return true;
     }
 
