@@ -680,6 +680,18 @@ static const Package PKG_HAMDE = {
         "Exec=music\n"
         "Icon=music\n"
         "Comment=Play what is in /usr/share/sounds\n", 0644, NULL },
+      { "/usr/share/applications/gsand.desktop",
+        "[Desktop Entry]\n"
+        "Name=Falling Sand\n"
+        "Exec=gsand\n"
+        "Icon=sand\n"
+        "Comment=Twelve materials and one density table\n", 0644, NULL },
+      { "/usr/share/applications/gsetris.desktop",
+        "[Desktop Entry]\n"
+        "Name=Sand Tetris\n"
+        "Exec=gsetris\n"
+        "Icon=sandtris\n"
+        "Comment=Pieces dissolve; bridge a colour wall to wall\n", 0644, NULL },
       { "/usr/share/applications/clock.desktop",
         "[Desktop Entry]\n"
         "Name=Clock\n"
@@ -733,7 +745,7 @@ static const Package PKG_HAMDE = {
        * the directories it needs, or it cannot be repaired. */
       { "/run/nomde", NULL, 0755, NULL, true },
       { "/usr/share/applications", NULL, 0755, NULL, true },
-    }, 34
+    }, 36
 };
 
 /* THE SOUNDS ARE FILES, AND A PACKAGE OWNS THEM.

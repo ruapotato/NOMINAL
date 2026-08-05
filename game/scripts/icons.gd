@@ -87,6 +87,8 @@ static func draw_icon(c: CanvasItem, at: Vector2, sz: float, kind: String) -> vo
 		"duview": _duview(c, at, sz)
 		"charmap": _charmap(c, at, sz)
 		"search": _search(c, at, sz)
+		"sand": _sand(c, at, sz)
+		"sandtris": _sandtris(c, at, sz)
 		_: _app(c, at, sz)
 
 
@@ -97,7 +99,7 @@ static func kinds() -> PackedStringArray:
 		"game", "calc", "sysmon", "pkg", "svc", "editor",
 		"snake", "mines", "blocks", "cards", "worms", "liquid", "flappy",
 		"music", "clock", "imgview", "archman", "duview", "charmap",
-		"search", "app"])
+		"search", "sand", "sandtris", "app"])
 
 
 # =============================================================================
@@ -539,3 +541,31 @@ static func _search(c: CanvasItem, at: Vector2, sz: float) -> void:
 	c.draw_arc(lens, sz * 0.21, 0.0, TAU, 24, BLUE_D, _bw(sz) * 1.6)
 	c.draw_line(lens + Vector2(0.15, 0.15) * sz, _pt(at, sz, 0.90, 0.90),
 		BLUE_D, _bw(sz) * 2.0)
+
+
+# Falling sand: an hourglass waist with a stream of grains and a cone that
+# has already formed under it. The cone is what says "this piles up".
+static func _sand(c: CanvasItem, at: Vector2, sz: float) -> void:
+	var b: Rect2 = _body(at, sz)
+	_card(c, b, CHAR, CHAR_EDGE, sz)
+	c.draw_colored_polygon(PackedVector2Array([
+		_pt(at, sz, 0.20, 0.14), _pt(at, sz, 0.80, 0.14),
+		_pt(at, sz, 0.54, 0.46), _pt(at, sz, 0.46, 0.46)]), AMBER)
+	for i in range(3):
+		c.draw_rect(_rc(at, sz, 0.46, 0.50 + float(i) * 0.09, 0.08, 0.05), AMBER)
+	c.draw_colored_polygon(PackedVector2Array([
+		_pt(at, sz, 0.22, 0.86), _pt(at, sz, 0.50, 0.62),
+		_pt(at, sz, 0.78, 0.86)]), AMBER_D)
+
+
+# Sand tetris: a tetromino above, already crumbling into grains below --
+# the whole idea of the game in one picture.
+static func _sandtris(c: CanvasItem, at: Vector2, sz: float) -> void:
+	var b: Rect2 = _body(at, sz)
+	_card(c, b, CHAR, CHAR_EDGE, sz)
+	_chip(c, _rc(at, sz, 0.18, 0.14, 0.44, 0.15), TEAL)
+	_chip(c, _rc(at, sz, 0.40, 0.29, 0.22, 0.15), TEAL)
+	for i in range(4):
+		var x: float = 0.16 + float(i) * 0.18
+		c.draw_rect(_rc(at, sz, x, 0.56 + float(i % 2) * 0.06, 0.09, 0.07), RED)
+	c.draw_rect(_rc(at, sz, 0.12, 0.74, 0.76, 0.12), RED)

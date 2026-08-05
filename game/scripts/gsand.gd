@@ -15,14 +15,31 @@
 # twice in one frame. Steam and fire move the other way, so a per-cell frame
 # stamp stops anything from being updated twice regardless of direction.
 #
-# PERFORMANCE. A settled pile is the common case and it must be free. The grid
-# is divided into 16x16 chunks; a chunk is simulated only if something moved in
-# it (or next to it) last frame. Sand that has come to rest wakes nobody and
-# costs one byte-compare per sixteen cells. Drawing merges horizontal runs of
-# equal colour into single draw_rect calls -- a settled dune is a handful of
-# rects per row rather than two hundred -- which is why the materials are flat
-# colours banded by row rather than speckled per cell. Speckle would look nicer
-# and would cost thirty thousand draw calls.
+# PERFORMANCE, because this is the part that decides whether a sand game is
+# playable. The grid is 128x96 -- twelve thousand cells -- and GDScript costs
+# about a microsecond per cell that actually has to think, which is what sets
+# that number. Three things keep it inside a frame:
+#
+#   Chunks. The grid is divided into 16x16 chunks and a chunk is simulated only
+#   if something moved in it, or next to it, last frame. A settled pile wakes
+#   nobody: measured at 0.06 ms/step, versus 8 ms with everything in free fall.
+#
+#   An inlined hot path. A grain falling one row is most of what this file ever
+#   does, and routed through _update -> _powder -> _open -> _swap -> _wake that
+#   is six GDScript calls per grain per frame. It is written out longhand in
+#   _step instead.
+#
+#   Run-length drawing. Colour is material plus a row band, and the band is
+#   constant across a row, so a run of one colour is a run of one material and
+#   the whole grid draws in a few hundred draw_rect calls rather than twelve
+#   thousand. That is why the materials are flat colours banded by row rather
+#   than speckled per cell: speckle would look better and would cost twelve
+#   thousand draw calls a frame.
+#
+# Measured on this machine: 0.06 ms/step settled, 3.5 ms/step for a working
+# scene of sand, water, oil and fire, 8 ms/step with 62% of the grid in free
+# fall at once. The last of those is a second of pathological worst case after
+# you paint a slab across the whole top of the screen.
 #
 # Same contract as g2048.gd: the desktop does .new(), sets mono and machine,
 # then take_focus(). Everything is draw_rect / draw_line / draw_string.
@@ -297,15 +314,16 @@ func _step() -> void:
 			while x >= x0 and x <= x1:
 				var i := rowbase + x
 				var m := mat[i]
-				if m == EMPTY or m == STONE or stamp[i] == fstamp:
+				# Stone and wood never act; they are only ever acted upon.
+				if m == EMPTY or m == STONE or m == WOOD or stamp[i] == fstamp:
 					x += d
 					continue
 				# THE HOT PATH, WRITTEN OUT. Powders are most of the cells in a
 				# busy sandbox and a grain falling one row is most of what they
-				# do. Routed through _update -> _powder -> _open -> _swap ->
-				# _wake that is six GDScript calls per grain per frame, and at
-				# ten thousand grains the calls cost more than the physics.
-				# Inlined it is about twenty operations and no calls at all.
+				# do. As a chain of small functions that is six GDScript calls
+				# per grain per frame, and at ten thousand grains the calls cost
+				# more than the physics they are wrapping. Inlined it is about
+				# twenty operations and no calls at all.
 				if m == SAND or m == ASH:
 					if y + 1 < GH:
 						var b := i + GW
@@ -364,12 +382,10 @@ func _step() -> void:
 	_dilate()
 
 
+# Everything the hot path in _step did not already handle. Powders never arrive
+# here -- they are dealt with inline, where the calls cost more than the rules.
 func _update(i: int, x: int, y: int, m: int, d: int) -> void:
 	match m:
-		SAND:
-			_powder(i, x, y, m, d)
-		ASH:
-			_powder(i, x, y, m, d)
 		WATER:
 			# Only water that could possibly be near a flame bothers looking.
 			if nhot > 0 and _quench(i, x, y):
@@ -390,8 +406,6 @@ func _update(i: int, x: int, y: int, m: int, d: int) -> void:
 			_steam(i, x, y, d)
 		PLANT:
 			_plant(i, x, y)
-		WOOD:
-			pass
 
 
 # May this material move into whatever is sitting in the target cell? Empty
@@ -400,25 +414,6 @@ func _open(m: int, t: int) -> bool:
 	if t == EMPTY:
 		return true
 	return FLUID[t] and DENS[t] < DENS[m]
-
-
-func _powder(i: int, x: int, y: int, m: int, d: int) -> void:
-	if y + 1 >= GH:
-		return
-	var b := i + GW
-	if _open(m, mat[b]):
-		_swap(i, b, x, y, x, y + 1)
-		return
-	# The two diagonals, in the frame's alternating order. Trying them in a
-	# FIXED order is the drift bug; trying them at random is the same bug with
-	# noise on top, because random still has no memory of the last frame.
-	var xa := x + d
-	if xa >= 0 and xa < GW and _open(m, mat[b + d]):
-		_swap(i, b + d, x, y, xa, y + 1)
-		return
-	var xb := x - d
-	if xb >= 0 and xb < GW and _open(m, mat[b - d]):
-		_swap(i, b - d, x, y, xb, y + 1)
 
 
 # Liquids fall like powders, then spread sideways. `reach` is how many cells of
@@ -842,29 +837,33 @@ func _draw_cells() -> void:
 func _draw_panel() -> void:
 	draw_rect(Rect2(8, TOP, pw, size.y - TOP - 10.0), PANEL)
 	var y := TOP + 4.0
-	var rowh: float = clamp((size.y - TOP - 108.0) / float(NMAT), 11.0, 19.0)
-	for m in range(NMAT):
-		var r := Rect2(10, y, pw - 4.0, rowh - 2.0)
-		if y + rowh > size.y - 96.0:
-			break
-		btn_rects.append([r, m])
-		if sel == m:
-			draw_rect(r, Color(1, 1, 1, 0.75))
-			draw_rect(r, SEL, false, 1.0)
-		var sw := Rect2(r.position + Vector2(3, 2), Vector2(rowh - 7.0, rowh - 7.0))
-		if m == EMPTY:
-			draw_rect(sw, Color(1, 1, 1, 0.9))
-			draw_line(sw.position, sw.position + sw.size, Color("#b04030"), 1.0)
-			draw_line(sw.position + Vector2(sw.size.x, 0),
-				sw.position + Vector2(0, sw.size.y), Color("#b04030"), 1.0)
-		else:
-			draw_rect(sw, pal[m * 2])
-		draw_rect(sw, FAINT, false, 1.0)
-		draw_string(mono, r.position + Vector2(rowh - 1.0, rowh - 6.0), MAT_NAME[m],
-			HORIZONTAL_ALIGNMENT_LEFT, r.size.x - rowh, 10, INK)
-		y += rowh
+	var listh: float = size.y - TOP - 112.0
+	if listh >= float(NMAT) * 12.0:
+		# Roomy: one labelled row per material.
+		var rowh: float = min(listh / float(NMAT), 19.0)
+		for m in range(NMAT):
+			var r := Rect2(10, y, pw - 4.0, rowh - 2.0)
+			btn_rects.append([r, m])
+			_swatch(r, m, rowh - 7.0)
+			draw_string(mono, r.position + Vector2(rowh - 1.0, rowh - 6.0), MAT_NAME[m],
+				HORIZONTAL_ALIGNMENT_LEFT, r.size.x - rowh, 10, INK)
+			y += rowh
+	else:
+		# Cramped: a grid of swatches with no labels, and the name of whatever is
+		# selected underneath. Truncating the list instead would leave lava and
+		# plant unreachable by mouse, which is worse than losing the names.
+		var cw: float = (pw - 6.0) / 3.0
+		var ch: float = clamp(listh / 4.0, 9.0, cw)
+		for m in range(NMAT):
+			var r := Rect2(10 + float(m % 3) * cw, y + float(m / 3) * ch,
+				cw - 2.0, ch - 2.0)
+			btn_rects.append([r, m])
+			_swatch(r, m, min(r.size.x, r.size.y) - 4.0)
+		y += ch * 4.0 + 2.0
+		draw_string(mono, Vector2(10, y + 8), MAT_NAME[sel],
+			HORIZONTAL_ALIGNMENT_LEFT, pw - 6.0, 10, INK)
 
-	var by: float = size.y - 92.0
+	var by: float = size.y - 96.0
 	if by < TOP + 4.0:
 		return
 	var bwd := (pw - 10.0) * 0.5
@@ -889,6 +888,23 @@ func _draw_panel() -> void:
 		HORIZONTAL_ALIGNMENT_LEFT, -1, 9, FAINT)
 	draw_string(mono, Vector2(10, by + 88), "peak %d" % best,
 		HORIZONTAL_ALIGNMENT_LEFT, -1, 9, FAINT)
+
+
+# One palette entry: the selection highlight, then the colour chip. The eraser
+# has no colour, so it gets a cross instead of a swatch of nothing.
+func _swatch(r: Rect2, m: int, s: float) -> void:
+	if sel == m:
+		draw_rect(r, Color(1, 1, 1, 0.75))
+		draw_rect(r, SEL, false, 1.0)
+	var sw := Rect2(r.position + Vector2(3, 2), Vector2(s, s))
+	if m == EMPTY:
+		draw_rect(sw, Color(1, 1, 1, 0.9))
+		draw_line(sw.position, sw.position + sw.size, Color("#b04030"), 1.0)
+		draw_line(sw.position + Vector2(sw.size.x, 0),
+			sw.position + Vector2(0, sw.size.y), Color("#b04030"), 1.0)
+	else:
+		draw_rect(sw, pal[m * 2])
+	draw_rect(sw, FAINT, false, 1.0)
 
 
 func _button(r: Rect2, label: String) -> void:

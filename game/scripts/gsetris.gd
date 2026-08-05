@@ -100,7 +100,6 @@ const WELL := Color("#1b1a18")
 const PANEL := Color("#e3e0d6")
 const INK := Color("#2f2a24")
 const FAINT := Color("#7d7468")
-const GHOST := Color(1, 1, 1, 0.14)
 
 var grid := PackedByteArray()          # 0 empty, else 1..NCOL
 var flash := PackedByteArray()         # 1 = part of a found bridge, going away

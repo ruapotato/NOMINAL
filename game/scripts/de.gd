@@ -93,7 +93,7 @@ const TITLES := {"term": "terminal - your", "chat": "chat", "files": "files",
 	"notes": "notes", "log": "log viewer", "manual": "manual", "g2048": "2048",
 	"gflappy": "flappy", "gworms": "worms", "browser": "browser",
 	"gsnake": "snake", "gmines": "minesweeper", "gblocks": "blocks",
-	"gsolitaire": "solitaire", "gliquid": "liquid war", "music": "music",
+	"gsolitaire": "solitaire", "gliquid": "liquid war", "music": "music", "gsand": "falling sand", "gsetris": "sand tetris",
 	"clock": "clock", "imgview": "image viewer", "archman": "archive manager",
 	"duview": "disk usage", "charmap": "character map", "search": "search",
 	"calc": "calculator", "sysmon": "system monitor",
@@ -559,6 +559,7 @@ const EXEC_MAP := {
 	"gblocks": "gblocks", "blocks": "gblocks",
 	"gsolitaire": "gsolitaire", "solitaire": "gsolitaire",
 	"gliquid": "gliquid", "liquid": "gliquid", "music": "music",
+	"gsand": "gsand", "sand": "gsand", "gsetris": "gsetris", "setris": "gsetris",
 	"clock": "clock", "imgview": "imgview", "archman": "archman",
 	"duview": "duview", "charmap": "charmap", "search": "search",
 	"calc": "calc", "calculator": "calc",
@@ -707,6 +708,16 @@ func _launch(kind0: String) -> void:
 			se.mono = mono
 			se.machine = machine
 			_win("search", _cascade_at(640, 440), se)
+		"gsand":
+			var sa := preload("res://scripts/gsand.gd").new()
+			sa.mono = mono
+			sa.machine = machine
+			_win("falling sand", _cascade_at(720, 560), sa)
+		"gsetris":
+			var st := preload("res://scripts/gsetris.gd").new()
+			st.mono = mono
+			st.machine = machine
+			_win("sand tetris", _cascade_at(560, 620), st)
 		"calc":
 			var ca := preload("res://scripts/calc.gd").new()
 			ca.mono = mono
