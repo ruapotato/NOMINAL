@@ -590,16 +590,22 @@ func _plan_racks() -> void:
 		var along_x: bool = wx >= wy
 		var span: int = wx if along_x else wy
 		# A rack needs 600 mm and a person needs to get past it.
-		n = min(n, int((span - 1.4) / 0.66))
+		n = min(n, int((span - 1.4) / 0.90))
+		# CENTRED ON THE ROOM, with a gap between frames. A row shoved into one
+		# corner is a row you only ever see end-on, which is what the first
+		# screenshot of this was: two black cages edge-on across an empty floor.
+		var pitch := 0.90
+		var run: float = float(n - 1) * pitch + RACK_W
+		var mid: float = (r.x0 + r.x1) * 0.5 if along_x else (r.y0 + r.y1) * 0.5
 		for i in range(n):
 			var d := {"room": r.i, "floor": r.floor, "along_x": along_x,
-					"next_u": 34, "x": 0.0, "z": 0.0}
+					"next_u": 36, "x": 0.0, "z": 0.0}
 			if along_x:
-				d.x = r.x0 + 0.7 + i * 0.66
-				d.z = r.y0 + 0.30
+				d.x = mid - run * 0.5 + i * pitch
+				d.z = r.y0 + 0.35
 			else:
-				d.x = r.x0 + 0.30
-				d.z = r.y0 + 0.7 + i * 0.66
+				d.x = r.x0 + 0.35
+				d.z = mid - run * 0.5 + i * pitch
 			racks.append(d)
 
 
@@ -781,13 +787,24 @@ func _signage() -> void:
 	for r in rooms:
 		if r.kind != K_LIFTLOBBY:
 			continue
-		var c := room_centre(r.i)
 		var t := "FLOOR %d" % r.floor
 		if not in_service(r.floor):
-			t += "\nNOT IN SERVICE"
-		for a in [0.0, PI]:
-			_sign(Vector3(c.x, r.floor * fheight + 2.25, c.z), t, a, 48,
-				Color("#e6ecf2") if in_service(r.floor) else Color("#8a6a5a"))
+			t += "  NOT IN SERVICE"
+		# ON THE WALLS, not floating in the middle of the room. A sign at the
+		# room centre is a sign hanging in mid-air with its ends buried in the
+		# brickwork at either side, which is what the first pass of this did.
+		var col: Color = Color("#e6ecf2") if in_service(r.floor) else Color("#c08a6a")
+		var y: float = r.floor * fheight + 2.30
+		var mid := room_centre(r.i)
+		for w in [[0, 0.0], [1, PI], [2, PI * 0.5], [3, -PI * 0.5]]:
+			var p := mid
+			p.y = y
+			match int(w[0]):
+				0: p.z = float(r.y0) + 0.10
+				1: p.z = float(r.y1) - 0.10
+				2: p.x = float(r.x0) + 0.10
+				3: p.x = float(r.x1) - 0.10
+			_sign(p, t, float(w[1]), 34, col)
 	# and what is on the other side of a door worth naming
 	for d in doors:
 		for pair in [[d.a, d.b], [d.b, d.a]]:
@@ -795,21 +812,33 @@ func _signage() -> void:
 			if inside >= rooms.size():
 				continue
 			var kind: int = rooms[inside].kind
-			if not SIGNED.has(kind):
+			# A CORRIDOR HAS TO SAY WHICH FLOOR IT IS ON, or four floors are
+			# four identical corridors. The way in from the lifts is where you
+			# read it, so that is where it goes.
+			var what: String = ""
+			if SIGNED.has(kind):
+				what = SIGNED[kind]
+			elif kind == K_LIFTLOBBY and rooms[pair[1]].kind == K_CORRIDOR:
+				what = "LIFTS  FLOOR %d" % d.floor
+			else:
 				continue
 			var p := Vector3(d.x + (1.0 if d.dir == 0 else 0.5),
 				d.floor * fheight + DOOR_H + 0.22,
 				d.y + (0.5 if d.dir == 0 else 1.0))
-			var toward := room_centre(pair[1]) - room_centre(inside)
-			var yaw := atan2(toward.x, toward.z)
-			_sign(p, SIGNED[kind], yaw, 26, Color("#d8e2ea"))
+			var toward := (room_centre(pair[1]) - room_centre(inside))
+			toward.y = 0
+			toward = toward.normalized()
+			# PROUD OF THE WALL. Sitting it in the wall plane buries half of it
+			# in the brickwork, and half a sign reads as a rendering fault.
+			p += toward * (WALL_T * 0.5 + 0.05)
+			_sign(p, what, atan2(toward.x, toward.z), 22, Color("#d8e2ea"))
 
 
 func _sign(p: Vector3, text: String, yaw: float, size: int, col: Color) -> void:
 	var l := Label3D.new()
 	l.font = preload("res://scripts/uifont.gd").mono()
 	l.font_size = size
-	l.pixel_size = 0.006
+	l.pixel_size = 0.0035
 	l.text = text
 	l.modulate = col
 	l.outline_size = 0
@@ -891,19 +920,33 @@ func _draw_cables() -> void:
 	for l in links:
 		if l.state < 0:
 			continue                     # pulled out
-		var a := _dev_point(l.a)
-		var b := _dev_point(l.b)
+		var a := _dev_point(l.a, l.aport)
+		var b := _dev_point(l.b, l.bport)
 		if a == Vector3.INF or b == Vector3.INF:
 			continue          # a device the view has not drawn has no end to draw to
 		var col: Color = CABLE_COL[l.i % CABLE_COL.size()]
 		if l.state == 2:                 # PORT_TOOLONG: it was laid and it is dead
 			col = Color("#7a3030")
-		var ya := tray_y(int(a.y / fheight))
-		var yb := tray_y(int(b.y / fheight))
-		var pts: Array = [a, Vector3(a.x, ya, a.z), Vector3(b.x, ya, b.z)]
-		if absf(ya - yb) > 0.01:
-			pts.append(Vector3(b.x, yb, b.z))
-		pts.append(b)
+		var pts: Array
+		if a.distance_to(b) < 2.5:
+			# A PATCH LEAD, between two boxes in the same frame. It does not go
+			# up into the tray to travel 400 mm: it comes out of the front, down
+			# past whatever is between them, and back in. That loop hanging off
+			# the front of a rack is what a rack you have worked on looks like.
+			var fa := _dev_face(l.a)
+			var fb := _dev_face(l.b)
+			var lo: float = min(a.y, b.y) - 0.07 - float(l.i % 4) * 0.022
+			var out: float = 0.10 + float(l.i % 4) * 0.022
+			var a2 := a + fa * out
+			var b2 := b + fb * out
+			pts = [a, a2, Vector3(a2.x, lo, a2.z), Vector3(b2.x, lo, b2.z), b2, b]
+		else:
+			var ya := tray_y(int(a.y / fheight))
+			var yb := tray_y(int(b.y / fheight))
+			pts = [a, Vector3(a.x, ya, a.z), Vector3(b.x, ya, b.z)]
+			if absf(ya - yb) > 0.01:
+				pts.append(Vector3(b.x, yb, b.z))
+			pts.append(b)
 		for i in range(pts.size() - 1):
 			_cable_seg(g, pts[i], pts[i + 1], col)
 	_cable_node = MeshInstance3D.new()
@@ -915,7 +958,7 @@ func _draw_cables() -> void:
 func _cable_seg(g, a: Vector3, b: Vector3, col: Color) -> void:
 	var mn := Vector3(min(a.x, b.x), min(a.y, b.y), min(a.z, b.z))
 	var mx := Vector3(max(a.x, b.x), max(a.y, b.y), max(a.z, b.z))
-	var t := 0.022
+	var t := 0.014
 	var size := mx - mn
 	size.x = max(size.x, t)
 	size.y = max(size.y, t)
@@ -923,11 +966,18 @@ func _cable_seg(g, a: Vector3, b: Vector3, col: Color) -> void:
 	g.box(mn, size, col, false)
 
 
-func _dev_point(site_i: int) -> Vector3:
+func _dev_point(site_i: int, port := 0) -> Vector3:
 	for d in devices:
 		if int(d.get("site", -1)) == site_i:
-			return d.pos
+			return _port_point(d, port)
 	return Vector3.INF
+
+
+func _dev_face(site_i: int) -> Vector3:
+	for d in devices:
+		if int(d.get("site", -1)) == site_i:
+			return d.face
+	return Vector3(0, 0, 1)
 
 
 func _light() -> void:
@@ -962,16 +1012,17 @@ func spawn_point() -> Vector3:
 				break
 	var r: Dictionary = rooms[i]
 	var p := room_centre(i)
-	# The racks sit against the low edge of the short axis; stand off it.
+	# The racks line the low edge of the short axis; stand square in front of
+	# the middle of the row, far enough back to see the whole frame.
 	if (r.x1 - r.x0) >= (r.y1 - r.y0):
-		p.z = max(p.z, r.y0 + 2.6)
+		p.z = min(float(r.y1) - 0.9, r.y0 + 0.35 + RACK_D + 2.4)
 	else:
-		p.x = max(p.x, r.x0 + 2.6)
+		p.x = min(float(r.x1) - 0.9, r.x0 + 0.35 + RACK_D + 2.4)
 	p.y = 0.1
 	return p
 
 
-# Facing the rack from the spawn: whichever way the racks in this room run.
+# Facing the rack from the spawn: the middle of the row, not the end of it.
 func spawn_yaw() -> float:
 	var i := find_room(0, K_MDF)
 	if i < 0:
@@ -979,8 +1030,11 @@ func spawn_yaw() -> float:
 	var mine := racks_in(i)
 	if mine.is_empty():
 		return 0.0
-	var k: Dictionary = racks[mine[0]]
-	var to := Vector3(k.x + 0.3, 0, k.z + 0.5) - spawn_point()
+	var mid := Vector3.ZERO
+	for m in mine:
+		mid += Vector3(racks[m].x + 0.3, 0, racks[m].z + 0.5)
+	mid /= float(mine.size())
+	var to := mid - spawn_point()
 	# -Z is forward for a Godot camera, so the yaw that looks along `to` is this.
 	return atan2(-to.x, -to.z)
 
@@ -1004,9 +1058,9 @@ func _spawn_player() -> void:
 # How tall a thing is, in U. A switch is 1U because a switch is 1U.
 const DEV_U := {"uplink": 1, "switch8": 1, "switch24": 1, "router": 1,
 	"pc": 4, "server": 2}
-const DEV_COL := {"uplink": Color("#6a5a3a"), "switch8": Color("#2b3a4a"),
-	"switch24": Color("#2b3a4a"), "router": Color("#40302c"),
-	"pc": Color("#33383f"), "server": Color("#23262b")}
+const DEV_COL := {"uplink": Color("#9a7b3a"), "switch8": Color("#3f6f96"),
+	"switch24": Color("#3f6f96"), "router": Color("#8a5a3e"),
+	"pc": Color("#6a707a"), "server": Color("#7c828c")}
 
 func _place_devices() -> void:
 	devices.clear()
@@ -1100,7 +1154,19 @@ func _add_device(dname: String, which: int, hdmi: bool, serial: bool,
 	else: fp.x = mn.x
 	if absf(face.z) > 0.5: fs.z = fw
 	else: fs.x = fw
-	g.box(fp, fs, col.lightened(0.22), false)
+	g.box(fp, fs, col.lightened(0.30), false)
+	# A LIT PANEL. Two lights on the end of a box is how you tell, across a
+	# room, that it is powered and that a port is up -- and it is the one thing
+	# that makes a rack of boxes read as equipment rather than as shelving.
+	var ly: float = mn.y + size.y * 0.5 - 0.008
+	for j in range(2):
+		var t2: float = 0.028 + float(j) * 0.028
+		if absf(face.z) > 0.5:
+			g.box(Vector3(mn.x + t2, ly, fp.z + (fw if face.z > 0 else -0.006)),
+				Vector3(0.016, 0.016, 0.006), Color("#7fe08a") if j == 0 else Color("#e0b040"), false)
+		else:
+			g.box(Vector3(fp.x + (fw if face.x > 0 else -0.006), ly, mn.z + t2),
+				Vector3(0.006, 0.016, 0.016), Color("#7fe08a") if j == 0 else Color("#e0b040"), false)
 	if nports > 0:
 		var along: float = size.x if absf(face.z) > 0.5 else size.z
 		var run: float = along - 0.10
@@ -1121,8 +1187,52 @@ func _add_device(dname: String, which: int, hdmi: bool, serial: bool,
 			g.box(pm, ps, Color("#0e1114"), false)
 	var n := g.node(dname.replace(" ", "_") + "_%d" % devices.size())
 	add_child(n)
+	# LABELLED, because every rack anybody has ever had to work on is labelled,
+	# and because otherwise a row of boxes is a row of boxes.
+	var lab := Label3D.new()
+	lab.font = preload("res://scripts/uifont.gd").mono()
+	lab.font_size = 40
+	lab.pixel_size = 0.00042
+	lab.text = dname
+	lab.modulate = Color("#e9eff5")
+	lab.outline_size = 0
+	lab.billboard = BaseMaterial3D.BILLBOARD_DISABLED
+	lab.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	var lp := mn + size * 0.5
+	if absf(face.z) > 0.5:
+		lp.x = mn.x + size.x * 0.62
+		lp.z = fp.z + (0.02 if face.z > 0 else -0.008)
+		lab.rotation = Vector3(0, 0.0 if face.z > 0 else PI, 0)
+	else:
+		lp.z = mn.z + size.z * 0.62
+		lp.x = fp.x + (0.02 if face.x > 0 else -0.008)
+		lab.rotation = Vector3(0, PI * 0.5 if face.x > 0 else -PI * 0.5, 0)
+	lab.position = lp
+	n.add_child(lab)
 	devices.append({"name": dname, "which": which, "hdmi": hdmi,
-		"serial": serial, "node": n, "pos": mn + size * 0.5, "site": site_i})
+		"serial": serial, "node": n, "pos": mn + size * 0.5, "site": site_i,
+		"face": face, "mn": mn, "size": size, "nports": nports, "fw": fw})
+
+
+# Where a lead actually goes IN: THE PORT, not the middle of the box. A lead
+# into port 7 comes out of the seventh hole, which is the difference between a
+# picture of cabling and a picture of a box with a stripe painted down it.
+func _port_point(d: Dictionary, port: int) -> Vector3:
+	var mn: Vector3 = d.mn
+	var size: Vector3 = d.size
+	var face: Vector3 = d.face
+	var n: int = max(1, int(d.nports))
+	var along: float = size.x if absf(face.z) > 0.5 else size.z
+	var t: float = 0.05 + (along - 0.10) * (float(clampi(port, 0, n - 1)) + 0.5) / float(n)
+	var p := mn + size * 0.5
+	if absf(face.z) > 0.5: p.x = mn.x + t
+	else: p.z = mn.z + t
+	var fw: float = d.fw
+	if face.z > 0: p.z = mn.z + size.z + fw
+	elif face.z < 0: p.z = mn.z - fw
+	elif face.x > 0: p.x = mn.x + size.x + fw
+	else: p.x = mn.x - fw
+	return p
 
 
 # What you are standing in front of. Distance alone is not enough once things
