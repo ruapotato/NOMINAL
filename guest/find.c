@@ -33,27 +33,53 @@ static int match(const char *p, const char *nm)
     return !*p && !*nm;
 }
 
-static void walk(const char *dir, int depth)
+/* ONE PATH BUFFER, GROWN AND TRUNCATED -- NOT A STATIC PER FRAME.
+ *
+ * This walked into a subdirectory and came back out having listed exactly
+ * one of its entries. `find /usr/share/man` printed one line where `ls -l`
+ * printed eight, which made find useless for the question it exists to
+ * answer, and worse than useless as evidence: a player who ran it would
+ * conclude a directory was nearly empty when it was not.
+ *
+ * The cause was `static char child[320]` inside a recursive function. The
+ * recursive call was handed `child` as its `dir`, then immediately appended
+ * its own entry name to that same buffer -- so `dir` changed under the
+ * caller's feet, and the next `g_readdir(dir, i, nm)` read some other
+ * directory entirely. `static` inside a recursive function is one buffer
+ * shared by every depth, which is precisely what recursion must not have.
+ *
+ * A stack buffer per frame would fix it and cost 480 bytes a level on a
+ * freestanding stack. One shared buffer, appended to on the way down and
+ * truncated on the way back up, costs nothing and cannot alias: `len` is
+ * the caller's own, and restoring it is the whole of the bookkeeping.
+ */
+static char path[512];
+
+static void walk(int len, int depth)
 {
     if (depth > 12 || hits > 4000) return;
-    static char nm[160];
+    char nm[160];
     for (int i = 0; i < 4096; i++) {
-        if (g_readdir(dir, i, nm) < 0) break;
-        static char child[320];
-        g_copy(child, dir, sizeof child);
-        if (!g_streq(dir, "/")) g_cat(child, "/", sizeof child);
-        g_cat(child, nm, sizeof child);
+        path[len] = 0;
+        if (g_readdir(path, i, nm) < 0) break;
+
+        int end = len;
+        if (!(len == 1 && path[0] == '/')) path[end++] = '/';
+        for (int k = 0; nm[k] && end < (int)sizeof path - 1; k++)
+            path[end++] = nm[k];
+        path[end] = 0;
 
         NomStat st;
-        int isdir = (g_stat(child, &st) == 0 && st.kind == NOM_KIND_DIR);
+        int isdir = (g_stat(path, &st) == 0 && st.kind == NOM_KIND_DIR);
         int kind_ok = (want_kind == 0) || (want_kind == 1 && !isdir)
                                        || (want_kind == 2 && isdir);
         if (kind_ok && (!pat || match(pat, nm))) {
-            g_putln(child);
+            g_putln(path);
             hits++;
         }
-        if (isdir) walk(child, depth + 1);
+        if (isdir) walk(end, depth + 1);
     }
+    path[len] = 0;
 }
 
 void _start(void)
@@ -77,7 +103,12 @@ void _start(void)
         g_exit(1);
     }
     if (st.kind != NOM_KIND_DIR) { g_putln(root); g_exit(0); }
-    walk(root, 0);
+    g_copy(path, root, sizeof path);
+    int rlen = 0;
+    while (path[rlen]) rlen++;
+    /* A trailing slash on the root would double up on every child. */
+    while (rlen > 1 && path[rlen - 1] == '/') path[--rlen] = 0;
+    walk(rlen, 0);
     if (!hits) g_putln("(nothing matched)");
     g_exit(0);
 }
