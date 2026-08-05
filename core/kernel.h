@@ -23,6 +23,10 @@ int64_t kernel_spawn_p(Machine *m, const char *path, const char *arg,
  * This is the ONLY entry point the terminal, the socket and the desktop use,
  * so none of them can diverge from the others. */
 int64_t kernel_run(Machine *m, const char *line, Buf *console);
+/* What the drives are, read out of band. The one question a service processor
+ * can answer about a machine that never reached a shell -- see the comment on
+ * the definition for why this one and nothing else. */
+void kernel_sp_blkid(Machine *m, Buf *out);
 /* One stage of a pipeline: `in` becomes the child's stdin, its stdout is
  * captured into `out`. */
 int64_t kernel_spawn_piped(Machine *m, const char *path, const char *arg,

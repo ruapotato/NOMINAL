@@ -92,7 +92,11 @@ typedef struct {
     BootStage  failed_at;    /* stage that stopped it (== reached on failure) */
     char       reason[160];  /* the machine's own words, never a diagnosis */
     Buf        console;      /* everything the boot printed, in order */
-    int        emergency;    /* dropped to an emergency shell in the initrd */
+    /* Stopped inside the initrd, before there was a userland. NOT "dropped to
+     * an emergency shell": this initrd is built out of driver modules and has
+     * no shell in it, which is what the console now says. See initrd_no_shell
+     * in boot.c. */
+    int        emergency;
 } BootResult;
 
 #define MOUNT_MAX 12

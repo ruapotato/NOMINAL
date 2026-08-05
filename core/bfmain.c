@@ -54,6 +54,35 @@ static void free_scratch(Machine *m, const char *prefix, Buf *o)
     }
 }
 
+/* A TYPED LINE THAT DOES NOT FIT MUST NOT BECOME TWO COMMANDS.
+ *
+ * These loops read with fgets into a fixed buffer, and fgets leaves the rest
+ * of the line in the stream -- so a command longer than the buffer ran its
+ * first half and then ran its own tail as a second command. Pasting twenty
+ * paths at 30 bytes each produced `rm /mnt/var/cache/...pkg /mnt/var/c` and
+ * then `ache/package-016.pkg: command not found`, which names a file that
+ * does not exist, from a command nobody typed. The buffer is NOM_ARG_MAX now,
+ * the same ceiling the machine itself has, and anything past it is swallowed
+ * and reported rather than executed. */
+static bool read_line(char *line, size_t cap)
+{
+    if (!fgets(line, (int)cap, stdin)) return false;
+    size_t l = strlen(line);
+    if (l && line[l-1] != '\n') {
+        /* Eat the rest of the line so its tail cannot be run as a command. */
+        int ch, over = 0;
+        while ((ch = getchar()) != EOF && ch != '\n') over++;
+        printf("this line is longer than %zu bytes and %d more were dropped.\n"
+               "  nothing was run. the machine's own argument limit is the same\n"
+               "  size, so shorten it or let a glob expand it on the machine.\n",
+               cap - 1, over);
+        line[0] = 0;
+        return true;
+    }
+    while (l && (line[l-1] == '\n' || line[l-1] == '\r')) line[--l] = 0;
+    return true;
+}
+
 int main(int argc, char **argv)
 {
     if (argc > 1 && strcmp(argv[1], "--health") == 0) {
@@ -630,10 +659,9 @@ int main(int argc, char **argv)
         }
         printf("  `ask <question>` to talk to them.\n\n");
 
-        char line[1024];
-        while (fgets(line, sizeof line, stdin)) {
-            size_t l = strlen(line);
-            while (l && (line[l-1] == '\n' || line[l-1] == '\r')) line[--l] = 0;
+        char line[NOM_ARG_MAX];
+        while (read_line(line, sizeof line)) {
+            if (!line[0]) continue;
             if (strcmp(line, "quit") == 0) break;
             /* The same hand-back the socket server offers, through the same
              * function. Two front ends that can disagree about whether a job
@@ -710,13 +738,12 @@ int main(int argc, char **argv)
         if (getenv("NOM_SPOIL")) printf("[break: %s]\n", what);
 
         /* One long-lived process owns the session, so cd and bind persist. */
-        char line[512];
+        char line[NOM_ARG_MAX];
         for (;;) {
             printf("rescue# ");
             fflush(stdout);
-            if (!fgets(line, sizeof line, stdin)) break;
-            size_t L = strlen(line);
-            while (L && (line[L-1] == '\n' || line[L-1] == '\r')) line[--L] = 0;
+            if (!read_line(line, sizeof line)) break;
+            if (!line[0]) continue;
             /* `exit` belongs to the shell: in a chroot it leaves the chroot.
              * Only `quit` hangs up. */
             if (strcmp(line, "quit") == 0) break;

@@ -412,7 +412,10 @@ static void m_on_rescue(Station *st, const GDExtensionConstTypePtr *args, void *
 static void m_sh_on(Station *st, const GDExtensionConstTypePtr *args, void *ret)
 {
     int64_t which = *(const int64_t *)args[0];
-    char line[2048];
+    /* The machine's own argument limit. 2048 silently cut a long command
+     * line in the desktop terminal, which is the one front end where the
+     * player cannot see it happen. */
+    char line[NOM_ARG_MAX];
     gdstring_to_c(args[1], line, sizeof line);
     Buf out; buf_init(&out);
     kernel_run(which ? &st->m : &st->desk, line, &out);
@@ -525,7 +528,10 @@ static void m_peer_addr(Station *st, const GDExtensionConstTypePtr *args, void *
 
 static void m_sh(Station *st, const GDExtensionConstTypePtr *args, void *ret)
 {
-    char line[2048];
+    /* The machine's own argument limit. 2048 silently cut a long command
+     * line in the desktop terminal, which is the one front end where the
+     * player cannot see it happen. */
+    char line[NOM_ARG_MAX];
     gdstring_to_c(args[0], line, sizeof line);
     Buf out; buf_init(&out);
     kernel_run(&st->m, line, &out);

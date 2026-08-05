@@ -59,7 +59,14 @@ static bool net_platform_init(void)
 }
 
 #define MAX_CLIENTS 8
-#define LINE_CAP    8192
+/* A LINE THAT DOES NOT FIT IS REFUSED, NOT SHORTENED.
+ *
+ * Characters past this used to be dropped on the floor with no mark of any
+ * kind, so a long paste arrived as a different command from the one that was
+ * sent -- the same silence that made a truncated glob delete the wrong files.
+ * It is the machine's own argument limit now, and an overlong line says so
+ * and runs nothing. */
+#define LINE_CAP    NOM_ARG_MAX
 
 typedef struct {
     sock_t   fd;
@@ -74,6 +81,7 @@ typedef struct {
     bool     live;
     char     line[LINE_CAP];
     size_t   len;
+    bool     line_over;  /* this line was longer than the buffer */
 } Client;
 
 /* THE PROMPT SAYS WHICH MACHINE YOU ARE ON.
@@ -239,6 +247,18 @@ static bool client_line(Client *c)
     while (*cmd == ' ') cmd++;
     size_t n = strlen(cmd);
     while (n && (cmd[n-1] == '\r' || cmd[n-1] == ' ')) cmd[--n] = 0;
+
+    /* The tail of this line was thrown away, so what is in the buffer is not
+     * what was sent. Running the front of it would be running a command
+     * nobody typed. */
+    if (c->line_over) {
+        c->line_over = false;
+        send_str(c->fd,
+            "\nthat line is longer than this connection can hold and the rest\n"
+            "  of it was dropped, so NOTHING was run -- what is here is not\n"
+            "  what you sent. shorten it, or let a glob expand on the machine.\n");
+        return true;
+    }
 
     /* `exit` is the shell's: inside a chroot it leaves the chroot, which is
      * the documented flow. Hanging up on it stranded the player. */
@@ -483,11 +503,29 @@ static bool client_line(Client *c)
      * machine's screen. If the machine never got to a shell, the screen has
      * no shell on it, and that IS the diagnosis. */
     if (on == &c->m && !c->m.boot.running) {
+        /* EXCEPT blkid, WHICH THE SERVICE PROCESSOR CAN ANSWER ITSELF.
+         *
+         * mountall's own error names blkid as the next step, and then the
+         * refusal below took it away -- the console recommending a command
+         * the console had just made unreachable. Everything else here needs a
+         * program running off the disk and stays refused; the identity of a
+         * block device does not. kernel_sp_blkid says whose answer it is. */
+        if (strncmp(cmd, "blkid", 5) == 0 && (cmd[5] == 0 || cmd[5] == ' ')) {
+            Buf b = {0};
+            send_str(c->fd, "\n");
+            kernel_sp_blkid(&c->m, &b);
+            send_all(c->fd, b.p, b.len);
+            buf_free(&b);
+            send_str(c->fd, prompt_for(c));
+            return true;
+        }
         send_str(c->fd,
             "\n[no shell here -- this machine did not finish booting]\n"
             "  the console shows what it managed to say. `rcon console` to\n"
             "  re-read it, `rcon media insert` + `rcon boot media` +\n"
-            "  `rcon power cycle` to bring it up on the rescue medium.\n");
+            "  `rcon power cycle` to bring it up on the rescue medium.\n"
+            "  `blkid` is the one command that still answers: the service\n"
+            "  processor reads the drives without the machine's help.\n");
         send_str(c->fd, prompt_for(c));
         return true;
     }
@@ -580,6 +618,8 @@ int bench_serve(int port, bool verbose, uint64_t seed0)
                     send_str(c->fd, prompt_for(c));
                 } else if (c->len < LINE_CAP - 1) {
                     c->line[c->len++] = ch;
+                } else {
+                    c->line_over = true;
                 }
             }
         }

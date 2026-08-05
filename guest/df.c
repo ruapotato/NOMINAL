@@ -85,6 +85,13 @@ void _start(void)
     }
     i64 n = sysc(SYS_mounts, (i64)t, sizeof t, 0);
     g_putln("FILESYSTEM        MOUNTED ON");
-    if (n > 0) g_write(1, t, (u64)n); else g_putln("(nothing mounted)");
+    /* There is always at least one line: something is mounted on /, or this
+     * process could not be reading a file. The table used to leave the root
+     * filesystem out and print "(nothing mounted)" underneath a top half that
+     * had just measured /dev/sda1 -- one command, two halves, disagreeing
+     * about whether the disk was mounted. Silence here now means the kernel
+     * refused the question, which is a different thing and says so. */
+    if (n > 0) g_write(1, t, (u64)n);
+    else       g_putln("(the kernel would not answer -- no mount table)");
     g_exit(0);
 }

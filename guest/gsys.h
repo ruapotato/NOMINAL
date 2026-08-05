@@ -40,7 +40,7 @@ static inline i64  g_readdir(const char *dir, int i, char *buf)
                                                     { return sysc(SYS_readdir, (i64)dir, i, (i64)buf); }
 static inline int  g_stat(const char *p, NomStat *st) { return (int)sysc(SYS_stat, (i64)p, (i64)st, 0); }
 static inline i64  g_spawn(const char *p, const char *arg) { return sysc(SYS_spawn, (i64)p, (i64)arg, 0); }
-static inline i64  g_getarg(char *buf, u64 n) { return sysc(SYS_getarg, (i64)buf, (i64)n, 0); }
+static inline i64  g_getarg_raw(char *buf, u64 n) { return sysc(SYS_getarg, (i64)buf, (i64)n, 0); }
 static inline int  g_bootsec(int write) { return (int)sysc(SYS_bootsec, write, 0, 0); }
 static inline i64  g_rootuuid(char *b, u64 n) { return sysc(SYS_rootuuid, (i64)b, (i64)n, 0); }
 static inline i64  g_dns(const char *n, char *b, u64 c) { return sysc(SYS_dns, (i64)n, (i64)b, (i64)c); }
@@ -90,6 +90,34 @@ static inline void g_putn(i64 v)
     if (neg) o[j++] = '-';
     while (i) o[j++] = t[--i];
     g_write(1, o, (u64)j);
+}
+
+/* THE ARGUMENT LIST, AND WHAT HAPPENS WHEN IT DOES NOT FIT.
+ *
+ * SYS_getarg writes NOTHING and returns -1 when the string is longer than the
+ * buffer, and every program here ignored the return value -- so the buffer
+ * stayed empty, g_argv found no words, and the program printed its usage
+ * line. `rm /mnt/var/cache/*.pkg` with a hundred and twenty matches did not
+ * remove some of them; it removed none of them and told the player they had
+ * typed the command wrong. A playtester deleted that cache in eight passes.
+ *
+ * Nothing gets truncated -- half a filename is worse than no filename, and
+ * this is a machine where the difference between two paths can be one
+ * character. Instead the failure is stated, in the only place that can see it,
+ * so a command added later cannot forget to check. */
+static inline i64 g_getarg(char *buf, u64 n)
+{
+    i64 r = g_getarg_raw(buf, n);
+    if (r >= 0) return r;
+    buf[0] = 0;
+    g_putln("this program's argument list is longer than it can hold, so it was");
+    g_putln("  handed NOTHING and has run on NOTHING -- not on some of them.");
+    g_puts ("  the limit is ");
+    g_putn((i64)n);
+    g_putln(" bytes. narrow the pattern, or work on the");
+    g_putln("  directory instead: `rm -r <dir>`, or `find <dir>` to see it.");
+    g_exit(2);
+    return -1;
 }
 
 /* Decimal the other way. Returns 0 if `s` is not entirely digits, so a tool
@@ -149,18 +177,23 @@ static inline void g_puthex(unsigned long v)
  * actually broken on that ticket. A cap that hides evidence, in a game about
  * finding evidence, is the worst kind of bug: the player cannot tell.
  *
- * 256 is generous enough that no directory on this machine reaches it, and it
- * costs one pointer array per caller -- 2 KB of stack in a program that has
+ * 256 was the next number, chosen against the directories the breaker makes
+ * today; 512 is chosen against the ones it can make. A cache of four hundred
+ * files is one of the faults, `seq` exists so a player can create as many as
+ * they like, and neither should be able to reach a ceiling by accident. It
+ * costs one pointer array per caller -- 4 KB of stack in a program that has
  * four megabytes of it. The cap still exists, because a fixed array is what
  * a machine without an allocator has, so g_argv now SAYS when it hits it:
  * g_argv_over is set, and every program that can be handed a glob checks it
  * and tells the player how many arguments it did not see. */
-#define GARGS 256
+#define GARGS 512
 
 /* The longest argument string a program can be handed, matching NOM_ARG_MAX
  * on the host. A program that may receive a glob declares its buffer this
- * big; anything smaller truncates in the middle of a filename. */
-#define GARG_MAX 4096
+ * big; anything smaller truncates in the middle of a filename. See NOM_ARG_MAX
+ * in core/nom.h for why 4096 was not enough: the 120-file cache fault came to
+ * 3720 bytes under /mnt and would not have fitted from anywhere deeper. */
+#define GARG_MAX 16384
 
 static int g_argv_over;   /* set by g_argv: there were more words than GARGS */
 

@@ -15,11 +15,19 @@ static int rm_tree(const char *path, int depth)
 {
     if (depth > 12) return 1;
     int bad = 0;
-    static char nm[160];
+    /* ON THE STACK, BECAUSE THIS FUNCTION CALLS ITSELF.
+     *
+     * `static` here is the bug this project has been bitten by twice: the
+     * recursive call overwrites the caller's name and path, so the outer
+     * level comes back out of a subdirectory reading whatever the inner
+     * level left behind. It survived only because a subdirectory's entries
+     * happen to be listed before the parent finishes with them. Twelve
+     * frames of half a kilobyte in a program with four megabytes. */
+    char nm[160];
     /* Re-read index 0 each time: the listing shifts as entries go. */
     for (int guard = 0; guard < 4096; guard++) {
         if (g_readdir(path, 0, nm) < 0) break;
-        static char child[320];
+        char child[320];
         g_copy(child, path, sizeof child);
         if (!g_streq(path, "/")) g_cat(child, "/", sizeof child);
         g_cat(child, nm, sizeof child);

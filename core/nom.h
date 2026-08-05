@@ -21,8 +21,17 @@
  * in the directory, and a 256-byte ceiling silently threw away everything
  * past the eighth match -- which on one ticket dropped the faulty file out of
  * a glob of the .conf files in /etc, and left the player looking at a
- * complete-looking answer that was missing the evidence. Must match GARG_MAX in guest/gsys.h. */
-#define NOM_ARG_MAX       4096
+ * complete-looking answer that was missing the evidence.
+ *
+ * 4096 was the next ceiling and it was set by counting the fault that exists
+ * rather than the one a player would meet: /var/cache fills with 120 files
+ * whose paths are 30 bytes under /mnt, which comes to 3720 and fitted with
+ * three hundred bytes to spare. Any deeper mount point, any longer name, and
+ * a glob of that cache deleted NOTHING and printed a usage line. A limit
+ * that a real glob on this machine can reach is a limit in the wrong place.
+ * 16384 clears the largest directory the breaker can make by a wide margin.
+ * Must match GARG_MAX in guest/gsys.h. */
+#define NOM_ARG_MAX       16384
 #define NOM_STACK_MAX     256
 #define NOM_FRAMES_MAX    32
 #define NOM_LOCALS_MAX    64

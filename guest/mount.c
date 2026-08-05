@@ -14,7 +14,9 @@ void _start(void)
 
     if (n == 0) {
         i64 got = sysc(SYS_mounts, (i64)table, sizeof table, 0);
-        if (got <= 0) g_putln("nothing mounted");
+        /* "nothing mounted" was never true: the root filesystem is mounted
+         * or nothing here could run. It was simply left out of the table. */
+        if (got <= 0) g_putln("mount: the kernel would not answer");
         else g_write(1, table, (u64)got);
         g_exit(0);
     }

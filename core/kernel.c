@@ -1133,6 +1133,26 @@ static int64_t kernel_syscall(Cpu *c, int64_t n, int64_t a0, int64_t a1,
 
     case SYS_mounts: {
         Buf b = {0};
+        /* THE ROOT FILESYSTEM IS MOUNTED, AND THIS TABLE LEFT IT OUT.
+         *
+         * df prints the space on /dev/sda1 in its top half and then, four
+         * lines lower, a mount table of "none on /proc" and "none on /tmp" --
+         * so one command said the root disk is 53% full and implied in the
+         * same screenful that it is not mounted anywhere. `du -s /` agrees
+         * with the top half to the byte, so the numbers were right and the
+         * table was wrong.
+         *
+         * The root mount is not in m->mount[] because nothing in userland
+         * performed it: the initrd did, before there was a userland. That is
+         * a fact about how it got there and not about whether it is there.
+         * `mount` reads this same call, so both were quietly short one line.
+         *
+         * Which device it is depends on which medium came up, and the machine
+         * already knows -- the same flag df uses to decide whether the
+         * customer's disk is reachable at all. */
+        buf_printf(&b, "%s on / (%s)\n",
+                   p->m->on_rescue ? "/dev/sr0" : "/dev/sda1",
+                   p->m->on_rescue ? "iso9660" : "ext4");
         for (int i = 0; i < p->m->nmount; i++) {
             if (!p->m->mount[i].used) continue;
             buf_printf(&b, "%s on %s%s\n", p->m->mount[i].dev,
@@ -1882,6 +1902,40 @@ static const char *device_type(const Machine *m, const char *dev)
         return "ext4";
     if (strcmp(dev, "/dev/sr0") == 0) return m->sp_media ? "iso9660" : NULL;
     return NULL;
+}
+
+/* BLKID FROM THE SERVICE PROCESSOR, ON A MACHINE THAT NEVER BOOTED.
+ *
+ * mountall stops the boot with
+ *
+ *   mountall: /etc/fstab:2: UUID=1b46-...: no device on this machine has that uuid
+ *             `blkid` says what /dev/sda1 actually is.
+ *
+ * and until now the very next thing the player typed was refused, because
+ * there is no shell on a machine that did not finish booting -- so the
+ * console recommended a command the console had just made unreachable, and
+ * the only route to the answer was the whole rescue-medium round trip.
+ *
+ * This is the one command a service processor really can answer without the
+ * machine's cooperation. What blkid reports is not read off a filesystem: it
+ * is the identity of the block device, which is exactly the kind of thing
+ * iDRAC and iLO show you about a box that is sitting at a POST error. So it
+ * is answered HERE, from the device table, and the reply says so -- it is
+ * out-of-band information and the player should know that is what they are
+ * looking at, because nothing else on that console is.
+ *
+ * Same device table, same probe as /sbin/blkid, so the two cannot disagree. */
+void kernel_sp_blkid(Machine *m, Buf *out)
+{
+    const char *t1 = device_type(m, "/dev/sda1");
+    const char *t2 = device_type(m, "/dev/sr0");
+    buf_puts(out, "[service processor: the machine has no shell, so this is read\n"
+                  " off the drives themselves -- it is the one thing out-of-band\n"
+                  " management can answer while the machine is down]\n");
+    if (t1) buf_printf(out, "/dev/sda1: UUID=\"%s\" TYPE=\"%s\"\n", m->root_uuid, t1);
+    else    buf_puts(out, "/dev/sda1: the controller does not see a disk there\n");
+    if (t2) buf_printf(out, "/dev/sr0:  TYPE=\"%s\"\n", t2);
+    else    buf_puts(out, "/dev/sr0:  no medium (the drive is empty)\n");
 }
 
 static Vfs *device_fs(Machine *m, const char *dev)
