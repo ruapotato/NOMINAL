@@ -286,8 +286,9 @@ void machine_boot(Machine *m);
 void machine_boot_rescue(Machine *m);
 
 /* The customer. customer_brief is given the breaker's own description of what
- * it did -- that string is the ground truth the persona is working from, and
- * is exactly the brief an LLM backend would receive. */
+ * it did. That string is ground truth and the customer NEVER repeats it: she
+ * is told what a person would have noticed and nothing else, so there is no
+ * secret in her mouth to leak. See the head of customer.c. */
 void customer_brief(Machine *m, const char *what);
 /* The customer's name. Bound to the persona, so a name is a person. */
 const char *customer_name(const Machine *m);

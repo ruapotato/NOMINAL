@@ -32,7 +32,7 @@ BIN = build/nominal
 # determinism gate compare a binary it had not rebuilt).
 .DEFAULT_GOAL := all
 
-.PHONY: all check clean gdext test-lang test-scenario bf test-break cpu test-cpu persona-eval
+.PHONY: all check clean gdext test-lang test-scenario bf test-break cpu test-cpu
 
 # --- break-fix (D17) ---------------------------------------------------
 # The new core. `make test-break` is the gate: random corruption must always
@@ -64,53 +64,15 @@ build/cpu: $(CPU_SRC) core/cpu.h core/nom.h | build
 test-cpu: build/cpu
 	@./tools/test_cpu.sh 40
 
-# --- the language model (D20) -----------------------------------------
-# Optional: `make bf NOM_LLM=1` links llama.cpp and the customer is played by
-# a model. Without it the scripted persona answers and nothing else changes,
-# so a checkout with no vendor/ still builds and still plays.
-LLAMA_DIR = vendor/llama.cpp
-LLAMA_BUILD = $(LLAMA_DIR)/build-linux
-LLAMA_LIBS = $(LLAMA_BUILD)/src/libllama.a $(LLAMA_BUILD)/ggml/src/libggml.a \
-             $(LLAMA_BUILD)/ggml/src/libggml-cpu.a $(LLAMA_BUILD)/ggml/src/libggml-base.a
-
-ifdef NOM_LLM
-CFLAGS  += -DNOM_LLM
-LLM_OBJ  = build/llm.o
-LLM_LINK = $(LLAMA_LIBS) -fopenmp -lstdc++ -lm -lpthread -ldl
-LINKER   = $(CXX)
-else
-LLM_OBJ  =
-LLM_LINK =
-LINKER   = $(CC)
-endif
-
-# Score a model on the one job it has here: keep a secret, give it up to the
-# right question, stay in character, stay short. Benchmarks measure none of
-# that. `make persona-eval MODEL=game/models/x.gguf`
-persona-eval: build/persona_eval
-	@for m in $(or $(MODEL),game/models/*.gguf); do \
-	  echo "=== $$m"; ./build/persona_eval $$m; echo; \
-	done
-
-build/persona_eval: tools/persona_eval.c build/llm.o | build
-	$(CC) $(CSTD) -O2 -c tools/persona_eval.c -o build/persona_eval.o
-	$(CXX) -o $@ build/persona_eval.o build/llm.o $(LLAMA_LIBS) \
-	  -fopenmp -lstdc++ -lm -lpthread -ldl
-
-build/llm.o: core/llm.cpp | build
-	$(CXX) -std=c++17 -O2 -I$(LLAMA_DIR)/include -I$(LLAMA_DIR)/ggml/include \
-	  -c $< -o $@
-
 bf: build/bf
 # guestbin.h must be a prerequisite: it is generated, and without it here
 # make keeps a binary with a stale guest userland embedded in it.
-build/bf: $(BF_OBJ) $(LLM_OBJ) | build
-	@# Compile the C with the C compiler and LINK with the C++ one: handing C
-	@# sources to g++ fails on void*->T* conversions, which C allows. This uses
-	@# the ordinary build/%.o pattern rule -- an earlier version compiled into
-	@# the working directory and moved the objects, which left stale mismatched
-	@# ones behind and produced a segfault that looked like a bug in llama.
-	$(LINKER) -o $@ $(BF_OBJ) $(LLM_OBJ) $(LLM_LINK)
+#
+# One C compiler, one link, no third-party libraries. D20 put a language model
+# in here and this rule linked with $(CXX) against a static llama; the
+# amendment on docs/decisions-d20.md says what that cost and why it went.
+build/bf: $(BF_OBJ) | build
+	$(CC) -o $@ $(BF_OBJ)
 
 # THE DRAW HISTOGRAM. `make faults` answers "does a player ever MEET this
 # fault", which is a different question from "does this fault work" and the
@@ -159,10 +121,12 @@ all: $(BIN)
 build:
 	@mkdir -p build
 
-# Objects depend on the FLAGS, not just the sources. Toggling NOM_LLM changes
-# CFLAGS and make cannot see that, so a build with the model silently linked
-# objects compiled without it and the scripted persona answered instead. The
-# stamp file makes the flags a real dependency.
+# Objects depend on the FLAGS, not just the sources. Changing CFLAGS -- OPT,
+# a -D, a sanitiser -- is invisible to make, so a rebuild happily links objects
+# compiled under the old flags. That is how a build with the language model
+# ended up silently running the code path without it, and the same trap is
+# waiting for the next flag anyone adds. The stamp file makes the flags a real
+# dependency.
 # `force` makes this rule run every time. Without it the stamp is a file with
 # no changing prerequisites, so make considers it up to date forever and the
 # whole mechanism does nothing -- which is exactly what happened.
@@ -188,55 +152,16 @@ GDEXT_OUT = game/bin/libnominal.linux.x86_64.so
 
 gdext: $(GDEXT_OUT)
 
-# THE GAME'S OWN BINARY SHIPS THE MODEL. It did not, and that is why the
-# customer in the Godot build answered every question -- "hi", "what do you
-# see", "poop" -- with the same "I'm not sure what you're asking me". Without
-# NOM_LLM, llm_available() is false and the scripted persona answers
-# everything, and the scripted persona has no reply for an unrecognised topic.
-# The whole of D20 was invisible to anyone actually playing the game.
-#
-# Linked whenever the vendored llama build is present, which on a checkout
-# meant for playing it always is.
-# A SHARED LIBRARY NEEDS POSITION-INDEPENDENT CODE. The static llama built for
-# the standalone bench is not PIC, so linking it into the GDExtension failed
-# with "final link failed: bad value" -- which is the linker's way of saying
-# the objects cannot be relocated. There is a second build for this, and the
-# two coexist because the bench genuinely does not need the PIC penalty.
-LLAMA_PIC  = $(LLAMA_DIR)/build-pic
-LLAMA_PIC_LIBS = $(LLAMA_PIC)/src/libllama.a $(LLAMA_PIC)/ggml/src/libggml.a \
-                 $(LLAMA_PIC)/ggml/src/libggml-cpu.a $(LLAMA_PIC)/ggml/src/libggml-base.a
-GDEXT_LLM = $(wildcard $(LLAMA_PIC)/src/libllama.a)
-
-ifeq ($(GDEXT_LLM),)
+# ONE COMMAND, ONE COMPILER, NO CONDITIONAL. This used to fork on whether a
+# PIC build of llama.cpp existed: with it, thirteen objects and a C++ link
+# against a static llama, pulling libstdc++, libgomp and libdl into the game's
+# own binary; without it, a plain C build and a customer who could not answer.
+# Two shapes of the same library, and which one a player got depended on what
+# happened to be in vendor/. The model is gone (docs/decisions-d20.md), so
+# there is one shape, it is plain C11, and it links nothing but libc.
 $(GDEXT_OUT): $(BF_SRC_LIB) gdext/nominal_gdext.c | build
 	@mkdir -p game/bin
-	@echo "gdext: NO MODEL (vendor/llama.cpp not built) -- scripted persona only"
 	$(CC) $(CFLAGS) -Igdext -fPIC -shared $(BF_SRC_LIB) gdext/nominal_gdext.c -o $@
-else
-# Per-object, for the same reason the Windows build is: compiling the whole
-# core plus a static llama in ONE command takes so long it gets killed, and
-# every retry starts from nothing because there is no intermediate to keep.
-GD_OBJDIR  = build/gd
-GD_C_OBJ   = $(BF_SRC_LIB:core/%.c=$(GD_OBJDIR)/%.o) $(GD_OBJDIR)/nominal_gdext.o
-GD_INC     = -Icore -Igdext -I$(LLAMA_DIR)/include -I$(LLAMA_DIR)/ggml/include
-
-$(GD_OBJDIR):
-	@mkdir -p $(GD_OBJDIR)
-
-$(GD_OBJDIR)/%.o: core/%.c | $(GD_OBJDIR)
-	$(CC) $(CFLAGS) -DNOM_LLM $(GD_INC) -fPIC -c $< -o $@
-
-$(GD_OBJDIR)/nominal_gdext.o: gdext/nominal_gdext.c | $(GD_OBJDIR)
-	$(CC) $(CFLAGS) -DNOM_LLM $(GD_INC) -fPIC -c $< -o $@
-
-$(GD_OBJDIR)/llm.o: core/llm.cpp | $(GD_OBJDIR)
-	$(CXX) $(WARN) $(FPFLAGS) $(OPT) -DNOM_LLM $(GD_INC) -fPIC -c $< -o $@
-
-$(GDEXT_OUT): $(GD_C_OBJ) $(GD_OBJDIR)/llm.o $(LLAMA_PIC_LIBS)
-	@mkdir -p game/bin
-	$(CXX) -shared -o $@ $(GD_C_OBJ) $(GD_OBJDIR)/llm.o \
-	  $(LLAMA_PIC_LIBS) -fopenmp -lstdc++ -lm -lpthread -ldl
-endif
 
 # ------------------------------------------------------------------ Windows
 # Cross-compiled with mingw-w64. KICKOFF requires exporting to Linux AND
@@ -254,62 +179,6 @@ windows: $(WIN_BIN) $(WIN_GDEXT)
 $(WIN_BIN): $(CORE_SRC) core/main.c
 	@mkdir -p build/win
 	$(WINCC) $(WINFLAGS) $(CORE_SRC) core/main.c -o $@ -lws2_32
-
-# --- the Windows bench, WITH the model (D20 step 4) --------------------
-# The whole point of D20 is that the customer ships inside the game on both
-# platforms. Linux having a model and Windows not having one is not "mostly
-# done", it is a Linux feature.
-#
-# llama.cpp cross-compiles cleanly with the mingw toolchain, but only the
-# LIBRARIES do -- its `llama-app` target wants generated headers (build-info.h,
-# arg.h) that its own build does not produce under cross-compilation, and we
-# do not need a chat binary anyway. Hence the explicit target list:
-#
-#   cmake -B build-win -DCMAKE_TOOLCHAIN_FILE=cmake/mingw.cmake \
-#         -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
-#         -DLLAMA_CURL=OFF -DGGML_NATIVE=OFF
-#   cmake --build build-win --target llama ggml ggml-base ggml-cpu
-#
-# GGML_NATIVE=OFF matters: the host's -march would be baked into code meant
-# for someone else's machine.
-WIN_LLAMA_BUILD = $(LLAMA_DIR)/build-win
-WIN_LLAMA_LIBS  = $(WIN_LLAMA_BUILD)/src/libllama.a \
-                  $(WIN_LLAMA_BUILD)/ggml/src/ggml.a \
-                  $(WIN_LLAMA_BUILD)/ggml/src/ggml-cpu.a \
-                  $(WIN_LLAMA_BUILD)/ggml/src/ggml-base.a
-WIN_BIN_LLM = build/win/nominal-bench.exe
-
-# Per-object, not one enormous invocation. Compiling thirteen C files and a
-# C++ file in a single g++ command took over fifteen minutes and was killed by
-# its own timeout twice -- and every retry started again from nothing, because
-# there was no intermediate to keep. Separate objects also mean the C files are
-# compiled AS C (the single command needed -x c / -x c++ juggling, which put a
-# C standard flag on the C++ compile), and that a change to one file costs one
-# file.
-WIN_OBJDIR  = build/win/obj
-WIN_CC_OBJ  = $(BF_SRC:core/%.c=$(WIN_OBJDIR)/%.o)
-WIN_CXX_OBJ = $(WIN_OBJDIR)/llm.o
-WIN_INC     = -Icore -I$(LLAMA_DIR)/include -I$(LLAMA_DIR)/ggml/include
-
-.PHONY: windows-llm
-windows-llm: $(WIN_BIN_LLM)
-
-$(WIN_OBJDIR):
-	@mkdir -p $(WIN_OBJDIR)
-
-$(WIN_OBJDIR)/%.o: core/%.c | $(WIN_OBJDIR)
-	x86_64-w64-mingw32-gcc $(CSTD) $(WARN) $(FPFLAGS) $(OPT) $(WIN_INC) \
-	  -DNOM_LLM -c $< -o $@
-
-$(WIN_OBJDIR)/llm.o: core/llm.cpp | $(WIN_OBJDIR)
-	x86_64-w64-mingw32-g++ $(WARN) $(FPFLAGS) $(OPT) $(WIN_INC) \
-	  -DNOM_LLM -c $< -o $@
-
-$(WIN_BIN_LLM): $(WIN_CC_OBJ) $(WIN_CXX_OBJ) $(WIN_LLAMA_LIBS)
-	@mkdir -p build/win
-	x86_64-w64-mingw32-g++ -o $@ $(WIN_CC_OBJ) $(WIN_CXX_OBJ) \
-	  $(WIN_LLAMA_LIBS) -static -static-libgcc -static-libstdc++ \
-	  -fopenmp -lws2_32
 
 $(WIN_GDEXT): $(BF_SRC_LIB) gdext/nominal_gdext.c
 	@mkdir -p game/bin
