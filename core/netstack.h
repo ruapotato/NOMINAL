@@ -50,7 +50,16 @@
 #define NET_PORTS_MAX   512     /* global pool; a switch takes many         */
 #define NET_CABLES_MAX  256
 #define NET_SWPORTS      24     /* the biggest switch we sell               */
-#define NET_IF_MAX        4     /* interfaces on one host                   */
+/* HOLES IN THE BACK OF THE BOX, and interfaces configured on them. They are
+ * not the same number and a building is what proves it: a core router
+ * terminates one subnet per tenant, and it does that down ONE trunk cable
+ * with a tagged subinterface per vlan. Four sockets is what the hardware
+ * has; thirty-four is what may be configured on them. Only the sockets cost
+ * a port out of the global pool, which is why this split exists at all --
+ * allocating NET_IF_MAX ports per host put a twelve-floor tower over
+ * NET_PORTS_MAX with nothing plugged into any of them. */
+#define NET_HOST_NICS     4     /* physical sockets on one host             */
+#define NET_IF_MAX       34     /* interfaces, incl. tagged subinterfaces   */
 #define NET_ARP_MAX      16
 #define NET_ROUTE_MAX     8
 #define NET_FW_MAX       12

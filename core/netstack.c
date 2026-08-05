@@ -463,7 +463,7 @@ static int add_node(Net *n, NodeKind k, const char *name, int nports)
 int net_add_host(Net *n, const char *name)
 {
     if (n->nhost >= NET_NODES_MAX) return -1;
-    int id = add_node(n, NODE_HOST, name, NET_IF_MAX);
+    int id = add_node(n, NODE_HOST, name, NET_HOST_NICS);
     if (id < 0) return -1;
     n->node[id].sub = n->nhost++;
     Host *h = &n->host[n->node[id].sub];
@@ -1019,9 +1019,18 @@ static void frame_land(Net *n, int p, uint8_t *fr, int len)
 
     Host *h = host_of(n, node);
     if (!h) return;
+    /* ONE PORT MAY CARRY SEVERAL INTERFACES. A router on a trunk has a
+     * tagged subinterface per vlan and they all hang off the same socket, so
+     * the frame goes to whichever one claims its tag -- and to none of them
+     * if no interface claims it, which is the drop the player is looking at.
+     * This used to stop at the first interface on the port and drop
+     * everything the first interface did not want, which made a router able
+     * to terminate exactly one vlan. */
+    int owner = -1;
     for (int i = 0; i < NET_IF_MAX; i++) {
         if (!h->ifc[i].used || h->ifc[i].port != p) continue;
-        if (!h->ifc[i].up) { h->ifc[i].rx_drop++; return; }
+        if (owner < 0) owner = i;               /* who counts the drop */
+        if (!h->ifc[i].up) continue;
         int vlan = 0;
         bool tagged = eth_tagged(fr, len, &vlan);
         /* A machine on an access port receives untagged frames. If it is on
@@ -1029,12 +1038,13 @@ static void frame_land(Net *n, int p, uint8_t *fr, int len)
          * one is not its. This is what makes a vlan mismatch look like a
          * perfectly good cable carrying nothing. */
         if (h->ifc[i].vlan) {
-            if (!tagged || vlan != h->ifc[i].vlan) { h->ifc[i].rx_drop++; return; }
+            if (!tagged || vlan != h->ifc[i].vlan) continue;
             len = eth_untag(fr, len);
-        } else if (tagged) { h->ifc[i].rx_drop++; return; }
+        } else if (tagged) continue;
         host_rx(n, node, i, fr, len);
         return;
     }
+    if (owner >= 0) h->ifc[owner].rx_drop++;
 }
 
 /* One tick of wire time: land everything that is due, oldest first. */
