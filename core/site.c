@@ -139,6 +139,7 @@ bool site_new(Site *s, const Building *b, uint64_t seed, long budget)
     d->room = (uint16_t)mdf;
     d->floor = 0;
     d->nports = 1;
+    d->powered = 1;            /* somebody else's router, and it is running */
     snprintf(d->name, sizeof d->name, "uplink");
     d->node = net_add_host_nics(s->net, d->name, d->nports);
     if (d->node < 0) return false;
@@ -450,7 +451,9 @@ static bool host_dev(const Site *s, int dev)
 static bool live_dev(Site *s, int dev)
 {
     if (!host_dev(s, dev)) { s->err = SITE_EIFACE; return false; }
-    if (!s->dev[dev].powered) { s->err = SITE_EOFF; return false; }
+    if (site_kind_has_os(s->dev[dev].kind) && !s->dev[dev].powered) {
+        s->err = SITE_EOFF; return false;
+    }
     return true;
 }
 

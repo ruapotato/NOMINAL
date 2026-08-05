@@ -408,6 +408,83 @@ static void check_routing(void)
     net_free(n);
 }
 
+/* ------------------------------------------------- every socket is a card */
+/* THE BLOCKER A BLIND PLAYTEST FOUND. Three of a router's four ports were
+ * holes with nothing behind them: the port said `up`, its rx counter climbed
+ * with every ARP, and the frames were dropped without ever appearing in
+ * `drop`, because no interface claimed them. Twenty minutes of correct
+ * sysadmin, and the fix was to move the cable to port 0.
+ *
+ * So: a frame arriving on ANY socket reaches the stack, and a box with an
+ * address on two of them routes between them. */
+static void check_nics(void)
+{
+    printf("every socket on the back of the box\n");
+    Net *n = net_new(31);
+    int sw = net_add_switch(n, "sw1", 8);
+    int r  = net_add_host(n, "router");
+    int peer[NET_HOST_NICS];
+    bool all_up = true, all_reach = true;
+
+    /* One machine per socket, each on its own subnet, each cabled to the
+     * port with the same number. Nothing is special about port 0. */
+    for (int i = 0; i < NET_HOST_NICS; i++) {
+        char nm[NET_NAME_MAX];
+        snprintf(nm, sizeof nm, "peer%d", i);
+        peer[i] = net_add_host(n, nm);
+        net_cable(n, r, i, sw, i * 2, 5, CAB_CAT5E);
+        net_cable(n, peer[i], 0, sw, i * 2 + 1, 5, CAB_CAT5E);
+        net_port_vlan(n, sw, i * 2, 10 + i);
+        net_port_vlan(n, sw, i * 2 + 1, 10 + i);
+        net_if_addr(n, r, i, net_ip(10, 0, i, 254), net_mask_bits(24));
+        net_if_addr(n, peer[i], 0, net_ip(10, 0, i, 5), net_mask_bits(24));
+        net_set_gateway(n, peer[i], net_ip(10, 0, i, 254));
+        if (net_port_state(n, r, i) != PORT_UP) all_up = false;
+    }
+    ck("a router's four sockets all come up with a cable in them", all_up);
+
+    for (int i = 0; i < NET_HOST_NICS; i++)
+        if (net_ping(n, peer[i], net_ip(10, 0, i, 254), NULL) != PING_OK)
+            all_reach = false;
+    ck("a frame arriving on any of them reaches the stack, not just port 0",
+       all_reach);
+
+    /* And no frame was eaten in silence: what the ports received, the cards
+     * received. This is the counter that made the bug invisible. */
+    uint64_t rx = 0, drop = 0;
+    Buf b;
+    buf_init(&b);
+    net_dump_ifaces(n, r, &b);
+    for (int i = 0; i < NET_HOST_NICS; i++) {
+        rx += net_port_rx(n, r, i);
+        drop += net_port_drops(n, r, i);
+    }
+    ck("and nothing was dropped by a port with nothing behind it",
+       rx > 0 && drop == 0 && strstr(b.p ? b.p : "", "dropped 0") != NULL);
+    buf_free(&b);
+
+    net_forwarding(n, r, true);
+    ck("a box with an address on two sockets routes between them",
+       net_ping(n, peer[0], net_ip(10, 0, 1, 5), NULL) == PING_OK &&
+       net_ping(n, peer[3], net_ip(10, 0, 2, 5), NULL) == PING_OK);
+
+    /* A SUBINTERFACE ADDS AN INTERFACE. It used to replace the parent, which
+     * is why a router could not have a WAN side and a LAN side at once. */
+    uint32_t was = net_if_get_addr(n, r, 0);
+    int sub = net_if_subif(n, r, 0, 100);
+    net_if_addr(n, r, sub, net_ip(192, 168, 100, 1), net_mask_bits(24));
+    ck("a tagged subinterface is an extra address, not a replacement",
+       sub >= NET_HOST_NICS && net_if_get_addr(n, r, 0) == was &&
+       net_if_get_addr(n, r, sub) == net_ip(192, 168, 100, 1) &&
+       net_if_nic(n, r, sub) == 0 && net_if_get_vlan(n, r, sub) == 100);
+    ck("asking twice for the same vlan on the same card is the same interface",
+       net_if_subif(n, r, 0, 100) == sub);
+    ck("and it goes away again, while the card underneath does not",
+       net_if_del(n, r, sub) && !net_if_exists(n, r, sub) &&
+       !net_if_del(n, r, 0) && net_if_get_addr(n, r, 0) == was);
+    net_free(n);
+}
+
 /* ------------------------------------------------------------------- L4 */
 static void check_tcp(void)
 {
@@ -840,6 +917,7 @@ int net_selfcheck(void)
     check_arp();
     check_mask();
     check_routing();
+    check_nics();
     check_tcp();
     check_firewall();
     check_dhcp();

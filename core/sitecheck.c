@@ -236,6 +236,103 @@ static void check_copper(const Building *b)
     site_free(&s);
 }
 
+/* ------------------------------------------- the box says the same thing
+ * twice */
+/* A server was sold with two sockets, `site` printed two, and the network
+ * world gave it four -- so `netstat` inside the machine and `show` outside it
+ * disagreed about the same box, and `show` on a one-port pc listed four ports
+ * while the refusal for using one was correct and said "numbered 0 to 0". One
+ * of those numbers has to be the number. */
+static void check_boxes(const Building *b)
+{
+    printf("\nthe sockets on the back, counted the same way twice\n");
+    Site s;
+    site_new(&s, b, GATE_SEED, 100000);
+    int room = a_room(b, 2);
+    bool agree = true;
+    for (int k = SDEV_SWITCH8; k < SDEV_KIND_COUNT; k++) {
+        char nm[NET_NAME_MAX];
+        snprintf(nm, sizeof nm, "box%d", k);
+        int d = site_install(&s, k, room, nm);
+        if (d < 0) { agree = false; continue; }
+        if (net_node_ports(s.net, s.dev[d].node) != site_kind_ports(k) ||
+            s.dev[d].nports != site_kind_ports(k)) agree = false;
+        Buf o = {0};
+        site_dump_dev(&s, d, &o);
+        char want[64];
+        snprintf(want, sizeof want, "port %d ", site_kind_ports(k) - 1);
+        char toomany[64];
+        snprintf(toomany, sizeof toomany, "port %d ", site_kind_ports(k));
+        if (!strstr(o.p ? o.p : "", want) || strstr(o.p ? o.p : "", toomany))
+            agree = false;
+        buf_free(&o);
+    }
+    ck("the catalogue, the site, the netstack and `show` count the same holes",
+       agree);
+
+    /* A vlan on a router's port was accepted and did nothing at all: a host
+     * reads its interface's tag and never its port's. */
+    int rt = site_install(&s, SDEV_ROUTER, room, "rtv");
+    ck("a vlan on a router's port is refused, and names what to use instead",
+       !site_port_vlan(&s, rt, 1, 10) && s.err == SITE_ENOTSW &&
+       strstr(site_err_text(s.err), "subif") != NULL);
+
+    /* Two addresses, on two sockets, on one box. This is the whole of F1. */
+    ck("a router takes an address on its second socket without losing its first",
+       site_addr(&s, rt, 0, net_ip(198, 51, 100, 2), net_mask_bits(30)) &&
+       site_addr(&s, rt, 1, net_ip(10, 0, 1, 1), net_mask_bits(24)) &&
+       net_if_get_addr(s.net, s.dev[rt].node, 0) == net_ip(198, 51, 100, 2) &&
+       net_if_get_addr(s.net, s.dev[rt].node, 1) == net_ip(10, 0, 1, 1));
+    ck("but not on a socket it has not got",
+       !site_addr(&s, rt, 4, net_ip(10, 0, 4, 1), net_mask_bits(24)) &&
+       s.err == SITE_EIFACE);
+    ck("nor the broadcast address of its own /30",
+       !site_addr(&s, rt, 0, net_ip(198, 51, 100, 3), net_mask_bits(30)) &&
+       s.err == SITE_EADDR);
+    site_free(&s);
+}
+
+/* --------------------------------------------------- switched off is off */
+/* The deepest inconsistency a playtest found: a box that had never been
+ * powered on answered a ping, because the address went onto its network node
+ * the moment the player typed it. */
+static void check_power(const Building *b)
+{
+    printf("\na box that is not running\n");
+    Site s;
+    site_new(&s, b, GATE_SEED, 100000);
+    int mdf = bld_find(b, 0, RM_MDF);
+    int sw = site_install(&s, SDEV_SWITCH8, mdf, "sw");
+    int rt = site_install(&s, SDEV_ROUTER, mdf, "rt");
+    int pc = site_install(&s, SDEV_PC, mdf, "probe");
+    site_cable(&s, rt, 0, sw, 0, CAB_CAT6);
+    site_cable(&s, pc, 0, sw, 1, CAB_CAT6);
+    site_addr(&s, rt, 0, net_ip(10, 0, 1, 1), net_mask_bits(24));
+
+    ck("a pc arrives switched off and a switch has no button at all",
+       !s.dev[pc].powered && s.dev[sw].powered && s.dev[rt].powered &&
+       !site_power(&s, sw, false) && s.err == SITE_ENOBTN);
+    ck("an off box will not take an address: there is nothing in it to hold one",
+       !site_addr(&s, pc, 0, net_ip(10, 0, 1, 30), net_mask_bits(24)) &&
+       s.err == SITE_EOFF);
+    int rtt = 0;
+    ck("and it answers nothing, with a cable in it and a router beside it",
+       net_ping(s.net, s.dev[rt].node, net_ip(10, 0, 1, 30), &rtt) != PING_OK &&
+       net_if_get_addr(s.net, s.dev[pc].node, 0) == 0);
+
+    ck("powered on, it takes one and answers",
+       site_power(&s, pc, true) &&
+       site_addr(&s, pc, 0, net_ip(10, 0, 1, 30), net_mask_bits(24)) &&
+       net_ping(s.net, s.dev[rt].node, net_ip(10, 0, 1, 30), &rtt) == PING_OK);
+
+    /* And what was in its memory was in its memory. */
+    site_power(&s, pc, false);
+    ck("switched off again, the address goes with the power and it is silent",
+       net_if_get_addr(s.net, s.dev[pc].node, 0) == 0 &&
+       net_ping(s.net, s.dev[rt].node, net_ip(10, 0, 1, 30), &rtt) != PING_OK);
+    site_free(&s);
+}
+
 /* --------------------------------------------------------- the tenants */
 static void check_tenants(const Building *b)
 {
@@ -532,6 +629,8 @@ int site_selfcheck(void)
     check_ports(&b);
     check_addresses(&b);
     check_copper(&b);
+    check_boxes(&b);
+    check_power(&b);
     check_tenants(&b);
     check_flat(&b);
     check_demand(&b);

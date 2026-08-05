@@ -441,6 +441,108 @@ static void check_build(int *passed, int *total)
     session_end(&ses);
 }
 
+/* ------------------------------------------- a run that did not happen */
+/* `cable` is a macro for four things a person does, and when the fourth
+ * refused it left the first end in a socket. The NEXT `cable` picked it up
+ * without a word: `cable core:4 edge:0` answered `link 4: core:3 to core:4`,
+ * a switch cabled to itself, which is a shape the game refuses when you ask
+ * for it directly -- and what came out of it was a broadcast storm with no
+ * line in the transcript to blame. */
+static void check_dangling(int *passed, int *total)
+{
+    P = passed; T = total;
+    printf("\na cable that was never run leaves nothing behind\n");
+    Session ses;
+    if (!session_start(&ses, GATE_SEED, 100000)) { ck("a session starts", false); return; }
+    Buf o = {0};
+    say(&ses, "buy switch8 core", &o);
+    say(&ses, "buy router edge", &o);
+    say(&ses, "go goods", &o);
+    say(&ses, "carry core", &o); say(&ses, "go mdf", &o); say(&ses, "drop", &o);
+    say(&ses, "go goods", &o);
+    say(&ses, "carry edge", &o); say(&ses, "go mdf", &o); say(&ses, "drop", &o);
+
+    /* A run that cannot finish: the far end is a port that box has not got. */
+    const char *r = say(&ses, "cable core:0 edge:9", &o);
+    ck("a run to a port that box has not got does not make a cable",
+       has(r, "numbered 0 to 3") && ses.s.nlink == 0);
+    ck("and it leaves no end in a socket for the next line to eat",
+       has(r, "comes back out of core port 0") && ses.cab_dev < 0);
+
+    ck("so the next run is the one that was asked for",
+       has(say(&ses, "cable core:1 edge:0", &o), "core:1 to edge:0") &&
+       ses.s.nlink == 1 && ses.s.link[0].aport == 1);
+
+    /* And an end put in BY HAND is not silently consumed either. */
+    say(&ses, "plug core:3", &o);
+    ck("an end left in by hand stops the macro rather than being used",
+       has(say(&ses, "cable core:4 edge:1", &o), "already in core port 3") &&
+       ses.s.nlink == 1);
+    ck("both ends of one run in the same box is refused where the loop would be",
+       has(say(&ses, "plug core:4", &o), "both ends would be in core") &&
+       ses.s.nlink == 1);
+    buf_free(&o);
+    session_end(&ses);
+}
+
+/* --------------------------------------------------- the power button */
+/* THE DEEPEST ONE. A machine that had never been switched on answered a
+ * ping, and then booting it made it LESS reachable, because its own firewall
+ * finally started. */
+static void check_power(int *passed, int *total)
+{
+    P = passed; T = total;
+    printf("\na box that is not running answers nothing\n");
+    Session ses;
+    if (!session_start(&ses, GATE_SEED, 100000)) { ck("a session starts", false); return; }
+    Buf o = {0};
+    say(&ses, "buy switch8 core", &o);
+    say(&ses, "buy pc probe", &o);
+    say(&ses, "go goods", &o);
+    say(&ses, "carry core", &o); say(&ses, "go mdf", &o); say(&ses, "drop", &o);
+    say(&ses, "go goods", &o);
+    say(&ses, "carry probe", &o); say(&ses, "go mdf", &o); say(&ses, "drop", &o);
+    say(&ses, "cable core:0 uplink:0", &o);
+    say(&ses, "cable core:1 probe:0", &o);
+    int pc = site_dev_by_name(&ses.s, "probe");
+
+    ck("a pc arrives switched off, and `show` says so where a player looks",
+       pc >= 0 && !ses.s.dev[pc].powered &&
+       has(say(&ses, "show probe", &o), "SWITCHED OFF"));
+    ck("an off box will not take an address",
+       has(say(&ses, "addr probe 10.0.1.30/24", &o), "switched off"));
+    ck("and a serial lead does not press the button for you",
+       has(say(&ses, "plug probe", &o), "power probe on") &&
+       ses.where == SES_BODY && ses.mach[pc] == NULL);
+
+    const char *on = say(&ses, "power probe on", &o);
+    ck("powering it on is what boots the operating system in it",
+       has(on, "zbios") && has(on, "UP at target") && ses.mach[pc] != NULL);
+    ck("and only then does an address stick",
+       has(say(&ses, "addr probe 10.0.1.30/24", &o), "10.0.1.30/24"));
+
+    /* What it answers is now its own kernel's business, and the ruleset the
+     * image ships drops what nobody asked for. Change the file, restart the
+     * service, and the same ping gets through -- and nothing in this program
+     * decided either outcome. */
+    say(&ses, "addr uplink 10.0.1.1/24", &o);
+    ck("its own filter is what refuses the ping, not the game",
+       !has(say(&ses, "ping uplink 10.0.1.30", &o), "reply"));
+    say(&ses, "plug probe", &o);
+    say(&ses, "sed -i \"s/policy drop/policy accept/\" /etc/nftables.conf", &o);
+    say(&ses, "svc restart nftables", &o);
+    say(&ses, "unplug", &o);
+    ck("and its own filter is what lets it through",
+       has(say(&ses, "ping uplink 10.0.1.30", &o), "reply"));
+
+    say(&ses, "power probe off", &o);
+    ck("switched off, it is silent again and its address went with the power",
+       !has(say(&ses, "ping uplink 10.0.1.30", &o), "reply") &&
+       net_if_get_addr(ses.s.net, ses.s.dev[pc].node, 0) == 0);
+    buf_free(&o);
+    session_end(&ses);
+}
+
 int session_selfcheck(int *passed, int *total)
 {
     check_verbs(passed, total);
@@ -448,5 +550,7 @@ int session_selfcheck(int *passed, int *total)
     check_reach(passed, total);
     check_goods(passed, total);
     check_build(passed, total);
+    check_dangling(passed, total);
+    check_power(passed, total);
     return 0;
 }
