@@ -371,7 +371,15 @@ CpuTrap cpu_run(Cpu *c, uint64_t budget)
             uint64_t r;
             if (F7(ins) == 1) {                       /* M extension */
                 switch (F3(ins)) {
-                case 0: r = (uint64_t)(sa * sb); break;                  /* mul */
+                /* MULTIPLY IN UNSIGNED, BECAUSE SIGNED OVERFLOW IS UNDEFINED
+                 * AND RISC-V `mul` IS NOT. The spec says mul returns the low
+                 * 64 bits of the product and never traps -- wrapping is the
+                 * defined behaviour. Written as `sa * sb` that is C undefined
+                 * behaviour the moment a guest multiplies two large numbers,
+                 * which UBSan duly reports and a sufficiently clever compiler
+                 * is entitled to act on. Unsigned wrapping IS defined, and
+                 * the low 64 bits are identical in two's complement. */
+                case 0: r = a * b; break;                                /* mul */
                 case 1: { /* mulh: signed high 64 of a 128-bit product */
                     __int128 p = (__int128)sa * (__int128)sb;
                     r = (uint64_t)((unsigned __int128)p >> 64); break;
@@ -423,7 +431,9 @@ CpuTrap cpu_run(Cpu *c, uint64_t budget)
             uint32_t r;
             if (F7(ins) == 1) {
                 switch (F3(ins)) {
-                case 0: r = (uint32_t)(sa * sb); break;                  /* mulw  */
+                /* Same as `mul` above: wrapping is defined for mulw and
+                 * undefined for the C multiply that was implementing it. */
+                case 0: r = (uint32_t)((uint32_t)a * (uint32_t)b); break; /* mulw  */
                 case 4: r = (b == 0) ? 0xffffffffu
                           : (sa == INT32_MIN && sb == -1) ? (uint32_t)sa
                           : (uint32_t)(sa / sb); break;                  /* divw  */
