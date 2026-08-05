@@ -59,7 +59,20 @@ def relay(port):
         confusion a playtest client must not add. Wait for the prompt, and
         only fall back to silence after a decent pause."""
         out = b''
-        deadline = time.time() + 40      # a model reply can take ~5s
+        # HOW LONG A PERSON TAKES TO ANSWER.
+        #
+        # This said 40 seconds, with a comment claiming "a model reply can take
+        # ~5s". On a loaded box a customer turn measured NINE MINUTES, so the
+        # drain gave up, and the answer arrived under the NEXT command's
+        # marker -- permanently shifting every later reply by one, which is
+        # exactly the confusion a playtest client must not add. A tester
+        # reported it as the difference between playtesting and guessing, and
+        # they were right; they had to write their own waiter.
+        #
+        # Ten minutes is not a guess about the model, it is a ceiling on the
+        # box: nothing here is worth waiting longer for, and the prompt check
+        # below ends the wait the moment the machine is actually ready.
+        deadline = time.time() + 600
         quiet = 0.0
         while time.time() < deadline:
             try:
@@ -191,9 +204,15 @@ def send(cmds):
         for c in cmds:
             f.write(c + '\n')
         f.flush()
+    # A MODEL TURN IS NOT A HANG. This gave up after 3.6s of log silence
+    # (six polls at 0.6s), so every `ask`/`ben`/`json` returned empty and the
+    # tester had to poll the log by hand. The relay writes the prompt when it
+    # is done; until then, quiet means thinking.
     last, still = before, 0
-    deadline = time.time() + 180         # a wedged relay must never hang us
-    while still < 6 and time.time() < deadline:
+    # The relay's own ceiling is ten minutes per command, so this has to be
+    # longer than that or it reports silence while the relay is still working.
+    deadline = time.time() + 660         # a wedged relay must never hang us
+    while still < 40 and time.time() < deadline:
         time.sleep(0.6)
         now = os.path.getsize(LOG)
         if now == last:
