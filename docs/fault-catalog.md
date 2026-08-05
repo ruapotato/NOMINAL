@@ -20,6 +20,19 @@ Legend: **[done]** built · **[next]** in progress or immediately next ·
   is clean. Fix: `zbl-install`.
 - **[todo]** partition table damaged; the root partition is there but nothing
   points at it. Fix: a partition tool that rewrites the table.
+- **[done]** **the firmware boot order names an empty drive.**
+  `fault_boot_order`. Nothing on the disk is wrong -- `pkg verify` is perfect,
+  the boot sector is there, every file matches -- and there is nothing to
+  boot, because somebody put the install medium in, moved the optical drive to
+  the top of the boot order, finished the job and took the disc out. The
+  machine has been up for two hundred days on the strength of nobody
+  rebooting it.
+
+  The console prints the boot order before it prints anything else and then
+  says the drive is empty; `rcon status` says the same from the service
+  processor. Two repairs, both real: `rcon boot disk`, or `zbl-install
+  /dev/sda`, which now writes the firmware's boot entry as well as the sector
+  -- which is what grub-install does and for exactly this reason.
 - **[todo]** two disks and the firmware boots the wrong one. Nothing is broken
   at all; the fix is boot order, and the evidence is that the machine that
   came up is the *other* install.
@@ -44,6 +57,26 @@ Legend: **[done]** built · **[next]** in progress or immediately next ·
 - **[todo]** `/boot` is a separate filesystem and is not mounted, so the
   loader's world and the running system's `/boot` are different directories.
   Deeply confusing and very real.
+- **[done]** **the default entry is not there.** `fault_zbl_default`. The
+  loader now reads the file the way a loader does: lines before the first
+  `entry` are global, each `entry` opens a block, and `default N` picks one.
+  Before that the menu it printed was decoration -- it took the first `kernel`
+  line anywhere in the file -- so the commonest bootloader mistake in the
+  world could not be expressed. Somebody added an entry to test something,
+  booted it, deleted the entry, and left the default pointing past the end of
+  the list. `zbl: default entry 2: there is only 1 entry in this
+  configuration`, and `zbl-mkconfig` is the repair.
+- **[done]** **two entries, and the default is last release's.**
+  `fault_zbl_dup_entry`. The upgrade appended the new entry and left `default`
+  where it was; the old entry's kernel went in the autoremove. Both entries
+  are well-formed and the right answer is one line further down the file,
+  which is what separates this from a single entry naming a kernel that is
+  gone: the configuration CONTAINS the fix and chooses not to use it.
+- **[done]** **the root named by device, and the numbering moved.**
+  `fault_zbl_rootdev`. Written by hand, the way it was written for twenty
+  years, and then a disk was added. `initrd: waiting for /dev/sdb1 ... no such
+  device on this machine` is a different sentence and a different mental model
+  from a uuid nothing carries, and it is the reason installers write uuids.
 - **[todo]** loader installed to the wrong disk after a clone.
 
 ## 3. Kernel and initrd
@@ -54,9 +87,42 @@ Legend: **[done]** built · **[next]** in progress or immediately next ·
   cannot invent a module that is gone, so it is reinstall-then-`mkinitrd`,
   two repairs in sequence.
 - **[done]** kernel/initrd truncated or magic corrupted.
-- **[todo]** **kernel and modules out of step.** `/lib/modules/<version>` does
-  not match the running kernel, so drivers refuse to load. The commonest real
-  upgrade failure there is.
+- **[done]** **kernel and modules out of step.** `fault_module_mismatch` and
+  `fault_kernel_version` -- the same check, the opposite diagnosis, which is
+  why they are two faults and not one. The kernel image says what version it
+  is, out of its own header rather than out of its filename, and the loader
+  prints it; `/lib/modules/<that version>` has to exist. Either the modules
+  are last release's and the kernel is current, or the image is a restore from
+  a backup wearing the current name. The console prints both halves:
+
+  ```
+  zbl: loading /boot/vmnomuz (6.4.9)
+  kernel: /lib/modules holds: 6.4.11
+  kernel: /lib/modules/6.4.9: no modules for this kernel
+  ```
+
+  `ls /lib/modules` against the version the loader read is the whole
+  diagnosis, and the odd one out is whichever of the two nothing else agrees
+  with.
+
+  **`kernel-default` now owns `/lib/modules/6.4.11` as a directory**, and it
+  had to: `open` with `O_CREAT` makes a file and never the path above it, so
+  once the directory was gone `pkg reinstall kernel-default` could not put a
+  single `.ko` back -- it had nowhere to write them. The solve ladder scored
+  that unfixable, which is the same lesson `/var/log` and `/run` taught and
+  the same fix.
+- **[done]** **an initrd built for another kernel.** `fault_initrd_version`.
+  Not empty, not corrupt, not foreign hardware: a complete image full of the
+  right modules for the kernel that was running when somebody rebuilt it. It
+  is checked AFTER `/lib/modules`, deliberately -- when the kernel image
+  itself is wrong, everything disagrees with it at once and the console must
+  not blame the initrd for being right. `mkinitrd`, and nothing else.
+- **[done]** **the two symlinks in /boot, written the wrong way round.**
+  `fault_boot_symlink_swap`. A rebuild script that took its arguments in the
+  other order. Both files are present and perfect, both links resolve, `ls
+  /boot` looks healthy, and the loader is handed an initrd where it expects a
+  kernel -- which it detects the way a loader does, by magic number. `stat` on
+  the two links is four seconds and the whole answer.
 - **[done]** **initrd built on a machine with different hardware** — it has the
   wrong storage driver, not none. `fault_foreign_initrd`. A complete, valid
   image full of drivers, none of which drive this machine's disk, which is
@@ -163,8 +229,14 @@ Legend: **[done]** built · **[next]** in progress or immediately next ·
   The file `pkg verify` flags is `/etc/fstab`, which is correct in every
   particular except intent -- which is why this one is not a reinstall
   reflex.
-- **[done]** **an entry naming a uuid no disk here carries.**
-  `fault_fstab_uuid`. The bootloader found the root and handed it over, so the
+- **[done]** **an entry naming a uuid no disk here carries.** An ARM of
+  `fault_wrong_uuid`, not a fault of its own any more: a blind playtester drew
+  "a uuid in a config does not match blkid" three times in eight tickets and
+  had the third in under a minute, because the bootloader's copy and fstab's
+  copy were two slots in the table for one mistake wearing two filenames. Both
+  tickets survive -- they stop at different stages and the file to fix is the
+  other one -- as two arms of one draw, which halves how often the family
+  comes up. The bootloader found the root and handed it over, so the
   machine is running, and then fstab describes a disk that is not in it.
   `blkid` answers it in one command. Deliberately a different fault from
   zbl.cfg's wrong uuid: that one stops in the initrd before userland exists,
@@ -320,6 +392,21 @@ Legend: **[done]** built · **[next]** in progress or immediately next ·
   is the most confusing line an init system can print.
 - **[todo]** `/etc/inittab` respawning something that exits immediately —
   the "respawning too fast" loop.
+- **[done]** **two commands in `/etc/inittab`, and init runs the last one.**
+  `fault_inittab_second`. Somebody testing single-user mode who added a line
+  rather than editing the one that was there. The correct line is still in the
+  file, three characters above the wrong one, so the machine is not
+  misconfigured so much as ambiguous -- and init resolves the ambiguity the
+  way init always has. One of the decoys is a comment in this same file
+  warning about exactly this, which cost its author an afternoon in February.
+- **[done]** **a unit that lost its `name:` line.** `fault_unit_no_name`. The
+  service starts, runs, and is healthy, and everything ordered after it waits
+  forever -- because a unit with no name is known by its filename, and `after:
+  syslog` does not match `syslog.svc`. The one dependency fault where the
+  thing being waited for is PRESENT AND WELL, so every reflex (is it enabled,
+  is it in this runlevel, is it installed) comes back yes. The console has
+  both halves one line apart: `started syslog.svc`, then `waiting for
+  syslog`.
 - **[done]** **pid 1 told to run the wrong script.** `fault_inittab_target`.
   Somebody was testing single-user mode, or the runlevel scripts were being
   reorganised. `/etc/inittab` is two lines long and one of them is now a path
@@ -380,8 +467,28 @@ Legend: **[done]** built · **[next]** in progress or immediately next ·
   different signal -- the content is right, the way in is not -- and joining
   those two facts up is the deduction the fault exists to ask for. The kernel
   now enforces traversal, which it did not before.
-- **[todo]** ownership wrong on a spool or state directory, so one daemon —
-  and only that one — cannot start.
+- **[done]** **the write bit off ONE daemon's state directory.**
+  `fault_ro_spool`. Not `/run`, which takes the whole machine down at once and
+  reads as madness -- one directory, belonging to one service, so exactly one
+  thing on the machine stops and everything else is perfect. There is no
+  pattern to notice, which is what makes it harder. `pkg verify` says `mode`
+  on a DIRECTORY, which is a line most people have never seen.
+- **[done]** **/etc/shells no longer lists the login shell.** `fault_shells`.
+  getty reads `/etc/shells` now; it did not, and the file shipped naming
+  `/bin/nomsh`, a program two releases gone -- decoration that would have
+  locked out every account the day anything started honouring it. The fault is
+  a hardening pass that pruned the list from another distribution's idea of
+  what a shell is. Account fine, shell present and executable, every service
+  up, no way in.
+- **[done]** **/etc/shadow tightened to mode 0000.** `fault_shadow_mode`. The
+  same hand as the sweep. Byte-for-byte correct -- `pkg verify` says `mode`
+  and not `changed` -- and the thing that authenticates cannot open the file
+  that authenticates.
+- **[done]** **the console handed to an account that is not there.**
+  `fault_getty_user`. The runlevel script names who gets the terminal and
+  somebody changed it during a migration that never finished. `/etc/passwd` is
+  completely correct, which is the trap: the wrong file is the one nobody
+  thinks of as an account file at all.
 - **[done]** **a state directory deleted outright.** `fault_missing_dir`.
   Rejected once for a good reason — no package owned `/run` or `/var/log`, so
   `pkg reinstall` could not put back something nothing had shipped, and the
@@ -483,6 +590,45 @@ boot, so a repair that leaves a service dead is not a repair.
   package cache that ate the disk is four hundred ordinary files, none of them
   remarkable, and the only way to see it is to look at the directory rather
   than at the files. `find /var -type f` is the tool.
+- **[done]** **A NAMESPACE BIND, AND `pkg verify` IS COMPLETELY CLEAN.**
+  `fault_ns_bind_unit`, and the one the wiki has been promising since note 9.
+  Nothing is corrupt, nothing is missing, nothing has the wrong mode. The file
+  you `cat` is the right file and the daemon read a different one, because a
+  unit nobody installed binds a directory over the top of `/etc/httpd` before
+  any service starts -- which is what an estate-management agent does.
+
+  It needed two things that were missing. Units can carry `bind: TARGET AT`,
+  which is the unit-file spelling of what `rc.boot` could already do; and a
+  daemon INHERITS ITS PARENT'S NAMESPACE, which it did not -- every service
+  started with an empty one, so a bind made before the services came up
+  applied to everything except the services. `svc` shows the unit as
+  `namespace` rather than as a dead service, because it starts no program and
+  calling it DEAD sent the player hunting a failure that does not exist.
+
+  ```
+  svcinit: site-config: bound /opt/sitecfg/httpd over /etc/httpd
+  ...
+  rescue# svc
+  site-config      namespace  bind /opt/sitecfg/httpd /etc/httpd
+  rescue# ns 13
+  /etc/httpd /opt/sitecfg/httpd
+  ```
+- **[done]** **the document root is a file.** `fault_docroot_file`. An archive
+  unpacked one level too high. `/srv/www` is not missing -- `ls` lists it,
+  `cat` reads it -- and it is a file with a web page in it. `stat` is the only
+  tool that answers what it IS rather than whether it is there, and `pkg
+  verify` says `NOT A DIRECTORY`, which is a line nobody has seen before.
+
+  **`pkg reinstall` now removes what is in the way of a directory it owns.**
+  It walked to the existing node and handed it back whatever kind it was, so
+  the reinstall reported success and left the file exactly where it was. rpm
+  removes what is in the way; so does this.
+- **[done]** **a config that stops in the middle and still parses.**
+  `fault_conf_truncated`. The disk filled, or the editor was killed, or the
+  copy was interrupted. Nothing is malformed and there is no error to find:
+  the daemon reads a perfectly valid file that is missing everything after a
+  certain line. `pkg diff` is what shows it, because a file that simply ENDS
+  reads very differently from a file with a line changed.
 - **[todo]** a service that starts and then dies an hour later, so the boot
   console is clean and `ps` is the only evidence.
 - **[todo]** two services that both start, where one silently depends on the
@@ -505,6 +651,27 @@ boot, so a repair that leaves a service dead is not a repair.
   a file:** `kill -HUP <pid>`. The fault has to be applied *after* boot by
   construction — reboot and the daemon reads the new file and it evaporates,
   which is exactly why it is so miserable to diagnose in real life.
+- **[done]** **the same fault ALREADY FIXED, and never reloaded.** The other
+  half of the stale-config lesson and the harder one, because `pkg verify` is
+  CLEAN: somebody found this fault before you, edited the file back to what it
+  should say, wrote it, and did not restart the daemon. The config reads
+  perfectly, `svc` says running, and the machine is still doing the wrong
+  thing.
+
+  ```
+  [UP at target, but 1 service(s) are not right]
+  services that are not doing what they are configured to do:
+    httpd          running with a stale /etc/httpd/httpd.conf
+                     on disk:  Listen 80
+                     running: Listen 8080
+  ```
+
+  It is built as a PAIR around the boot -- the wrong value on disk while the
+  daemon reads it, corrected afterwards -- which is the only honest way to
+  make it, and it is why `--sh` had to stop rebooting the machine after
+  breaking it: that second boot silently repaired every fault of this shape
+  before the player saw it. Note 8 in the previous administrator's notes
+  describes exactly this and the game had never once produced it.
 - **[done]** a log filling the disk. See §4 — it now takes syslogd down with
   it, because a logger that cannot write its log is not running whatever the
   process table says.
@@ -579,7 +746,7 @@ sessions and a playtester followed it into a dead end. It is a real fault now.
 
 ## 15. The decoys, which are half the game
 
-There are now **27** of them (`install_local_edits` in `image.c`,
+There are now **37** of them (`install_local_edits` in `image.c`,
 `./tools/check-decoys.sh` walks every one against a 20-machine health run),
 and the count is not decoration: a fault set that doubles while the decoy set
 stands still turns `pkg verify` straight back into an oracle, because the one
@@ -601,10 +768,60 @@ since those are the ones a player reinstalls on sight:
 - `/etc/nftables.conf`, `/etc/logrotate.conf`, `/etc/nomde/panel.conf`,
   `/etc/services.d/sshd.svc` — ordinary tuning, in files that matter.
 
+The third batch (27 to 37) was chosen by a stricter rule: **six of its ten are
+in files that a fault added in the same tranche also writes.** `/boot/zbl/zbl.cfg`
+now holds three faults, so it gets an edit that is somebody raising the menu
+timeout because they kept missing it. `/etc/shells` matters for the first time
+because getty reads it, so it gets a list somebody has legitimately added a
+restricted shell to. `/etc/rc.d/rc.3` names the console's account, so it gets
+an extra `echo`. Likewise `auditd.conf`, `/etc/crontab` and `httpd.conf`. A
+decoy that shares no file with any fault teaches nothing: it is noise, not a
+decision.
+
 One of the original seventeen wrote `/etc/default/postfix`, which no package
 installs, so the edit silently did nothing: a decoy of a decoy. A fault that
 cannot fire is worth checking for as carefully as a repair that cannot fail;
 the same bug had one entry of `fault_wellmeant` doing nothing for months.
+
+## 16. The MIX of tickets, which is not the same thing as the number of faults
+
+A blind playtester played sixteen boots across eight tickets and reported that
+every single one was "the machine will not boot". They rated fixing that above
+another twenty boot-time faults: *"it changes the whole shape of the session:
+no rescue medium, no /mnt, different tools, different customer conversation."*
+
+Two things were true, and only one of them was a bug.
+
+1. **The class was reachable and they were unlucky.** Measured over eighty
+   consecutive seeds through the play path, up-but-sick was 19/80 -- about one
+   ticket in four. Eight draws missing it entirely is an 11% event. It happens.
+2. **The game lied about it in the first sentence.** The desktop opened every
+   ticket with the hard-coded line *"my computer will not start"*, on every
+   machine, including the ones sitting at a login prompt. On the sequence the
+   desk hands out, seeds 4803, 4804 and 4805 are all up-but-sick -- so a
+   player working through it in order was told three times that a machine at a
+   login prompt would not start, and spent those tickets hunting a boot
+   failure that had already happened successfully. The engine knew; nothing
+   asked it. There is a `complaint()` on the machine now, and the chat and the
+   notification badge both use it.
+
+A lie in the opening line is worse than no line at all, because it is the one
+claim a player has no way to check.
+
+The mix is now DECIDED rather than observed. `machine_break` draws a shape
+first -- will not boot, up with something dead, or up and running a
+configuration nobody reloaded -- and keeps generating until it has that shape,
+falling back to whatever it has after 150 attempts so a ticket is always
+produced. Nothing about the fault is chosen or faked: the machine is still
+broken at random and still has to prove it by failing. One draw in four is
+forced, which with what the untargeted draws produce anyway lands at about two
+tickets in five. The first attempt forced two thirds and inverted the problem
+-- fifty-nine seeds in eighty came up healthy-looking and the boot chain, which
+is where most of the machine is, stopped being the job.
+
+A stale ticket is also the WHOLE ticket now: no other corruption is applied,
+because a stray unrelated file in `pkg verify` is the one thing that would give
+that class away, and its whole point is that verify comes back clean.
 
 ## What makes a fault good
 

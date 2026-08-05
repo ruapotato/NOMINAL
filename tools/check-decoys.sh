@@ -10,8 +10,11 @@
 # The count is the length of the EDITS table in image.c. It went from 17 to 27
 # when the structural fault set roughly doubled: a decoy set that does not grow
 # with the fault set turns `pkg verify` back into an oracle, because the one
-# unfamiliar line in the output is the answer again.
-N=${1:-27}
+# unfamiliar line in the output is the answer again. 27 to 37 for the third
+# generation, and six of those ten are in files a NEW fault also writes --
+# zbl.cfg, /etc/shells, rc.3, auditd.conf, crontab, httpd.conf -- because a
+# decoy that shares no file with any fault teaches nothing.
+N=${1:-37}
 fail=0
 i=0
 while [ "$i" -lt "$N" ]; do

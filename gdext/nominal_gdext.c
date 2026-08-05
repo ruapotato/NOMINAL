@@ -580,6 +580,41 @@ static void m_customer_name(Station *st, const GDExtensionConstTypePtr *args, vo
     c_to_gdstring(ret, customer_name(&st->m));
 }
 
+/* complaint() -> String
+ *
+ * WHAT THE CUSTOMER SAYS IS WRONG, and it has to be true.
+ *
+ * The desktop opened every ticket with "my computer will not start", hard
+ * coded, on every machine -- and about one ticket in four is a machine that
+ * IS started and has something dead on it. A blind playtester played sixteen
+ * boots and reported that they had never once been given an up-but-sick
+ * machine; they had been given three, and the first sentence of the call told
+ * them otherwise, so they spent those tickets looking for a boot failure that
+ * was not there. A lie in the opening line is worse than no line at all,
+ * because it is the one thing a player has no way to check.
+ *
+ * It stays at the customer's level of knowledge: they can see a screen, they
+ * cannot see a service. Naming what is actually wrong is still the job. */
+static void m_complaint(Station *st, const GDExtensionConstTypePtr *args, void *ret)
+{
+    (void)args;
+    if (!st->installed) { c_to_gdstring(ret, "my computer will not start."); return; }
+    Buf sick; buf_init(&sick);
+    int dead = kernel_health(&st->m, &sick);
+    buf_free(&sick);
+    Buf left; buf_init(&left);
+    int rest = machine_outstanding(&st->m, &left) ? 1 : 0;
+    buf_free(&left);
+    const char *say;
+    if (!st->m.boot.running)
+        say = "my computer will not start.";
+    else if (dead || rest)
+        say = "my computer comes on, and something on it is not working.";
+    else
+        say = "it seems all right now, and I would like somebody to be sure.";
+    c_to_gdstring(ret, say);
+}
+
 /* chmod(String path, int mode) -> bool */
 static void m_chmod(Station *st, const GDExtensionConstTypePtr *args, void *ret)
 {
@@ -627,6 +662,7 @@ static const MethodDef METHODS[] = {
     { "de_apps",     m_de_apps,     0, { 0 },                              GDEXTENSION_VARIANT_TYPE_STRING },
     { "colleague",   m_colleague,   2, { GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_STRING }, GDEXTENSION_VARIANT_TYPE_STRING },
     { "customer_name", m_customer_name, 0, { 0 },            GDEXTENSION_VARIANT_TYPE_STRING },
+    { "complaint",   m_complaint,   0, { 0 },                              GDEXTENSION_VARIANT_TYPE_STRING },
 };
 #define NMETHODS ((int)(sizeof METHODS / sizeof METHODS[0]))
 

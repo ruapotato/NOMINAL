@@ -765,8 +765,15 @@ func _launch(kind0: String) -> void:
 			chat.bg = WIN_BG
 			_win("chat", _cascade_at(620, 380), chat)
 			chat.call("reset", cust)
+			# WHAT IS ACTUALLY WRONG WITH IT. This sentence was hard coded
+			# to "my computer will not start", which is false on about one
+			# ticket in four -- a machine that is up with a service dead is a
+			# real and commoner call, and a blind playtester spent three of
+			# them hunting a boot failure that had already happened
+			# successfully. The engine knows; ask it.
 			chat.call("seed_first",
-				"my computer will not start. the sticker on the front says %s" % addr)
+				"%s the sticker on the front says %s"
+					% [machine.call("complaint"), addr])
 			alerts = 0
 			_alert_msg = ""
 			foot.queue_redraw()
@@ -1137,7 +1144,9 @@ func _new_ticket() -> void:
 	focused = null
 	chat = null
 	alerts = 1
-	_alert_msg = "%s: my computer will not start. are you there?" % cust
+	# The badge is the first thing said about the machine, so it has to be
+	# true of THIS machine -- see the note at seed_first.
+	_alert_msg = "%s: %s are you there?" % [cust, machine.call("complaint")]
 	# Re-arm the jingle against THIS machine's state. A ticket whose machine
 	# is already up is not a boot you performed.
 	_was_booted = machine.booted()

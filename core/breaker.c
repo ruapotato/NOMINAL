@@ -268,8 +268,21 @@ static void fault_stray_unit(Machine *m, Rng *r, char *d, size_t ds)
  * content, so verify DOES catch it. The interesting part is the repair:
  * reinstalling zbl writes the config for the machine the package was built
  * for, and zbl-mkconfig writes one for the machine in front of you. */
+static void fault_fstab_uuid(Machine *m, Rng *r, char *d, size_t ds);
+
+/* TWO FILES CAN CARRY A UUID AND THIS IS ONE FAULT, NOT TWO.
+ *
+ * A blind playtester drew "a uuid in a config does not match blkid" three
+ * times in eight tickets and had the third one in under a minute: the
+ * bootloader's copy and fstab's copy are the same mistake wearing a different
+ * filename, and drawing them from two slots made the family twice as likely
+ * as anything else in the table. They are still genuinely different tickets --
+ * one stops in the initrd before userland exists and the other stops in
+ * mountall with the machine half up, and the file to fix is the other one --
+ * so both survive, as two arms of one draw. */
 static void fault_wrong_uuid(Machine *m, Rng *r, char *d, size_t ds)
 {
+    if (rng_next(r) % 2) { fault_fstab_uuid(m, r, d, ds); return; }
     char line[96];
     snprintf(line, sizeof line, "  root UUID=%04llx-%04llx-%04llx-%04llx",
              (unsigned long long)(rng_next(r) % 0xffff),
@@ -1730,6 +1743,473 @@ static void fault_cache_full(Machine *m, Rng *r, char *d, size_t ds)
                     "/var/cache", (unsigned long long)files);
 }
 
+/* =====================================================================
+ * A THIRD GENERATION, weighted at the stages the survey said were thin.
+ *
+ * Two thirds of every ticket landed in `services` or `target`, because that
+ * is where the machine has the most files -- and the first four stages of the
+ * boot, which are the ones a player has to reason about rather than grep,
+ * were producing about one ticket in twenty between them. Everything below
+ * fails in the firmware, the loader, the kernel, the initrd, init or login,
+ * and each one is a different question from the ones already here.
+ * ===================================================================== */
+
+/* THE FIRMWARE IS STILL SET TO BOOT THE INSTALLER.
+ *
+ * Not a file. No package owns it, `pkg verify` is perfect, the disk is
+ * perfect, and there is nothing to boot -- because somebody put the install
+ * medium in, moved the optical drive to the top of the boot order, finished
+ * the job, took the disc out and never put the order back. The machine has
+ * been up for two hundred days on the strength of nobody rebooting it.
+ *
+ * The console prints the boot order before it prints anything else, which is
+ * the whole diagnosis; `rcon status` says the same thing from the service
+ * processor. Two repairs, both real: put the order back (`rcon boot disk`),
+ * or run `zbl-install /dev/sda`, which writes the firmware's boot entry the
+ * way grub-install does. */
+static void fault_boot_order(Machine *m, Rng *r, char *d, size_t ds)
+{
+    (void)r;
+    if (m->sp_bootdev == 1) return;
+    m->sp_bootdev = 1;
+    m->sp_media   = false;
+    snprintf(d, ds, "the firmware boot order names the optical drive, and "
+                    "there is no disc in it");
+}
+
+/* THE DEFAULT ENTRY IS NOT THERE.
+ *
+ * Somebody added a menu entry to test something, booted it, deleted the entry
+ * and left `default` pointing past the end of the list. The loader has a
+ * perfectly good entry sitting right there and refuses to guess, which is
+ * what a bootloader should do. One number in one line, and `zbl-mkconfig`
+ * writes a configuration for the machine in front of you. */
+static void fault_zbl_default(Machine *m, Rng *r, char *d, size_t ds)
+{
+    int n = 1 + (int)(rng_next(r) % 3);
+    char line[64];
+    snprintf(line, sizeof line, "default %d", n);
+    VNode *f = vfs_lookup(&m->disk, "/boot/zbl/zbl.cfg");
+    if (!f || f->kind != VN_FILE) return;
+    rewrite_line(m, "/boot/zbl/zbl.cfg", "default", line);
+    snprintf(d, ds, "zbl.cfg boots entry %d and the file has one entry", n);
+}
+
+/* THE UPGRADE ADDED AN ENTRY AND LEFT THE DEFAULT WHERE IT WAS.
+ *
+ * Two entries, both well-formed, and the one at the top is last release's --
+ * whose kernel was autoremoved when /boot filled. The new entry is right
+ * there, one line further down, and the machine has never booted it.
+ *
+ * Deliberately not the same fault as a single entry naming a kernel that is
+ * gone: here the configuration contains the right answer and picks the wrong
+ * one, so the repair is the `default` line or `zbl-mkconfig`, and reading the
+ * file tells you everything. */
+static void fault_zbl_dup_entry(Machine *m, Rng *r, char *d, size_t ds)
+{
+    static const char *OLD[] = { "6.4.9", "6.4.7", "6.3.12" };
+    const char *v = OLD[rng_next(r) % 3];
+    VNode *f = vfs_lookup(&m->disk, "/boot/zbl/zbl.cfg");
+    if (!f || f->kind != VN_FILE) return;
+    Buf out = {0};
+    buf_printf(&out,
+        "default 0\ntimeout 5\n\n"
+        "entry \"NomnixOS 11.4 (%s)\"\n"
+        "  kernel /boot/vmnomuz-%s\n"
+        "  initrd /boot/initrd-%s\n"
+        "  root UUID=%s\n"
+        "\n"
+        "entry \"NomnixOS 11.4\"\n"
+        "  kernel /boot/vmnomuz\n"
+        "  initrd /boot/initrd\n"
+        "  root UUID=%s\n",
+        v, v, v, m->root_uuid, m->root_uuid);
+    buf_clear(&f->data);
+    buf_put(&f->data, out.p, out.len);
+    buf_free(&out);
+    snprintf(d, ds, "zbl.cfg has two entries and the default is the %s one, "
+                    "which is gone", v);
+}
+
+/* THE ROOT NAMED BY DEVICE, AND THE NUMBERING MOVED.
+ *
+ * Somebody wrote the root by hand, the way it was written for twenty years,
+ * and then a disk was added and the partition it names is not the partition
+ * it was. This is the reason installers write uuids, and the console says
+ * plainly that it waited for a device that never appeared -- which is a
+ * different sentence, and a different mental model, from a uuid nothing
+ * carries. `zbl-mkconfig` writes what this machine actually has. */
+static void fault_zbl_rootdev(Machine *m, Rng *r, char *d, size_t ds)
+{
+    static const char *DEV[] = { "/dev/sda2", "/dev/sdb1", "/dev/vda1",
+                                 "/dev/nvme0n1p2" };
+    const char *dev = DEV[rng_next(r) % 4];
+    VNode *f = vfs_lookup(&m->disk, "/boot/zbl/zbl.cfg");
+    if (!f || f->kind != VN_FILE) return;
+    char line[96];
+    snprintf(line, sizeof line, "  root %s", dev);
+    rewrite_line(m, "/boot/zbl/zbl.cfg", "root", line);
+    snprintf(d, ds, "zbl.cfg names the root as %s, a device this machine has "
+                    "not got", dev);
+}
+
+/* THE MODULES ARE FOR THE KERNEL BEFORE LAST.
+ *
+ * The commonest real upgrade failure there is: the new kernel went in, the
+ * modules did not, or a cleanup took the wrong directory. /lib/modules holds
+ * one directory per kernel and the one this kernel needs is not among them,
+ * so nothing can be loaded and the root device has no driver.
+ *
+ * `ls /lib/modules` against `uname` is the whole diagnosis and the console
+ * prints both halves of it. `pkg reinstall kernel-default` puts the modules
+ * back. */
+static void fault_module_mismatch(Machine *m, Rng *r, char *d, size_t ds)
+{
+    static const char *OLD[] = { "6.4.9", "6.4.7", "6.3.12" };
+    const char *v = OLD[rng_next(r) % 3];
+    VNode *src = vfs_lookup(&m->disk, "/lib/modules/6.4.11");
+    if (!src || src->kind != VN_DIR) return;
+    char dst[NOM_PATH_MAX];
+    snprintf(dst, sizeof dst, "/lib/modules/%s", v);
+    if (vfs_lookup(&m->disk, dst)) return;
+    vfs_mkdir(&m->disk, dst);
+    for (VNode *k = src->child; k; k = k->next) {
+        if (k->kind != VN_FILE) continue;
+        char p2[NOM_PATH_MAX];
+        snprintf(p2, sizeof p2, "%s/%s", dst, k->name);
+        VNode *n = vfs_mkfile(&m->disk, p2, "");
+        if (!n) continue;
+        buf_clear(&n->data);
+        buf_put(&n->data, k->data.p, k->data.len);
+        n->mode = k->mode;
+    }
+    vfs_remove(&m->disk, "/lib/modules/6.4.11");
+    snprintf(d, ds, "the only modules installed are %s's; the kernel is "
+                    "6.4.11", v);
+}
+
+/* A VALID KERNEL IMAGE OF THE WRONG VERSION.
+ *
+ * A restore from a backup, or an image copied over the top of another one.
+ * The file is where it belongs, it has the right name, it loads, and it is
+ * last release's kernel -- so the modules on this disk were never built for
+ * it. The FILENAME says 6.4.11 and the IMAGE says otherwise, which is the
+ * one thing a filename cannot be trusted about, and the loader prints the
+ * version it actually read. `pkg reinstall kernel-default`. */
+static void fault_kernel_version(Machine *m, Rng *r, char *d, size_t ds)
+{
+    static const char *OLD[] = { "6.4.9", "6.4.7", "6.3.12" };
+    const char *v = OLD[rng_next(r) % 3];
+    VNode *n = vfs_lookup(&m->disk, "/boot/vmnomuz-6.4.11");
+    if (!n || n->kind != VN_FILE) return;
+    buf_clear(&n->data);
+    buf_printf(&n->data, "\x7fKRNL %s rv64\n", v);
+    snprintf(d, ds, "/boot/vmnomuz-6.4.11 is really a %s image", v);
+}
+
+/* THE TWO SYMLINKS IN /boot, WRITTEN THE WRONG WAY ROUND.
+ *
+ * A rebuild script that took its arguments in the other order. Both files are
+ * present and perfect, both links resolve to something real, `ls /boot` looks
+ * completely healthy -- and the loader is handed an initrd where it expects a
+ * kernel and says so, because a kernel image has a magic number and this is
+ * not it. `stat` on the two links is four seconds and the whole answer. */
+static void fault_boot_symlink_swap(Machine *m, Rng *r, char *d, size_t ds)
+{
+    (void)r;
+    VNode *k = vfs_lookup(&m->disk, "/boot/vmnomuz");
+    VNode *i = vfs_lookup(&m->disk, "/boot/initrd");
+    if (!k || k->kind != VN_LINK || !i || i->kind != VN_LINK) return;
+    vfs_remove(&m->disk, "/boot/vmnomuz");
+    vfs_remove(&m->disk, "/boot/initrd");
+    vfs_symlink(&m->disk, "/boot/initrd-6.4.11", "/boot/vmnomuz");
+    vfs_symlink(&m->disk, "/boot/vmnomuz-6.4.11", "/boot/initrd");
+    snprintf(d, ds, "/boot/vmnomuz and /boot/initrd point at each other's "
+                    "images");
+}
+
+/* AN INITRD BUILT FOR ANOTHER KERNEL.
+ *
+ * Not empty, not corrupt, not foreign hardware: a complete image full of the
+ * right modules for the kernel that was running when somebody rebuilt it,
+ * which is not the kernel installed now. `mkinitrd` builds one for the kernel
+ * that is here, and that is the entire repair -- no package is damaged and
+ * reinstalling anything achieves nothing. */
+static void fault_initrd_version(Machine *m, Rng *r, char *d, size_t ds)
+{
+    static const char *OLD[] = { "6.4.9", "6.4.7", "6.3.12" };
+    const char *v = OLD[rng_next(r) % 3];
+    VNode *n = vfs_lookup(&m->disk, "/boot/initrd-6.4.11");
+    if (!n || n->kind != VN_FILE) return;
+    Buf out = {0};
+    buf_printf(&out, "\x7fINITRD %s\n", v);
+    /* keep the module list: the image is complete, it is simply not ours */
+    const char *p = n->data.p, *end = n->data.p + n->data.len;
+    const char *nl = p ? memchr(p, '\n', (size_t)(end - p)) : NULL;
+    if (nl) buf_put(&out, nl + 1, (size_t)(end - nl - 1));
+    buf_clear(&n->data);
+    buf_put(&n->data, out.p, out.len);
+    buf_free(&out);
+    snprintf(d, ds, "the initrd on this disk was built for %s", v);
+}
+
+/* TWO COMMANDS IN /etc/inittab, AND INIT RUNS THE LAST ONE.
+ *
+ * Somebody was testing single-user mode and added a line rather than editing
+ * the one that was there. The correct line is still in the file, three
+ * characters above the wrong one, which is what makes this different from an
+ * inittab that simply names the wrong script: the machine is not misconfigured
+ * so much as ambiguous, and init resolves the ambiguity the way init always
+ * has. The comment in the shipped file warns about exactly this. */
+static void fault_inittab_second(Machine *m, Rng *r, char *d, size_t ds)
+{
+    static const char *T[] = {
+        "/bin/rc /etc/rc.d/rc.single",
+        "/bin/rc /etc/rc.boot.new",
+        "/sbin/init.debug /etc/rc.boot",
+    };
+    const char *t = T[rng_next(r) % 3];
+    VNode *n = vfs_lookup(&m->disk, "/etc/inittab");
+    if (!n || n->kind != VN_FILE) return;
+    if (n->data.len && n->data.p[n->data.len - 1] != '\n') buf_putc(&n->data, '\n');
+    buf_puts(&n->data, "# temporary, while I test the new bootstrap. -- R.\n");
+    buf_puts(&n->data, t);
+    buf_putc(&n->data, '\n');
+    snprintf(d, ds, "a second command in /etc/inittab (%s), which is the one "
+                    "init runs", t);
+}
+
+/* THE SHELL IS NOT ON THE LIST.
+ *
+ * A hardening pass pruned /etc/shells to the shells it approved of, and
+ * /bin/sh was not one of them because whoever wrote the list was working from
+ * another distribution's. The account is fine, the shell is present and
+ * executable, every service is running, and there is no way in. The machine
+ * says which file it consulted, which is the only reason this is findable at
+ * all -- nobody looks at /etc/shells twice a decade. */
+static void fault_shells(Machine *m, Rng *r, char *d, size_t ds)
+{
+    static const char *LISTS[] = {
+        "# approved interactive shells -- security review, 14 May\n"
+        "/bin/bash\n/bin/dash\n",
+        "# pruned to what we actually support. -- R.\n"
+        "/bin/nomsh\n/bin/false\n",
+        "/bin/false\n",
+    };
+    const char *l = LISTS[rng_next(r) % 3];
+    VNode *n = vfs_lookup(&m->disk, "/etc/shells");
+    if (!n || n->kind != VN_FILE) return;
+    buf_clear(&n->data);
+    buf_puts(&n->data, l);
+    snprintf(d, ds, "/etc/shells no longer lists /bin/sh, which is root's "
+                    "login shell");
+}
+
+/* THE CONSOLE IS HANDED TO AN ACCOUNT THAT IS NOT THERE.
+ *
+ * The runlevel script names who gets the terminal, and somebody changed it to
+ * the operations account during a migration that never finished. The machine
+ * boots perfectly, every service is up, and getty has nobody to hand it to.
+ * `/etc/passwd` is completely correct, which is the trap: the wrong file is
+ * the one nobody thinks of as an account file at all. */
+static void fault_getty_user(Machine *m, Rng *r, char *d, size_t ds)
+{
+    static const char *WHO[] = { "ops", "console", "admin", "operator" };
+    const char *who = WHO[rng_next(r) % 4];
+    VNode *n = vfs_lookup(&m->disk, "/etc/rc.d/rc.3");
+    if (!n || n->kind != VN_FILE) return;
+    char line[96];
+    snprintf(line, sizeof line, "exec /sbin/getty %s", who);
+    rewrite_line(m, "/etc/rc.d/rc.3", "exec /sbin/getty", line);
+    snprintf(d, ds, "rc.3 gives the console to %s, who has no account", who);
+}
+
+/* A UNIT THAT LOST ITS NAME.
+ *
+ * The service starts. It runs. It is healthy. And everything ordered after it
+ * waits forever, because a unit with no `name:` is known by its filename, and
+ * `after: syslog` does not match `syslog.svc`.
+ *
+ * This is the one dependency fault where the thing being waited for is
+ * PRESENT AND WELL, so every reflex -- is it enabled, is it in this runlevel,
+ * is it installed -- comes back yes. The console has both halves one line
+ * apart: `started syslog.svc` and `waiting for syslog`. */
+static void fault_unit_no_name(Machine *m, Rng *r, char *d, size_t ds)
+{
+    static const char *HUBS[] = { "syslog", "net", "udev" };
+    const char *hub = HUBS[rng_next(r) % 3];
+    char path[NOM_PATH_MAX];
+    snprintf(path, sizeof path, "/etc/services.d/%s.svc", hub);
+    VNode *n = vfs_lookup(&m->disk, path);
+    if (!n || n->kind != VN_FILE) return;
+    size_t before = n->data.len;
+    rewrite_line(m, path, "name:", NULL);
+    if (n->data.len == before) return;
+    snprintf(d, ds, "the %s unit has no name line, so it starts as %s.svc and "
+                    "nothing ordered after it ever runs", hub, hub);
+}
+
+/* THE CONFIGURATION AGENT'S OWN COPY, BOUND OVER THE REAL ONE.
+ *
+ * `pkg verify` is COMPLETELY CLEAN. Nothing is corrupt, nothing is missing,
+ * nothing has the wrong mode. The file you `cat` is the right file, and the
+ * daemon read a different one, because a unit nobody installed binds a
+ * directory over the top of /etc/httpd before any service starts -- which is
+ * exactly what an estate-management agent does, and exactly what note 9 in
+ * the previous administrator's notes is about.
+ *
+ * The evidence is in three places and nowhere else: the boot log says it
+ * bound something, `ns <pid>` on the dead daemon shows the binding, and
+ * `pkg owns /etc/services.d/site-config.svc` answers nothing. The repair is
+ * to delete a file no package owns. */
+static void fault_ns_bind_unit(Machine *m, Rng *r, char *d, size_t ds)
+{
+    static const struct {
+        const char *dir, *file, *body, *over, *unit, *why;
+    } B[] = {
+      { "/opt/sitecfg/httpd", "/opt/sitecfg/httpd/httpd.conf",
+        "# site policy, managed centrally. Do not edit on the host.\n"
+        "Listen 80\n"
+        "DocumentRoot /srv/sites/default\n"
+        "ServerName nominal.local\n",
+        "/etc/httpd", "site-config",
+        "a site-config unit binds /opt/sitecfg/httpd over /etc/httpd, and its "
+        "document root does not exist here" },
+      /* Over /etc/audit, not over /etc. Binding the whole of /etc takes every
+       * daemon on the machine down at once and reads as a catastrophe rather
+       * than as a puzzle -- and it is the fault rc.boot's leftover bind
+       * already is. One directory, one daemon, and everything else perfect is
+       * the harder and better ticket. */
+      { "/opt/sitecfg/audit", "/opt/sitecfg/audit/auditd.conf",
+        "# site policy, managed centrally. Do not edit on the host.\n"
+        "log_file = /var/audit/trail\n"
+        "max_log_file = 32\n",
+        "/etc/audit", "site-config",
+        "a site-config unit binds /opt/sitecfg/audit over /etc/audit, and the "
+        "trail it names is not there" },
+    };
+    int i = (int)(rng_next(r) % 2);
+    char unit[NOM_PATH_MAX];
+    snprintf(unit, sizeof unit, "/etc/services.d/%s.svc", B[i].unit);
+    if (vfs_lookup(&m->disk, unit)) return;
+    if (vfs_lookup(&m->disk, B[i].dir)) return;
+
+    vfs_mkdir(&m->disk, "/opt");
+    vfs_mkdir(&m->disk, "/opt/sitecfg");
+    vfs_mkdir(&m->disk, B[i].dir);
+    VNode *f = vfs_mkfile(&m->disk, B[i].file, B[i].body);
+    if (!f) return;
+    f->mode = 0644;
+
+    char body[512];
+    snprintf(body, sizeof body,
+             "# dropped in by the estate agent installer -- managed centrally\n"
+             "name: %s\n"
+             "description: site configuration overlay\n"
+             "bind: %s %s\n"
+             "enabled: yes\n"
+             "runlevel: 3 5\n", B[i].unit, B[i].dir, B[i].over);
+    VNode *n = vfs_mkfile(&m->disk, unit, body);
+    if (n) n->mode = 0644;
+    snprintf(d, ds, "%s", B[i].why);
+}
+
+/* THE WRITE BIT OFF ONE DAEMON'S STATE DIRECTORY.
+ *
+ * Not /run, which takes the whole machine down at once and reads as madness.
+ * One directory, belonging to one service, so exactly one thing on the
+ * machine stops and everything else is perfect -- which is a much harder
+ * ticket, because there is no pattern to notice. Every file in it lists and
+ * reads; the daemon cannot create the one file it keeps there.
+ *
+ * `pkg verify` says `mode` on a DIRECTORY, which is a line most people have
+ * never seen, and `chmod 755` is the repair. */
+static void fault_ro_spool(Machine *m, Rng *r, char *d, size_t ds)
+{
+    static const struct { const char *path, *who; } S[] = {
+        { "/var/lib/ntp", "ntpd, which keeps its drift file there" },
+        { "/run/nomde",   "the display server, which keeps its socket there" },
+    };
+    int i = (int)(rng_next(r) % 2);
+    VNode *n = vfs_lookup(&m->disk, S[i].path);
+    if (!n || n->kind != VN_DIR) return;
+    n->mode = 0555;
+    snprintf(d, ds, "%s is read-only: %s cannot write", S[i].path, S[i].who);
+}
+
+/* /etc/shadow, TIGHTENED UNTIL NOTHING CAN READ IT.
+ *
+ * The same hand that prunes /etc/shells. The file is byte-for-byte correct --
+ * `pkg verify` says `mode` and not `changed` -- and login is impossible,
+ * because the thing that authenticates cannot open the file that
+ * authenticates. The machine boots, every service runs, and it is unusable.
+ * `ls -l /etc/shadow`, and `chmod 600`. */
+static void fault_shadow_mode(Machine *m, Rng *r, char *d, size_t ds)
+{
+    (void)r;
+    VNode *n = vfs_lookup(&m->disk, "/etc/shadow");
+    if (!n || n->kind != VN_FILE) return;
+    if (n->mode == 0000) return;
+    n->mode = 0000;
+    snprintf(d, ds, "/etc/shadow is mode 0000: nothing can read the passwords");
+}
+
+/* A CONFIG THAT STOPS IN THE MIDDLE AND STILL PARSES.
+ *
+ * The disk filled, or the editor was killed, or the copy was interrupted --
+ * and what is left is a perfectly valid file that is missing everything after
+ * a certain line. Nothing is malformed. There is no error to find. The daemon
+ * reads it, cannot see the one directive that was in the part that never got
+ * written, and refuses to start.
+ *
+ * `pkg diff` is what shows it, because a file that simply ENDS reads very
+ * differently from a file with a line changed -- and it is the only fault
+ * here whose evidence is what is absent from the bottom of a file. */
+static void fault_conf_truncated(Machine *m, Rng *r, char *d, size_t ds)
+{
+    static const struct { const char *path; int keep; const char *what; } C[] = {
+        { "/etc/httpd/httpd.conf",  1, "the document root" },
+        { "/etc/crontab",           4, "every job" },
+        { "/etc/nftables.conf",     0, "the whole ruleset" },
+    };
+    int i = (int)(rng_next(r) % 3);
+    VNode *n = vfs_lookup(&m->disk, C[i].path);
+    if (!n || n->kind != VN_FILE || !n->data.len) return;
+
+    size_t at = 0;
+    int lines = 0;
+    while (at < n->data.len && lines < C[i].keep) {
+        while (at < n->data.len && n->data.p[at] != '\n') at++;
+        if (at < n->data.len) at++;
+        lines++;
+    }
+    if (at == n->data.len) return;
+    n->data.len = at;
+    snprintf(d, ds, "%s stops after %d line(s): %s never got written",
+             C[i].path, C[i].keep, C[i].what);
+}
+
+/* THE DOCUMENT ROOT IS A FILE.
+ *
+ * An archive unpacked one level too high, or a `cp` where a `cp -r` was
+ * meant: /srv/www is not missing, it is a file called /srv/www with a web
+ * page in it. `ls /srv` lists it, `cat` reads it, the config names it, and
+ * the only tool that tells you what it IS rather than that it is there is
+ * `stat`. A different sentence out of httpd and a different half-second of
+ * confusion from a directory that was deleted. */
+static void fault_docroot_file(Machine *m, Rng *r, char *d, size_t ds)
+{
+    (void)r;
+    VNode *n = vfs_lookup(&m->disk, "/srv/www");
+    if (!n || n->kind != VN_DIR) return;
+    if (!vfs_remove(&m->disk, "/srv/www")) return;
+    VNode *f = vfs_mkfile(&m->disk, "/srv/www",
+        "<html><body>this machine</body></html>\n");
+    if (f) f->mode = 0644;
+    snprintf(d, ds, "/srv/www is a file, not a directory: the document root "
+                    "was unpacked one level too high");
+}
+
 typedef void (*StructuralFault)(Machine *, Rng *, char *, size_t);
 static const StructuralFault STRUCTURAL[] = {
     fault_bootsector, fault_stray_unit, fault_wrong_uuid, fault_missing_module,
@@ -1741,13 +2221,20 @@ static const StructuralFault STRUCTURAL[] = {
     fault_missing_dir, fault_wellmeant, fault_dep_disabled,
     fault_inodes, fault_iface_rename, fault_half_upgrade,
     /* the second generation */
-    fault_mount_shadow, fault_fstab_uuid, fault_dangling_lib,
+    fault_mount_shadow, fault_dangling_lib,
     fault_lib_shadow, fault_wrong_runlevel, fault_dep_cycle,
     fault_after_ghost, fault_hardening_sweep, fault_wrong_binary,
     fault_stale_kernel_entry, fault_foreign_initrd, fault_no_shadow,
     fault_passwd_fields, fault_docroot, fault_exec_path,
     fault_inittab_target, fault_rcboot_need, fault_ro_dir,
     fault_cache_full,
+    /* the third generation, weighted at the stages the survey said were thin */
+    fault_boot_order, fault_zbl_default, fault_zbl_dup_entry,
+    fault_zbl_rootdev, fault_module_mismatch, fault_kernel_version,
+    fault_boot_symlink_swap, fault_initrd_version, fault_inittab_second,
+    fault_shells, fault_getty_user, fault_unit_no_name,
+    fault_ns_bind_unit, fault_ro_spool, fault_shadow_mode,
+    fault_conf_truncated, fault_docroot_file,
 };
 #define NSTRUCT ((int)(sizeof STRUCTURAL / sizeof STRUCTURAL[0]))
 
@@ -1769,26 +2256,31 @@ static const Mutation MUTATION[] = {
  * `pkg verify` is clean, `svc` says running, and the machine does not do what
  * its configuration plainly says it does. The fix is a signal, not a file.
  */
-static bool fault_stale_config(Machine *m, Rng *r)
-{
-    static const struct { const char *path, *from, *to; } EDITS[] = {
-        { "/etc/nftables.conf",   "inet",       "ip"        },
-        { "/etc/ntp.conf",        "10.0.2.3",   "10.0.2.7"  },
-        { "/etc/httpd/httpd.conf","Listen 80",  "Listen 8080" },
-        { "/etc/net/interfaces",  "eth0",       "eth1"      },
-    };
-    int i = (int)(rng_next(r) % 4);
-    VNode *n = vfs_lookup(&m->disk, EDITS[i].path);
-    if (!n || n->kind != VN_FILE) return false;
+static const struct { const char *path, *from, *to; } STALE_EDITS[] = {
+    { "/etc/nftables.conf",   "inet",       "ip"        },
+    { "/etc/ntp.conf",        "10.0.2.3",   "10.0.2.7"  },
+    { "/etc/httpd/httpd.conf","Listen 80",  "Listen 8080" },
+    { "/etc/net/interfaces",  "eth0",       "eth1"      },
+    { "/etc/nomde/nomde.conf","/run/nomde/requests", "/run/nomde/socket" },
+    { "/etc/audit/auditd.conf","/var/log/audit.log",  "/var/log/audit/trail" },
+};
+#define NSTALE ((int)(sizeof STALE_EDITS / sizeof STALE_EDITS[0]))
 
-    /* rewrite the first occurrence, leaving a file that is entirely valid */
+/* Replace the first occurrence of `from` with `to`. Returns false if the file
+ * does not contain it, which is how a machine whose local edits have already
+ * moved that line declines the fault rather than pretending. */
+static bool text_sub(Machine *m, const char *path, const char *from,
+                     const char *to)
+{
+    VNode *n = vfs_lookup(&m->disk, path);
+    if (!n || n->kind != VN_FILE) return false;
     Buf out = {0};
     const char *p = n->data.p, *end = n->data.p + n->data.len;
-    size_t fl = strlen(EDITS[i].from);
+    size_t fl = strlen(from);
     bool hit = false;
     while (p < end) {
-        if (!hit && (size_t)(end - p) >= fl && memcmp(p, EDITS[i].from, fl) == 0) {
-            buf_puts(&out, EDITS[i].to);
+        if (!hit && (size_t)(end - p) >= fl && memcmp(p, from, fl) == 0) {
+            buf_puts(&out, to);
             p += fl;
             hit = true;
             continue;
@@ -1798,6 +2290,71 @@ static bool fault_stale_config(Machine *m, Rng *r)
     if (hit) { buf_clear(&n->data); buf_put(&n->data, out.p, out.len); }
     buf_free(&out);
     return hit;
+}
+
+/* THE OTHER HALF OF THE SAME LESSON, AND THE HARDER ONE: THE FILE IS RIGHT.
+ *
+ * Somebody already found this fault and fixed it. They edited the config back
+ * to what it should say, wrote the file, and did not restart the daemon --
+ * and then went home, or handed the ticket on, or simply forgot. So `pkg
+ * verify` is CLEAN, `cat` shows exactly the right thing, `svc` says running,
+ * and the machine is still doing the wrong thing, because the process has
+ * been holding the old file in memory since it started.
+ *
+ * The pair is applied around the boot: the wrong value is on disk while the
+ * daemon reads it, and the right value is put back afterwards. That is the
+ * only honest way to build it -- reboot the machine and it evaporates, which
+ * is exactly why it is so miserable in life -- and it is what note 8 in the
+ * previous administrator's notes has been promising: /run/*.state says what
+ * each daemon really loaded, and `kill -HUP` is the repair.
+ */
+typedef struct { char path[NOM_PATH_MAX]; Buf orig; bool on; } StaleFix;
+
+/* A NARROWER SET THAN THE POST-BOOT ONE, and the difference matters: this
+ * value is on the disk WHILE THE DAEMON STARTS, so it has to be one the
+ * daemon will accept. A wrong interface name or an audit path that is not
+ * there stops the service dead, and then the file is corrected behind it and
+ * the player is handed a dead daemon with a perfect config and no evidence at
+ * all -- which is not a puzzle, it is a trap. */
+static const int STALE_PRE[] = { 0, 1, 2, 4 };
+
+static bool stale_pre(Machine *m, Rng *r, StaleFix *s)
+{
+    int i = STALE_PRE[rng_next(r) % (sizeof STALE_PRE / sizeof STALE_PRE[0])];
+    VNode *n = vfs_lookup(&m->disk, STALE_EDITS[i].path);
+    if (!n || n->kind != VN_FILE) return false;
+    buf_clear(&s->orig);
+    buf_put(&s->orig, n->data.p, n->data.len);
+    /* The machine boots with the value somebody has SINCE corrected. */
+    if (!text_sub(m, STALE_EDITS[i].path, STALE_EDITS[i].from, STALE_EDITS[i].to)) {
+        buf_free(&s->orig);
+        s->orig = (Buf){0};
+        return false;
+    }
+    snprintf(s->path, sizeof s->path, "%s", STALE_EDITS[i].path);
+    s->on = true;
+    return true;
+}
+
+static void stale_post(Machine *m, StaleFix *s)
+{
+    VNode *n = vfs_lookup(&m->disk, s->path);
+    if (n && n->kind == VN_FILE) {
+        buf_clear(&n->data);
+        buf_put(&n->data, s->orig.p, s->orig.len);
+    }
+    buf_free(&s->orig);
+    s->orig = (Buf){0};
+    s->on = false;
+}
+
+static bool fault_stale_config(Machine *m, Rng *r)
+{
+    int i = (int)(rng_next(r) % (uint64_t)NSTALE);
+    /* The file now says what somebody has just decided it should say, and the
+     * running process has not been told. */
+    return text_sub(m, STALE_EDITS[i].path, STALE_EDITS[i].from,
+                    STALE_EDITS[i].to);
 }
 
 /* Damage one random file one random way. Returns false if the mutation was a
@@ -1857,29 +2414,115 @@ bool machine_break(Machine *m, uint64_t seed, int nfaults, char *what, size_t wh
     if (nfaults < 1) nfaults = 1;
     if (what && whatsz) what[0] = '\0';
 
+    /* WHAT KIND OF TICKET THIS IS GOING TO BE.
+     *
+     * A blind playtester played sixteen boots and never once got a machine
+     * that was UP and wrong: "it would double the FEEL of variety more than
+     * another twenty boot-time faults would, because it changes the whole
+     * shape of the session -- no rescue medium, no /mnt, different tools,
+     * different customer conversation."
+     *
+     * They were unlucky rather than blocked -- the class was drawing at about
+     * one ticket in four -- but one in four is a coin that lands the wrong way
+     * three times in a row often enough to matter, and every fault added to
+     * the boot chain makes it rarer. So the MIX is decided first and the
+     * generator keeps drawing until it has that kind of ticket. Nothing about
+     * the fault itself is chosen or faked: the machine is still broken at
+     * random and still has to prove it by failing, and a run of attempts that
+     * cannot produce the wanted shape falls back to taking what it has, so a
+     * ticket is always produced.
+     *
+     * Three shapes, one third each: a machine that will not boot, a machine
+     * that is up with something dead on it, and a machine that is up and
+     * running a configuration nobody reloaded. */
+    enum { WANT_ANY, WANT_UP, WANT_STALE };
+    int want = WANT_ANY;
+    {
+        Rng pr;
+        rng_seed(&pr, seed ^ 0x5bf03635e9a1c4d3ULL);
+        /* One draw in four is forced. Two thirds forced was the first
+         * attempt and it inverted the problem -- fifty-nine of eighty seeds
+         * came up healthy-looking and the boot chain, which is where most of
+         * the machine is, stopped being the job. A quarter forced plus what
+         * the untargeted draws produce on their own lands at about two
+         * tickets in five, which is the shape a support desk actually has. */
+        uint64_t k = rng_next(&pr) % 8;
+        want = k == 0 ? WANT_UP : (k == 1 ? WANT_STALE : WANT_ANY);
+    }
+    {
+        const char *f = getenv("NOM_FORCE_STALE");
+        if (f) want = WANT_STALE;
+        if (getenv("NOM_FORCE_UP")) want = WANT_UP;
+    }
+    /* After this many tries the wanted shape is not happening on this seed --
+     * usually because the one structural fault it keeps drawing takes the
+     * boot down -- and a ticket that exists beats a ticket of the right
+     * flavour that does not. */
+    const int GIVE_UP = 150;
+
     for (int attempt = 0; attempt < 400; attempt++) {
         machine_free(m);
         machine_install(m, seed);
         Rng r;
         rng_seed(&r, (seed ^ 0x9e3779b97f4a7c15ULL) + (uint64_t)attempt * 0x2545f491ULL);
 
+        /* Half of the WANT_STALE draws are the harder shape: the wrong value
+         * has to be on the disk while the daemon reads it, so the edit goes
+         * in before the boot and is corrected after it. */
+        StaleFix sf = {0};
+        if (want == WANT_STALE && attempt < GIVE_UP && (attempt & 1) == 0)
+            stale_pre(m, &r, &sf);
+
         char all[512] = "";
         int applied = 0;
-        for (int guard = 0; guard < 64 && applied < nfaults; guard++) {
-            char d[200];
-            if (!machine_corrupt(m, &r, d, sizeof d)) continue;
-            if (applied) strncat(all, "; ", sizeof all - strlen(all) - 1);
-            strncat(all, d, sizeof all - strlen(all) - 1);
-            applied++;
+        /* A STALE TICKET IS THE WHOLE TICKET. The edit around the boot is the
+         * fault, so nothing else is broken -- which is the entire point of
+         * the class: `pkg verify` comes back clean and the player has to
+         * stop trusting it. Corrupting something as well left a stray
+         * unrelated file in `pkg verify` on every one of these, which is the
+         * one thing that would have given the answer away. */
+        bool pure_stale = (want == WANT_STALE && nfaults == 1 &&
+                           attempt < GIVE_UP);
+        if (!pure_stale) {
+            for (int guard = 0; guard < 64 && applied < nfaults; guard++) {
+                char d[200];
+                if (!machine_corrupt(m, &r, d, sizeof d)) continue;
+                if (applied) strncat(all, "; ", sizeof all - strlen(all) - 1);
+                strncat(all, d, sizeof all - strlen(all) - 1);
+                applied++;
+            }
+            if (applied < nfaults) { if (sf.on) stale_post(m, &sf); continue; }
         }
-        if (applied < nfaults) continue;
 
         machine_boot(m);
 
-        /* One ticket in twelve is an edit made after the machine came up. It
-         * has to be applied here, AFTER the boot, or the daemon simply reads
-         * the new file and there is no fault at all. */
-        if (m->boot.running && (rng_next(&r) % 12) == 0) {
+        /* THE TWO WAYS A RUNNING DAEMON ENDS UP OUT OF STEP WITH ITS FILE,
+         * both of which have to happen around the boot rather than before it.
+         *
+         * One: the file was edited after the machine came up and nothing was
+         * reloaded, so the disk says the new thing and the process is doing
+         * the old one. Two: somebody already FOUND that and corrected the
+         * file, and still did not reload it -- so `pkg verify` is clean, the
+         * config reads perfectly, and the machine is doing the wrong thing
+         * anyway. The second is note 8 in the previous administrator's notes,
+         * and until now the game had never once produced it. */
+        if (sf.on) {
+            stale_post(m, &sf);
+            if (m->boot.running) {
+                Buf sick2 = {0};
+                int d2 = kernel_health(m, &sick2);
+                buf_free(&sick2);
+                if (d2 > 0) {
+                    machine_rebaseline_local(m);
+                    if (what) snprintf(what, whatsz,
+                        "a config was corrected and the daemon was never "
+                        "reloaded: the file is right and the process is not");
+                    customer_brief(m, "somebody had a go at it before you and "
+                                      "did not restart anything");
+                    return true;
+                }
+            }
+        } else if (m->boot.running && want == WANT_STALE) {
             if (fault_stale_config(m, &r)) {
                 Buf sick2 = {0};
                 int d2 = kernel_health(m, &sick2);
@@ -1900,6 +2543,12 @@ bool machine_break(Machine *m, uint64_t seed, int nfaults, char *what, size_t wh
         Buf sick = {0};
         int dead = kernel_health(m, &sick);
         buf_free(&sick);
+        /* Not the shape this ticket is supposed to be: put it back and draw
+         * again. Every attempt is an independently broken machine, so this
+         * costs nothing but time and biases nothing except the mix. */
+        if (attempt < GIVE_UP && want != WANT_ANY &&
+            (!m->boot.running || dead == 0))
+            continue;
         if (!m->boot.running || dead > 0) {
             /* The ticket is settled. Whatever the breaker did to a file that
              * also carries a local edit is now part of what the player was
