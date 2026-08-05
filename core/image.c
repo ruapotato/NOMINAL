@@ -4447,7 +4447,25 @@ void machine_rebaseline_local(Machine *m)
  */
 bool machine_handback(Machine *m, Buf *out)
 {
-    machine_boot(m);
+    /* HANDING A MACHINE BACK DOES NOT TOUCH THE MACHINE.
+     *
+     * This used to boot it first, and a reboot is a REPAIR: it is the one
+     * thing that fixes a daemon running a configuration nobody reloaded,
+     * because the daemon reads the file again on the way up. So the ticket
+     * whose whole lesson is `kill -HUP` could be closed by typing `done`, and
+     * a blind playtester found seed 1234 doing exactly that -- two commands,
+     * no repair, "ticket closed", after they had spent twenty minutes
+     * correctly proving the machine was healthy. It was healthy: the verdict
+     * had quietly fixed it before judging it. That teaches a player to
+     * distrust their own diagnosis, which is the one thing this game exists
+     * to build.
+     *
+     * It also meant the rescue-medium branch below could never fire, since
+     * booting the disk clears on_rescue on the way past.
+     *
+     * A claim is checked against the machine AS IT STANDS. If the last thing
+     * it did was fail to boot, that is the answer, and the refusal says so.
+     */
     Buf sick = {0};
     int dead = kernel_health(m, &sick);
     Buf left = {0}, lost = {0};
