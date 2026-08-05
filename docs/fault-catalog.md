@@ -613,10 +613,17 @@ boot, so a repair that leaves a service dead is not a repair.
   svcinit: site-config: bound /opt/sitecfg/httpd over /etc/httpd
   ...
   rescue# svc
-  site-config      namespace  bind /opt/sitecfg/httpd /etc/httpd
-  rescue# ns 13
-  /etc/httpd /opt/sitecfg/httpd
+  site-config      namespace      bind /opt/sitecfg/httpd /etc/httpd
+  rescue# svc status httpd
+  namespace /etc/httpd is really /opt/sitecfg/httpd
   ```
+
+  The bind lives in the namespace `svcinit` handed the service at boot, and
+  nothing in userland can take a binding out of another process's namespace
+  -- so `svc restart` brings the service back into the same bound view it
+  died in, deliberately, rather than quietly undoing a fault that is still on
+  the disk. Removing the unit and rebooting is the repair; making what the
+  bound config names exist is the way to have the service up before then.
 - **[done]** **the document root is a file.** `fault_docroot_file`. An archive
   unpacked one level too high. `/srv/www` is not missing -- `ls` lists it,
   `cat` reads it -- and it is a file with a web page in it. `stat` is the only
@@ -652,7 +659,12 @@ boot, so a repair that leaves a service dead is not a repair.
   Every daemon publishes what it actually loaded to `/run/<name>.state`, so
   the gap between intention and behaviour is a thing the machine can notice
   rather than something only a person could spot. **The fix is a signal, not
-  a file:** `kill -HUP <pid>`. The fault has to be applied *after* boot by
+  a file:** `kill -HUP <pid>`, or `svc reload <name>`, which is the same
+  signal without having to find the pid first. Neither takes the machine
+  down, which is the point: a reboot fixes it and destroys the evidence. A
+  daemon that does not read signals says so, and `svc restart <name>` re-reads
+  the unit and the config from disk for those. The fault has to be applied
+  *after* boot by
   construction — reboot and the daemon reads the new file and it evaporates,
   which is exactly why it is so miserable to diagnose in real life.
 - **[done]** **the same fault ALREADY FIXED, and never reloaded.** The other
