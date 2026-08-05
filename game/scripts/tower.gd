@@ -46,8 +46,8 @@ const FLOOR_COL := {
 	K_LIFT: Color("#3c3f45"),
 	K_STAIR: Color("#6f7378"),
 	K_RISER: Color("#4a4139"),
-	K_COMMS: Color("#2f6f8f"),
-	K_MDF: Color("#2f8f6a"),
+	K_COMMS: Color("#3c6072"),
+	K_MDF: Color("#3d6b5c"),
 	K_TOILET: Color("#9fb3bd"),
 	K_PLANT: Color("#7a6a55"),
 	K_GOODS: Color("#a08349"),
@@ -581,7 +581,7 @@ func _plan_racks() -> void:
 	for r in rooms:
 		var n := 0
 		match r.kind:
-			K_MDF: n = 4
+			K_MDF: n = 6
 			K_COMMS: n = 1
 			K_SERVER: n = 3
 			_: continue
@@ -662,6 +662,19 @@ func racks_in(room: int) -> Array:
 	for i in range(racks.size()):
 		if racks[i].room == room:
 			out.append(i)
+	return out
+
+
+# The same frames, in the order somebody would actually fill them: from the
+# middle of the row outwards. A row of six with everything in the end one is a
+# row you are always standing at the wrong end of.
+func racks_in_fill_order(room: int) -> Array:
+	var row := racks_in(room)
+	var out: Array = []
+	var mid := row.size() / 2
+	for d in range(row.size()):
+		if mid + d < row.size(): out.append(row[mid + d])
+		if d > 0 and mid - d >= 0: out.append(row[mid - d])
 	return out
 
 
@@ -1075,7 +1088,7 @@ func _place_devices() -> void:
 		var room: int = d.room
 		if room < 0 or room >= rooms.size():
 			room = mdf                       # the handoff is outside; land it in the MDF
-		var frames := racks_in(room)
+		var frames := racks_in_fill_order(room)
 		var nu: int = DEV_U.get(d.kindname, 1)
 		var slot := {}
 		for i in frames:
@@ -1098,9 +1111,9 @@ func _place_devices() -> void:
 		_desk(Vector3(r.x1 - 2.4, 0, r.y1 - 1.8), Vector3(1.6, 0.72, 0.8))
 		# the customer's machine, racked: 4U of it, and the crash cart's whole
 		# lesson lives on the back of it -- serial yes, display no.
-		var frames := racks_in(mdf)
+		var frames := racks_in_fill_order(mdf)
 		if not frames.is_empty():
-			var slot := _rack_slot(frames[frames.size() - 1], 4)
+			var slot := _rack_slot(frames[1] if frames.size() > 1 else frames[0], 4)
 			if not slot.is_empty():
 				_add_device("rack server", 1, false, true, slot.mn, slot.size,
 					Color("#23262b"), slot.face, 2, -1)
@@ -1116,7 +1129,7 @@ func _place_devices() -> void:
 		var c := find_room(f, K_COMMS)
 		if c >= 0: pp_rooms.append(c)
 	for room in pp_rooms:
-		var frames := racks_in(room)
+		var frames := racks_in_fill_order(room)
 		if frames.is_empty():
 			continue
 		var slot := _rack_slot(frames[0], 2)

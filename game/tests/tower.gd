@@ -197,6 +197,40 @@ func _init() -> void:
 				ok("lobby -> comms on floor %d is %.0f m on foot" % [f, dist[c]])
 	if reached == 0: fail("there is no comms cupboard above the ground floor")
 
+	# ---- EVERY DEVICE IS REACHABLE ON FOOT from where the day starts. A box
+	# you cannot walk to is a box you cannot plug a lead into, and the site
+	# model will happily install one into a room with no door.
+	var from_spawn: PackedFloat32Array = t.walk_from(mdf)
+	var unreachable := 0
+	var buried := 0
+	for d in t.devices:
+		var df: int = int(floor((d.pos.y + 0.3) / t.fheight))
+		var dr: int = t.room_of(df, int(floor(d.pos.x)), int(floor(d.pos.z)))
+		if dr == t.NOROOM:
+			buried += 1
+			fail("%s is outside the building plate at (%.1f, %.1f)" % [d.name, d.pos.x, d.pos.z])
+		elif from_spawn[dr] < 0.0:
+			unreachable += 1
+			fail("you cannot walk from the MDF to the %s in the %s"
+				% [d.name, t.rooms[dr].name])
+	if unreachable == 0 and buried == 0:
+		ok("all %d devices are reachable on foot from the MDF" % t.devices.size())
+
+	# ---- and the site model is the one that says what they are
+	var kit: Array = t.site_devs()
+	if kit.size() < 4:
+		fail("the MDF holds %d devices; it should hold the handoff and a few to set up"
+			% kit.size())
+	else:
+		var names := ""
+		for d in kit: names += " " + str(d.name)
+		ok("day one in the MDF:" + names)
+	# nothing is cabled on day one: that is the job
+	if t.site_links().size() != 0:
+		fail("something was already cabled before the player touched it")
+	else:
+		ok("and not one of them is plugged into anything yet")
+
 	# ---- doors are gaps you can get through: every door edge must be clear
 	var blocked := 0
 	for d in t.doors:
