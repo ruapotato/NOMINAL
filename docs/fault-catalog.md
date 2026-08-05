@@ -180,7 +180,17 @@ Legend: **[done]** built · **[next]** in progress or immediately next ·
   version straight back.** "4 files restored" and the machine still will not
   boot. The fault is three lines away in a config nobody thinks to look at,
   and the fix is to correct the *source* and then reinstall.
-- **[todo]** an interrupted upgrade: half the package's files are the new
+- **[done]** **an interrupted upgrade.** `fault_half_upgrade`. The power went,
+  or the disk filled, or somebody hit ctrl-C. Some of a package's programs are
+  the new build and want a libc this machine has not got yet; the rest are the
+  old build and run fine.
+
+  The signature is unlike anything else here. A corrupted binary is ONE file.
+  A bad library is EVERY binary at once. This is several files of ONE package
+  changed together, all consistently, all deliberately -- because they really
+  were installed on purpose, just not all of them. The fix is to finish the
+  upgrade or roll it back, not to edit anything.
+- **[was-todo]** an interrupted upgrade: half the package's files are the new
   version and half are the old. `pkg verify` shows a scatter of CHANGED files
   in one package, which reads very differently from one damaged file.
 - **[todo]** a held/pinned package that will not upgrade, so a dependency is

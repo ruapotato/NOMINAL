@@ -991,6 +991,53 @@ static void fault_iface_rename(Machine *m, Rng *r, char *d, size_t ds)
                              "which /etc/net/interfaces does not configure", nm);
 }
 
+/* AN UPGRADE THAT STOPPED HALFWAY.
+ *
+ * The power went, or the disk filled, or somebody hit ctrl-C. Some of the
+ * package's files are the new version and some are still the old one, and the
+ * package is now internally inconsistent in a way nothing on the machine
+ * agrees about: `pkg list` shows one version, the files disagree with each
+ * other, and only SOME of the programs it ships will run.
+ *
+ * The signature is unlike anything else here. A corrupted binary is one file;
+ * a bad library is every binary at once. This is several files of ONE package
+ * changed together, all consistently, all deliberately -- because they really
+ * were installed on purpose, just not all of them.
+ *
+ * Done by patching the dependency each binary declares: the new build wants a
+ * libc this machine does not have yet, because the libc half of the upgrade
+ * never happened. That is exactly what a half-finished dist-upgrade feels
+ * like, and the fix is to finish it or roll it back, not to edit anything. */
+static void fault_half_upgrade(Machine *m, Rng *r, char *d, size_t ds)
+{
+    /* Programs that ship together and are upgraded together. */
+    static const char *SETS[][4] = {
+        { "/usr/sbin/syslogd", "/usr/sbin/crond",  NULL, NULL },
+        { "/usr/sbin/netd",    "/usr/sbin/sshd",   NULL, NULL },
+        { "/usr/sbin/httpd",   "/usr/sbin/nft",    NULL, NULL },
+    };
+    int set = (int)(rng_next(r) % 3);
+    int hit = 0;
+
+    for (int i = 0; i < 4 && SETS[set][i]; i++) {
+        VNode *n = vfs_lookup(&m->disk, SETS[set][i]);
+        if (!n || n->kind != VN_FILE || n->data.len < 32) continue;
+        /* The .nomneed section carries "libc.so.6 2.38". The new build of
+         * this program was compiled against 2.41. */
+        static const char want[] = "libc.so.6 2.38";
+        for (size_t k = 0; k + sizeof want - 1 < n->data.len; k++) {
+            if (memcmp(n->data.p + k, want, sizeof want - 1) != 0) continue;
+            n->data.p[k + sizeof want - 2] = '1';   /* 2.38 -> 2.41 */
+            n->data.p[k + sizeof want - 3] = '4';
+            hit++;
+            break;
+        }
+    }
+    if (!hit) return;
+    snprintf(d, ds, "an upgrade stopped halfway: %d program(s) are the new "
+                    "build and want a libc this machine has not got yet", hit);
+}
+
 static void fault_missing_dir(Machine *m, Rng *r, char *d, size_t ds)
 {
     static const char *VICTIMS[] = {
@@ -1062,7 +1109,7 @@ static const StructuralFault STRUCTURAL[] = {
     fault_daemon_directive, fault_disk_full, fault_bad_bind,
     fault_dir_mode, fault_root_ro, fault_bad_libz, fault_fstype,
     fault_missing_dir, fault_wellmeant, fault_dep_disabled,
-    fault_inodes, fault_iface_rename,
+    fault_inodes, fault_iface_rename, fault_half_upgrade,
 };
 #define NSTRUCT ((int)(sizeof STRUCTURAL / sizeof STRUCTURAL[0]))
 
