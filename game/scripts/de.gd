@@ -63,17 +63,30 @@ var _shot_path := ""
 var _shot_after := 0
 var _frames := 0
 
-const LAUNCHERS := [
-	["Terminal",   "term"],
-	["Chat",       "chat"],
-	["Files",      "files"],
-	["Notes",      "notes"],
-	["Log Viewer", "log"],
-	["Manual",     "manual"],
-	["2048",       "g2048"],
-]
+# THE DESKTOP DOES NOT KNOW WHAT APPLICATIONS EXIST. It reads the .desktop
+# entries in /usr/share/applications, the way every real desktop does. Delete
+# one and its icon goes; corrupt one and it goes; and both are findable with
+# `ls` and `cat`. This list is only the fallback for a machine whose registry
+# is unreadable -- which is itself a thing worth seeing.
+var LAUNCHERS: Array = [["Terminal", "term", "term"]]
+
+func _load_apps() -> void:
+	var out: String = machine.de_apps()
+	var got: Array = []
+	for row in out.split("\n"):
+		if row.strip_edges() == "":
+			continue
+		var f: PackedStringArray = row.split("\t")
+		if f.size() >= 3:
+			got.append([f[1], f[0], f[2]])
+		elif f.size() == 2:
+			got.append([f[1], f[0], "app"])
+	if got.is_empty():
+		got = [["Terminal", "term", "term"]]
+	LAUNCHERS = got
 const TITLES := {"term": "terminal - your", "chat": "chat", "files": "files",
-	"notes": "notes", "log": "log viewer", "manual": "manual", "g2048": "2048"}
+	"notes": "notes", "log": "log viewer", "manual": "manual", "g2048": "2048",
+	"gflappy": "flappy", "gworms": "worms", "browser": "browser"}
 
 
 func _ready() -> void:
@@ -86,6 +99,9 @@ func _ready() -> void:
 		return
 	_build_shell()
 	_new_ticket()
+	# After the ticket, because the workstation is created with it.
+	_load_apps()
+	wall.queue_redraw()
 	_parse_args()
 
 
@@ -119,7 +135,7 @@ func _draw_wall() -> void:
 			WALL_TOP.lerp(WALL_BOT, t))
 	var y := PANEL_H + 14.0
 	for spec in LAUNCHERS:
-		_draw_icon(wall, Vector2(24, y), spec[0], spec[1])
+		_draw_icon(wall, Vector2(24, y), spec[0], spec[2] if spec.size() > 2 else spec[1])
 		y += 62
 
 	if menu_open:
@@ -130,7 +146,8 @@ func _draw_wall() -> void:
 		for spec in LAUNCHERS:
 			wall.draw_string(mono, Vector2(r.position.x + 30, my + 17), spec[0],
 				HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color("#1b1b1b"))
-			_draw_icon_small(wall, Vector2(r.position.x + 6, my + 4), spec[1])
+			_draw_icon_small(wall, Vector2(r.position.x + 6, my + 4),
+				spec[2] if spec.size() > 2 else spec[1])
 			my += MENU_ROW
 
 
@@ -161,11 +178,27 @@ func _draw_icon(c: Control, at: Vector2, label: String, kind: String) -> void:
 			c.draw_line(at + Vector2(5, 22), at + Vector2(14, 10), Color("#79d17a"))
 			c.draw_line(at + Vector2(14, 10), at + Vector2(22, 18), Color("#79d17a"))
 			c.draw_line(at + Vector2(22, 18), at + Vector2(30, 7), Color("#79d17a"))
-		_:
+		"game":
+			c.draw_rect(r, Color("#f0e6d2"))
+			c.draw_rect(r, Color("#8b929b"), false, 1.0)
+			c.draw_rect(Rect2(at.x + 5, at.y + 5, 10, 9), Color("#e0a338"))
+			c.draw_rect(Rect2(at.x + 18, at.y + 14, 10, 9), Color("#c96f4a"))
+		"browser":
+			c.draw_rect(r, Color("#ffffff"))
+			c.draw_rect(r, Color("#8b929b"), false, 1.0)
+			c.draw_rect(Rect2(at.x + 1, at.y + 1, 32, 6), Color("#3c6eb4"))
+			c.draw_line(at + Vector2(5, 16), at + Vector2(29, 16), Color("#9fb4cc"))
+			c.draw_line(at + Vector2(5, 21), at + Vector2(24, 21), Color("#9fb4cc"))
+		"manual":
 			c.draw_rect(r, Color("#f6f6f6"))
 			c.draw_rect(r, Color("#8b929b"), false, 1.0)
 			c.draw_string(mono, at + Vector2(11, 21), "M",
 				HORIZONTAL_ALIGNMENT_LEFT, -1, 13, INK)
+		_:
+			c.draw_rect(r, Color("#f6f6f6"))
+			c.draw_rect(r, Color("#8b929b"), false, 1.0)
+			c.draw_string(mono, at + Vector2(12, 21), "*",
+				HORIZONTAL_ALIGNMENT_LEFT, -1, 14, INK)
 	c.draw_string(mono, Vector2(at.x - 8, at.y + 44), label,
 		HORIZONTAL_ALIGNMENT_CENTER, 50, 11, Color("#ffffff"))
 
@@ -179,6 +212,8 @@ func _draw_icon_small(c: Control, at: Vector2, kind: String) -> void:
 		"files": c.draw_rect(r, Color("#e0a338"))
 		"notes": c.draw_rect(r, Color("#fbfbf4"))
 		"log": c.draw_rect(r, Color("#1c1c1c"))
+		"game": c.draw_rect(r, Color("#e0a338"))
+		"browser": c.draw_rect(r, Color("#3c6eb4"))
 		_: c.draw_rect(r, Color("#dcdcdc"))
 	c.draw_rect(r, Color("#8b929b"), false, 1.0)
 
@@ -455,7 +490,16 @@ func _find(prefix: String) -> Control:
 	return null
 
 
-func _launch(kind: String) -> void:
+# .desktop Exec names to the windows this desktop can build.
+const EXEC_MAP := {
+	"terminal": "term", "term": "term", "chat": "chat", "files": "files",
+	"notes": "notes", "logview": "log", "log": "log", "manual": "manual",
+	"browser": "browser", "g2048": "g2048", "gflappy": "gflappy",
+	"gworms": "gworms",
+}
+
+func _launch(kind0: String) -> void:
+	var kind: String = EXEC_MAP.get(kind0, kind0)
 	var existing := _find(str(TITLES.get(kind, "?")))
 	if existing:
 		_raise(existing)
@@ -514,6 +558,21 @@ func _launch(kind: String) -> void:
 			g.mono = mono
 			g.machine = machine
 			_win("2048", _cascade_at(360, 460), g)
+		"gflappy":
+			var g2 := preload("res://scripts/gflappy.gd").new()
+			g2.mono = mono
+			g2.machine = machine
+			_win("flappy", _cascade_at(520, 400), g2)
+		"gworms":
+			var g3 := preload("res://scripts/gworms.gd").new()
+			g3.mono = mono
+			g3.machine = machine
+			_win("worms", _cascade_at(720, 480), g3)
+		"browser":
+			var b := preload("res://scripts/browser.gd").new()
+			b.mono = mono
+			b.machine = machine
+			_win("browser", _cascade_at(720, 520), b)
 
 
 # A text file, in a window, editable. Clicking a .txt in the file manager
@@ -625,6 +684,17 @@ func _new_ticket() -> void:
 
 
 func _process(dt: float) -> void:
+	# DRAIN THE DISPLAY SERVER'S SOCKET. `open g2048` in a terminal writes a
+	# line to /run/nomde/requests and this is what turns it into a window --
+	# which is the whole of David's "start any of the graphical applications
+	# from the command line", and it goes through the OS rather than round it.
+	if machine:
+		var req: String = machine.de_requests()
+		if req.strip_edges() != "":
+			for r in req.split("\n"):
+				if r.strip_edges() != "":
+					_launch(r.strip_edges())
+
 	_clock += dt
 	if panel:
 		panel.queue_redraw()

@@ -420,6 +420,70 @@ static void m_sh_on(Station *st, const GDExtensionConstTypePtr *args, void *ret)
     buf_free(&out);
 }
 
+/* de_requests() -> String
+ *
+ * Everything written to /run/nomde/requests since the last call, and it
+ * clears the file. This is the display server's socket being drained by the
+ * thing that draws the windows -- which is what makes `open g2048` in a
+ * terminal actually open a window, and what makes a broken graphical stack
+ * debuggable: no nomde, no /run, or a damaged .desktop, and nothing happens
+ * for a reason you can find. */
+static void m_de_requests(Station *st, const GDExtensionConstTypePtr *args, void *ret)
+{
+    (void)args;
+    /* The workstation is created with the ticket. Asking before that walks a
+     * zeroed Machine and takes Godot down with a native backtrace and no
+     * script error at all -- the second time I have made exactly this
+     * mistake, so both new methods check. */
+    if (!st->desk_up) { c_to_gdstring(ret, ""); return; }
+    VNode *n = vfs_lookup(&st->desk.disk, "/run/nomde/requests");
+    if (!n || n->kind != VN_FILE || !n->data.len) { c_to_gdstring(ret, ""); return; }
+    Buf b; buf_init(&b);
+    buf_put(&b, n->data.p, n->data.len);
+    buf_clear(&n->data);
+    c_to_gdstring(ret, b.p ? b.p : "");
+    buf_free(&b);
+}
+
+/* de_apps() -> String: the .desktop registry, one "key\tName\tIcon" per line.
+ * The desktop does not know what applications exist; it reads this. */
+static void m_de_apps(Station *st, const GDExtensionConstTypePtr *args, void *ret)
+{
+    (void)args;
+    if (!st->desk_up) { c_to_gdstring(ret, ""); return; }
+    Buf b; buf_init(&b);
+    VNode *d = vfs_lookup(&st->desk.disk, "/usr/share/applications");
+    for (VNode *k = d ? d->child : NULL; k; k = k->next) {
+        if (k->kind != VN_FILE) continue;
+        size_t nl = strlen(k->name);
+        if (nl < 9 || strcmp(k->name + nl - 8, ".desktop") != 0) continue;
+        char key[64];
+        size_t kl = nl - 8;
+        if (kl >= sizeof key) kl = sizeof key - 1;
+        memcpy(key, k->name, kl);
+        key[kl] = 0;
+        /* Name= and Icon= out of the entry itself. */
+        char nm[64] = "", ic[32] = "";
+        const char *p = k->data.p ? k->data.p : "";
+        for (const char *q = p; q && *q; ) {
+            const char *e = strchr(q, '\n');
+            size_t len = e ? (size_t)(e - q) : strlen(q);
+            if (len > 5 && strncmp(q, "Name=", 5) == 0) {
+                size_t c2 = len - 5; if (c2 >= sizeof nm) c2 = sizeof nm - 1;
+                memcpy(nm, q + 5, c2); nm[c2] = 0;
+            } else if (len > 5 && strncmp(q, "Icon=", 5) == 0) {
+                size_t c2 = len - 5; if (c2 >= sizeof ic) c2 = sizeof ic - 1;
+                memcpy(ic, q + 5, c2); ic[c2] = 0;
+            }
+            q = e ? e + 1 : NULL;
+        }
+        if (!nm[0]) continue;             /* a damaged entry has no name */
+        buf_printf(&b, "%s\t%s\t%s\n", key, nm, ic);
+    }
+    c_to_gdstring(ret, b.p ? b.p : "");
+    buf_free(&b);
+}
+
 /* peer_addr() -> String: what the customer reads off the sticker. */
 static void m_peer_addr(Station *st, const GDExtensionConstTypePtr *args, void *ret)
 {
@@ -526,6 +590,8 @@ static const MethodDef METHODS[] = {
     { "ask",         m_ask,         1, { GDEXTENSION_VARIANT_TYPE_STRING }, GDEXTENSION_VARIANT_TYPE_STRING },
     { "sh_on",       m_sh_on,       2, { GDEXTENSION_VARIANT_TYPE_INT, GDEXTENSION_VARIANT_TYPE_STRING }, GDEXTENSION_VARIANT_TYPE_STRING },
     { "peer_addr",   m_peer_addr,   0, { 0 },                              GDEXTENSION_VARIANT_TYPE_STRING },
+    { "de_requests", m_de_requests, 0, { 0 },                              GDEXTENSION_VARIANT_TYPE_STRING },
+    { "de_apps",     m_de_apps,     0, { 0 },                              GDEXTENSION_VARIANT_TYPE_STRING },
     { "colleague",   m_colleague,   2, { GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_STRING }, GDEXTENSION_VARIANT_TYPE_STRING },
     { "customer_name", m_customer_name, 0, { 0 },            GDEXTENSION_VARIANT_TYPE_STRING },
 };

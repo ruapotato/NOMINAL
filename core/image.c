@@ -348,19 +348,113 @@ static const Package PKG_SSH = {
 static const Package PKG_HAMDE = {
     "nomde", "3.1", "the desktop",
     {
-      { "/usr/bin/nomde", "#!nomde\n", 0755, NULL },
+      { "/usr/bin/nomde", NULL, 0755, NULL },
       { "/etc/services.d/nomde.svc",
         "# /etc/services.d/nomde.svc\n"
         "name: nomde\n"
         "exec: /usr/bin/nomde\n"
-        "description: desktop panel\n"
+        "description: the display server\n"
+        /* RUNLEVEL 3 AND 5, so the graphical stack exists on every machine
+         * and can therefore BREAK on every machine. A desktop that only runs
+         * on a box you never see is not debuggable, and David's whole point
+         * was being able to debug a broken graphical session the way you
+         * would a broken X11 one. */
         "after: net\n"
         "restart: on-failure\n"
         "enabled: yes\n"
-        "runlevel: 5\n", 0644, NULL },
+        "runlevel: 3 5\n", 0644, NULL },
       { "/etc/nomde/panel.conf", "position=bottom\nheight=28\n", 0644, NULL },
       { "/etc/nomde/desktop.icons", "Terminal\nFiles\n", 0644, NULL },
-    }, 4
+      /* THE APP REGISTRY, and it is FILES.
+       *
+       * David: "tie the desktop into the OS at a fairly deep level, so you
+       * could start any of the graphical applications from the command line
+       * ... similar to debugging a broken X11 session."
+       *
+       * So the desktop does not know what applications exist. It reads these,
+       * the way every real desktop reads .desktop files. Delete one and the
+       * icon goes; corrupt one and it goes; and both are diagnosable with
+       * `ls /usr/share/applications` and `cat` like anything else. The
+       * graphical stack becomes a thing you can break and repair rather than
+       * a painted-on menu. */
+      { "/usr/share/applications/terminal.desktop",
+        "[Desktop Entry]\n"
+        "Name=Terminal\n"
+        "Exec=terminal\n"
+        "Icon=term\n"
+        "Comment=A shell on this machine\n", 0644, NULL },
+      { "/usr/share/applications/chat.desktop",
+        "[Desktop Entry]\n"
+        "Name=Chat\n"
+        "Exec=chat\n"
+        "Icon=chat\n"
+        "Comment=The customer, and two colleagues\n", 0644, NULL },
+      { "/usr/share/applications/files.desktop",
+        "[Desktop Entry]\n"
+        "Name=Files\n"
+        "Exec=files\n"
+        "Icon=files\n"
+        "Comment=Browse this machine\n", 0644, NULL },
+      { "/usr/share/applications/notes.desktop",
+        "[Desktop Entry]\n"
+        "Name=Notes\n"
+        "Exec=notes\n"
+        "Icon=notes\n"
+        "Comment=/root/notes.txt, in a window\n", 0644, NULL },
+      { "/usr/share/applications/logview.desktop",
+        "[Desktop Entry]\n"
+        "Name=Log Viewer\n"
+        "Exec=logview\n"
+        "Icon=log\n"
+        "Comment=What the machine said while booting\n", 0644, NULL },
+      { "/usr/share/applications/manual.desktop",
+        "[Desktop Entry]\n"
+        "Name=Manual\n"
+        "Exec=manual\n"
+        "Icon=manual\n"
+        "Comment=How this machine works\n", 0644, NULL },
+      { "/usr/share/applications/browser.desktop",
+        "[Desktop Entry]\n"
+        "Name=Browser\n"
+        "Exec=browser\n"
+        "Icon=browser\n"
+        "Comment=The intranet\n", 0644, NULL },
+      { "/usr/share/applications/g2048.desktop",
+        "[Desktop Entry]\n"
+        "Name=2048\n"
+        "Exec=g2048\n"
+        "Icon=game\n"
+        "Comment=Slide the tiles\n", 0644, NULL },
+      { "/usr/share/applications/gflappy.desktop",
+        "[Desktop Entry]\n"
+        "Name=Flappy\n"
+        "Exec=gflappy\n"
+        "Icon=game\n"
+        "Comment=Do not hit the pipes\n", 0644, NULL },
+      { "/usr/share/applications/gworms.desktop",
+        "[Desktop Entry]\n"
+        "Name=Worms\n"
+        "Exec=gworms\n"
+        "Icon=game\n"
+        "Comment=Two worms, one hill\n", 0644, NULL },
+      /* Where the display server takes requests. A file, because a file can
+       * be looked at: `cat /run/nomde/requests` shows what was asked for,
+       * which is the debuggability the socket version would not have. */
+      { "/etc/nomde/nomde.conf",
+        "# the display server\n"
+        "socket = /run/nomde/requests\n"
+        "applications = /usr/share/applications\n", 0644, NULL },
+      { "/usr/bin/open", NULL, 0755, NULL },
+      /* THE DISPLAY SERVER OWNS ITS OWN DIRECTORIES.
+       *
+       * /run/nomde was created at install and owned by nobody, so when the
+       * deleted-directory fault took /run out, `pkg reinstall` could put back
+       * /run -- which base owns -- and not /run/nomde, and nomde never came
+       * up again. One seed of sixty went unfixable that way. A package owns
+       * the directories it needs, or it cannot be repaired. */
+      { "/run/nomde", NULL, 0755, NULL, true },
+      { "/usr/share/applications", NULL, 0755, NULL, true },
+    }, 18
 };
 
 static const Package PKG_SHELL = {
@@ -940,6 +1034,10 @@ void image_generated(const Machine *m, const char *path, Buf *out)
         buf_put(out, (const char *)GUEST_FIND, GUEST_FIND_LEN);
     else if (strcmp(path, "/bin/netstat") == 0)
         buf_put(out, (const char *)GUEST_NETSTAT, GUEST_NETSTAT_LEN);
+    else if (strcmp(path, "/usr/bin/nomde") == 0)
+        buf_put(out, (const char *)GUEST_NOMDE, GUEST_NOMDE_LEN);
+    else if (strcmp(path, "/usr/bin/open") == 0)
+        buf_put(out, (const char *)GUEST_OPEN, GUEST_OPEN_LEN);
     else if (strcmp(path, "/sbin/reboot") == 0 ||
              strcmp(path, "/sbin/halt") == 0 ||
              strcmp(path, "/sbin/poweroff") == 0)
@@ -1097,6 +1195,7 @@ void machine_install(Machine *m, uint64_t seed)
 
     static const char *DIRS[] = {
         "/bin", "/boot", "/boot/zbl", "/dev", "/etc", "/etc/nomde",
+        "/usr/share/applications", "/run/nomde",
         "/etc/net", "/etc/rc.d", "/etc/services.d", "/etc/ssh", "/etc/udev",
         "/etc/udev/rules.d", "/home", "/home/nomowner", "/home/nomowner/bin",
         /* A HOME DIRECTORY LOOKS LIKE SOMEBODY LIVES IN IT. Everything was
