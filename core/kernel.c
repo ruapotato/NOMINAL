@@ -824,6 +824,13 @@ static int64_t kernel_syscall(Cpu *c, int64_t n, int64_t a0, int64_t a1,
                                    (int)a2, p->console,
                                    p->info ? &p->info->ns : NULL);
     }
+    case SYS_svcctl: {
+        char nm[64];
+        if (!guest_str(c, (uint64_t)a1, nm, sizeof nm)) return -1;
+        if ((int)a0 == SVCCTL_STOP)   return kernel_svc_stop(p->m, nm);
+        if ((int)a0 == SVCCTL_RELOAD) return kernel_svc_reload(p->m, nm, p->console);
+        return -1;
+    }
     case SYS_fsck: {
         char dev[64];
         if (!guest_str(c, (uint64_t)a0, dev, sizeof dev)) return -1;
@@ -1085,9 +1092,25 @@ static int64_t kernel_syscall(Cpu *c, int64_t n, int64_t a0, int64_t a1,
                 buf_printf(&b, "last said %s\n", d->died);
             if (d->pending_sig)
                 buf_printf(&b, "signal    %d pending\n", d->pending_sig);
-            if (!d->running)
+            /* WHAT IT IS ACTUALLY LOOKING AT. A service started under a bind
+             * reads a different file from the one you `cat`, everything
+             * passes `pkg verify`, and the only evidence is the namespace it
+             * was handed. That was reachable through `ns <pid>` and only if
+             * you already suspected it -- and on a service that is DEAD there
+             * is no pid left to ask. */
+            for (int k = 0; k < d->ns.n; k++)
+                buf_printf(&b, "%-9s %s is really %s\n", k ? "" : "namespace",
+                           d->ns.b[k].at, d->ns.b[k].target);
+            /* A service somebody stopped by hand said nothing on the way
+             * down and left nothing in the log, so sending the player to
+             * `dmesg -f` for it is an invitation to read an empty answer as
+             * a missing one. */
+            if (!d->running && strcmp(d->died, "stopped by hand") != 0)
                 buf_printf(&b, "\nwhat it said on the way down is in the boot log:\n"
                                "  dmesg -f %s\n", d->name);
+            else if (!d->running)
+                buf_printf(&b, "\nnothing failed: it was stopped from a shell.\n"
+                               "  svc start %s\n", d->name);
             break;
         }
         if (!found) return 0;
@@ -1596,6 +1619,34 @@ int64_t kernel_start_daemon(Machine *m, const char *path, const char *arg,
                             const Ns *inherit)
 {
     struct Daemon *ds = daemons(m);
+    /* A SERVICE STARTED TWICE IS STILL ONE SERVICE.
+     *
+     * `svc start` and `svc restart` arrive here exactly the way the boot
+     * does, and appending a second record for a name already in the table
+     * would leave `svc status` answering from whichever it found first and
+     * kernel_health counting the corpse of the old one for ever. A start of
+     * something already known is THAT record starting again -- which is also
+     * what makes a restart genuinely re-read the unit and the config from
+     * disk, since everything about loading it happens below. */
+    const char *want = name ? name : path;
+    for (int i = 0; i < m->ndaemon; i++) {
+        if (strcmp(ds[i].name, want) != 0) continue;
+        if (ds[i].running) return SPAWN_EBUSY;
+        struct Daemon *e = &ds[i];
+        snprintf(e->path, sizeof e->path, "%s", path);
+        snprintf(e->proc.arg, sizeof e->proc.arg, "%s", arg ? arg : "");
+        e->restart_policy = restart;
+        e->restarts = 0;
+        e->gave_up = false;
+        e->exit_code = 0;
+        e->died[0] = '\0';
+        e->pending_sig = 0;
+        /* Its OWN namespace, not the caller's: a service comes back up where
+         * it was, so a bind a unit made before it started is still under it.
+         * Inheriting the shell's view instead would make `svc restart` a way
+         * to quietly undo a namespace fault that is still on the disk. */
+        return daemon_launch(m, e, console);
+    }
     if (m->ndaemon >= DAEMON_MAX) return SPAWN_EDEPTH;
     struct Daemon *d = &ds[m->ndaemon];
     memset(d, 0, sizeof *d);
@@ -1749,6 +1800,63 @@ void kernel_tick(Machine *m, int slices, Buf *console)
             }
         }
     }
+}
+
+/* STOPPING ONE, AND ASKING ONE TO RE-READ ITSELF.
+ *
+ * Everything a running-and-wrong machine needs repairing with, short of the
+ * power switch -- and the power switch is exactly what must not be needed,
+ * because rebooting destroys the evidence for the whole fault class where a
+ * process is out of step with a file.
+ */
+int kernel_svc_stop(Machine *m, const char *name)
+{
+    if (!m->daemon) return SVCCTL_ENOSVC;
+    struct Daemon *d = daemons(m);
+    for (int i = 0; i < m->ndaemon; i++) {
+        if (strcmp(d[i].name, name) != 0) continue;
+        if (!d[i].running) return SVCCTL_ENOTRUN;
+        cpu_free(&d[i].cpu);
+        d[i].running = false;
+        d[i].gave_up = false;
+        d[i].pending_sig = 0;
+        d[i].exit_code = 0;
+        snprintf(d[i].died, sizeof d[i].died, "stopped by hand");
+        /* Out of the process table too, which is what makes `ps` and
+         * `netstat` agree with `svc` about it -- netstat lists a port only
+         * while the process that opens it is alive, so stopping the web
+         * server really does take :80 off the machine. */
+        if (d[i].proc.info) {
+            d[i].proc.info->alive = false;
+            d[i].proc.info->exit_code = 0;
+        }
+        return 0;
+    }
+    return SVCCTL_ENOSVC;
+}
+
+int kernel_svc_reload(Machine *m, const char *name, Buf *console)
+{
+    if (!m->daemon) return SVCCTL_ENOSVC;
+    struct Daemon *d = daemons(m);
+    for (int i = 0; i < m->ndaemon; i++) {
+        if (strcmp(d[i].name, name) != 0) continue;
+        if (!d[i].running) return SVCCTL_ENOTRUN;
+        d[i].pending_sig = SIG_HUP;
+        /* Give it the slice it needs to notice. A signal here is left
+         * pending and collected by a daemon that polls for it, so "does this
+         * daemon support reload" has an answer nobody has to write down: the
+         * ones that poll take it, and the ones that do not leave it sitting
+         * there. Declaring the capability in the unit file would be a second
+         * copy of that fact, free to be wrong. */
+        kernel_tick(m, 2, console);
+        if (d[i].pending_sig == SIG_HUP) {
+            d[i].pending_sig = 0;      /* not left to go off later */
+            return SVCCTL_ENOSIG;
+        }
+        return 0;
+    }
+    return SVCCTL_ENOSVC;
 }
 
 /* --------------------------------------------------------- the linker -- */

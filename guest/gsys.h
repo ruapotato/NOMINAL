@@ -69,6 +69,8 @@ static inline i64 g_slurp_stdin(char *buf, u64 cap)
 }
 
 static inline i64  g_svcstart(const char *p, const char *n, int r) { return sysc(SYS_svcstart, (i64)p, (i64)n, r); }
+static inline int  g_svcstop(const char *n)   { return (int)sysc(SYS_svcctl, SVCCTL_STOP, (i64)n, 0); }
+static inline int  g_svcreload(const char *n) { return (int)sysc(SYS_svcctl, SVCCTL_RELOAD, (i64)n, 0); }
 static inline i64  g_readlink(const char *p, char *b, u64 n) { return sysc(SYS_readlink, (i64)p, (i64)b, (i64)n); }
 static inline int  g_getpid(void) { return (int)sysc(SYS_getpid, 0, 0, 0); }
 static inline int  g_bind(const char *target, const char *at) { return (int)sysc(SYS_bind, (i64)target, (i64)at, 0); }

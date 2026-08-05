@@ -345,6 +345,11 @@ int64_t kernel_start_daemon(Machine *m, const char *path, const char *arg,
  * faults during its slice has crashed, and says so. */
 void kernel_tick(Machine *m, int slices, Buf *console);
 void kernel_stop_daemons(Machine *m);
+/* Stop ONE service, and ask one to re-read its configuration. The other half
+ * of starting them: a service that can only be started is a machine whose
+ * only repair is the power switch. Both return 0 or a negative SVCCTL_*. */
+int  kernel_svc_stop(Machine *m, const char *name);
+int  kernel_svc_reload(Machine *m, const char *name, Buf *console);
 /* How many services that should be running are not, and which. A machine can
  * boot perfectly and still be broken; this is the difference. */
 int  kernel_health(Machine *m, Buf *out);

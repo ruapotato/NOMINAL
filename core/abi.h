@@ -111,6 +111,21 @@ typedef unsigned long      uint64_t;
                              * it would not start. Unlike spawn, the program
                              * STAYS running afterwards. `restart` is 1 for
                              * on-failure, 2 for always, 0 for never.      */
+#define SYS_svcctl   1063   /* (op, name) -> 0, or a negative SVCCTL_*. The
+                             * other half of svcstart: a service you can start
+                             * and never stop is a machine whose only repair
+                             * is the power switch, and rebooting is what
+                             * DESTROYS the evidence for half the faults on
+                             * it. Starting a service is svcstart with a name
+                             * already in the table, so it is not here.     */
+#define SVCCTL_STOP    0
+#define SVCCTL_RELOAD  1      /* leave a HUP on it and see whether it looks */
+#define SVCCTL_ENOSVC  (-1)   /* nothing by that name started this boot     */
+#define SVCCTL_ENOTRUN (-2)   /* it is in the table and it is not running   */
+#define SVCCTL_ENOSIG  (-3)   /* it does not read signals: it never picked
+                               * the HUP up, which is the only honest way to
+                               * tell a daemon that reloads from one that
+                               * would simply ignore you                    */
 #define SYS_fsck     1046   /* (dev, buf, len) -> 0 clean, 1 repaired, -1 no  */
 #define SYS_bootsec  1044   /* (write?) -> 1 if a boot sector is present.
                              * Not a file, so no package owns it and no
@@ -167,5 +182,10 @@ typedef struct {
 #define SPAWN_ENOEXEC  (-3)   /* not a program this machine can run  */
 #define SPAWN_EFAULT   (-4)   /* it ran and trapped                  */
 #define SPAWN_EDEPTH   (-5)   /* nested too deep                     */
+#define SPAWN_EBUSY    (-6)   /* a service of that name is already
+                               * running: starting it twice would
+                               * leave two records for one name and
+                               * `svc status` reading whichever it
+                               * found first                        */
 
 #endif /* NOM_ABI_H */
