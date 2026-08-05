@@ -79,7 +79,101 @@ static const Package PKG_KERNEL = {
       { "/lib/modules/6.4.11/dm_mod.ko",     "\x7fMOD dm_mod\n",     0644, NULL },
       { "/lib/modules/6.4.11/e1000.ko",      "\x7fMOD e1000\n",      0644, NULL },
       { "/lib/modules/6.4.11/loop.ko",       "\x7fMOD loop\n",       0644, NULL },
-    }, 10
+      { "/usr/share/doc/kernel-default/README",
+        "kernel-default 6.4.11 -- the kernel and its initrd.\n"
+        "\n"
+        "  /boot/vmnomuz-6.4.11    the kernel image\n"
+        "  /boot/vmnomuz           A SYMLINK to it\n"
+        "  /boot/initrd-6.4.11     the initial ramdisk\n"
+        "  /boot/initrd            A SYMLINK to it\n"
+        "  /lib/modules/6.4.11/    the modules: virtio_blk, ext4, dm_mod, e1000, loop\n"
+        "  /usr/bin/mkinitrd       rebuilds the initrd from what is in /lib/modules\n"
+        "\n"
+        "THE TWO SYMLINKS ARE THE MOST IMPORTANT FACT IN THIS FILE. The bootloader\n"
+        "config names /boot/vmnomuz; the package installs /boot/vmnomuz-6.4.11 and\n"
+        "points the link at it. So there are two things that can go wrong and they\n"
+        "look nothing alike:\n"
+        "\n"
+        "  ls /boot           shows you the LINK. It looks healthy either way.\n"
+        "  stat /boot/vmnomuz FOLLOWS it, and tells you the truth.\n"
+        "\n"
+        "`pkg verify kernel-default` records the hash of a symlink's TARGET, so it\n"
+        "reports MISSING (symlink) and REPOINTED as distinct things.\n"
+        "\n"
+        "WHAT THE INITRD IS FOR: it carries the drivers needed to reach the root\n"
+        "filesystem before the root filesystem is available. This machine's disk is\n"
+        "virtio_blk and its filesystem is ext4, so an initrd without those two cannot\n"
+        "mount the root however perfect the rest of the machine is.\n"
+        "\n"
+        "mkinitrd BUILDS FROM /lib/modules. It cannot invent a module that is not\n"
+        "there. That is why a deleted module is two repairs in order -- reinstall the\n"
+        "package, THEN rebuild -- and a merely wrong initrd is one.\n", 0644, NULL },
+      { "/usr/share/doc/kernel-default/CHANGELOG",
+        "kernel-default CHANGELOG -- newest first.\n"
+        "\n"
+        "6.4.11 -- current. `pkg list` says so and so does /lib/modules.\n"
+        "\n"
+        "6.4.9  -- superseded. IF THE BOOTLOADER CONFIG STILL NAMES THIS VERSION,\n"
+        "          that is the fault: an upgrade that half finished, or a cleanup\n"
+        "          that removed the old image after the config was written. The\n"
+        "          loader says `/boot/vmnomuz-6.4.9: not found`, `ls /boot` shows\n"
+        "          what is really there, and `stat /boot/vmnomuz` is perfectly happy\n"
+        "          -- because the file the LOADER wants is not the file the system\n"
+        "          installs. `zbl-mkconfig` writes a config for the machine in front\n"
+        "          of you; reinstalling the zbl package writes the config for the\n"
+        "          machine it was built for.\n"
+        "\n"
+        "6.4.4  -- the initrd records which modules it contains, so the loader can\n"
+        "          say what an image DOES carry as well as what it lacks. \"No driver\n"
+        "          for the root device\" was the same sentence for an empty initrd and\n"
+        "          for one built on a machine with different disks, and those are not\n"
+        "          the same problem.\n"
+        "\n"
+        "6.3.x  -- older series. No modules for this series remain installed;\n"
+        "          /lib/modules has one directory and it matches this kernel. When it\n"
+        "          does not match, drivers refuse to load, and that is the commonest\n"
+        "          real upgrade failure there is.\n", 0644, NULL },
+      { "/usr/share/doc/kernel-default/known-issues",
+        "kernel-default -- known issues.\n"
+        "\n"
+        "1. THE VERSIONED IMAGE IS GONE AND THE LISTING LOOKS FINE.\n"
+        "\n"
+        "   Something tidied /boot. /boot/vmnomuz is a symlink and the symlink was\n"
+        "   not touched, so `ls /boot` is perfectly healthy and the loader says the\n"
+        "   kernel is missing.\n"
+        "\n"
+        "     ls /boot            the link\n"
+        "     stat /boot/vmnomuz  the truth\n"
+        "     pkg verify kernel-default\n"
+        "     pkg reinstall kernel-default\n"
+        "\n"
+        "2. THE IMAGE IS TRUNCATED OR ITS MAGIC IS WRONG.\n"
+        "\n"
+        "   Half a file, usually because /boot filled during the write. The write\n"
+        "   \"succeeded\". `pkg verify` says CHANGED because the hash is not the hash.\n"
+        "   Reinstall -- and check `df` first, or you will write half a file again.\n"
+        "\n"
+        "3. THE INITRD HAS NO DRIVER FOR THIS DISK.\n"
+        "\n"
+        "   Two different faults with one symptom, and the loader distinguishes them\n"
+        "   by saying what the image DOES carry.\n"
+        "\n"
+        "   a. The module is missing from /lib/modules as well. mkinitrd cannot\n"
+        "      invent it. TWO repairs, in order: `pkg reinstall kernel-default` then\n"
+        "      `mkinitrd`.\n"
+        "   b. Every module is present in /lib/modules and the initrd is simply the\n"
+        "      wrong one -- a complete, valid image full of drivers for somebody\n"
+        "      else's hardware, which is what a clone from a different box produces.\n"
+        "      ONE repair: `mkinitrd`.\n"
+        "\n"
+        "   `ls /lib/modules/6.4.11` is what tells you which of the two you have.\n"
+        "\n"
+        "4. /lib/modules DOES NOT MATCH THE RUNNING KERNEL.\n"
+        "\n"
+        "   The directory is named for a version and the kernel is another. Nothing\n"
+        "   loads. Reinstalling this package makes the two agree again, because they\n"
+        "   ship together and are meant to.\n", 0644, NULL },
+    }, 13
 };
 
 /* The userland that actually runs. */
@@ -99,7 +193,90 @@ static const Package PKG_SYSINIT = {
       { "/etc/rc.d/rc.3", NULL, 0755, NULL },          /* SRC_RC3 */
       { "/etc/rc.d/rc.0", NULL, 0755, NULL },          /* SRC_RC0 */
       { "/etc/rc.conf", "3\n", 0644, NULL },
-    }, 11
+      { "/usr/share/doc/sysinit/README",
+        "sysinit 254 -- pid 1, the rc scripts, the runlevels and the login.\n"
+        "\n"
+        "  /usr/lib/sysinit/init   the real program\n"
+        "  /sbin/init              a symlink to it\n"
+        "  /etc/inittab            the ONE file pid 1 reads\n"
+        "  /etc/rc.boot            the bootstrap rc\n"
+        "  /etc/rc.d/rc.3          the multi-user runlevel\n"
+        "  /etc/rc.d/rc.0          halt\n"
+        "  /etc/rc.conf            the default runlevel\n"
+        "  /sbin/svcinit           starts the units in /etc/services.d\n"
+        "  /sbin/mountall          reads /etc/fstab, and decides ro or rw for /\n"
+        "  /sbin/getty, /sbin/login\n"
+        "\n"
+        "THE ORDER, because the stage a machine stops at is half the diagnosis:\n"
+        "\n"
+        "  init      reads /etc/inittab. Its last non-comment line is a command.\n"
+        "  rc        /bin/rc runs /etc/rc.boot.\n"
+        "  mountall  /etc/fstab is the SINGLE source of truth for what is mounted,\n"
+        "            including the remount of the root itself as ro or rw.\n"
+        "  runlevel  rc.boot runs /etc/rc.d/rc.3.\n"
+        "  services  /sbin/svcinit reads /etc/services.d and starts units in\n"
+        "            dependency order.\n"
+        "  login     /sbin/getty checks the account is in /etc/passwd and that its\n"
+        "            shell exists and is executable, then offers a prompt.\n"
+        "\n"
+        "/bin/rc KNOWS FIVE VERBS: echo, mount, run, exec, need. It stops at the\n"
+        "FIRST failure, deliberately -- a boot that carries on past a step that did\n"
+        "not work is a boot that fails later, somewhere unrelated, for reasons that\n"
+        "make no sense. That also means rc is a poor language for a checklist, which\n"
+        "is why the half-written one in ~nomowner/bin is all comments.\n"
+        "\n"
+        "A boot that dies with almost nothing on the console died in init, and init\n"
+        "reads one file.\n", 0644, NULL },
+      { "/usr/share/doc/sysinit/known-issues",
+        "sysinit -- known issues.\n"
+        "\n"
+        "1. /etc/inittab NAMES A SCRIPT THAT IS NOT THERE.\n"
+        "\n"
+        "   The file is two lines long and one of them is now a path that does not\n"
+        "   exist -- somebody testing single-user mode, or reorganising the runlevel\n"
+        "   scripts. The machine stops before any of userland has run and the console\n"
+        "   has almost nothing on it, which is itself the diagnosis.\n"
+        "\n"
+        "2. A `need` LINE IN /etc/rc.boot FOR SOMETHING THAT IS NOT INSTALLED.\n"
+        "\n"
+        "   A vendor package dropped it in, or somebody tidied away the thing it\n"
+        "   named. rc stops at the first failure, so the machine dies at a line that\n"
+        "   has nothing to do with booting. The repair is to take the line out, not\n"
+        "   to install anything.\n"
+        "\n"
+        "   Note that an extra `echo` in rc.boot is somebody being helpful and is\n"
+        "   completely harmless. Same file, same kind of edit, opposite verdict --\n"
+        "   read the verb.\n"
+        "\n"
+        "3. A UNIT IN THE WRONG RUNLEVEL.\n"
+        "\n"
+        "   Nothing failed and nothing was tried. The unit is present, correct,\n"
+        "   enabled and healthy, and it belongs to runlevel 5 on a machine that boots\n"
+        "   to 3. `enabled: yes` is in the file and is the line everybody reads. The\n"
+        "   word \"runlevel\" appears only on the console. The mirror image is rc.3\n"
+        "   entering runlevel 5, where half the service set does not belong.\n"
+        "\n"
+        "4. TWO UNITS ORDERED AFTER EACH OTHER.\n"
+        "\n"
+        "   Neither is broken, neither will ever start, and each unit read on its own\n"
+        "   is completely reasonable. Reading ONE file tells you nothing. This is the\n"
+        "   fault that punishes checking a file instead of checking a set.\n"
+        "\n"
+        "5. ORDERED AFTER SOMETHING THAT IS NOT INSTALLED, OR IS DISABLED.\n"
+        "\n"
+        "   svcinit says which, and the difference is twenty minutes: \"waiting for\n"
+        "   network\", \"waiting for network -- and no unit by that name is installed\",\n"
+        "   and \"waiting for network -- which is disabled\" are three sentences. Read\n"
+        "   the console; `svc` will show the dependents DEAD with no reason at all,\n"
+        "   and `pkg verify` will point at the wrong service.\n"
+        "\n"
+        "6. A STRAY .svc NO PACKAGE OWNS.\n"
+        "\n"
+        "   `pkg verify` is CLEAN and the boot still stops, because verify compares\n"
+        "   what is installed against the manifests and a file no manifest mentions\n"
+        "   cannot differ from anything. `pkg owns` it; \"nothing owns it\" is a real\n"
+        "   answer; delete it.\n", 0644, NULL },
+    }, 13
 };
 
 static const Package PKG_BASE = {
@@ -114,12 +291,53 @@ static const Package PKG_BASE = {
         "DISTRIB_ID=NomnixOS\nDISTRIB_RELEASE=11.4\n", 0644, NULL },
       { "/etc/issue", "NomnixOS 11.4\n", 0644, NULL },
       { "/etc/motd",  "Welcome to NomnixOS.\n", 0644, NULL },
-      { "/etc/shells", "/bin/nomsh\n", 0644, NULL },
+      /* THE SHELLS AN ACCOUNT MAY LOG IN WITH, and getty checks it. This
+       * said `/bin/nomsh`, a program that has not existed for two releases,
+       * and nothing read the file -- so it was decoration that would have
+       * locked every account out the day anything started honouring it. */
+      { "/etc/shells", "/bin/sh\n/bin/false\n", 0644, NULL },
       { "/etc/profile", "# login shell profile\nPATH=/bin:/usr/bin:/sbin\n", 0644, NULL },
           { "/run", NULL, 0755, NULL, true },
       { "/tmp", NULL, 0777, NULL, true },
       { "/var/cache", NULL, 0755, NULL, true },
-    }, 11
+          { "/usr/share/doc/README",
+        "/usr/share/doc -- one directory per package, named exactly as `pkg list`\n"
+        "names the package.\n"
+        "\n"
+        "  README         what the package is for, and which files on this machine\n"
+        "                 belong to it\n"
+        "  CHANGELOG      the versions, newest first. The top entry is the version\n"
+        "                 `pkg list` reports, and if it is not, one of the two is\n"
+        "                 lying and it is worth knowing which.\n"
+        "  known-issues   the ways this package really goes wrong HERE, what each one\n"
+        "                 looks like in `pkg verify`, and what the repair is. These\n"
+        "                 are not hypothetical. Every one of them has happened on a\n"
+        "                 machine like this one.\n"
+        "\n"
+        "The documentation is shipped BY the package it documents, which is the whole\n"
+        "reason it is trustworthy: `pkg owns /usr/share/doc/httpd/README` answers\n"
+        "`httpd`, `pkg verify httpd` hashes it along with the binary and the config,\n"
+        "and a doc file that has been edited shows up as CHANGED like anything else.\n"
+        "Nothing here is a second source of truth bolted on beside the machine.\n"
+        "\n"
+        "Not every package has a directory. A package with nothing interesting to say\n"
+        "does not get made to say something, which is the only way the ones that do\n"
+        "have anything stay worth reading.\n"
+        "\n"
+        "  ls /usr/share/doc\n"
+        "  ls /usr/share/doc/httpd\n"
+        "  cat /usr/share/doc/libc/known-issues\n"
+        "  grep -n verify /usr/share/doc/libc/known-issues\n"
+        "\n"
+        "A glob matches names in ONE directory, so `/usr/share/doc/*/README` is\n"
+        "not a thing you can write here: the shell splits at the last slash and\n"
+        "asks the kernel to list a directory called `*`. Glob the last part or\n"
+        "use `find /usr/share/doc -name README`.\n"
+        "\n"
+        "`man` is the other half of this: `man` on its own lists the pages, and those\n"
+        "are about COMMANDS. These are about PACKAGES. When something is broken you\n"
+        "usually know which package before you know which command.\n", 0644, NULL },
+    }, 12
 };
 
 static const Package PKG_USERS = {
@@ -132,7 +350,58 @@ static const Package PKG_USERS = {
       { "/etc/group", "root:x:0:\ndaemon:x:1:\nnomowner:x:1000:\n", 0644, NULL },
       { "/etc/shadow", "root:!:19000:0:99999:7:::\n", 0600, NULL },
       { "/etc/login.defs", "UID_MIN 1000\nUID_MAX 60000\n", 0644, NULL },
-    }, 4
+      { "/usr/share/doc/shadow/README",
+        "shadow 4.13 -- accounts.\n"
+        "\n"
+        "  /etc/passwd      name:x:uid:gid:comment:home:shell   -- SEVEN fields\n"
+        "  /etc/group\n"
+        "  /etc/shadow      the password, mode 0600\n"
+        "  /etc/login.defs\n"
+        "\n"
+        "/sbin/getty VALIDATES THE ACCOUNT before it hands the machine over. The\n"
+        "entry has to be in /etc/passwd, and the login shell named in the last field\n"
+        "has to exist and be executable. That is why a machine can boot perfectly,\n"
+        "with every service running, and have no way in at all -- which is a\n"
+        "different problem from a machine that will not start, and is why login is\n"
+        "its own boot stage here.\n"
+        "\n"
+        "Count the colons. Six of them, seven fields. Almost everything that goes\n"
+        "wrong with this file is arithmetic.\n", 0644, NULL },
+      { "/usr/share/doc/shadow/known-issues",
+        "shadow -- known issues. Every one of these boots the machine perfectly.\n"
+        "\n"
+        "1. THE LOGIN SHELL IS WRONG.\n"
+        "\n"
+        "   A shell that used to exist, one that never did, a rename that was going\n"
+        "   to be temporary, or the field left empty. getty says so by name. `ls -l`\n"
+        "   the path it names.\n"
+        "\n"
+        "2. root IS NOT IN /etc/passwd AT ALL.\n"
+        "\n"
+        "   Half a user migration. Everything runs; nobody can log in.\n"
+        "\n"
+        "3. /etc/passwd AND /etc/shadow ARE OUT OF STEP.\n"
+        "\n"
+        "   root is in passwd and has no line in shadow. THE PASSWORD LIVES IN THE\n"
+        "   OTHER FILE, and /etc/passwd -- where everybody looks first -- is perfect.\n"
+        "   `cat /etc/shadow` is the whole diagnosis and mode 0600 is why people\n"
+        "   forget it is there.\n"
+        "\n"
+        "4. ONE EXTRA COLON.\n"
+        "\n"
+        "   The line still parses. Right name, right uid, right home. Every field\n"
+        "   after the typo has shifted one to the left, so the login shell is now the\n"
+        "   home directory, and the machine says -- quite correctly -- that root's\n"
+        "   login shell /root is not a program. A sentence that makes no sense at all\n"
+        "   until you count the colons.\n"
+        "\n"
+        "5. A SERVICE ACCOUNT SOMEBODY ADDED.\n"
+        "\n"
+        "   `pkg verify shadow` says CHANGED on /etc/passwd and it is not the fault.\n"
+        "   Somebody added an account on purpose. `pkg diff` it: a diff that reads\n"
+        "   like a decision is not a fault, and `pkg reinstall --force` here deletes\n"
+        "   a real account to fix a problem that is somewhere else.\n", 0644, NULL },
+    }, 6
 };
 
 static const Package PKG_NET = {
@@ -179,7 +448,81 @@ static const Package PKG_SYSLOG = {
         "runlevel: 3\n", 0644, NULL },
       { "/etc/syslog.conf", "*.info /var/log/messages\n", 0644, NULL },
           { "/var/log", NULL, 0755, NULL, true },
-    }, 4
+      { "/usr/share/doc/syslog/README",
+        "syslog 2.4 -- system logging.\n"
+        "\n"
+        "  /usr/sbin/syslogd            the daemon\n"
+        "  /etc/syslog.conf             where messages go\n"
+        "  /var/log                     A DIRECTORY THIS PACKAGE OWNS\n"
+        "  /etc/services.d/syslog.svc   critical: yes, after udev\n"
+        "\n"
+        "/var/log/messages is NOT owned by any package and never will be. `pkg owns\n"
+        "/var/log/messages` answers \"nothing\", and that is a fact worth being able to\n"
+        "discover: a log that matched a hash would be a log nothing had written to.\n"
+        "The DIRECTORY is owned, so a deleted or chmod'd /var/log is something\n"
+        "`pkg verify syslog` can see and `pkg reinstall syslog` can repair. The\n"
+        "contents are yours.\n"
+        "\n"
+        "syslogd appends its own banner at every boot, so the newest line in\n"
+        "/var/log/messages is always this machine's own and everything above it is\n"
+        "history. /var/log/messages.1 is what logrotate moved aside, and on a machine\n"
+        "that has been running a while it is the more interesting of the two.\n"
+        "\n"
+        "  dmesg                  this boot, from the kernel\n"
+        "  dmesg -1               the boot before this one\n"
+        "  tail /var/log/messages the end of the log, which is where the news is\n"
+        "  grep <name> /var/log/messages.1   what happened last time\n", 0644, NULL },
+      { "/usr/share/doc/syslog/known-issues",
+        "syslog -- known issues, and the first one is a warning about this package.\n"
+        "\n"
+        "1. SYSLOGD IS ALMOST NEVER THE PROBLEM.\n"
+        "\n"
+        "   It is critical, it starts early, and it is the first thing on the machine\n"
+        "   that tries to WRITE. So when the disk is full, or the root is mounted\n"
+        "   read-only, or /var/log has had its mode changed, syslogd is the first\n"
+        "   service to fail and every instinct you have says to go and look at\n"
+        "   syslogd.\n"
+        "\n"
+        "   The first thing to fail is never the interesting thing. It is just the\n"
+        "   first thing that tried.\n"
+        "\n"
+        "     df          is there room\n"
+        "     df -i       ...or is it inodes, which is a different question\n"
+        "     mount       is the root ro\n"
+        "     ls -ld /var/log\n"
+        "\n"
+        "   Two hours went into syslogd on this machine in March. The answer was\n"
+        "   `df`, and `df` is free.\n"
+        "\n"
+        "2. THE LOG ATE THE DISK.\n"
+        "\n"
+        "   One enormous file. `wc /var/log/messages` finds it immediately, `tail` it\n"
+        "   before you delete it, and `rm` it -- syslogd writes a fresh one at the\n"
+        "   next start. Nothing is corrupt and `pkg verify` will hand you a clean\n"
+        "   bill of health while there is nowhere to put the next byte.\n"
+        "\n"
+        "   Compare: a package CACHE that ate the disk is four hundred ordinary\n"
+        "   files, none of them remarkable, and no amount of looking at files will\n"
+        "   show it to you. `find /var -type f` is what shows you a directory.\n"
+        "\n"
+        "3. /var/log IS GONE, OR IS NOT WRITABLE.\n"
+        "\n"
+        "   Because this package owns the directory, verify says so plainly --\n"
+        "   `missing`, or `MODE` with the mode it shipped. `pkg reinstall syslog`\n"
+        "   restores the directory. Note that this is a directory a package owns; the\n"
+        "   mode of a directory NOBODY owns is invisible to verify entirely, and then\n"
+        "   `ls -ld` is the only tool that will tell you.\n"
+        "\n"
+        "4. SYSLOGD DOES NOT PUBLISH A STATE FILE, AND ALMOST EVERYTHING ELSE DOES.\n"
+        "\n"
+        "   `ls /run` shows udevd, netd, sshd, nomde, crond, ntpd, httpd, nft and\n"
+        "   auditd each writing down what they actually loaded, and no syslogd\n"
+        "   among them. So the trick that catches every other stale config --\n"
+        "   compare /run/<name>.state against the file on disk -- has nothing to\n"
+        "   compare here. An edit to /etc/syslog.conf that nothing reloaded has to\n"
+        "   be caught by noticing that the machine is not doing what the file says.\n"
+        "   `ps` for the pid, then `kill -HUP` on it.\n", 0644, NULL },
+    }, 6
 };
 
 static const Package PKG_UDEV = {
@@ -566,9 +909,11 @@ static const Package PKG_HOME = {
         "\n"
         "--- JANUARY ---\n"
         "\n"
-        "7th. /var/log/messages is 200K and growing. Logrotate is configured. The\n"
-        "crontab line is there. There is no evidence it has ever run. A job with no\n"
-        "log has never run.\n"
+        "7th. /var/log/messages is 200K and growing. Logrotate is configured, the\n"
+        "crontab line is there, and `grep logrotate /var/log/messages` shows crond\n"
+        "starting it -- a CMD line, in both the current log and the rotated one. So\n"
+        "it is not the case that the job never runs. The job runs and the file grows\n"
+        "anyway, which is a worse fact and I have not got to the bottom of it.\n"
         "\n"
         "15th. Still growing. Put it on the TODO. It is now on the TODO twice.\n"
         "\n"
@@ -811,10 +1156,16 @@ static const Package PKG_HOME = {
         "checklist that a person runs, and TODO, which is the list of what it would\n"
         "have needed. Both are more useful than the script would have been.\n"
         "\n"
-        "THE ACTUAL FIX, which I never did: find out why the logrotate line never\n"
-        "runs. `grep logrotate /var/log/messages` and `grep logrotate\n"
-        "/var/log/messages.1` -- crond logs a CMD line every time it starts a job,\n"
-        "so if there is no line, there was no job. A job with no log has never run.\n", 0644, NULL },
+        "WHAT I SHOULD HAVE CHASED INSTEAD. crond writes a CMD line every time it\n"
+        "starts a job, so the logs answer the first question for free:\n"
+        "\n"
+        "  grep logrotate /var/log/messages\n"
+        "  grep logrotate /var/log/messages.1\n"
+        "\n"
+        "Both of them have a line in. So logrotate is being started, and the log\n"
+        "grew until the disk was full anyway, and the interesting question was never\n"
+        "\"why does the job not run\" -- it was \"what does the job DO\". I spent\n"
+        "January on the wrong one of those, and then March happened.\n", 0644, NULL },
       { "/home/nomowner/bin/logsweep/sweep.rc",
         "# logsweep/sweep.rc -- not a program. rc has five verbs (echo, mount, run,\n"
         "# exec, need) and stops at the first failure, so this could never have been\n"
@@ -861,15 +1212,29 @@ static const Package PKG_HOME = {
       { "/home/nomowner/.profile",
         "# ~/.profile\n"
         "#\n"
-        "# It does nothing. /etc/profile is the login profile on this machine and it\n"
-        "# sets PATH; there is no per-user profile and nothing reads this file. I\n"
-        "# worked that out by reading /bin/sh and /sbin/login rather than by wondering\n"
-        "# about it for a year, which I recommend.\n"
+        "# It does nothing, and neither does /etc/profile, and finding that out was\n"
+        "# worth the afternoon.\n"
+        "#\n"
+        "# /etc/profile is shipped by the filesystem package and it has a PATH line\n"
+        "# in it, and NOTHING ON THIS MACHINE READS EITHER FILE. /bin/sh carries its\n"
+        "# search path inside itself -- /bin, /usr/bin, /sbin, /usr/sbin, in that\n"
+        "# order -- so a command in one of those four is found and a command anywhere\n"
+        "# else is not, whatever any profile says. If you want to run something that\n"
+        "# lives elsewhere, name it by its path. `./thing` and `/home/me/thing` both\n"
+        "# work; editing a PATH line does not.\n"
+        "#\n"
+        "# I mention it because /etc/profile turns up in `pkg verify` looking edited,\n"
+        "# more than once, and somebody is going to spend an evening on a file that\n"
+        "# has never affected anything. It is a note somebody left. Read it as one.\n"
         "#\n"
         "# What I wanted was aliases, and this shell has none. The builtins are cd,\n"
         "# pwd, bind, unbind, echo and help, and that is the complete list -- `help`\n"
         "# prints it. So there is nothing to alias with, and typing `pkg verify` in\n"
         "# full has not actually cost me anything except this file.\n"
+        "#\n"
+        "# If you find an `alias` line in /etc/profile: that is mine, I wrote it\n"
+        "# before I knew any of the above, and it has never done anything. It is why\n"
+        "# I went and read the shell. I have left it there as a monument.\n"
         "#\n"
         "# The things I would have aliased, for whoever wants them typed out:\n"
         "#\n"
@@ -1302,7 +1667,74 @@ static const Package PKG_SHELL = {
        * runs it with a runlevel, so that is what init.c does now. This is
        * only the second name for it. */
       { "/sbin/telinit", NULL, 0755, NULL },
-    }, 45
+      { "/usr/share/doc/nomsh/README",
+        "nomsh 1.9 -- the shell and the base tools.\n"
+        "\n"
+        "/bin/sh is the interactive shell. /bin/rc is a different program with a\n"
+        "different job: rc runs SCRIPT FILES during the boot and knows five verbs\n"
+        "(echo, mount, run, exec, need). Nothing on this machine will run a shell\n"
+        "script from a file. If you want a sequence, type it, or put it in comments\n"
+        "and read them -- which is what ~nomowner did twice.\n"
+        "\n"
+        "WHAT THE SHELL HAS. `help` prints most of it; the rest is here.\n"
+        "\n"
+        "  builtins        cd  pwd  bind  unbind  echo  help\n"
+        "  for             for i in a b c; do ... ; done      $i expands\n"
+        "  variables       NAME=value, $NAME, and $? for the last status\n"
+        "  substitution    $(command) and `command`\n"
+        "  redirection     > and >>\n"
+        "  pipelines       a | b | c\n"
+        "  and / or        && and ||\n"
+        "  globbing        * and ? against a directory\n"
+        "  quoting         single, double, and backslash\n"
+        "\n"
+        "There are no aliases, no functions, no if, and no arithmetic. The search\n"
+        "path is inside the shell -- /bin, /usr/bin, /sbin, /usr/sbin, in that order\n"
+        "-- and no profile changes it. Name anything else by its path.\n"
+        "\n"
+        "PIPELINES RUN TO COMPLETION, one stage at a time, because these are filters\n"
+        "and a filter that has not finished has nothing to say. A builtin cannot be a\n"
+        "stage, which is why /bin/echo exists as a real program as well.\n"
+        "\n"
+        "THE FILTERS: grep, sed, head, tail, wc, sort-of-everything-else via find.\n"
+        "`sed -i` is the only editor on this machine, and it is enough:\n"
+        "\n"
+        "  sed -i s/testing/stable/ /etc/pkg/repos.d/main.repo\n"
+        "  sed -i /badline/d /etc/fstab\n"
+        "  echo \"a new line\" >> /etc/hosts\n"
+        "\n"
+        "Read /usr/share/doc/README for what else is documented, and `man` for the\n"
+        "individual commands.\n", 0644, NULL },
+      { "/usr/share/doc/nomsh/CHANGELOG",
+        "nomsh CHANGELOG -- newest first.\n"
+        "\n"
+        "1.9  -- current.\n"
+        "       seq and rev. The shell has `for` and no arithmetic, so until seq\n"
+        "       there was no way to write a loop over a count, and therefore no way\n"
+        "       to demonstrate inode exhaustion to yourself on a machine that was\n"
+        "       not already broken.\n"
+        "       The `for` word list and every tool's argument buffer are one command\n"
+        "       line long and SAY SO when they overflow. Before this, `for i in\n"
+        "       $(seq 1 300)` silently ran 154 times and `rm` with a hundred and\n"
+        "       twenty matches silently removed none of them.\n"
+        "\n"
+        "1.8  -- Globbing, and `rm -r`. Deleting a directory of four hundred cache\n"
+        "       files was previously impossible with the tools on the machine, which\n"
+        "       made one entry in the fault list unsolvable rather than hard.\n"
+        "\n"
+        "1.7  -- tail, du and mkdir. /var/log/messages is half a megabyte and only\n"
+        "       `head` existed, so the only end of the log a player could read was\n"
+        "       the wrong one.\n"
+        "\n"
+        "1.6  -- Quoting. `sed -i s/enabled: yes/enabled: no/ f` was not awkward, it\n"
+        "       was impossible in either quoting style, and a whole package had to be\n"
+        "       reinstalled to change one word.\n"
+        "\n"
+        "1.5  -- Pipelines, and /bin/echo as a real program so it can be a stage.\n"
+        "\n"
+        "1.4  -- find and netstat, because everybody reached for them and they were\n"
+        "       not there.\n", 0644, NULL },
+    }, 47
 };
 
 
@@ -1331,7 +1763,64 @@ static const Package PKG_PKGCONF = {
         "# how aggressive upgrades are allowed to be\n"
         "allow_downgrade = no\n"
         "check_signatures = yes\n", 0644, NULL },
-    }, 2
+      { "/usr/share/doc/pkg-config-data/README",
+        "pkg-config-data 1.4 -- where packages come from.\n"
+        "\n"
+        "  /etc/pkg/repos.d/main.repo   the repository, and THE CHANNEL\n"
+        "  /etc/pkg/pkg.conf            how aggressive upgrades may be\n"
+        "\n"
+        "  channel = stable    11.4 -- what this machine is built from\n"
+        "  channel = testing   12.0-pre -- what this machine is NOT built from\n"
+        "\n"
+        "THIS IS THE MOST DANGEROUS FILE ON THE MACHINE and it is three lines long.\n"
+        "`pkg reinstall` and `pkg upgrade` both fetch from whatever this names. It is\n"
+        "not on any boot path, no daemon reads it, and it will never appear in a\n"
+        "console error, so it is the last file anybody thinks to look at and the\n"
+        "first one worth ruling out when a repair does not take.\n"
+        "\n"
+        "  cat /etc/pkg/repos.d/main.repo\n"
+        "\n"
+        "before you reinstall anything, and it costs two seconds.\n"
+        "\n"
+        "pkg.conf: `allow_downgrade = no` means the package manager will not take you\n"
+        "BACK across a version, which matters after an upgrade that should not have\n"
+        "happened -- correct the channel, and then the reinstall does what you meant.\n", 0644, NULL },
+      { "/usr/share/doc/pkg-config-data/known-issues",
+        "pkg-config-data -- known issues. There is really only one and it is a\n"
+        "masterpiece.\n"
+        "\n"
+        "THE CHANNEL IS POINTED AT testing.\n"
+        "\n"
+        "  Somebody changed one word, months ago, to get a fix. `pkg upgrade` then\n"
+        "  fetched 12.0's libc: perfectly valid, correctly signed, not corrupt in any\n"
+        "  way, and nothing on this machine is linked against it. Everything stops.\n"
+        "\n"
+        "  Now the part that makes it the best puzzle here:\n"
+        "\n"
+        "    pkg verify      reports the file as CHANGED. Correct.\n"
+        "    pkg reinstall   fetches THE SAME WRONG VERSION straight back and\n"
+        "                    reports \"4 files restored\". Also correct.\n"
+        "\n"
+        "  Neither tool is lying to you. Both are doing exactly what you asked. The\n"
+        "  fault is three lines away in a config nobody thinks to look at, and the\n"
+        "  repair is to fix the SOURCE and then reinstall:\n"
+        "\n"
+        "    cat /etc/pkg/repos.d/main.repo\n"
+        "    sed -i s/testing/stable/ /etc/pkg/repos.d/main.repo\n"
+        "    pkg reinstall libc\n"
+        "\n"
+        "  From the live medium when the libc is the casualty, because nothing on\n"
+        "  that disk will run:\n"
+        "\n"
+        "    mount /dev/sda1 /mnt\n"
+        "    cat /mnt/etc/pkg/repos.d/main.repo\n"
+        "    pkg --root /mnt reinstall libc\n"
+        "\n"
+        "  THE DECOY VERSION OF THIS: a main.repo with the name, the url and the\n"
+        "  comments all edited and the CHANNEL still saying stable. That is somebody\n"
+        "  tidying, and it is harmless, and it looks identical at a glance. Read the\n"
+        "  channel line. It is the only line that does anything.\n", 0644, NULL },
+    }, 4
 };
 
 static const Package PKG_LIBC = {
@@ -1347,12 +1836,185 @@ static const Package PKG_LIBC = {
        * dependency is resolved. Ours reads the same ELF section through the
        * same code the loader uses. */
       { "/usr/bin/ldd",    NULL, 0755, NULL },
-    }, 5
+      { "/usr/share/doc/libc/README",
+        "libc 2.38 -- the C library.\n"
+        "\n"
+        "Everything on this machine is dynamically linked against it, which is not a\n"
+        "detail: it is the reason a bad libc is the worst thing that can happen here.\n"
+        "When libc is wrong, nothing on the disk runs, including every tool you would\n"
+        "use to find out why, including the shell.\n"
+        "\n"
+        "WHAT THIS PACKAGE OWNS\n"
+        "\n"
+        "  /lib/libc.so.6      the library itself\n"
+        "  /lib/libm.so.6      the maths library\n"
+        "  /etc/ld.so.conf     the directories the loader searches, IN ORDER\n"
+        "  /etc/nsswitch.conf  where name lookups go, in order: files then dns\n"
+        "  /usr/bin/ldd        yes, really\n"
+        "\n"
+        "ldd SHIPS WITH THE C LIBRARY, here as on every real distribution, and for a\n"
+        "real reason: it has to agree with this library's loader about how a\n"
+        "dependency is resolved. Ours reads the same section of the ELF through the\n"
+        "same code the loader uses, so it cannot disagree with what happens when you\n"
+        "run the program. That is why `ldd` is evidence and not an opinion.\n"
+        "\n"
+        "  ldd /usr/sbin/httpd\n"
+        "\n"
+        "prints each library, THE PATH IT RESOLVED TO, and the version found there.\n"
+        "The path is the important column and it is the one people skip.\n"
+        "\n"
+        "WHEN THE LIBC ITSELF IS THE CASUALTY\n"
+        "\n"
+        "You cannot fix it from the machine and you cannot chroot into it, because a\n"
+        "chroot still runs that disk's programs. Boot the live medium, which carries\n"
+        "its own libc and its own ldd, and work on the disk from outside it:\n"
+        "\n"
+        "  mount /dev/sda1 /mnt\n"
+        "  ldd /mnt/usr/sbin/httpd\n"
+        "  pkg --root /mnt verify libc\n"
+        "  pkg --root /mnt reinstall libc\n"
+        "\n"
+        "`pkg --root` is deliberately not a chroot. That is the entire point of it.\n", 0644, NULL },
+      { "/usr/share/doc/libc/CHANGELOG",
+        "libc CHANGELOG -- newest first. `pkg list` reports the installed version;\n"
+        "this file should start with it.\n"
+        "\n"
+        "2.38  -- current on the stable channel (11.4)\n"
+        "        ldd prints the resolved PATH as well as the verdict, because \"not\n"
+        "        found\" and \"found in the wrong directory\" were the same output and\n"
+        "        are not the same fault.\n"
+        "        Version comparison is done on the soname's recorded version rather\n"
+        "        than on the filename, so renaming a library proves nothing.\n"
+        "\n"
+        "2.37  -- /etc/ld.so.conf is searched strictly in the order written. It\n"
+        "        always was; it was not documented, and two administrators had\n"
+        "        different beliefs about it in the same week.\n"
+        "\n"
+        "2.36  -- nsswitch honours `hosts: files dns` in order. Before this a name in\n"
+        "        /etc/hosts and a name in DNS raced, which made \"it is DNS\" and \"it is\n"
+        "        not DNS\" both true on alternate afternoons.\n"
+        "\n"
+        "12.0-pre -- ON THE TESTING CHANNEL ONLY. Not compatible with anything built\n"
+        "        for 11.4, which is everything on this machine. See known-issues. It\n"
+        "        is not broken, it is not corrupt, and it is signed. It is simply not\n"
+        "        ours.\n", 0644, NULL },
+      { "/usr/share/doc/libc/known-issues",
+        "libc -- known issues, with what each looks like and what actually fixes it.\n"
+        "\n"
+        "1. THE WRONG LIBC ARRIVED FROM THE TESTING CHANNEL.\n"
+        "\n"
+        "   Symptom: nothing runs. Not the shell, not pkg, not ldd. The console says\n"
+        "   `error while loading shared libraries` for whatever it tried.\n"
+        "   pkg verify: says libc's files CHANGED -- and it cannot run to say it.\n"
+        "   TRAP: `pkg reinstall libc` fetches from the repository the machine is\n"
+        "   configured for, and if /etc/pkg/repos.d still says `channel = testing`\n"
+        "   that is the same wrong version again, reported as \"restored\".\n"
+        "   Fix: correct /etc/pkg/repos.d/main.repo FIRST, then reinstall. From the\n"
+        "   live medium, with `pkg --root /mnt`, because nothing on the disk runs.\n"
+        "\n"
+        "2. libc.so.6 IS THERE AND POINTS AT NOTHING.\n"
+        "\n"
+        "   A failed upgrade can leave the name as a symlink to a versioned file that\n"
+        "   was removed. `ls /lib` shows the library, in the right directory, with\n"
+        "   exactly the right name. `stat /lib/libc.so.6` says there is nothing at the\n"
+        "   end of it.\n"
+        "   The loader says `cannot open shared object file`, which is a DIFFERENT\n"
+        "   SENTENCE from `version ... not found` and means a different thing: one is\n"
+        "   \"I cannot find it\", the other is \"I found it and it is too old\". Read\n"
+        "   which one you got before you decide what is wrong.\n"
+        "\n"
+        "3. A DIRECTORY MISSING FROM /etc/ld.so.conf.\n"
+        "\n"
+        "   The library is installed. `ls` finds it. Nothing can load it, because the\n"
+        "   loader only looks in the directories that file lists. `ldd` reports it as\n"
+        "   not found, which is the fault stated plainly, and the repair is one line\n"
+        "   in one file rather than a package.\n"
+        "\n"
+        "4. TWO COPIES, AND THE ORDER DECIDES.\n"
+        "\n"
+        "   The worst of them, because NOTHING IS MISSING AND NOTHING IS CORRUPT. The\n"
+        "   correct library is exactly where it belongs and is exactly right; there is\n"
+        "   an older copy somewhere else, and /etc/ld.so.conf lists that somewhere\n"
+        "   else FIRST. This is what unpacking a vendor tarball and making it work\n"
+        "   leaves behind.\n"
+        "\n"
+        "     ldd /usr/sbin/httpd\n"
+        "\n"
+        "   prints the path it resolved to. When that path is not the one you expected\n"
+        "   you have found it, and the repair is the ORDER of two lines and not the\n"
+        "   content of either. `pkg verify` flags /etc/ld.so.conf, which reads exactly\n"
+        "   like a deliberate local edit, because it is one.\n"
+        "\n"
+        "   Note carefully: a vendor path APPENDED to the end of that file is\n"
+        "   harmless and somebody probably meant it. The same path at the TOP is the\n"
+        "   fault. Same file, same line, different position.\n", 0644, NULL },
+    }, 8
 };
 
 static const Package PKG_ZLIB = {
     "zlib", "1.3", "compression library",
-    { { "/lib/libz.so.1", "\x7fELF (stub) zlib 1.3\n", 0755, NULL } }, 1
+    {
+      { "/lib/libz.so.1", "\x7fELF (stub) zlib 1.3\n", 0755, NULL },
+      { "/usr/share/doc/zlib/README",
+        "zlib 1.3 -- compression.\n"
+        "\n"
+        "One file: /lib/libz.so.1.\n"
+        "\n"
+        "WHY THIS PACKAGE IS INTERESTING OUT OF ALL PROPORTION TO ITS SIZE\n"
+        "\n"
+        "Almost every program on this machine needs libc and nothing else, so almost\n"
+        "every library fault breaks the whole machine at once and the diagnosis is\n"
+        "over in one step. libz is needed only by the programs that compress what\n"
+        "they write, and there are four of them on the entire disk:\n"
+        "\n"
+        "  /usr/sbin/httpd     compressed responses\n"
+        "  /usr/sbin/auditd    a compressed audit trail\n"
+        "  /usr/sbin/postfix   (shipped disabled on this machine)\n"
+        "  /usr/bin/links      compressed transfers\n"
+        "\n"
+        "So a bad libz leaves the web server and the audit trail dead while ssh,\n"
+        "cron, udev, ntp and the firewall run perfectly. That pattern -- two\n"
+        "unrelated services down, everything else up -- is the shape you are meant to\n"
+        "recognise. Everything dead means libc. TWO things dead means asking what\n"
+        "those two have in common, and `ldd` on one of each answers it in seconds:\n"
+        "\n"
+        "  ldd /usr/sbin/httpd\n"
+        "  ldd /usr/sbin/sshd\n"
+        "\n"
+        "The dead one lists a library the live one does not. That is the whole trick\n"
+        "and it works for any pair.\n", 0644, NULL },
+      { "/usr/share/doc/zlib/known-issues",
+        "zlib -- known issues.\n"
+        "\n"
+        "1. AN OLDER libz, FOUND FIRST.\n"
+        "\n"
+        "   /lib/libz.so.1 is correct and present. There is a 1.2 in another\n"
+        "   directory, and /etc/ld.so.conf lists that directory before /lib. The\n"
+        "   loader takes the first one it finds, so httpd and auditd will not start\n"
+        "   and everything that does not compress is completely fine.\n"
+        "\n"
+        "     ldd /usr/sbin/httpd\n"
+        "         libc.so.6 => /lib/libc.so.6 (2.38)\n"
+        "         libz.so.1 => /usr/lib/libz.so.1 (1.2)  -- TOO OLD\n"
+        "\n"
+        "   ldd prints the PATH for exactly this reason. `pkg owns` the stray copy and\n"
+        "   nothing will own it. `pkg verify` flags /etc/ld.so.conf and not zlib,\n"
+        "   because zlib is fine. The repair is the order of the lines.\n"
+        "\n"
+        "2. libz AT THE WRONG VERSION AFTER AN UPGRADE.\n"
+        "\n"
+        "   Same two services, same silence from everything else, but here `pkg verify\n"
+        "   zlib` says CHANGED and the file really is the wrong one. Check the\n"
+        "   repository channel before reinstalling -- if /etc/pkg/repos.d names\n"
+        "   testing, reinstall will fetch the same thing back and tell you it\n"
+        "   restored it.\n"
+        "\n"
+        "3. IT LOOKS LIKE A COINCIDENCE AND IT IS NOT.\n"
+        "\n"
+        "   The commonest wrong turn is treating \"httpd is down\" and \"auditd is down\"\n"
+        "   as two tickets. They are one ticket with two symptoms, and the console\n"
+        "   said the same sentence twice.\n", 0644, NULL },
+    }, 3
 };
 
 static const Package PKG_CRON = {
@@ -1376,7 +2038,75 @@ static const Package PKG_CRON = {
         "0  4  * * *  /home/nomowner/bin/cleanup   # DISABLED, see TODO\n", 0644, NULL },
       { "/var/spool/cron/root", "# no personal jobs\n", 0600, NULL },
           { "/var/spool/cron", NULL, 0755, NULL, true },
-    }, 5
+      { "/usr/share/doc/cron/README",
+        "cron 3.0 -- scheduled jobs.\n"
+        "\n"
+        "  /usr/sbin/crond           the daemon\n"
+        "  /etc/crontab              the system crontab\n"
+        "  /var/spool/cron           A DIRECTORY THIS PACKAGE OWNS\n"
+        "  /var/spool/cron/root      root's personal jobs, mode 0600\n"
+        "  /etc/services.d/cron.svc  after syslog, runlevels 3 and 5\n"
+        "\n"
+        "THE FORMAT is five time fields and then the command:\n"
+        "\n"
+        "  m  h  dom mon dow  command\n"
+        "  17 *  *   *   *    /usr/sbin/logrotate /etc/logrotate.conf\n"
+        "\n"
+        "crond writes a line to the system log every time it STARTS a job, which\n"
+        "makes the log the cheapest answer to the first question anybody asks:\n"
+        "\n"
+        "  grep logrotate /var/log/messages\n"
+        "  grep logrotate /var/log/messages.1\n"
+        "\n"
+        "A job with no log has never run. A job WITH a log has run, and if the thing\n"
+        "it was supposed to accomplish has not happened, then the question is no\n"
+        "longer \"does it fire\" but \"what does it actually do\" -- and those two\n"
+        "questions have sent people down very different weeks.\n"
+        "\n"
+        "crond refuses to start with a crontab that has no jobs in it at all, rather\n"
+        "than running with nothing to do and reporting itself healthy. It publishes\n"
+        "/run/crond.state with the file it read.\n"
+        "\n"
+        "A COMMENTED LINE IS A WARNING SOMEBODY LEFT. There is one in /etc/crontab on\n"
+        "this machine with DISABLED on it. Deleting a commented line is how the next\n"
+        "person re-invents the thing it was warning about; leaving it costs nothing.\n", 0644, NULL },
+      { "/usr/share/doc/cron/known-issues",
+        "cron -- known issues.\n"
+        "\n"
+        "1. A JOB THAT DELETES THINGS.\n"
+        "\n"
+        "   This is not a bug in cron and cron will not protect you from it. An\n"
+        "   unattended job with no dry run, no lock and no log is a loaded weapon in\n"
+        "   a drawer. There is a real example on this machine: a tidy-up script that\n"
+        "   removed a kernel image because a filename did not match a pattern its\n"
+        "   author had written weeks earlier. Six hours.\n"
+        "\n"
+        "   Rules that came out of that, all of them cheap:\n"
+        "     - a job you cannot run by hand is not a job, it is a rumour\n"
+        "     - anything that deletes must be able to say what it WOULD delete\n"
+        "     - if you disable it, comment the line and say why. Do not delete it.\n"
+        "\n"
+        "2. /var/spool/cron MISSING.\n"
+        "\n"
+        "   This package owns the directory, so `pkg verify cron` reports it and\n"
+        "   `pkg reinstall cron` puts it back. Before packages recorded the\n"
+        "   directories they own, this was diagnosable and not repairable, which is\n"
+        "   the worst combination there is.\n"
+        "\n"
+        "3. crond RUNNING WITH THE OLD CRONTAB.\n"
+        "\n"
+        "   Editing /etc/crontab does not reach the running process. `cat\n"
+        "   /run/crond.state` says which file it read; `kill -HUP <pid>` makes it\n"
+        "   read it again.\n"
+        "\n"
+        "4. THE UNIT IS IN THE WRONG RUNLEVEL.\n"
+        "\n"
+        "   cron.svc says `runlevel: 3 5`. A unit that says only 5 on a machine that\n"
+        "   boots to 3 is present, correct, enabled, healthy and never started, and\n"
+        "   NOTHING reports an error, because nothing was tried. `enabled: yes` is\n"
+        "   right there in the file and is the line everybody reads. The word\n"
+        "   \"runlevel\" appears only on the console.\n", 0644, NULL },
+    }, 7
 };
 
 static const Package PKG_LOGROTATE = {
@@ -1447,7 +2177,112 @@ static const Package PKG_HTTPD = {
         "name: httpd\nexec: /usr/sbin/httpd\n"
         "description: web server\nafter: net\n"
         "restart: on-failure\nenabled: yes\nrunlevel: 3 5\n", 0644, NULL },
-    }, 6
+      { "/usr/share/doc/httpd/README",
+        "httpd 2.4 -- the web server.\n"
+        "\n"
+        "  /usr/sbin/httpd            the daemon\n"
+        "  /etc/httpd/httpd.conf      Listen, DocumentRoot, ServerName\n"
+        "  /srv/www                   the document root, owned by this package\n"
+        "  /srv/www/index.html        something to serve\n"
+        "  /etc/services.d/httpd.svc  the unit: after net, restart on-failure\n"
+        "\n"
+        "WHAT IT DOES AT STARTUP, which is what makes it breakable honestly:\n"
+        "\n"
+        "  1. reads /etc/httpd/httpd.conf and refuses to start unless the file\n"
+        "     names a DocumentRoot. A config that exists and does not say the\n"
+        "     one thing its daemon needs is a different fault from a config\n"
+        "     that is gone, and it fails later and less obviously.\n"
+        "  2. STATS THE DIRECTORY DocumentRoot NAMES and refuses to start if it is\n"
+        "     not there. A daemon that does not touch what its configuration points\n"
+        "     at cannot be broken by pointing it somewhere wrong, so it touches it.\n"
+        "  3. writes /run/httpd.state -- two lines: the config file it read, and\n"
+        "     the first meaningful line it found in it, which in the shipped\n"
+        "     config is the Listen line\n"
+        "\n"
+        "Point 3 is how \"running with a stale config\" becomes something the machine\n"
+        "can notice rather than something only a person could spot. The file on disk\n"
+        "says what httpd is SUPPOSED to do; /run/httpd.state says what the running\n"
+        "process is really doing; `netstat` says the same thing from the other end.\n"
+        "When they disagree, nobody reloaded it, and the fix is a signal:\n"
+        "\n"
+        "  cat /run/httpd.state\n"
+        "  netstat\n"
+        "  ps\n"
+        "  kill -HUP <pid>\n"
+        "\n"
+        "ON THE LISTEN PORT: this machine is shipped listening on 80. Sites where a\n"
+        "load balancer terminates set it to 8080 on purpose, and that edit shows up\n"
+        "in `pkg verify` as CHANGED for ever afterwards. It is a decision, not a\n"
+        "fault. `pkg diff` it and read it before you \"correct\" it.\n"
+        "\n"
+        "It needs libz, so a library problem takes it down together with auditd and\n"
+        "leaves everything else running. See /usr/share/doc/zlib/README.\n", 0644, NULL },
+      { "/usr/share/doc/httpd/CHANGELOG",
+        "httpd CHANGELOG -- newest first.\n"
+        "\n"
+        "2.4  -- current.\n"
+        "       Stats DocumentRoot at startup and refuses to run without it. Before\n"
+        "       this it read the directive and never looked at what it named, so\n"
+        "       /srv/www could be deleted and httpd would come up and serve nothing\n"
+        "       and report itself perfectly healthy.\n"
+        "       Publishes /run/httpd.state with the config path and the port loaded.\n"
+        "       Re-reads its configuration on SIGHUP.\n"
+        "\n"
+        "2.3  -- Refuses to start when the config names no DocumentRoot, rather\n"
+        "       than defaulting to somewhere. A daemon that invents a value for a\n"
+        "       line you commented out has hidden your mistake instead of showing\n"
+        "       it to you.\n"
+        "\n"
+        "2.2  -- Compressed responses. This is where the libz dependency came from,\n"
+        "       and where \"httpd and auditd are both down and nothing else is\"\n"
+        "       started being a sentence worth recognising.\n"
+        "\n"
+        "2.0  -- Initial packaging for NomnixOS 11.\n", 0644, NULL },
+      { "/usr/share/doc/httpd/known-issues",
+        "httpd -- known issues.\n"
+        "\n"
+        "1. THE DOCUMENT ROOT IS NOT THERE.\n"
+        "\n"
+        "   The config is valid, the binary is fine, the machine boots all the way to\n"
+        "   a login prompt, and the web server is dead because the directory its\n"
+        "   configuration names has been moved or deleted.\n"
+        "\n"
+        "     grep DocumentRoot /etc/httpd/httpd.conf\n"
+        "     ls /srv/www\n"
+        "     svc status httpd\n"
+        "\n"
+        "   /srv/www is a directory THIS PACKAGE OWNS, which is what makes it\n"
+        "   repairable: `pkg verify httpd` reports it missing and `pkg reinstall\n"
+        "   httpd` puts it back. A package cannot restore a file into a directory\n"
+        "   that does not exist -- creating a file never creates a path -- so\n"
+        "   owning the directory is the difference between a fault and a dead end.\n"
+        "\n"
+        "2. RUNNING, AND ON THE WRONG PORT.\n"
+        "\n"
+        "   `svc` says running. `pkg verify` is clean. The config plainly says one\n"
+        "   port and the machine is answering on another. Nothing is corrupt: a\n"
+        "   daemon reads its configuration ONCE, at startup, and somebody edited the\n"
+        "   file afterwards.\n"
+        "\n"
+        "     cat /run/httpd.state     what it actually loaded\n"
+        "     netstat                  what it is actually listening on\n"
+        "     kill -HUP <pid>          make it re-read\n"
+        "\n"
+        "   This one evaporates if you reboot, which is why it is so miserable to\n"
+        "   catch in life and why rebooting is a diagnostic and not a repair.\n"
+        "\n"
+        "3. DOWN TOGETHER WITH auditd AND NOTHING ELSE.\n"
+        "\n"
+        "   That is libz, every time. `ldd /usr/sbin/httpd` and `ldd /usr/sbin/sshd`\n"
+        "   and compare. See /usr/share/doc/zlib/known-issues.\n"
+        "\n"
+        "4. THE UNIT NAMES A PATH THE BINARY HAS NEVER BEEN AT.\n"
+        "\n"
+        "   `svcinit` says `not found` and the binary is present, correct and\n"
+        "   executable exactly where this package put it. What is wrong is the\n"
+        "   pointer, and `pkg verify httpd` flags the .svc file and not the program,\n"
+        "   which is the clue.\n", 0644, NULL },
+    }, 9
 };
 
 static const Package PKG_FIREWALL = {
@@ -1790,7 +2625,57 @@ static const Package PKG_FUN = {
         "`ls` does not list names beginning with a dot. `ls -a` does, and so\n"
         "do `find` and `du`, which is worth remembering the next time a\n"
         "directory looks emptier than the disk says it is.\n", 0644, NULL },
-    }, 9
+      { "/usr/share/doc/nomfun/README",
+        "nomfun 1.4 -- the fortune cookie, the cow, the train, and rot13.\n"
+        "\n"
+        "  /usr/bin/fortune      one line from /usr/share/fortunes\n"
+        "  /usr/bin/cowsay       a cow says it. -f cow, tux, dragon, daemon\n"
+        "  /usr/bin/sl           you meant ls\n"
+        "  /usr/bin/rot13        thirteen places, its own undo\n"
+        "  /usr/share/fortunes   THE QUOTES, in a file\n"
+        "\n"
+        "This package exists for two reasons beyond being funny.\n"
+        "\n"
+        "The first is that a machine with nothing pointless on it does not feel like\n"
+        "a machine anybody ever used. Every box that has had an administrator has a\n"
+        "cow on it somewhere.\n"
+        "\n"
+        "The second is the useful one. These are ORDINARY packages containing\n"
+        "ORDINARY binaries. `pkg owns /usr/bin/sl` answers. `ldd /usr/bin/cowsay`\n"
+        "lists libc. A bad libc kills the train along with everything else, and a\n"
+        "`chmod 000` sweep across /usr/bin disarms the cow exactly as it disarms\n"
+        "sshd. So you can learn every tool in this game by poking at the toys, with\n"
+        "none of the fear, and then use the same tools on something that matters.\n"
+        "\n"
+        "THE FORTUNES ARE DATA. They are in /usr/share/fortunes, not inside the\n"
+        "binary, which is the difference between something you can cat, grep, wc,\n"
+        "damage, verify and repair and something you can only run.\n"
+        "\n"
+        "  fortune | cowsay -f tux\n"
+        "  wc /usr/share/fortunes\n"
+        "  pkg verify nomfun\n"
+        "  fortune /home/nomowner/fortunes\n", 0644, NULL },
+      { "/usr/share/doc/nomfun/CHANGELOG",
+        "nomfun CHANGELOG -- newest first.\n"
+        "\n"
+        "1.4  -- current. rot13, with a man page that refuses to call it encryption.\n"
+        "       It is here because somebody on this machine used it for the thing\n"
+        "       people really use it for, which is not being read by accident.\n"
+        "\n"
+        "1.3  -- fortune reads a FILE rather than a compiled-in array, so the quotes\n"
+        "       became something you can grep and something `pkg verify` notices when\n"
+        "       it is damaged. An indented line continues the one above it.\n"
+        "\n"
+        "1.2  -- cowsay measures its balloon: the text wraps at 40 columns and the\n"
+        "       box is as wide as the longest line the wrap produced. With no words\n"
+        "       it reads stdin, which is the point of it.\n"
+        "\n"
+        "1.1  -- sl. It does not animate, and it never will: nothing on this machine\n"
+        "       redraws the screen, and a program that pretended to would be the only\n"
+        "       dishonest thing in /usr/bin.\n"
+        "\n"
+        "1.0  -- fortune.\n", 0644, NULL },
+    }, 11
 };
 
 static const Package PKG_MAIL = {
@@ -1915,7 +2800,93 @@ static const Package PKG_RESCUE_BASE = {
         "  links wiki.nomnix.org/rescue    for the procedure\n", 0644, NULL },
       { "/usr/lib/sysinit/init", NULL, 0755, NULL },
       { "/sbin/init", NULL, 0777, "/usr/lib/sysinit/init" },
-    }, 14
+      /* THE OTHER HIDDEN THING, and reaching it is a real step: you have to
+       * boot the live medium and then look somewhere on it that has nothing
+       * to do with repairing anything. Nobody browses a rescue disc.
+       *
+       * It pays out in technique that is true and is written nowhere else:
+       * that `pkg verify` on the rescue medium cheerfully verifies THE
+       * RESCUE MEDIUM and says the reassuring sentence about the wrong
+       * machine; that --root is not chroot and why that matters on the day
+       * the libc is the casualty; that ldd says out loud which root it
+       * resolved against. Every line of it was checked by running it. */
+      { "/root/burn-notes.txt",
+        "Notes from whoever burned this disc. If you are reading this you went\n"
+        "looking in /root on a rescue medium, which nobody does, so these are the\n"
+        "things I only ever tell people who ask.\n"
+        "\n"
+        "1. THIS MEDIUM IS NEVER DAMAGED.\n"
+        "\n"
+        "   The customer's disk is /dev/sda1 and it is where the fault is. This is\n"
+        "   /dev/sr0 and the breaker never touches it. That makes it the only fixed\n"
+        "   point you have: when a command here behaves oddly, it is not the disc.\n"
+        "   It is the command, or the arguments, or you. I have watched people lose\n"
+        "   an hour to doubting the one thing in the room that cannot be wrong.\n"
+        "\n"
+        "2. pkg VERIFIES WHATEVER ROOT YOU POINT IT AT, AND BY DEFAULT THAT IS THIS\n"
+        "   ONE.\n"
+        "\n"
+        "     pkg verify                 verifies THE RESCUE MEDIUM. It will say\n"
+        "                                \"all files match their packages\" and it will\n"
+        "                                be telling the truth about the wrong machine.\n"
+        "     pkg --root /mnt verify     verifies the customer's disk.\n"
+        "\n"
+        "   That one is worth reading twice, because the reassuring answer and the\n"
+        "   useless answer are the same sentence.\n"
+        "\n"
+        "3. --root IS NOT chroot, AND THE DIFFERENCE IS THE WHOLE POINT.\n"
+        "\n"
+        "   chroot /mnt runs THE CUSTOMER'S programs. When their libc is the\n"
+        "   casualty, nothing on that disk runs at all, so chroot cannot help you --\n"
+        "   the shell you would land in is one of the things that will not start.\n"
+        "\n"
+        "   `pkg --root /mnt` runs THIS medium's pkg against THEIR files. It works on\n"
+        "   a disk with nothing runnable left on it, which is the day you need it.\n"
+        "   Same for ldd:\n"
+        "\n"
+        "     ldd /mnt/usr/sbin/httpd\n"
+        "\n"
+        "   and it says \"(resolving against the root filesystem at /mnt)\", which is\n"
+        "   it telling you it used their /etc/ld.so.conf and their libraries and not\n"
+        "   ours. That sentence is the difference between an answer about their\n"
+        "   machine and an answer about mine.\n"
+        "\n"
+        "4. THE FAILED BOOT LEFT A LOG AND YOU CAN READ IT FROM HERE.\n"
+        "\n"
+        "     dmesg -r /mnt      their boot log, read from outside their machine\n"
+        "     dmesg -1           the boot before the one you are looking at\n"
+        "\n"
+        "   A boot that failed still wrote a log while it was failing. People power\n"
+        "   cycle the box and destroy it, then ask what it said.\n"
+        "\n"
+        "5. WHAT I PUT ON THIS DISC THAT IS NOT STRICTLY A REPAIR TOOL.\n"
+        "\n"
+        "   /usr/bin/rot13, /bin/seq and /bin/rev, and only the first one needs\n"
+        "   defending. Somebody I worked with kept notes in rot13 -- not secrets,\n"
+        "   just things they did not want read over their shoulder -- and the day\n"
+        "   their machine would not boot, those notes were the most useful files on\n"
+        "   the disk and there was no way to read them. So it is on the disc now.\n"
+        "\n"
+        "     ls -a /mnt/home/<whoever>\n"
+        "     rot13 /mnt/home/<whoever>/<whatever it turns out to be>\n"
+        "\n"
+        "   `ls` does not list a name that starts with a dot. It never has. A home\n"
+        "   directory that looks tidy is usually a home directory you have not\n"
+        "   actually looked at.\n"
+        "\n"
+        "6. THE ORDER, AND IT IS ON THE WIKI TOO.\n"
+        "\n"
+        "     rcon media insert\n"
+        "     rcon boot media\n"
+        "     rcon power cycle\n"
+        "     mount /dev/sda1 /mnt\n"
+        "     dmesg -r /mnt\n"
+        "     pkg --root /mnt verify\n"
+        "     blkid\n"
+        "\n"
+        "   `links wiki.nomnix.org/rescue` for the full version, if their network\n"
+        "   is up. Ours is. This medium's /etc/hosts is its own.\n", 0644, NULL },
+    }, 15
 };
 
 static const Package PKG_RESCUE_TOOLS = {
@@ -1971,7 +2942,14 @@ static const Package PKG_RESCUE_TOOLS = {
       { "/usr/sbin/zbl-install", NULL, 0755, NULL },
       { "/usr/sbin/zbl-mkconfig", NULL, 0755, NULL },
       { "/usr/bin/mkinitrd", NULL, 0755, NULL },
-    }, 38
+      /* seq and rev because the live medium carries the tools, and rot13
+       * because the day somebody's machine will not boot is the day their
+       * rot13'd notes are the most useful files on the disk and there is no
+       * way to read them. /root/burn-notes.txt explains itself. */
+      { "/bin/seq", NULL, 0755, NULL },
+      { "/bin/rev", NULL, 0755, NULL },
+      { "/usr/bin/rot13", NULL, 0755, NULL },
+    }, 41
 };
 
 static const Package *RESCUE_IMAGE[] = { &PKG_RESCUE_BASE, &PKG_RESCUE_TOOLS };
@@ -2311,6 +3289,18 @@ void machine_install(Machine *m, uint64_t seed)
         "/lib/modules/6.4.11", "/proc", "/root", "/sbin", "/sys", "/tmp",
         "/mnt", "/media", "/usr", "/usr/bin", "/usr/lib", "/usr/lib/sysinit",
         "/usr/sbin", "/usr/share", "/usr/share/man", "/usr/share/zoneinfo",
+        /* /usr/share/doc/<package>, exactly as every real distribution lays
+         * it out and named exactly as `pkg list` names the package. The docs
+         * are shipped BY the package they document, so `pkg owns` answers,
+         * `pkg verify` hashes them and an edited doc reads as CHANGED --
+         * which is what stops them being a second source of truth sitting
+         * beside the machine and disagreeing with it. */
+        "/usr/share/doc", "/usr/share/doc/libc", "/usr/share/doc/zlib",
+        "/usr/share/doc/httpd", "/usr/share/doc/kernel-default",
+        "/usr/share/doc/syslog", "/usr/share/doc/cron",
+        "/usr/share/doc/pkg-config-data", "/usr/share/doc/sysinit",
+        "/usr/share/doc/shadow", "/usr/share/doc/nomsh",
+        "/usr/share/doc/nomfun",
         "/usr/share/terminfo", "/var", "/var/log", "/var/lib", "/var/lib/ntp",
         "/var/lib/pkg", "/var/cache", "/var/spool", "/var/spool/cron",
         "/etc/audit", "/etc/default", "/etc/httpd", "/etc/logrotate.d",
@@ -2719,6 +3709,66 @@ void machine_rebaseline_local(Machine *m)
  * definition needs no cooperation from the faults and no list of what was
  * injected -- it is just the truth about the disk.
  */
+/* THERE WAS NO WAY TO FINISH A JOB.
+ *
+ * A blind playtester repaired seven machines and wrote: "The customer never
+ * says it's working, no ticket is marked resolved... `[UP at target]` is the
+ * entire payoff and it's easy to miss." Worse, `rcon power cycle` does not
+ * print that line at all, so their first fully repaired ticket ended in
+ * silence. A shift made of jobs that never end is not a shift.
+ *
+ * `done` is a CLAIM the game checks, not a button that congratulates you.
+ * Signing off a machine that is still broken is the mistake this job really
+ * punishes, so the refusal reports what the customer can see and leaves the
+ * diagnosis where it belongs. A machine sitting on the rescue medium is not
+ * repaired however healthy it looks -- that image was never broken.
+ */
+bool machine_handback(Machine *m, Buf *out)
+{
+    machine_boot(m);
+    Buf sick = {0};
+    int dead = kernel_health(m, &sick);
+    Buf left = {0};
+    int rest = machine_outstanding(m, &left) ? 1 : 0;
+    bool closed = false;
+
+    buf_puts(out, "you tell them it is fixed.\n\n");
+    if (!m->boot.running) {
+        buf_puts(out,
+            "  \"...it is still doing the same thing. It has not come up.\"\n\n"
+            "it does not reach a login prompt. `boot` and read what it says on\n"
+            "the way down.\n");
+    } else if (m->on_rescue) {
+        buf_puts(out,
+            "  \"There is a prompt, but it is not asking for my name like it\n"
+            "   normally does. And my files are not where I left them.\"\n\n"
+            "that is the rescue medium, not their system -- a separate working\n"
+            "install that was never broken, so of course it boots. put their own\n"
+            "disk back in front of them:\n"
+            "  rcon media eject / rcon boot disk / rcon power cycle\n");
+    } else if (dead || rest) {
+        buf_puts(out,
+            "  \"It starts up now, thank you -- but it is still not right.\"\n\n");
+        if (dead && sick.len) buf_put(out, sick.p, sick.len);
+        if (rest && left.len) buf_put(out, left.p, left.len);
+    } else {
+        buf_puts(out,
+            "  \"Oh, that is it -- that is exactly how it looked before.\n"
+            "   Thank you. I will let you get on.\"\n\n");
+        buf_printf(out, "--- ticket %s closed ---\n", m->id);
+        buf_puts(out,
+            "  it boots from its own disk, every service that should be running\n"
+            "  is running, and nothing on it differs from what its packages\n"
+            "  shipped except what somebody meant to change.\n\n"
+            "`ticket` takes the next call.\n");
+        closed = true;
+    }
+    buf_free(&sick);
+    buf_free(&left);
+    return closed;
+}
+
+
 int machine_outstanding(Machine *m, Buf *out)
 {
     int bad = 0;
@@ -2732,6 +3782,23 @@ int machine_outstanding(Machine *m, Buf *out)
             for (int k = 0; k < m->nlocal; k++)
                 if (strcmp(m->local[k], f->path) == 0) is_local = true;
             if (is_local) continue;
+
+            /* A FILE THE SANCTIONED REPAIR TOOL REGENERATES IS NOT DAMAGE.
+             *
+             * `mkinitrd` builds an initrd from the modules on THIS machine and
+             * `zbl-mkconfig` writes a bootloader config from the kernels it
+             * finds -- that is what they are for, and it is the documented fix
+             * for several faults. Their output cannot be byte-identical to
+             * what the package shipped, and nothing is wrong with that.
+             *
+             * This flagged the result anyway, so a machine repaired exactly as
+             * the game teaches came back "still not as its package shipped
+             * it", naming /boot/initrd-6.4.11. Every one of sixty repaired
+             * tickets was refused a hand-back for this reason. Telling a
+             * player their correct repair was vandalism is the same lie as
+             * the console faking a boot, in a quieter voice. */
+            if (strncmp(f->path, "/boot/initrd", 12) == 0 ||
+                strcmp(f->path, "/boot/zbl/zbl.cfg") == 0) continue;
 
             VNode *n = vfs_lookup(&m->disk, f->path);
             Buf want = {0};
