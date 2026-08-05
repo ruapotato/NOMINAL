@@ -191,6 +191,16 @@ func _has_picture(d: Dictionary) -> bool:
 
 func _console_banner(d: Dictionary) -> String:
 	var m: Object = tower.machine
+	if d.which == -2:
+		# A MANAGED BOX. A switch and a router are not machines with a disk in
+		# this game; they are entries in the site model with real ports, a real
+		# forwarding table and real frames going through them. So the lead gets
+		# you the management line, and what it prints is that box's own state
+		# out of core/netstack.c -- ports, addresses, routes, the MAC table --
+		# not a paragraph somebody wrote about switches.
+		var s: String = tower.site("show " + d.name)
+		return ("management line on %s\n\n" % d.name) + s + \
+			"\nthis line takes one operation at a time. `help` lists them."
 	if d.which == 1:
 		# The REAL boot log off the real boot chain. It is a pure function of
 		# what is on that disk, so reading it costs nothing and cannot lie.
@@ -206,7 +216,10 @@ func type_line(line: String) -> String:
 	if plugged < 0 or lead != "serial":
 		return ""
 	var d: Dictionary = tower.devices[plugged]
-	var out: String = str(tower.machine.sh_on(d.which, line))
+	# The managed boxes answer through site_cmd(), which is the same shell a
+	# blind playtester drives over a pipe. One implementation, two front ends.
+	var out: String = tower.site(line) if d.which == -2 \
+		else str(tower.machine.sh_on(d.which, line))
 	_say("# " + line)
 	for l in out.split("\n"):
 		_say(l)

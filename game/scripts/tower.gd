@@ -67,6 +67,21 @@ const WALL_T := 0.14
 const DOOR_H := 2.05       # head height of a doorway
 const EYE := 1.62
 
+# The furniture of the job. A room is not a coloured volume: it is a rack with
+# things bolted into it, a tray over the corridor with cable in it, and a sign
+# telling you which floor you are on.
+const RACK_W := 0.60       # a 19" rack is 600 mm wide, because a floor tile is
+const RACK_D := 1.00
+const RACK_H := 2.00
+const U := 0.04445         # one rack unit, 1.75", which is where 1U comes from
+const RACK_U := 42
+const RACK_BASE := 0.10    # the plinth: U 1 starts here
+const RACK_COL := Color("#25282d")
+const RACK_RAIL := Color("#3a3f46")
+const TRAY_COL := Color("#6b7078")
+const CABLE_COL := [Color("#2f6fd0"), Color("#cf5a3a"), Color("#3fae6a"),
+	Color("#d9c04a"), Color("#a05fd0")]
+
 # Set before adding to the tree.
 var seed_no := 200
 var with_desktop := true
@@ -89,6 +104,24 @@ var stairs: Array = []         # per stair run: {floor,lo,hi,axis,c0,c1,room}
 var player: CharacterBody3D = null
 var cart: Node3D = null
 var devices: Array = []
+
+# THE TOWER GROWS. The generator makes the whole building up front and that is
+# right -- it is the SPACE, and the space is there whether or not anybody is
+# paying for it. What is NOT there on day one is the tower in service: the
+# lift offers the ground floor and the one above it, and open_next_floor()
+# brings the next one up. The owner: "an elevator should be the thing that
+# takes you to new floors, those get added during gameplay."
+#
+# The stairs still go everywhere, deliberately. A lift that has stopped is a
+# fault this game should be able to have one day, and a building where that
+# fault strands you is a building nobody can play.
+var floors_in_service := 2
+
+var lifts: Array = []          # lift.gd instances, one per shaft
+var racks: Array = []          # {room, floor, i, x, z, face, used}
+var site_up := false
+var _cable_node: MeshInstance3D = null
+var _cable_from := -1          # the device whose port the spool is on
 
 var _v := PackedVector3Array()
 var _c := PackedColorArray()
@@ -164,8 +197,13 @@ func build(s: int) -> bool:
 	machine.take_ticket(s, 1)
 
 	_plan_stairs()
+	_plan_racks()
+	_site_start()
 	_build_mesh()
+	_build_lifts()
+	_signage()
 	_place_devices()
+	_draw_cables()
 	if with_player:
 		_spawn_player()
 		_spawn_cart()
@@ -241,8 +279,15 @@ func _plan_stairs() -> void:
 
 
 # The strip of floor f that the run from f-1 punched out, as a Rect2 in metres.
+# A LIFT SHAFT IS A HOLE ALL THE WAY DOWN. It used to be filled in on every
+# floor, which is why the shaft read as sealed geometry and the door onto it
+# opened into a slab. The landing doors are what keeps you out of it, not the
+# floor, exactly as in a real one.
 func _hole_on(f: int) -> Array:
 	var out: Array = []
+	for r in rooms:
+		if r.kind == K_LIFT and r.floor == f:
+			out.append(Rect2(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0))
 	for s in stairs:
 		if s.floor != f - 1:
 			continue
@@ -308,8 +353,11 @@ func _build_mesh() -> void:
 	for f in range(nfloors):
 		_slabs(f)
 		_walls(f)
+		_trays(f)
 	for s in stairs:
 		_stair_run(s)
+	for i in range(racks.size()):
+		_rack_geom(i)
 	_roof()
 
 	var mesh := ArrayMesh.new()
@@ -517,6 +565,371 @@ func _ramp(a: Vector3, b: Vector3, c: Vector3, d: Vector3) -> void:
 	_tri_count += 2
 
 
+# ------------------------------------------------------------- the racks
+#
+# The comparable game is Tower Networking Inc., and racks, patch panels and
+# cable runs are its entire visual language. Ours is first person, so the same
+# furniture has to be there at the size a person meets it: a 600 mm frame, 42
+# U of it, and the gear bolted in at the height you would actually reach.
+#
+# A rack is not decoration. It is where a device GOES: _place_devices() asks
+# for U positions out of these frames, so a box in the game is a box in a rack
+# and its height off the floor is the U it was mounted at.
+
+func _plan_racks() -> void:
+	racks.clear()
+	for r in rooms:
+		var n := 0
+		match r.kind:
+			K_MDF: n = 4
+			K_COMMS: n = 1
+			K_SERVER: n = 3
+			_: continue
+		var wx: int = r.x1 - r.x0
+		var wy: int = r.y1 - r.y0
+		var along_x: bool = wx >= wy
+		var span: int = wx if along_x else wy
+		# A rack needs 600 mm and a person needs to get past it.
+		n = min(n, int((span - 1.4) / 0.66))
+		for i in range(n):
+			var d := {"room": r.i, "floor": r.floor, "along_x": along_x,
+					"next_u": 34, "x": 0.0, "z": 0.0}
+			if along_x:
+				d.x = r.x0 + 0.7 + i * 0.66
+				d.z = r.y0 + 0.30
+			else:
+				d.x = r.x0 + 0.30
+				d.z = r.y0 + 0.7 + i * 0.66
+			racks.append(d)
+
+
+func _rack_geom(i: int) -> void:
+	var k: Dictionary = racks[i]
+	var base: float = k.floor * fheight
+	var w: float = RACK_W if k.along_x else RACK_D
+	var d: float = RACK_D if k.along_x else RACK_W
+	var o := Vector3(k.x, base, k.z)
+	# plinth and top
+	_box(o, Vector3(w, 0.08, d), RACK_COL)
+	_box(o + Vector3(0, RACK_H - 0.05, 0), Vector3(w, 0.05, d), RACK_COL)
+	# four uprights
+	for ax in [0.0, w - 0.06]:
+		for az in [0.0, d - 0.06]:
+			_box(o + Vector3(ax, 0.08, az), Vector3(0.06, RACK_H - 0.13, 0.06), RACK_COL)
+	# The two punched rails at the front, and the U holes in them. The holes
+	# are what makes it read as a rack rather than a wardrobe: they give the
+	# eye a repeat at 1.75 inches, which is the size everything else is in.
+	var front := 0.0 if k.along_x else d - 0.06
+	if k.along_x: front = d - 0.06
+	for s in [0.10, w - 0.13]:
+		var rm := o + (Vector3(s, RACK_BASE, front) if k.along_x else Vector3(front, RACK_BASE, s))
+		var rs := Vector3(0.03, RACK_U * U, 0.06) if k.along_x else Vector3(0.06, RACK_U * U, 0.03)
+		_box(rm, rs, RACK_RAIL, false)
+		for uu in range(0, RACK_U, 3):
+			var hm := rm + Vector3(0, uu * U + U * 0.35, 0)
+			if k.along_x: hm.z += 0.055
+			else: hm.x += 0.055
+			var hs := Vector3(0.03, 0.012, 0.012) if k.along_x else Vector3(0.012, 0.012, 0.03)
+			_box(hm, hs, Color("#8d949c"), false)
+
+
+# Take `nu` rack units out of frame `i`, filling downwards from eye height,
+# and say where the box goes and which way its front faces.
+func _rack_slot(i: int, nu: int) -> Dictionary:
+	var k: Dictionary = racks[i]
+	var top: int = k.next_u
+	if top - nu < 1:
+		return {}
+	k.next_u = top - nu - 1        # a gap, so two boxes are two boxes
+	racks[i] = k
+	var y: float = k.floor * fheight + RACK_BASE + float(top - nu) * U
+	var h: float = float(nu) * U
+	if k.along_x:
+		return {"mn": Vector3(k.x + 0.06, y, k.z + RACK_D - 0.74),
+				"size": Vector3(RACK_W - 0.12, h, 0.68), "face": Vector3(0, 0, 1)}
+	return {"mn": Vector3(k.x + RACK_D - 0.74, y, k.z + 0.06),
+			"size": Vector3(0.68, h, RACK_W - 0.12), "face": Vector3(1, 0, 0)}
+
+
+func racks_in(room: int) -> Array:
+	var out: Array = []
+	for i in range(racks.size()):
+		if racks[i].room == room:
+			out.append(i)
+	return out
+
+
+# ------------------------------------------------------------- cable tray
+#
+# Containment on the corridor ceiling, because that is where cable goes and
+# because a corridor with a tray in it tells you at a glance where a run could
+# possibly have gone. The cables themselves are drawn from the SITE's links --
+# see _draw_cables() -- so an empty tray means you have not run anything yet.
+
+const TRAY_KINDS := [K_CORRIDOR, K_LIFTLOBBY, K_LOBBY, K_MDF, K_COMMS, K_GOODS, K_SERVER]
+
+func tray_y(f: int) -> float:
+	return f * fheight + fheight - SLAB_T - 0.32
+
+
+func _trays(f: int) -> void:
+	var y := tray_y(f)
+	for y0 in range(bh):
+		var x := 0
+		while x < bw:
+			var r := room_of(f, x, y0)
+			if r == NOROOM or not TRAY_KINDS.has(int(rooms[r].kind)):
+				x += 1
+				continue
+			var x2 := x
+			while x2 < bw:
+				var r2 := room_of(f, x2, y0)
+				if r2 == NOROOM or not TRAY_KINDS.has(int(rooms[r2].kind)):
+					break
+				x2 += 1
+			var n := x2 - x
+			_box(Vector3(x, y, y0 + 0.25), Vector3(n, 0.05, 0.03), TRAY_COL, false)
+			_box(Vector3(x, y, y0 + 0.72), Vector3(n, 0.05, 0.03), TRAY_COL, false)
+			for i in range(n):
+				_box(Vector3(x + i + 0.35, y + 0.005, y0 + 0.25),
+					Vector3(0.07, 0.02, 0.50), TRAY_COL, false)
+			x = x2
+
+
+# -------------------------------------------------------------- the lifts
+#
+# One car per shaft. The shafts are already vertically aligned on every floor
+# they pass through -- the generator guarantees it -- so grouping the RM_LIFT
+# rooms by footprint gives each lift the list of landings it serves.
+
+func _build_lifts() -> void:
+	for l in lifts:
+		l.queue_free()
+	lifts.clear()
+	var by_rect := {}
+	for r in rooms:
+		if r.kind != K_LIFT:
+			continue
+		var key := "%d,%d,%d,%d" % [r.x0, r.y0, r.x1, r.y1]
+		if not by_rect.has(key):
+			by_rect[key] = []
+		by_rect[key].append(r.i)
+	for key in by_rect.keys():
+		var l = preload("res://scripts/lift.gd").new()
+		l.name = "Lift_%d" % lifts.size()
+		add_child(l)
+		if l.setup(self, by_rect[key]):
+			lifts.append(l)
+		else:
+			l.queue_free()
+
+
+# ------------------------------------------------------ the tower in service
+#
+# The building generator makes the whole tower at once, which is right: it is
+# the space. What grows is how much of it is OPEN. A floor that is not in
+# service has no lit button in the lift and the car will not stop there.
+
+func in_service(f: int) -> bool:
+	return f >= 0 and f < floors_in_service
+
+
+func open_next_floor() -> String:
+	if floors_in_service >= nfloors:
+		return "every floor in this tower is already in service."
+	var f := floors_in_service
+	floors_in_service += 1
+	for l in lifts:
+		l.rebuild_panels()
+	_signage()
+	var who := ""
+	if site_up:
+		var n := 0
+		for r in rooms:
+			if r.floor == f and r.tenant != 0:
+				n += 1
+		who = "  %d let spaces on it" % n
+	return "floor %d is in service.%s" % [f, who]
+
+
+func lift_for(f: int) -> Object:
+	for l in lifts:
+		if l.floors.has(f):
+			return l
+	return lifts[0] if lifts.size() else null
+
+
+# ------------------------------------------------------------- the signage
+#
+# A corridor that does not say which floor it is on is four identical
+# corridors. These are Label3D, which is an engine node drawing the project's
+# own font -- there is still no imported art anywhere in this project.
+
+var _signs: Node3D = null
+
+const SIGNED := {K_MDF: "MDF", K_COMMS: "COMMS", K_GOODS: "GOODS IN",
+	K_PLANT: "PLANT", K_STAIR: "STAIRS", K_SERVER: "SERVER ROOM",
+	K_TOILET: "WC", K_RISER: "RISER"}
+
+func _signage() -> void:
+	if _signs:
+		_signs.queue_free()
+	_signs = Node3D.new()
+	_signs.name = "Signage"
+	add_child(_signs)
+	# the floor, in the lift lobby, big enough to read across the lobby
+	for r in rooms:
+		if r.kind != K_LIFTLOBBY:
+			continue
+		var c := room_centre(r.i)
+		var t := "FLOOR %d" % r.floor
+		if not in_service(r.floor):
+			t += "\nNOT IN SERVICE"
+		for a in [0.0, PI]:
+			_sign(Vector3(c.x, r.floor * fheight + 2.25, c.z), t, a, 48,
+				Color("#e6ecf2") if in_service(r.floor) else Color("#8a6a5a"))
+	# and what is on the other side of a door worth naming
+	for d in doors:
+		for pair in [[d.a, d.b], [d.b, d.a]]:
+			var inside: int = pair[0]
+			if inside >= rooms.size():
+				continue
+			var kind: int = rooms[inside].kind
+			if not SIGNED.has(kind):
+				continue
+			var p := Vector3(d.x + (1.0 if d.dir == 0 else 0.5),
+				d.floor * fheight + DOOR_H + 0.22,
+				d.y + (0.5 if d.dir == 0 else 1.0))
+			var toward := room_centre(pair[1]) - room_centre(inside)
+			var yaw := atan2(toward.x, toward.z)
+			_sign(p, SIGNED[kind], yaw, 26, Color("#d8e2ea"))
+
+
+func _sign(p: Vector3, text: String, yaw: float, size: int, col: Color) -> void:
+	var l := Label3D.new()
+	l.font = preload("res://scripts/uifont.gd").mono()
+	l.font_size = size
+	l.pixel_size = 0.006
+	l.text = text
+	l.modulate = col
+	l.outline_size = 0
+	l.billboard = BaseMaterial3D.BILLBOARD_DISABLED
+	l.double_sided = false
+	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	l.position = p
+	l.rotation = Vector3(0, yaw, 0)
+	_signs.add_child(l)
+
+
+# ---------------------------------------------------------------- the site
+#
+# core/site.c owns what is installed, what it cost and whether the link came
+# up. This calls it; it does not duplicate it. The day-one state is the ISP
+# handoff in the MDF and a small delivery of kit sitting in the racks with
+# nothing plugged into it, which is what the first morning of a new building
+# actually looks like.
+
+func _site_start() -> void:
+	site_up = false
+	if machine == null or not machine.has_method("site_start"):
+		return
+	if str(machine.site_start(60000)).strip_edges() == "":
+		return
+	site_up = true
+	for line in ["install router f0.mdf edge",
+			"install switch24 f0.mdf core",
+			"install server f0.mdf files"]:
+		machine.site_cmd(line)
+
+
+func site(line: String) -> String:
+	if not site_up:
+		return "there is no site yet\n"
+	return str(machine.site_cmd(line))
+
+
+func site_devs() -> Array:
+	var out: Array = []
+	if not site_up:
+		return out
+	for line in str(machine.site_devs()).split("\n", false):
+		var f: PackedStringArray = line.split(" ", false)
+		if f.size() < 8:
+			continue
+		out.append({"i": int(f[0]), "kind": int(f[1]), "room": int(f[2]),
+			"floor": int(f[3]), "tenant": int(f[4]), "nports": int(f[5]),
+			"kindname": f[6], "name": f[7]})
+	return out
+
+
+func site_links() -> Array:
+	var out: Array = []
+	if not site_up:
+		return out
+	for line in str(machine.site_links()).split("\n", false):
+		var f: PackedStringArray = line.split(" ", false)
+		if f.size() < 11:
+			continue
+		out.append({"i": int(f[0]), "a": int(f[1]), "aport": int(f[2]),
+			"b": int(f[3]), "bport": int(f[4]), "room_a": int(f[5]),
+			"room_b": int(f[6]), "metres": int(f[7]), "cost": int(f[8]),
+			"kind": int(f[9]), "state": int(f[10])})
+	return out
+
+
+# The cables that are really there, drawn from the site's own link list, up
+# into the tray and along it. The LENGTH and the PRICE are the site model's,
+# off the building's cable graph; this line is only how it looks.
+func _draw_cables() -> void:
+	if _cable_node:
+		_cable_node.queue_free()
+		_cable_node = null
+	var links := site_links()
+	if links.is_empty():
+		return
+	var g = preload("res://scripts/vgeo.gd").new()
+	for l in links:
+		if l.state < 0:
+			continue                     # pulled out
+		var a := _dev_point(l.a)
+		var b := _dev_point(l.b)
+		if a == Vector3.INF or b == Vector3.INF:
+			continue          # a device the view has not drawn has no end to draw to
+		var col: Color = CABLE_COL[l.i % CABLE_COL.size()]
+		if l.state == 2:                 # PORT_TOOLONG: it was laid and it is dead
+			col = Color("#7a3030")
+		var ya := tray_y(int(a.y / fheight))
+		var yb := tray_y(int(b.y / fheight))
+		var pts: Array = [a, Vector3(a.x, ya, a.z), Vector3(b.x, ya, b.z)]
+		if absf(ya - yb) > 0.01:
+			pts.append(Vector3(b.x, yb, b.z))
+		pts.append(b)
+		for i in range(pts.size() - 1):
+			_cable_seg(g, pts[i], pts[i + 1], col)
+	_cable_node = MeshInstance3D.new()
+	_cable_node.name = "Cables"
+	_cable_node.mesh = g.mesh()
+	add_child(_cable_node)
+
+
+func _cable_seg(g, a: Vector3, b: Vector3, col: Color) -> void:
+	var mn := Vector3(min(a.x, b.x), min(a.y, b.y), min(a.z, b.z))
+	var mx := Vector3(max(a.x, b.x), max(a.y, b.y), max(a.z, b.z))
+	var t := 0.022
+	var size := mx - mn
+	size.x = max(size.x, t)
+	size.y = max(size.y, t)
+	size.z = max(size.z, t)
+	g.box(mn, size, col, false)
+
+
+func _dev_point(site_i: int) -> Vector3:
+	for d in devices:
+		if int(d.get("site", -1)) == site_i:
+			return d.pos
+	return Vector3.INF
+
+
 func _light() -> void:
 	var env := Environment.new()
 	env.background_mode = Environment.BG_COLOR
@@ -532,18 +945,44 @@ func _light() -> void:
 # ------------------------------------------------------------- the player
 
 func spawn_point() -> Vector3:
-	# The entrance lobby, or failing that anything on the ground floor you can
-	# stand in. Never a riser or a lift shaft: you cannot walk into either.
-	var i := find_room(0, K_LOBBY)
-	if i < 0: i = find_room(0, K_GOODS)
+	# THE MDF. The day starts where the ISP handoff lands and where everything
+	# you own is, because that is where an IT person's day starts. The lobby is
+	# somewhere you walk TO. It used to spawn you in the entrance hall, which is
+	# the front of house of a building you do not work in the front of.
+	#
+	# Standing clear of the racks: they line one wall, so the spawn is on the
+	# far side of the room looking at them.
+	var i := find_room(0, K_MDF)
+	if i < 0: i = find_room(0, K_COMMS)
+	if i < 0: i = find_room(0, K_LOBBY)
 	if i < 0:
 		for r in rooms:
 			if r.floor == 0 and r.kind != K_RISER and r.kind != K_LIFT:
 				i = r.i
 				break
+	var r: Dictionary = rooms[i]
 	var p := room_centre(i)
+	# The racks sit against the low edge of the short axis; stand off it.
+	if (r.x1 - r.x0) >= (r.y1 - r.y0):
+		p.z = max(p.z, r.y0 + 2.6)
+	else:
+		p.x = max(p.x, r.x0 + 2.6)
 	p.y = 0.1
 	return p
+
+
+# Facing the rack from the spawn: whichever way the racks in this room run.
+func spawn_yaw() -> float:
+	var i := find_room(0, K_MDF)
+	if i < 0:
+		return 0.0
+	var mine := racks_in(i)
+	if mine.is_empty():
+		return 0.0
+	var k: Dictionary = racks[mine[0]]
+	var to := Vector3(k.x + 0.3, 0, k.z + 0.5) - spawn_point()
+	# -Z is forward for a Godot camera, so the yaw that looks along `to` is this.
+	return atan2(-to.x, -to.z)
 
 
 func _spawn_player() -> void:
@@ -551,6 +990,7 @@ func _spawn_player() -> void:
 	player.name = "Player"
 	add_child(player)
 	player.global_position = spawn_point() + Vector3(0, 0.2, 0)
+	player.look_at_yaw(spawn_yaw())
 
 
 # ------------------------------------------------------------- the devices
@@ -561,64 +1001,151 @@ func _spawn_player() -> void:
 # from it and serial gets you its console -- including the console of a
 # machine that never finished booting, which is the interesting one.
 
+# How tall a thing is, in U. A switch is 1U because a switch is 1U.
+const DEV_U := {"uplink": 1, "switch8": 1, "switch24": 1, "router": 1,
+	"pc": 4, "server": 2}
+const DEV_COL := {"uplink": Color("#6a5a3a"), "switch8": Color("#2b3a4a"),
+	"switch24": Color("#2b3a4a"), "router": Color("#40302c"),
+	"pc": Color("#33383f"), "server": Color("#23262b")}
+
 func _place_devices() -> void:
 	devices.clear()
+	for k in racks:
+		k.next_u = 34
 	var mdf := find_room(0, K_MDF)
 	if mdf < 0: mdf = find_room(0, K_COMMS)
+
+	# ---- what the SITE says is installed, in the racks of the room it says.
+	# This is a read of site_devs(). There is no list of devices in this file.
+	for d in site_devs():
+		var room: int = d.room
+		if room < 0 or room >= rooms.size():
+			room = mdf                       # the handoff is outside; land it in the MDF
+		var frames := racks_in(room)
+		var nu: int = DEV_U.get(d.kindname, 1)
+		var slot := {}
+		for i in frames:
+			slot = _rack_slot(i, nu)
+			if not slot.is_empty():
+				break
+		if slot.is_empty():
+			continue                          # no rack space: it is still on the floor
+		# A managed box has a management line and no picture on the back of it.
+		_add_device(d.name, -2, false, true, slot.mn, slot.size,
+			DEV_COL.get(d.kindname, Color("#2f343a")), slot.face, d.nports, d.i)
+
 	if mdf >= 0:
 		var r: Dictionary = rooms[mdf]
-		# your workstation: a desk machine, so it has a screen output
+		# your workstation: a desk machine, so it has a screen output. On a desk
+		# against the opposite wall from the racks, which is where it goes.
 		_add_device("workstation", 0, true, true,
-			Vector3(r.x0 + 1.2, 0, r.y0 + 1.2), Vector3(0.6, 0.5, 0.6), Color("#3a3f46"))
-		# the customer's machine, racked. A rack server has serial and no
-		# display output at all, which is why the crash cart carries both leads.
-		_add_device("rack server", 1, false, true,
-			Vector3(r.x0 + 1.2, 0, r.y0 + 3.0), Vector3(0.7, 1.9, 1.0), Color("#23262b"))
+			Vector3(r.x1 - 1.9, 0.72, r.y1 - 1.5), Vector3(0.5, 0.42, 0.5),
+			Color("#3a3f46"), Vector3(0, 0, -1), 0, -1)
+		_desk(Vector3(r.x1 - 2.4, 0, r.y1 - 1.8), Vector3(1.6, 0.72, 0.8))
+		# the customer's machine, racked: 4U of it, and the crash cart's whole
+		# lesson lives on the back of it -- serial yes, display no.
+		var frames := racks_in(mdf)
+		if not frames.is_empty():
+			var slot := _rack_slot(frames[frames.size() - 1], 4)
+			if not slot.is_empty():
+				_add_device("rack server", 1, false, true, slot.mn, slot.size,
+					Color("#23262b"), slot.face, 2, -1)
+
+	# ---- patch panels. A PATCH PANEL IS PASSIVE: no processor, no console, no
+	# ports to plug a lead into, and saying so is true where inventing a console
+	# for it would be the exact lie this project does not tell. It is where the
+	# floor's copper terminates, so there is one in every comms cupboard and one
+	# in the MDF, 2U, with the twenty-four ports drawn on the front of it.
+	var pp_rooms: Array = []
+	if mdf >= 0: pp_rooms.append(mdf)
 	for f in range(nfloors):
 		var c := find_room(f, K_COMMS)
-		if c < 0:
+		if c >= 0: pp_rooms.append(c)
+	for room in pp_rooms:
+		var frames := racks_in(room)
+		if frames.is_empty():
 			continue
-		var r: Dictionary = rooms[c]
-		# A PATCH PANEL IS PASSIVE. No processor, no console, no ports to plug
-		# a lead into -- and saying so is true, where inventing a console for
-		# it would be the exact lie this project does not tell.
-		_add_device("patch panel", -1, false, false,
-			Vector3(r.x0 + 0.6, f * fheight, r.y0 + 0.6), Vector3(0.5, 1.6, 0.9), Color("#4a4033"))
+		var slot := _rack_slot(frames[0], 2)
+		if slot.is_empty():
+			continue
+		_add_device("patch panel", -1, false, false, slot.mn, slot.size,
+			Color("#4a4033"), slot.face, 24, -1)
+
+
+# A desk to put the workstation on, because a computer floating at 720 mm is
+# the sort of thing that makes a room read as a diagram.
+func _desk(mn: Vector3, size: Vector3) -> void:
+	var g = preload("res://scripts/vgeo.gd").new()
+	g.box(mn + Vector3(0, size.y - 0.04, 0), Vector3(size.x, 0.04, size.z), Color("#8a7f6d"))
+	for ax in [0.03, size.x - 0.09]:
+		g.box(mn + Vector3(ax, 0, 0.05), Vector3(0.06, size.y - 0.04, size.z - 0.1), Color("#5b6068"))
+	var n := g.node("Desk")
+	add_child(n)
 
 
 func _add_device(dname: String, which: int, hdmi: bool, serial: bool,
-		pos: Vector3, size: Vector3, col: Color) -> void:
-	var n := Node3D.new()
-	n.name = dname.replace(" ", "_") + "_%d" % devices.size()
-	n.position = pos + Vector3(size.x * 0.5, size.y * 0.5, size.z * 0.5)
-	var mi := MeshInstance3D.new()
-	var bm := BoxMesh.new()
-	bm.size = size
-	mi.mesh = bm
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = col
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	mi.material_override = mat
-	n.add_child(mi)
-	var body := StaticBody3D.new()
-	var cs := CollisionShape3D.new()
-	var bs := BoxShape3D.new()
-	bs.size = size
-	cs.shape = bs
-	body.add_child(cs)
-	n.add_child(body)
+		mn: Vector3, size: Vector3, col: Color,
+		face := Vector3(0, 0, 1), nports := 0, site_i := -1) -> void:
+	var g = preload("res://scripts/vgeo.gd").new()
+	g.box(mn, size, col)
+	# The FRONT of a box is what tells you what it is: a lighter faceplate, and
+	# a row of ports you can count. A twenty-four port switch that does not
+	# visibly have twenty-four ports is a grey brick with a label.
+	var fw := 0.012
+	var fp := mn
+	var fs := size
+	if face.z > 0: fp.z = mn.z + size.z - fw
+	elif face.z < 0: fp.z = mn.z
+	elif face.x > 0: fp.x = mn.x + size.x - fw
+	else: fp.x = mn.x
+	if absf(face.z) > 0.5: fs.z = fw
+	else: fs.x = fw
+	g.box(fp, fs, col.lightened(0.22), false)
+	if nports > 0:
+		var along: float = size.x if absf(face.z) > 0.5 else size.z
+		var run: float = along - 0.10
+		var per: float = run / float(nports)
+		var pw: float = min(per * 0.62, 0.022)
+		var ph: float = min(size.y * 0.45, 0.024)
+		var py: float = mn.y + size.y * 0.5 - ph * 0.5
+		for i in range(nports):
+			var t: float = 0.05 + per * (float(i) + 0.5)
+			var pm: Vector3
+			var ps: Vector3
+			if absf(face.z) > 0.5:
+				pm = Vector3(mn.x + t - pw * 0.5, py, fp.z + (fw if face.z > 0 else -0.008))
+				ps = Vector3(pw, ph, 0.008)
+			else:
+				pm = Vector3(fp.x + (fw if face.x > 0 else -0.008), py, mn.z + t - pw * 0.5)
+				ps = Vector3(0.008, ph, pw)
+			g.box(pm, ps, Color("#0e1114"), false)
+	var n := g.node(dname.replace(" ", "_") + "_%d" % devices.size())
 	add_child(n)
 	devices.append({"name": dname, "which": which, "hdmi": hdmi,
-		"serial": serial, "node": n, "pos": n.position})
+		"serial": serial, "node": n, "pos": mn + size * 0.5, "site": site_i})
 
 
+# What you are standing in front of. Distance alone is not enough once things
+# are racked 45 mm apart: which one you mean is which one you are LOOKING at.
 func nearest_device(from: Vector3, radius := 2.2) -> int:
 	var best := -1
-	var bestd := radius
+	var bestd := 1e9
+	var fwd := Vector3.ZERO
+	if player and player.cam:
+		fwd = -player.cam.global_transform.basis.z
 	for i in range(devices.size()):
-		var d: float = from.distance_to(devices[i].pos)
-		if d < bestd:
-			bestd = d
+		var to: Vector3 = devices[i].pos - from
+		var d: float = to.length()
+		if d > radius:
+			continue
+		var score := d
+		if fwd != Vector3.ZERO and d > 0.05:
+			var aim: float = to.normalized().dot(fwd)
+			if aim < 0.35:
+				continue                    # behind you, or off to one side
+			score = d * (2.0 - aim)
+		if score < bestd:
+			bestd = score
 			best = i
 	return best
 
@@ -653,6 +1180,59 @@ func player_floor() -> int:
 	return int(floor((player.global_position.y + 0.3) / fheight))
 
 
+# ---- the lift, without a window.
+#
+# A blind playtester cannot press a button in a 3D lift lobby, so every one of
+# these is what the button does, and the 3D is only the button.
+
+func lift_in() -> Object:
+	# The lift the player is standing in, if any.
+	if player:
+		for l in lifts:
+			if l.inside(player.global_position):
+				return l
+	return null
+
+
+func lift_call(f: int) -> String:
+	# From a landing: bring a car that serves this floor to it.
+	var l := lift_for(f)
+	if l == null:
+		return "there is no lift in this building."
+	return l.call_to(f)
+
+
+func lift_go(f: int) -> String:
+	# From inside the car: press a button. A floor not in service has no lit
+	# button, and this is the refusal a player reads.
+	var l := lift_in()
+	if l == null:
+		l = lift_for(f)
+	if l == null:
+		return "there is no lift in this building."
+	return l.go_to(f)
+
+
+func lift_floor() -> int:
+	var l := lift_in()
+	if l == null:
+		l = lifts[0] if lifts.size() else null
+	return -1 if l == null else int(l.at)
+
+
+func lift_busy() -> bool:
+	for l in lifts:
+		if l.busy():
+			return true
+	return false
+
+
+func lift_car_centre(which := 0) -> Vector3:
+	if which >= lifts.size():
+		return Vector3.ZERO
+	return lifts[which].car_centre()
+
+
 # ------------------------------------------------------------------- the HUD
 
 var hud: Label = null
@@ -681,16 +1261,66 @@ func where_am_i() -> String:
 	return "floor %d  %s  (%.0f, %.0f m)" % [f, what, p.x, p.z]
 
 
+# RUN A CABLE, in the building, between two boxes. The price and the length
+# come out of site_cable() off the building's own tray graph -- this only says
+# which two ports the player meant.
+func cable_here(dev: int) -> String:
+	if dev < 0 or not site_up:
+		return ""
+	var s: int = int(devices[dev].get("site", -1))
+	if s < 0:
+		return "%s is passive. There is nothing to plug into." % devices[dev].name
+	if _cable_from < 0:
+		_cable_from = s
+		return "spool at %s. Walk to the other end and press [C]." % devices[dev].name
+	if _cable_from == s:
+		_cable_from = -1
+		return "spool put back."
+	var a := _cable_from
+	_cable_from = -1
+	var out := site("cable %d:%d %d:%d cat6" % [a, _free_port(a), s, _free_port(s)])
+	_draw_cables()
+	return out.strip_edges()
+
+
+func _free_port(s: int) -> int:
+	# The lowest port with nothing in it, which is how anybody patches a switch.
+	var used := {}
+	for l in site_links():
+		if l.state < 0:
+			continue
+		if l.a == s: used[l.aport] = true
+		if l.b == s: used[l.bport] = true
+	for d in site_devs():
+		if d.i != s:
+			continue
+		for p in range(d.nports):
+			if not used.has(p):
+				return p
+	return 0
+
+
 func _process(_dt: float) -> void:
 	if player == null:
 		return
 	var near := nearest_device(player.global_position)
+	var car: Object = lift_in()
+	var landing := _lift_landing()
 	if hud:
 		var t := where_am_i()
 		if cart:
 			t += "\ncart: " + str(cart.status)
+		if _cable_from >= 0:
+			t += "\nspool in hand"
 		if near >= 0:
 			t += "\n%s in reach   [F] serial lead   [H] HDMI lead   [U] unplug" % devices[near].name
+			if int(devices[near].get("site", -1)) >= 0:
+				t += "   [C] cable"
+		if car != null:
+			t += "\nin the lift: press a floor number.  in service: %s" % str(car.serviced())
+		elif landing != null:
+			t += "\n[E] call the lift"
+		t += "\n%d of %d floors in service   [O] open the next one" % [floors_in_service, nfloors]
 		hud.text = t
 	if Input.is_key_pressed(KEY_F) and not _f_down:
 		if near >= 0 and cart:
@@ -703,7 +1333,40 @@ func _process(_dt: float) -> void:
 	if Input.is_key_pressed(KEY_U) and not _u_down and cart:
 		cart.unplug()
 	_u_down = Input.is_key_pressed(KEY_U)
+	if Input.is_key_pressed(KEY_C) and not _c_down and near >= 0:
+		print(cable_here(near))
+	_c_down = Input.is_key_pressed(KEY_C)
+	if Input.is_key_pressed(KEY_E) and not _e_down and landing != null:
+		print(landing.call_to(player_floor()))
+	_e_down = Input.is_key_pressed(KEY_E)
+	if Input.is_key_pressed(KEY_O) and not _o_down:
+		print(open_next_floor())
+	_o_down = Input.is_key_pressed(KEY_O)
+	# The buttons inside the car, on the number row.
+	if car != null:
+		for f in range(min(10, nfloors)):
+			if Input.is_key_pressed(KEY_0 + f) and not _num_down[f]:
+				print(car.go_to(f))
+			_num_down[f] = Input.is_key_pressed(KEY_0 + f)
+
+
+# The call plate you are standing in front of, if you are standing in front of
+# one. Two metres, which is arm's reach plus a step.
+func _lift_landing() -> Object:
+	if player == null:
+		return null
+	var f := player_floor()
+	for l in lifts:
+		if not l.floors.has(f):
+			continue
+		if player.global_position.distance_to(l.call_plate_pos(f)) < 2.0:
+			return l
+	return null
 
 var _f_down := false
 var _h_down := false
 var _u_down := false
+var _c_down := false
+var _e_down := false
+var _o_down := false
+var _num_down := [false, false, false, false, false, false, false, false, false, false]
