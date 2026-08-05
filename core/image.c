@@ -74,6 +74,14 @@ static const Package PKG_KERNEL = {
         "module dm_mod\n", 0644, NULL },
       { "/boot/initrd", NULL, 0777, "/boot/initrd-6.4.11" },
       { "/usr/bin/mkinitrd", NULL, 0755, NULL },
+      /* THE MODULE DIRECTORY IS OWNED, and it has to be, for the reason
+       * /var/log and /run already are: `open` with O_CREAT makes a file and
+       * never the path above it, so once a cleanup or a half-finished upgrade
+       * has taken /lib/modules/6.4.11 away, `pkg reinstall kernel-default`
+       * cannot put a single .ko back -- it has nowhere to write them. The
+       * solve ladder scored exactly that unfixable. Listed BEFORE the modules
+       * so the manifest restores the directory first. */
+      { "/lib/modules/6.4.11", NULL, 0755, NULL, true },
       { "/lib/modules/6.4.11/virtio_blk.ko", "\x7fMOD virtio_blk\n", 0644, NULL },
       { "/lib/modules/6.4.11/ext4.ko",       "\x7fMOD ext4\n",       0644, NULL },
       { "/lib/modules/6.4.11/dm_mod.ko",     "\x7fMOD dm_mod\n",     0644, NULL },
@@ -606,9 +614,18 @@ static const Package PKG_HOME = {
         "   on disk is a lie about what the machine is doing. /run/*.state\n"
         "   says what each daemon really loaded. kill -HUP it.\n"
         "\n"
+        "   The nastier version: somebody ALREADY FIXED IT and did not reload\n"
+        "   it either. Then the file is right, verify is clean, svc says\n"
+        "   running, and the machine is still doing the old thing. Compare\n"
+        "   /run/*.state with the file before you believe either of them.\n"
+        "\n"
         "9. Somebody bound a directory over /etc once. Every file passed\n"
         "   verify and the machine still read the wrong one. `ns` would have\n"
         "   shown me in four seconds.\n"
+        "\n"
+        "   The management agent does it on purpose, from a .svc file with a\n"
+        "   `bind:` line in it that no package owns. `svc` shows it as a\n"
+        "   namespace unit rather than a service. Read what it binds.\n"
         "\n"
         "10. The vendor agent. Twice. They drop a .svc in /etc/services.d\n"
         "    that no package owns and it is marked critical, so the boot\n"
@@ -1225,8 +1242,14 @@ static const Package PKG_HOME = {
         "  that cuts both ways: I would not have been able to prove it HAD run.\n"
         "\n"
         "Conclusion after writing all that down: the tool I actually wanted is\n"
-        "logrotate, which is installed, configured, and has a crontab line. Find out\n"
-        "why the line never fires. Do not write a second one.\n", 0644, NULL },
+        "logrotate. It is installed, it is configured, it has a crontab line, and\n"
+        "`grep logrotate /var/log/messages` proves crond really does start it. So\n"
+        "the question is not why it never fires -- it fires -- it is what it does\n"
+        "when it fires. Start with the two files, because they do not say the\n"
+        "same thing: /etc/logrotate.conf sets a policy for everything and\n"
+        "/etc/logrotate.d/syslog sets a different one for /var/log/messages\n"
+        "specifically, and only one of those can be what actually happens. Find\n"
+        "that out. Do not write a second one.\n", 0644, NULL },
       { "/home/nomowner/.profile",
         "# ~/.profile\n"
         "#\n"
@@ -3435,6 +3458,62 @@ static void install_history(Machine *m)
  * not cover themselves in twenty tries. Now they are covered on purpose. */
 int local_edit_count(void);
 
+/* WHICH LINES OF A LOCAL EDIT ARE ACTUALLY LOCAL.
+ *
+ * See machine_collateral for why this exists. A decoy is a whole file, and
+ * most of its lines are the ones the package ships -- the local decision is
+ * the handful that are not. Those are the thing the collateral report is
+ * about, and comparing whole files could never see them.
+ *
+ * A file no package owns has no shipped version, so every line of it is a
+ * local decision, which is also the truth. */
+static bool line_present(const Buf *hay, const char *line, size_t len)
+{
+    const char *p = hay->p, *end = hay->p ? hay->p + hay->len : NULL;
+    while (p && p < end) {
+        const char *nl = memchr(p, '\n', (size_t)(end - p));
+        size_t ll = nl ? (size_t)(nl - p) : (size_t)(end - p);
+        if (ll == len && (len == 0 || memcmp(p, line, len) == 0)) return true;
+        p = nl ? nl + 1 : end;
+    }
+    return false;
+}
+
+static void shipped_content(const Machine *m, const char *path, Buf *out)
+{
+    const Package *pk = pkg_owns(m, path);
+    if (!pk) return;
+    for (int j = 0; j < pk->nfiles; j++)
+        if (strcmp(pk->file[j].path, path) == 0) {
+            if (!pk->file[j].isdir && !pk->file[j].link)
+                pristine(m, &pk->file[j], out);
+            return;
+        }
+}
+
+/* Record edit `path` with content `content` as local edit slot m->nlocal.
+ * local_orig holds the LOCAL LINES, newline-terminated -- not the file. */
+static void record_local(Machine *m, const char *path, const char *content)
+{
+    Buf ship = {0};
+    shipped_content(m, path, &ship);
+    Buf *keep = &m->local_orig[m->nlocal];
+    buf_clear(keep);
+    const char *p = content;
+    while (*p) {
+        const char *nl = strchr(p, '\n');
+        size_t ll = nl ? (size_t)(nl - p) : strlen(p);
+        if (ll && !line_present(&ship, p, ll)) {
+            buf_put(keep, p, ll);
+            buf_putc(keep, '\n');
+        }
+        p = nl ? nl + 1 : p + ll;
+    }
+    buf_free(&ship);
+    snprintf(m->local[m->nlocal], NOM_PATH_MAX, "%s", path);
+    m->nlocal++;
+}
+
 static void install_local_edits(Machine *m, uint64_t seed)
 {
     Rng r;
@@ -3729,9 +3808,7 @@ static void install_local_edits(Machine *m, uint64_t seed)
         if (n && n->kind == VN_FILE) {
             buf_clear(&n->data);
             buf_puts(&n->data, EDITS[i].content);
-            buf_puts(&m->local_orig[m->nlocal], EDITS[i].content);
-            snprintf(m->local[m->nlocal], NOM_PATH_MAX, "%s", EDITS[i].path);
-            m->nlocal++;
+            record_local(m, EDITS[i].path, EDITS[i].content);
         }
         return;
     }
@@ -3751,9 +3828,7 @@ static void install_local_edits(Machine *m, uint64_t seed)
         if (!n || n->kind != VN_FILE) continue;
         buf_clear(&n->data);
         buf_puts(&n->data, EDITS[i].content);
-        buf_puts(&m->local_orig[m->nlocal], EDITS[i].content);
-        snprintf(m->local[m->nlocal], NOM_PATH_MAX, "%s", EDITS[i].path);
-        m->nlocal++;
+        record_local(m, EDITS[i].path, EDITS[i].content);
     }
 }
 
@@ -3763,21 +3838,78 @@ static void install_local_edits(Machine *m, uint64_t seed)
  * every flagged package, and there was no cost to being sloppy. There is one
  * now: `pkg reinstall` keeps modified config unless forced, and this reports
  * what was reverted anyway. Fixing the machine while quietly undoing
- * somebody's work is not the same as fixing the machine. */
+ * somebody's work is not the same as fixing the machine.
+ *
+ * WHAT IT USED TO COMPARE, AND WHY THAT WAS THE OPPOSITE OF WHAT IT SAID.
+ *
+ * It held the whole file as it stood when the player arrived and fired if a
+ * single byte of it had changed since. That is not "did you clobber local
+ * config", it is "did you edit this file at all" -- and the files carrying a
+ * local edit are, by design, the same files the faults live in. So the
+ * surgical repair the game teaches was the thing it punished. A player on
+ * seed 8129 changed one word in the fstab line for the optical drive, left
+ * the customer's hand-written `/dev/sdb1 nofail` lines and their comment
+ * exactly where they were, confirmed with `pkg diff` that those lines were
+ * the only remaining delta, and was told at the login prompt:
+ *
+ *   you overwrote local configuration:
+ *     /etc/fstab
+ *     this machine's own settings are gone and there is no undo.
+ *
+ * Nothing local was lost. And the counter-case ran the other way: a player
+ * who edited /etc/passwd until `pkg diff` said "identical -- nothing to fix
+ * here" had genuinely erased whatever was local in it, and the check was
+ * silent, because on that seed passwd carried no seeded edit at all. It
+ * rewarded the destructive repair and accused the correct one, on the exact
+ * mechanic notes.txt hint 4 teaches.
+ *
+ * The local decision was never the file. It is the handful of LINES the
+ * package does not ship -- the caddy, the second nameserver, the backup
+ * account, the vendor path that has to go last. Those are what somebody chose
+ * on purpose, those are what a forced reinstall takes away, and those are
+ * what this asks about now. Change the uuid on the root line and every local
+ * line is still there. Restore the file to what shipped and every one of them
+ * is gone, which is the sentence this has been printing all along.
+ *
+ * It names the lines, because "/etc/fstab" alone left the player hunting for
+ * what they were supposed to have destroyed. */
 int machine_collateral(Machine *m, Buf *out)
 {
     int lost = 0;
     for (int i = 0; i < m->nlocal; i++) {
         VNode *n = vfs_lookup(&m->disk, m->local[i]);
-        bool gone = !n || n->kind != VN_FILE ||
-                    n->data.len != m->local_orig[i].len ||
-                    (n->data.len &&
-                     memcmp(n->data.p, m->local_orig[i].p, n->data.len) != 0);
-        if (!gone) continue;
-        if (!lost) buf_puts(out,
-            "\nyou overwrote local configuration:\n");
-        buf_printf(out, "  %s\n", m->local[i]);
-        lost++;
+        bool isfile = n && n->kind == VN_FILE;
+        const Buf *keep = &m->local_orig[i];
+        if (!keep->len) continue;      /* nothing local left to lose */
+
+        Buf now = {0};
+        if (isfile && n->data.len) buf_put(&now, n->data.p, n->data.len);
+        int missing = 0;
+        const char *p = keep->p, *end = keep->p + keep->len;
+        Buf which = {0};
+        while (p < end) {
+            const char *nl = memchr(p, '\n', (size_t)(end - p));
+            size_t ll = nl ? (size_t)(nl - p) : (size_t)(end - p);
+            if (!line_present(&now, p, ll)) {
+                if (missing < 3) {
+                    buf_puts(&which, "      ");
+                    buf_put(&which, p, ll);
+                    buf_putc(&which, '\n');
+                }
+                missing++;
+            }
+            p = nl ? nl + 1 : end;
+        }
+        buf_free(&now);
+        if (missing) {
+            if (!lost) buf_puts(out, "\nyou overwrote local configuration:\n");
+            buf_printf(out, "  %s -- %d line(s) somebody put there are gone:\n",
+                       m->local[i], missing);
+            buf_put(out, which.p, which.len);
+            if (missing > 3) buf_printf(out, "      ... and %d more\n", missing - 3);
+            lost++;
+        }
+        buf_free(&which);
     }
     if (lost)
         buf_puts(out,
@@ -3798,14 +3930,35 @@ int machine_collateral(Machine *m, Buf *out)
  * to work out what it meant and concluded, reasonably, that the same message
  * means both "you broke this" and "the customer broke this".
  *
+ * Same question, now asked line by line: a local line the BREAKER already
+ * removed is not the player's to lose, so it stops being watched. What is
+ * left is exactly the set of local decisions that were on the disk at the
+ * moment it was handed over.
+ *
  * Called once the machine is broken and before anyone touches it. */
 void machine_rebaseline_local(Machine *m)
 {
     for (int i = 0; i < m->nlocal; i++) {
         VNode *n = vfs_lookup(&m->disk, m->local[i]);
-        buf_clear(&m->local_orig[i]);
+        Buf now = {0};
         if (n && n->kind == VN_FILE && n->data.len)
-            buf_put(&m->local_orig[i], n->data.p, n->data.len);
+            buf_put(&now, n->data.p, n->data.len);
+        Buf keep = {0};
+        const char *p = m->local_orig[i].p;
+        const char *end = p ? p + m->local_orig[i].len : NULL;
+        while (p && p < end) {
+            const char *nl = memchr(p, '\n', (size_t)(end - p));
+            size_t ll = nl ? (size_t)(nl - p) : (size_t)(end - p);
+            if (line_present(&now, p, ll)) {
+                buf_put(&keep, p, ll);
+                buf_putc(&keep, '\n');
+            }
+            p = nl ? nl + 1 : end;
+        }
+        buf_clear(&m->local_orig[i]);
+        if (keep.len) buf_put(&m->local_orig[i], keep.p, keep.len);
+        buf_free(&keep);
+        buf_free(&now);
     }
 }
 
@@ -4062,6 +4215,16 @@ bool pkg_restore_path(Machine *m, const char *pkgname, const char *path)
     for (int j = 0; j < p->nfiles; j++) {
         if (strcmp(p->file[j].path, path) != 0) continue;
         if (p->file[j].isdir) {
+            /* SOMETHING ELSE IN THE WAY IS NOT A DIRECTORY THAT IS THERE.
+             *
+             * vfs_mkdir walks to an existing node and hands it back whatever
+             * kind it is, so a package whose directory had been replaced by a
+             * FILE -- an archive unpacked one level too high, which is a real
+             * afternoon -- reinstalled "successfully" and left the file
+             * exactly where it was. The solve ladder scored it unfixable and
+             * it was right to. rpm removes what is in the way; so does this. */
+            VNode *ex = vfs_lookup(&m->disk, path);
+            if (ex && ex->kind != VN_DIR) vfs_remove(&m->disk, path);
             VNode *d = vfs_mkdir(&m->disk, path);
             if (d) d->mode = p->file[j].mode;
             return true;
