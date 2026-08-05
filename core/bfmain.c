@@ -12,6 +12,7 @@
 #include "nom.h"
 #include "machine.h"
 #include "kernel.h"
+#include "building.h"
 #include "netstack.h"
 
 /* The network's own gate. See core/netcheck.c. */
@@ -213,8 +214,229 @@ static bool ac_no_jargon(const char *p, size_t len, const char **words)
     return true;
 }
 
+/* A CHECK THAT HAS NEVER FIRED IS NOT A CHECK. Every gate in this repo has
+ * at some point reported a steady, confident number about a class of failure
+ * it could not see. So the building gate is itself gated: take a good tower,
+ * break it one specific way, and the check that owns that failure has to go
+ * off. If it does not, the 200/200 above means nothing.
+ *
+ * Returns the check that must fire, or -1 if this mutation does not apply to
+ * this seed. */
+static int bld_mutate(Building *b, int which)
+{
+    int top = b->floors - 1;
+    switch (which) {
+    case BC_STACK:      /* the top plate overhangs the one below it */
+        if (top < 1) return -1;
+        b->fx1[top] = (int16_t)(b->fx1[top - 1] + 1);
+        return BC_STACK;
+    case BC_TESSELLATE: { /* a metre of floor that is in no room */
+        int r = bld_find(b, 1, RM_OFFICE);
+        if (r < 0) r = bld_find(b, 1, RM_RESIDENCE);
+        if (r < 0) return -1;
+        b->rooms[r].x1 = (int16_t)(b->rooms[r].x1 - 1);
+        return BC_TESSELLATE; }
+    case BC_ROOMSIZE: { /* a room one metre wide */
+        int r = bld_find(b, 1, RM_OFFICE);
+        if (r < 0) r = bld_find(b, 1, RM_RESIDENCE);
+        if (r < 0) return -1;
+        b->rooms[r].y1 = (int16_t)(b->rooms[r].y0 + 1);
+        return BC_ROOMSIZE; }
+    case BC_ALIGN: {    /* the riser steps sideways between two floors */
+        int r = bld_find(b, 1, RM_RISER);
+        if (r < 0) return -1;
+        b->rooms[r].x0 = (int16_t)(b->rooms[r].x0 + 1);
+        b->rooms[r].x1 = (int16_t)(b->rooms[r].x1 + 1);
+        return BC_ALIGN; }
+    case BC_DOORS:      /* a door that says it stands somewhere it does not */
+        if (!b->ndoors) return -1;
+        b->doors[0].a = (uint16_t)((b->doors[0].a + 3) % b->nrooms);
+        return BC_DOORS;
+    case BC_ROOMDOOR:   /* an office with no way in */
+    case BC_REACH:
+        for (int i = 0; i < b->ndoors; i++) {
+            int ka = b->rooms[b->doors[i].a].kind, kb = b->rooms[b->doors[i].b].kind;
+            if (ka != RM_OFFICE && ka != RM_RESIDENCE &&
+                kb != RM_OFFICE && kb != RM_RESIDENCE) continue;
+            b->edge[(((size_t)b->doors[i].floor * (size_t)b->h + (size_t)b->doors[i].y)
+                     * (size_t)b->w) + (size_t)b->doors[i].x] = 0;
+            b->doors[i] = b->doors[--b->ndoors];
+            return which;
+        }
+        return -1;
+    case BC_CORRIDOR: { /* the ring cut in two: two pieces, four dead ends.
+                         * Cutting it ONCE is not enough and that is the point
+                         * -- a loop survives one break, which is why a loop is
+                         * what a building has. */
+        int cut = 0;
+        for (int i = 0; i < b->nrooms && cut < 2; i++) {
+            const Room *rm = &b->rooms[i];
+            if (rm->floor != 1 || rm->kind != RM_CORRIDOR) continue;
+            if (rm->x1 - rm->x0 <= 2) continue;      /* a north/south leg */
+            int x = (rm->x0 + rm->x1) / 2;
+            for (int y = rm->y0; y < rm->y1; y++)
+                b->cell[(((size_t)1 * (size_t)b->h + (size_t)y) * (size_t)b->w) + (size_t)x]
+                    = BLD_NOROOM;
+            cut++;
+        }
+        return cut == 2 ? BC_CORRIDOR : -1; }
+    case BC_PRIVACY: {  /* one tenant's only way in is through another's */
+        for (int i = 0; i < b->ndoors; i++) {
+            int a = b->doors[i].a, bb = b->doors[i].b;
+            if (b->rooms[a].kind == RM_CORRIDOR || b->rooms[bb].kind == RM_CORRIDOR) continue;
+            b->rooms[a].tenant = 251; b->rooms[bb].tenant = 252;
+            return BC_PRIVACY;
+        }
+        return -1; }
+    case BC_PROGRAM: {  /* the building's uplink has nowhere to land */
+        int m = bld_find(b, 0, RM_MDF);
+        if (m < 0) return -1;
+        b->rooms[m].kind = RM_RETAIL;
+        return BC_PROGRAM; }
+    case BC_METRIC:     /* the riser no longer joins one floor to the next */
+        for (int u = 0; u < b->nrooms; u++) {
+            if (b->rooms[u].kind != RM_RISER) continue;
+            for (int e = b->cg_head[u]; e < b->cg_head[u + 1]; e++)
+                if (b->cg_to[e] < b->nrooms && b->rooms[b->cg_to[e]].kind == RM_RISER)
+                    b->cg_to[e] = u;
+        }
+        return BC_METRIC;
+    default:
+        return -1;
+    }
+}
+
 int main(int argc, char **argv)
 {
+    if (argc > 1 && strcmp(argv[1], "--building") == 0) {
+        /* THE BUILDING IS GAMEPLAY DATA, SO IT GETS A GATE LIKE EVERYTHING
+         * ELSE. A tower that looks fine in a render and has an office with no
+         * door, or a riser that steps sideways between floors, would be
+         * discovered by a player halfway through paying for a cable run. Every
+         * claim building.h makes is checked here, over N seeds, and a failure
+         * prints the seed so it can be looked at with --floorplan. */
+        int n = argc > 2 ? atoi(argv[2]) : 200, bad = 0;
+        int fails[BC_COUNT] = {0}, hit[BC_COUNT] = {0};
+        int nogen = 0, ndeterm = 0;
+        long rooms = 0, doors = 0, floors = 0; double area = 0;
+        double diffsum = 0; long diffn = 0;
+        for (int i = 0; i < n; i++) {
+            uint64_t seed = 7000 + (uint64_t)i;
+            Building b;
+            if (!bld_generate(&b, seed)) { nogen++; bad++;
+                printf("seed %llu produced no building at all\n",
+                       (unsigned long long)seed);
+                continue; }
+            /* Same seed, same tower, always -- the whole save format depends
+             * on it, because a saved game stores the seed and not the walls. */
+            Building b2;
+            bool same = bld_generate(&b2, seed);
+            if (same) {
+                same = b2.nrooms == b.nrooms && b2.ndoors == b.ndoors &&
+                       b2.floors == b.floors &&
+                       memcmp(b2.rooms, b.rooms, sizeof(Room) * (size_t)b.nrooms) == 0 &&
+                       memcmp(b2.doors, b.doors, sizeof(Door) * (size_t)b.ndoors) == 0;
+            }
+            if (same) bld_free(&b2); else { ndeterm++; }
+            int before[BC_COUNT]; memcpy(before, fails, sizeof before);
+            Buf why = {0};
+            int nf = bld_check(&b, &why, fails);
+            if (nf || !same) {
+                bad++;
+                printf("seed %llu is not a coherent building:\n",
+                       (unsigned long long)seed);
+                if (!same) printf("  %-42s a second generate gave a different tower\n",
+                                  "the same seed gives the same tower");
+                if (why.len > 900) { fwrite(why.p, 1, 900, stdout); printf("  ...\n"); }
+                else fwrite(why.p, 1, why.len, stdout);
+            }
+            for (int c = 0; c < BC_COUNT; c++) if (fails[c] != before[c]) hit[c]++;
+            buf_free(&why);
+
+            rooms += b.nrooms; doors += b.ndoors; floors += b.floors;
+            for (int f = 0; f < b.floors; f++)
+                area += (b.fx1[f] - b.fx0[f]) * (double)(b.fy1[f] - b.fy0[f]);
+            /* How far apart ARE the two numbers? If a player is choosing
+             * between carrying the box and running the cable, the answer has
+             * to be worth thinking about. */
+            int mdf = bld_find(&b, 0, RM_MDF);
+            if (mdf >= 0) {
+                double *w = nom_alloc(sizeof(double) * (size_t)b.nrooms);
+                double *c = nom_alloc(sizeof(double) * (size_t)b.nrooms);
+                bld_walk_all(&b, mdf, w); bld_cable_all(&b, mdf, c);
+                for (int rr = 0; rr < b.nrooms; rr++) {
+                    if (b.rooms[rr].kind != RM_COMMS) continue;
+                    if (w[rr] >= BLD_INF || c[rr] >= BLD_INF) continue;
+                    double d = w[rr] - c[rr]; if (d < 0) d = -d;
+                    diffsum += d; diffn++;
+                }
+                nom_free(w); nom_free(c);
+            }
+            bld_free(&b);
+        }
+        /* Now break one on purpose, once per check, and demand a complaint. */
+        int mut = 0, caught = 0;
+        for (int c = 0; c < BC_COUNT; c++) {
+            for (int t = 0; t < 8; t++) {
+                Building m;
+                if (!bld_generate(&m, 9100 + (uint64_t)t)) continue;
+                int want = bld_mutate(&m, c);
+                if (want < 0) { bld_free(&m); continue; }
+                int mf[BC_COUNT] = {0};
+                bld_check(&m, NULL, mf);
+                mut++;
+                if (mf[want]) caught++;
+                else printf("A BUILDING BROKEN ON PURPOSE PASSED: nothing complained about"
+                            " \"%s\" (seed %d)\n", bld_check_name(want), 9100 + t);
+                bld_free(&m);
+                break;
+            }
+        }
+        if (caught != mut) bad++;
+
+        printf("\n");
+        for (int c = 0; c < BC_COUNT; c++)
+            printf("  %-46s %d/%d\n", bld_check_name(c), n - hit[c], n);
+        if (nogen)   printf("  %-46s %d/%d\n", "the generator produced a building", n - nogen, n);
+        if (ndeterm) printf("  %-46s %d/%d\n", "the same seed gives the same tower", n - ndeterm, n);
+        if (floors)
+            printf("\naverage tower: %.1f floors, %.0f rooms, %.0f doors, %.0f m2 of plate\n",
+                   (double)floors / n, (double)rooms / n, (double)doors / n, area / floors);
+        if (diffn)
+            printf("MDF to a comms cupboard: walking and cabling differ by %.1f m on average\n",
+                   diffsum / (double)diffn);
+        printf("%d/%d deliberately broken buildings were caught by the check that owns them\n",
+               caught, mut);
+        printf("\n%d/%d buildings coherent\n", n - bad, n);
+        return bad ? 1 : 0;
+    }
+
+    if (argc > 2 && strcmp(argv[1], "--floorplan") == 0) {
+        uint64_t seed = strtoull(argv[2], NULL, 10);
+        int floor = argc > 3 ? atoi(argv[3]) : 0;
+        Building b;
+        if (!bld_generate(&b, seed)) { printf("seed %llu makes no building\n",
+                                              (unsigned long long)seed); return 1; }
+        Buf o = {0};
+        bld_floorplan(&b, floor, &o);
+        fwrite(o.p, 1, o.len, stdout);
+        buf_free(&o);
+        /* The two numbers, on this floor, so the difference is not a claim in
+         * a comment. */
+        int comms = bld_find(&b, floor, RM_COMMS), mdf = bld_find(&b, 0, RM_MDF);
+        if (comms >= 0 && mdf >= 0) {
+            double *w = nom_alloc(sizeof(double) * (size_t)b.nrooms);
+            double *c = nom_alloc(sizeof(double) * (size_t)b.nrooms);
+            bld_walk_all(&b, mdf, w); bld_cable_all(&b, mdf, c);
+            printf("\nfrom the MDF on the ground floor to this floor's comms cupboard:\n");
+            printf("  carrying it   %6.1f m   (corridors, doors, stairs or the lift)\n", w[comms]);
+            printf("  cabling it    %6.1f m   (tray, comms cupboard, riser)\n", c[comms]);
+            nom_free(w); nom_free(c);
+        }
+        bld_free(&b);
+        return 0;
+    }
+
     /* THE NETWORK GATE. Frames on a wire, and every layer above them, checked
      * by building a topology and doing something ordinary to it. The
      * assertions live in netcheck.c because they are long and this file is
