@@ -227,7 +227,8 @@ static void new_ticket(Client *c, uint64_t seed, int faults)
         send_str(c->fd,
             "  it is not on any network -- there is no address to give you.\n"
             "  your only terminal on their machine is the person in front of\n"
-            "  it. `ask type <command>` and they read back what they see.\n");
+            "  it. `ask` for what they can do; `ask 2 <command>` and they type\n"
+            "  it and read back what they see.\n");
     } else {
         snprintf(hdr, sizeof hdr,
             "  they read you the address on the sticker: %s\n"
@@ -317,15 +318,14 @@ static bool client_line(Client *c)
                 "rescue: that machine has no service processor and no route --\n"
                 "  it is not on any network, so nothing you type here reaches\n"
                 "  it. The only hands in the room are the customer's:\n"
-                "    ask put the rescue disc in\n"
-                "    ask turn it off and on again\n"
-                "    ask type <command>      they read the screen back to you\n"
+                "    ask                     what they can do from there\n"
+                "    ask 2 <command>         they type it and read the screen\n"
+                "                            back to you\n"
                 :
                 "boot: that machine has no service processor and no route --\n"
                 "  it is not on any network, so nothing you type here reaches\n"
                 "  it. The only hands in the room are the customer's:\n"
-                "    ask turn it off and on again\n"
-                "    ask what does the screen say\n");
+                "    ask                     what they can do from there\n");
             return true;
         }
         if (!c->desk.sp_connected) {
@@ -355,11 +355,31 @@ static bool client_line(Client *c)
         return true;
     }
 
+    /* TALKING TO HER IS A MENU, and the menu is the constraint.
+     *
+     * `ask` on its own is the list of things you can say from where the call
+     * has got to; `ask <n>` says one; `ask 2 <command>` is the one option that
+     * carries a command, which she types exactly as dictated or refuses whole.
+     * There is no free-text channel to her any more and that is the point: the
+     * cost of the air-gapped ticket is the round trip, not the wording. */
     if (strncmp(cmd, "ask", 3) == 0 && (cmd[3] == ' ' || !cmd[3])) {
-        Buf a = {0};
-        customer_ask(&c->m, cmd[3] ? cmd + 4 : "", &a);
-        send_all(c->fd, a.p, a.len);
-        buf_free(&a);
+        const char *a = cmd[3] ? cmd + 4 : "";
+        while (*a == ' ') a++;
+        Buf o = {0};
+        if (*a >= '0' && *a <= '9') {
+            int idx = atoi(a);
+            while (*a >= '0' && *a <= '9') a++;
+            while (*a == ' ') a++;
+            customer_choose(&c->m, idx, a, &o);
+        } else {
+            if (*a) send_str(c->fd,
+                "she is on the phone, not on chat. pick something to say:\n");
+            customer_options(&c->m, &o);
+            buf_puts(&o, "  `ask <n>` to say one. option 2 takes a command:\n"
+                         "  `ask 2 dmesg -f error`\n");
+        }
+        send_all(c->fd, o.p, o.len);
+        buf_free(&o);
         return true;
     }
 
@@ -372,26 +392,6 @@ static bool client_line(Client *c)
         if (*a) faults = atoi(a);
         if (!seed) seed = c->m.id[0] ? (uint64_t)atoi(c->m.id) + 1 : 4823;
         new_ticket(c, seed, faults);
-        return true;
-    }
-
-    /* Three people, not one. */
-    /* THE COMMAND IS THE PERSON'S NAME. `help` said sam/boss while the
-     * replies said "Ben:" and "Json:", and `ben`/`json` were not commands at
-     * all -- a playtester had to guess which of the two naming schemes was
-     * real. Both work now, and the help names the people. */
-    if (strncmp(cmd, "ben ", 4) == 0 || strncmp(cmd, "sam ", 4) == 0) {
-        Buf o = {0};
-        colleague_ask(&c->m, "coworker", cmd + 4, &o);
-        if (o.len) send_all(c->fd, o.p, o.len);
-        buf_free(&o);
-        return true;
-    }
-    if (strncmp(cmd, "json ", 5) == 0 || strncmp(cmd, "boss ", 5) == 0) {
-        Buf o = {0};
-        colleague_ask(&c->m, "manager", cmd + 5, &o);
-        if (o.len) send_all(c->fd, o.p, o.len);
-        buf_free(&o);
         return true;
     }
 
@@ -409,20 +409,13 @@ static bool client_line(Client *c)
             "                    up and nothing left differing from what its\n"
             "                    packages shipped. this is how a job ends\n"
             "  ticket [seed] [n] take a new ticket (n = how many faults)\n"
-            "  ben <question>    Ben, a technician at the next desk. He has NOT\n"
-            "                    seen this machine and know only what you tell\n"
-            "                    them -- useful for exactly what a colleague is\n"
-            "                    useful for: say it out loud and they ask the\n"
-            "                    obvious question you skipped\n"
-            "  json <question>   Json, who wrote the runbook. Knows how\n"
-            "                    the whole system works -- boot order, tools,\n"
-            "                    where things live -- but has not seen your\n"
-            "                    machine either. Ask about the SYSTEM\n"
-            "  ask <question>    talk to the customer. They are not technical\n"
-            "                    and they are the only pair of hands in the\n"
-            "                    room. Try: what do you see on the screen /\n"
-            "                    turn it off and on again / put the rescue\n"
-            "                    disc in / have you deleted anything\n"
+            "  ask               what you can say to the customer right now.\n"
+            "                    they are not technical and they are the only\n"
+            "                    pair of hands in the room\n"
+            "  ask <n>           say it\n"
+            "  ask 2 <command>   dictate a command. they type exactly that and\n"
+            "                    read back what they can see of the answer --\n"
+            "                    which is the bottom of the screen and no more\n"
             "  quit              hang up (exit leaves a chroot, it does not disconnect)\n"
             "\n"
             "YOU ARE AT YOUR OWN WORKSTATION -- a healthy install of the same\n"
@@ -436,9 +429,9 @@ static bool client_line(Client *c)
             "compare against your own box: it is the same system, working.\n"
             "\n"
             "IF THEY ARE AIR-GAPPED there is no route at all, and the person in\n"
-            "front of the machine is your only terminal:\n"
-            "  ask type <command>       they type it and read back the screen\n"
-            "  ask put the rescue disc in / ask turn it off and on again\n"
+            "front of the machine is your only terminal. `ask` lists what they\n"
+            "can do: read the screen, put the rescue disc in, power cycle it,\n"
+            "and `ask 2 <command>` to type one for you.\n"
             "\n"
             "START HERE. read what the machine said while it was failing:\n"
             "  dmesg             this boot\n"

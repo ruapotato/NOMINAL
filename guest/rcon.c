@@ -47,8 +47,9 @@ void _start(void)
             g_puts("rcon: no route to "); g_putln(v[1]);
             g_putln("  that machine is not on any network you can reach.");
             g_putln("  you will have to work through the person in front of it:");
-            g_putln("    ask them to type <command>   -- they will read back what");
-            g_putln("                                    they see on the screen");
+            g_putln("    ask               -- what they can do from there");
+            g_putln("    ask 2 <command>   -- they type it and read back what");
+            g_putln("                         they can see of the answer");
             g_exit(1);
         }
         if (rc0 != 0) {

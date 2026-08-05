@@ -204,15 +204,14 @@ def send(cmds):
         for c in cmds:
             f.write(c + '\n')
         f.flush()
-    # A MODEL TURN IS NOT A HANG. This gave up after 3.6s of log silence
-    # (six polls at 0.6s), so every `ask`/`ben`/`json` returned empty and the
-    # tester had to poll the log by hand. The relay writes the prompt when it
-    # is done; until then, quiet means thinking.
+    # This waited 24s of log silence before returning, because a turn used to
+    # be a language model thinking and giving up early returned an empty
+    # `ask`. Nothing in the bench thinks any more -- the customer is a menu and
+    # answers in microseconds -- so the wait is back to the length of a slow
+    # boot, and a playtest session stops costing half a minute a command.
     last, still = before, 0
-    # The relay's own ceiling is ten minutes per command, so this has to be
-    # longer than that or it reports silence while the relay is still working.
-    deadline = time.time() + 660         # a wedged relay must never hang us
-    while still < 40 and time.time() < deadline:
+    deadline = time.time() + 120         # a wedged relay must never hang us
+    while still < 8 and time.time() < deadline:
         time.sleep(0.6)
         now = os.path.getsize(LOG)
         if now == last:

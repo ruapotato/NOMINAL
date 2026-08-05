@@ -732,11 +732,14 @@ the fault. It is now a deliberate act with a name and a receipt.
   `rcon connect` finds no route and says so, and the only terminal you have is
   the person standing in front of it.
 
-  `ask type <command>` really runs that command on their machine and they read
-  back what they see -- the last few lines, because that is what is in front
-  of them, and they say when something has scrolled off. Every character is a
-  character the machine printed: they are a slow, narrow pipe, not an
-  unreliable one, so the ticket stays fair.
+  `ask` lists what the person in front of it can do, and `ask 2 <command>`
+  really runs that command on their machine. They read back what they can see
+  -- the bottom of the screen and no more, because that is what is in front of
+  them, and they say when something has scrolled off. Every character is a
+  character the machine printed, give or take the odd transposed one that a
+  second reading fixes: they are a slow, narrow pipe, not an unreliable one,
+  so the ticket stays fair. There is a limit to how much anybody will type off
+  a phone call, and past it they say so and type nothing.
 
   It changes what a good question is. On a normal ticket you run six commands
   because they cost nothing. Here each one costs a round trip through somebody
@@ -744,8 +747,8 @@ the fault. It is now a deliberate act with a name and a receipt.
   five.
 
   Proven solvable end to end by dictation alone: ask them to insert the rescue
-  disc, ask them to power cycle, `ask type mount /dev/sda1 /mnt`, `ask type
-  pkg --root /mnt verify` -- and they read back the real verify output.
+  disc, ask them to power cycle, `ask 2 mount /dev/sda1 /mnt`, `ask 2 pkg
+  --root /mnt verify` -- and they read back the real verify output.
 
 ## 14. What the previous administrator's notes say
 
