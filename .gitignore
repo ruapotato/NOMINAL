@@ -6,3 +6,8 @@ vendor/
 game/models/*.gguf
 !game/models/README.md
 build/
+
+# The Godot engine binary: a 138 MB tool you download, not source we wrote.
+# GitHub refuses anything over 100 MB, and it does not belong in history.
+Godot_v*_linux.x86_64
+Godot_v*
