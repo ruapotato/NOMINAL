@@ -222,26 +222,39 @@ const LABEL_W := CELL.x - 8.0
 
 func _draw_icon(c: Control, at: Vector2, label: String, kind: String) -> void:
 	Icons.draw_icon(c, at, 34.0, kind)
+	# Two lines at 11px, and if a single word still will not fit on a line --
+	# "Minesweeper" is the only one -- the whole label steps down a size rather
+	# than losing its ending. A name in smaller type is still the name.
+	var fs := 11
+	var lines := _label_lines(label, fs)
+	while fs > 8 and not _fits(lines, fs):
+		fs -= 1
+		lines = _label_lines(label, fs)
 	var x := at.x + 17.0 - LABEL_W / 2.0
 	var y := at.y + 44.0
-	for l in _label_lines(label):
+	for l in lines:
 		c.draw_string(mono, Vector2(x, y), l,
-			HORIZONTAL_ALIGNMENT_CENTER, LABEL_W, 11, Color("#ffffff"))
-		y += 11.0
+			HORIZONTAL_ALIGNMENT_CENTER, LABEL_W, fs, Color("#ffffff"))
+		y += fs + 1.0
 
 
-# One line if it fits, otherwise split at the last space that does. A name with
-# no space in it that is still too wide -- there are none today -- is the only
-# case that gets shortened, and it is shortened with an ellipsis so you can see
-# that it was.
-func _label_lines(label: String) -> PackedStringArray:
-	if mono.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, 11).x <= LABEL_W:
+func _fits(lines: PackedStringArray, fs: int) -> bool:
+	for l in lines:
+		if mono.get_string_size(l, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x > LABEL_W:
+			return false
+	return true
+
+
+# One line if it fits, otherwise split at the last space that does. Two lines
+# is what the cell has room for; a third would run into the icon below it.
+func _label_lines(label: String, fs: int) -> PackedStringArray:
+	if mono.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x <= LABEL_W:
 		return PackedStringArray([label])
 	var out := PackedStringArray()
 	var line := ""
 	for word in label.split(" ", false):
 		var t := word if line == "" else line + " " + word
-		if mono.get_string_size(t, HORIZONTAL_ALIGNMENT_LEFT, -1, 11).x > LABEL_W \
+		if mono.get_string_size(t, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x > LABEL_W \
 				and line != "":
 			out.append(line)
 			line = word
@@ -249,22 +262,9 @@ func _label_lines(label: String) -> PackedStringArray:
 			line = t
 	if line != "":
 		out.append(line)
-	# Two lines is what the cell has room for; a third would run into the icon
-	# below it.
 	while out.size() > 2:
 		out.remove_at(out.size() - 1)
-	for i in range(out.size()):
-		out[i] = _ellipsize(str(out[i]))
 	return out
-
-
-func _ellipsize(s: String) -> String:
-	if mono.get_string_size(s, HORIZONTAL_ALIGNMENT_LEFT, -1, 11).x <= LABEL_W:
-		return s
-	while s.length() > 1 and mono.get_string_size(s + "...",
-			HORIZONTAL_ALIGNMENT_LEFT, -1, 11).x > LABEL_W:
-		s = s.substr(0, s.length() - 1)
-	return s + "..."
 
 
 # A 16px version of the launcher icon, for the menu.

@@ -1081,7 +1081,55 @@ static const Package PKG_MAN = {
         "  ldd /mnt/usr/sbin/httpd\n"
         "That works even when the disk's own libc is too broken to run\n"
         "anything at all, which is when you need it most.\n", 0644, NULL },
-    }, 6
+      /* du, tail and mkdir are new on this machine, and a new command with
+       * no page is a command nobody finds. Each page states what the flags
+       * ARE, because this userland refuses the ones it does not have rather
+       * than accepting and ignoring them -- so a page that over-promises
+       * would send someone into an error message. */
+      { "/usr/share/man/du",
+        "du(1)\n\n"
+        "  du [-s] [-h] [dir ...]\n"
+        "    -s   the total only, no line per subdirectory\n"
+        "    -h   K and M rather than K throughout\n"
+        "\n"
+        "du AGREES WITH df, deliberately: same bytes, same divisor, no\n"
+        "rounding each file up to a block. `du -s /` and the USED column of\n"
+        "`df` are the same number, so when they differ the disagreement is\n"
+        "real and worth chasing rather than an artefact of the tools.\n"
+        "\n"
+        "Directories cost no bytes here; they cost an inode, which is what\n"
+        "`df -i` counts. Symlinks are not followed and cost nothing. /proc is\n"
+        "skipped because it is generated and df cannot see it either.\n"
+        "\n"
+        "On a full disk: `df` first, then `du -s /var /usr /home` to find the\n"
+        "branch, then du again inside it.\n", 0644, NULL },
+      { "/usr/share/man/tail",
+        "tail(1)\n\n"
+        "  tail [-n N] [-N] [file ...]      the last N lines, ten by default\n"
+        "\n"
+        "There is no -f. Nothing on this machine runs while the shell is\n"
+        "waiting for you to type, so a follow would follow nothing; the flag\n"
+        "is refused rather than accepted and left to sit there.\n"
+        "\n"
+        "It keeps the last 16 KB of the file as the file streams past, so it\n"
+        "costs the same on a 524 KB /var/log/messages as on a config, and it\n"
+        "says so if the lines you asked for ran off the front of what it\n"
+        "kept. `dmesg` is the boot log; tail is for everything else.\n", 0644, NULL },
+      { "/usr/share/man/mkdir",
+        "mkdir(1)\n\n"
+        "  mkdir [-p] <dir> ...\n"
+        "    -p   make the parents too, and treat an existing directory as\n"
+        "         success rather than as an error\n"
+        "\n"
+        "Without -p the directory above it must already exist. That is not\n"
+        "pedantry: `open` on this machine refuses to invent directories, so a\n"
+        "typo that quietly created /var/lgo would leave a tree that looks\n"
+        "right and that nothing writes to.\n"
+        "\n"
+        "It fails when the parent is not writable, when the root is mounted\n"
+        "read-only, and when the filesystem is out of inodes -- `ls -ld` on\n"
+        "the parent, `mount`, and `df -i` respectively.\n", 0644, NULL },
+    }, 9
 };
 
 /* THE JOKE PACKAGE, built exactly like the serious ones.

@@ -540,7 +540,9 @@ func _draw_right(lw: float) -> void:
 			HORIZONTAL_ALIGNMENT_RIGHT, 72, 10, col)
 	if findings.is_empty():
 		draw_string(mono, Vector2(x + 4, y + 11),
-			_fit(vnote if vnote != "" else "nothing verified yet", w - 8.0, 11),
+			_fit(vnote if vnote != ""
+				else "`pkg verify` has not been run on this package yet -- press R",
+				w - 8.0, 11),
 			HORIZONTAL_ALIGNMENT_LEFT, -1, 11, GREEN if vnote.begins_with("all") else DIM)
 	elif findings.size() > fr:
 		draw_string(mono, Vector2(x + 4, y + fr * ROW_H + 10),
