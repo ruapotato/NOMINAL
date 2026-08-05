@@ -680,14 +680,31 @@ static int64_t kernel_syscall(Cpu *c, int64_t n, int64_t a0, int64_t a1,
             return -1;
         return vfs_mkdir(fs, path) ? 0 : -1;
     }
-    case SYS_dfused:
+    case SYS_dfused: {
         /* 0 bytes used, 1 bytes total, 2 inodes used, 3 inodes total */
+        /* CAN THIS MACHINE SEE THAT FILESYSTEM AT ALL.
+         *
+         * These four answered about the customer's disk unconditionally, so
+         * after `umount /mnt` on the rescue medium `df` printed
+         * "/dev/sda1 1035K 523K 511K 50%" and then, four lines lower under
+         * its own second header, "(nothing mounted)". Two halves of one
+         * command disagreeing about the same filesystem, in one screenful.
+         *
+         * From the rescue medium the disk is a device, not a filesystem,
+         * until somebody mounts it. Then there is nothing to measure, and
+         * "nothing to measure" is an answer -- an unqualified number is not. */
+        Machine *m = p->m;
+        bool reachable = !m->on_rescue;
+        for (int i = 0; !reachable && i < m->nmount; i++)
+            if (m->mount[i].used && m->mount[i].fs == &m->disk) reachable = true;
+        if (!reachable) return -1;
         switch ((int)a0) {
         case 1:  return (int64_t)p->m->fs_capacity;
         case 2:  return (int64_t)machine_inodes_used(p->m);
         case 3:  return (int64_t)p->m->fs_inodes_max;
         default: return (int64_t)machine_disk_used(p->m);
         }
+    }
     case SYS_kill: {
         /* Leave the signal pending on the target. Nothing is interrupted --
          * there is no preemption here -- so a daemon sees it the next time it

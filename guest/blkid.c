@@ -28,8 +28,16 @@ void _start(void)
     g_puts("\" TYPE=\"");
     g_puts(t1);
     g_putln("\"");
-    g_puts("/dev/sr0:  TYPE=\"");
-    g_puts(t2);
-    g_putln("\"");
+    /* AN EMPTY DRIVE HAS NO FILESYSTEM ON IT, and TYPE="" reads as a probe
+     * that failed rather than a drive that is empty. The removable device is
+     * the one thing here whose presence changes during a ticket, so it is the
+     * one that has to say which of the two it is. */
+    if (n2 <= 0) {
+        g_putln("/dev/sr0:  no medium (the drive is empty)");
+    } else {
+        g_puts("/dev/sr0:  TYPE=\"");
+        g_puts(t2);
+        g_putln("\"");
+    }
     g_exit(0);
 }

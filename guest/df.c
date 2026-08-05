@@ -7,6 +7,28 @@
 #include "gsys.h"
 static char t[2048];
 static char arg[128];
+/* NOTHING TO MEASURE IS AN ANSWER; A NUMBER ABOUT AN UNMOUNTED FILESYSTEM
+ * IS NOT.
+ *
+ * After `umount /mnt` on the rescue medium df printed a full
+ * "/dev/sda1 1035K 523K 511K 50%" row and then, under its own second header a
+ * few lines later, "(nothing mounted)". One command, two halves, flatly
+ * contradicting each other about the same filesystem in one screenful.
+ *
+ * The kernel now refuses the question when the disk is not mounted anywhere,
+ * and refusing it is the whole of the fix -- the number was never available,
+ * it was simply being printed anyway. */
+static void unreachable(const char *what)
+{
+    g_puts("(the customer's disk is not mounted -- no ");
+    g_puts(what);
+    g_putln(" to report)");
+    g_putln("");
+    g_putln("The rescue medium is a read-only live image with no space of");
+    g_putln("its own. /dev/sda1 is a device until you mount it:");
+    g_putln("      mount /dev/sda1 /mnt");
+}
+
 void _start(void)
 {
     /* -i: INODES, not bytes. A filesystem runs out of the two independently,
@@ -21,6 +43,11 @@ void _start(void)
     if (inodes) {
         i64 iu = sysc(SYS_dfused, 2, 0, 0);
         i64 ic = sysc(SYS_dfused, 3, 0, 0);
+        if (ic < 0 || iu < 0) {
+            g_putln("FILESYSTEM      INODES     IUSED     IFREE  IUSE%");
+            unreachable("inodes");
+            g_exit(1);
+        }
         g_putln("FILESYSTEM      INODES     IUSED     IFREE  IUSE%");
         g_puts("/dev/sda1     ");
         /* A filesystem cannot have more inodes in use than it has, and free
@@ -41,7 +68,11 @@ void _start(void)
 
     i64 used = sysc(SYS_dfused, 0, 0, 0);
     i64 cap  = sysc(SYS_dfused, 1, 0, 0);
-    if (cap > 0) {
+    if (cap < 0 || used < 0) {
+        g_putln("FILESYSTEM       SIZE     USED    AVAIL  USE%");
+        unreachable("space");
+        g_putln("");
+    } else if (cap > 0) {
         g_putln("FILESYSTEM       SIZE     USED    AVAIL  USE%");
         g_puts("/dev/sda1     ");
         g_putn(cap / 1024);  g_puts("K   ");
