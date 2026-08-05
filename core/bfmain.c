@@ -616,10 +616,20 @@ int main(int argc, char **argv)
                     Buf o = {0};
                     size_t before = m.boot.console.len;
                     customer_choose(&m, id, "echo probe", &o);
-                    AC(o.p && strstr(o.p, "cannot do that") &&
-                       m.boot.console.len == before,
-                       "seed %llu mode %d: option %d is not offered and did "
-                       "something anyway", (unsigned long long)seed, mode, id);
+                    /* A refusal changes nothing, and it is HER refusing --
+                     * a spoken line about what she can see, not a menu error
+                     * message. The one exception is a number nobody offered
+                     * at all, which is a front end bug and says so. */
+                    AC(o.p && m.boot.console.len == before &&
+                       (memcmp(o.p, "  \"", 3) == 0 ||
+                        strstr(o.p, "there is no option")),
+                       "seed %llu mode %d: option %d is not offered and "
+                       "answered out of character or acted anyway",
+                       (unsigned long long)seed, mode, id);
+                    AC(!(o.p && strstr(o.p, "cannot do that")),
+                       "seed %llu mode %d: option %d refused in the game's "
+                       "voice instead of hers",
+                       (unsigned long long)seed, mode, id);
                     buf_free(&o);
                 }
 
@@ -788,6 +798,40 @@ int main(int argc, char **argv)
                    (unsigned long long)seed);
                 (void)nomis;
                 buf_free(&p);
+            }
+            machine_free(&m);
+        }
+
+        /* NOWHERE TO TYPE IS AN ANSWER, NOT A MISSING OPTION.
+         *
+         * Dictating a command at a machine that stopped halfway through
+         * starting is the first thing a player tries, and taking the option
+         * off the list does not stop them trying -- it means the game says no
+         * on her behalf, while the ticket header is still telling them to use
+         * it. She is standing in front of the thing: let her say what she can
+         * see, and run nothing. */
+        for (int si = 0; si < 6; si++) {
+            uint64_t seed = (uint64_t)(7100 + si * 13);
+            Machine m;
+            Buf o = {0};
+            ac_state(&m, seed, 0, &o);
+            buf_free(&o);
+            int run = ac_find(&m, "\"can I have you run:\"  <command>");
+            AC(run > 0, "seed %llu: the dictate option is not on the list, "
+                        "and the ticket header advertises it",
+               (unsigned long long)seed);
+            if (run > 0 && !m.boot.running) {
+                o = (Buf){0};
+                size_t before = m.boot.console.len;
+                customer_choose(&m, run, "dmesg", &o);
+                AC(o.p && memcmp(o.p, "  \"", 3) == 0 &&
+                   strstr(o.p, "nowhere to type"),
+                   "seed %llu: she did not say why there is nowhere to type "
+                   "it", (unsigned long long)seed);
+                AC(m.boot.console.len == before,
+                   "seed %llu: something ran on a machine with no prompt",
+                   (unsigned long long)seed);
+                buf_free(&o);
             }
             machine_free(&m);
         }

@@ -797,11 +797,6 @@ static bool offered(const Machine *m, int id)
 {
     if (id <= 0 || id >= O_MAX) return false;
     switch (id) {
-    /* Nothing to type at until there is a prompt. Asking her to type into a
-     * boot that stopped halfway is asking her to do something impossible, and
-     * the answer used to be a line of dialogue explaining that -- an option
-     * whose only outcome is being told no. */
-    case O_RUN:      return m->powered && m->boot.running;
     case O_MORE:     return m->cust.screen.len > 0 && m->cust.scroll > 0;
     case O_AGAIN:    return m->cust.screen.len > 0 && m->cust.nlines > 0;
     case O_OFF:      return m->powered;
@@ -809,6 +804,12 @@ static bool offered(const Machine *m, int id)
     case O_DISCIN:   return !m->cust.disc_inserted;
     case O_DISCOUT:  return m->cust.disc_inserted;
     case O_PASSWORD: return !m->cust.gave_password;
+    /* DICTATING AT A MACHINE WITH NO PROMPT IS A THING A PLAYER WILL TRY, and
+     * taking the option away does not stop them trying -- it just means the
+     * game says no on her behalf. She is standing in front of it, so let her
+     * answer: "there is nowhere to type it, it has not finished starting up".
+     * That is the same refusal in her voice and it is also a diagnosis. */
+    case O_RUN:
     case O_SCREEN: case O_CYCLE: case O_WORKING:
         return true;
     default:
@@ -924,6 +925,17 @@ static void dictate(Machine *m, const char *arg, Buf *out)
         return;
     }
 
+    if (!m->powered) {
+        say(out, "There is nowhere to type it -- it is off. The screen is "
+                 "black. Do you want me to press the button?");
+        return;
+    }
+    if (!m->boot.running) {
+        say(out, "There is nowhere to type it. It has not finished starting "
+                 "up -- there is no prompt, just the writing that stopped.");
+        return;
+    }
+
     /* A COMMAND THAT DID NOT ARRIVE WHOLE IS NOT TYPED. Never a truncated
      * version of it, whatever the buffer says. */
     if ((int)strlen(clean) > dictate_max(m->cust.persona)) {
@@ -1001,16 +1013,60 @@ static void power_cycle(Machine *m, Buf *out)
                  "it, is it.");
 }
 
+/* WHEN SHE CANNOT, SHE SAYS WHY, AND SHE SAYS IT IN HER OWN WORDS.
+ *
+ * "She cannot do that right now" is the game talking. It reads as a menu
+ * error, it tells the player nothing about the machine, and it is the exact
+ * register this rewrite exists to get away from: she is an instrument, not a
+ * form with a validation message. Every one of these describes what she can
+ * SEE -- the tray is empty, it is already off, there is nothing left above
+ * that -- which is information, and half of them are the answer to the
+ * question that was really being asked. */
+static void cannot(Machine *m, int idx, Buf *out)
+{
+    switch (idx) {
+    case O_MORE:
+        say(out, m->cust.screen.len
+              ? "That is the top of it. There is nothing above that."
+              : "There is nothing on the screen for me to read back.");
+        return;
+    case O_AGAIN:
+        say(out, "There is nothing on the screen for me to read back.");
+        return;
+    case O_OFF:
+        say(out, "It is already off. The screen is black and the fan has "
+                 "stopped.");
+        return;
+    case O_ON:
+        say(out, "It is already on. It has been on all morning.");
+        return;
+    case O_DISCIN:
+        say(out, "It is already in there.");
+        return;
+    case O_DISCOUT:
+        say(out, "There is nothing in the drive. The tray is empty.");
+        return;
+    case O_PASSWORD:
+        say(out, "I have already given you that. hunter2, off the sticky "
+                 "note.");
+        return;
+    default:
+        break;
+    }
+    if (idx > 0 && idx < O_MAX && m->cust.told[idx]) {
+        say(out, "I already told you about that.");
+        return;
+    }
+    /* Not a thing she could be asked at all. This one IS an interface error
+     * and says so plainly, rather than putting a nonsense sentence in her
+     * mouth to cover for a front end that sent a number nobody offered. */
+    buf_printf(out, "  there is no option %d.\n", idx);
+}
+
 void customer_choose(Machine *m, int idx, const char *arg, Buf *out)
 {
     if (!m) return;
-    if (!offered(m, idx)) {
-        /* Not a thing she can do from where she is standing. Say which, and
-         * never half-do it. */
-        buf_printf(out, "  she cannot do that right now.%s\n",
-                   idx > 0 && idx < O_MAX ? "" : " there is no such option.");
-        return;
-    }
+    if (!offered(m, idx)) { cannot(m, idx, out); return; }
     m->cust.asked++;
     if (m->cust.asked >= 3 && m->cust.mood < MOOD_OK)      m->cust.mood = MOOD_OK;
     if (m->cust.asked >= 6 && m->cust.mood < MOOD_HELPFUL) m->cust.mood = MOOD_HELPFUL;
