@@ -423,9 +423,10 @@ static const Package PKG_KERNEL = {
         "\n"
         "A filename is a label somebody typed; a header is what the image really is.\n"
         "When the two disagree it is the filename that is lying, which is the whole\n"
-        "reason that line exists. `uname` here prints 6.4.11 and does not read the\n"
-        "image, so when you need to know which kernel was actually loaded, read the\n"
-        "loader's line: `dmesg -f loading`.\n"
+        "reason that line exists. To ask a running machine which kernel it actually\n"
+        "loaded, `uname` or `cat /proc/version` -- both report what the loader put\n"
+        "there, not what is installed. On a machine that never got that far, the\n"
+        "loader's own line is what you have: `dmesg -f loading`.\n"
         "\n"
         "WHAT IS CHECKED AND IN WHAT ORDER, because a stage is half the diagnosis:\n"
         "\n"
@@ -546,9 +547,9 @@ static const Package PKG_KERNEL = {
         "   the IMAGE is, and `ls /boot` cannot see it because the filename still\n"
         "   says 6.4.11 -- only the loader's version, or `cat` on the image, does.\n"
         "   `pkg verify kernel-default` says CHANGED for /boot/vmnomuz-6.4.11, which\n"
-        "   is the confirmation, and reinstalling is the repair. Note that the\n"
-        "   loader's line is the only thing on the machine that will tell you this:\n"
-        "   `uname` prints 6.4.11 either way.\n"
+        "   is the confirmation, and reinstalling is the repair. If it got as far as\n"
+        "   a prompt, `uname` agrees with the loader -- it reads /proc/version, so\n"
+        "   it reports the image that loaded and not the one on the shelf.\n"
         "\n"
         "6. THE INITRD WAS BUILT FOR ANOTHER KERNEL.\n"
         "\n"
@@ -2759,7 +2760,8 @@ static const Package PKG_MAN = {
         "                           that were edited on this machine are LEFT\n"
         "                           ALONE -- somebody chose those settings.\n"
         "  pkg reinstall --force <name>\n"
-        "                           overwrite them too. There is no undo, so\n"
+        "                           overwrite them too. The old file is kept\n"
+        "                           as <path>.pkgsave, so\n"
         "                           `pkg diff` them first.\n"
         "  pkg diff <path>          what a CHANGED file says, against what\n"
         "                           the package shipped\n"
@@ -4358,7 +4360,14 @@ int machine_collateral(Machine *m, Buf *out)
     }
     if (lost)
         buf_puts(out,
-            "  this machine's own settings are gone and there is no undo.\n"
+            /* "there is no undo" was FALSE, and provably so one line
+             * earlier: pkg prints "saved your /etc/hosts as
+             * /etc/hosts.pkgsave" as it goes. A playtester restored the file
+             * with cp and reported the message as a lie, correctly. The point
+             * stands without the exaggeration -- the copy is one command
+             * away, and nobody looks for it unless told it is there. */
+            "  this machine's own settings are gone. `pkg` saved the old file\n"
+            "  beside the new one -- `ls /etc/*.pkgsave` -- and `cp` puts it back.\n"
             "  somebody chose them on purpose; `pkg diff` shows what a file\n"
             "  says against what the package ships, and plain `pkg reinstall`\n"
             "  (without --force) leaves edited config alone.\n");
@@ -4440,7 +4449,7 @@ bool machine_handback(Machine *m, Buf *out)
     machine_boot(m);
     Buf sick = {0};
     int dead = kernel_health(m, &sick);
-    Buf left = {0};
+    Buf left = {0}, lost = {0};
     int rest = machine_outstanding(m, &left) ? 1 : 0;
     bool closed = false;
 
@@ -4463,6 +4472,36 @@ bool machine_handback(Machine *m, Buf *out)
             "  \"It starts up now, thank you -- but it is still not right.\"\n\n");
         if (dead && sick.len) buf_put(out, sick.p, sick.len);
         if (rest && left.len) buf_put(out, left.p, left.len);
+    } else if (machine_collateral(m, &lost) && lost.len) {
+        /* THE BOOT KNEW AND THE VERDICT DID NOT.
+         *
+         * A playtester --force'd over /etc/hosts, watched the machine name the
+         * three lines they had just destroyed, and then handed the machine
+         * back one command later to a closing message asserting that nothing
+         * differed "except what somebody meant to change". The warning was
+         * wired to `boot`; the verdict never asked.
+         *
+         * It STILL CLOSES, and that is deliberate. The machine is repaired --
+         * it boots from its own disk and every service is up -- and refusing
+         * to close would be answering a different question from the one asked.
+         * (I tried refusing first. It also made every ticket unclosable,
+         * because the repair ladder force-reinstalls everything by design, and
+         * the gate said 0 of 60 immediately.) What was wrong was never the
+         * verdict; it was a closing message that asserted the absence of the
+         * exact damage the player had done. */
+        buf_puts(out,
+            "  \"That is it running again. Thank you.\"\n\n");
+        buf_printf(out, "--- ticket %s closed ---\n", m->id);
+        buf_puts(out,
+            "  it boots from its own disk and every service that should be\n"
+            "  running is running. you also took something with you:\n\n");
+        buf_put(out, lost.p, lost.len);
+        buf_puts(out,
+            "\nnothing will fail today. it will fail the day somebody needs that\n"
+            "line, and by then this call is closed. `pkg` saved the old file\n"
+            "beside the new one -- `ls /etc/*.pkgsave` -- and `cp` puts it back.\n\n"
+            "`ticket` takes the next call.\n");
+        closed = true;
     } else {
         buf_puts(out,
             "  \"Oh, that is it -- that is exactly how it looked before.\n"
@@ -4477,6 +4516,7 @@ bool machine_handback(Machine *m, Buf *out)
     }
     buf_free(&sick);
     buf_free(&left);
+    buf_free(&lost);
     return closed;
 }
 
