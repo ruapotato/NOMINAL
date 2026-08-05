@@ -22,6 +22,7 @@ func _ready() -> void:
 
 
 func _to_tower(s: int) -> void:
+	print("nominal: the building, seed %d" % s)
 	var scene: PackedScene = load("res://scenes/tower.tscn")
 	var t: Node = scene.instantiate()
 	t.seed_no = s

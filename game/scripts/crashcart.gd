@@ -105,8 +105,10 @@ func _make_viewport() -> void:
 	var q := QuadMesh.new()
 	q.size = Vector2(0.52, 0.325)
 	_screen.mesh = q
+	# A QuadMesh faces +Z, and +Z on the cart is the side you stand at. Turning
+	# it round showed the back of the screen -- which is culled, so the picture
+	# was a black rectangle that looked exactly like a monitor that is off.
 	_screen.position = Vector3(0, 1.05, -0.122)
-	_screen.rotation.y = PI
 	var mat := StandardMaterial3D.new()
 	mat.albedo_texture = _vp.get_texture()
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED

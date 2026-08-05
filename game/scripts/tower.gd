@@ -60,6 +60,7 @@ const WALL_COL := Color("#cfc9bd")
 const OUTER_COL := Color("#8f9ba5")
 const CEIL_COL := Color("#d6d3cc")
 const SLAB_EDGE := Color("#6d6a64")
+const SKIRT_COL := Color("#8a8378")
 
 const SLAB_T := 0.16       # slab thickness, metres
 const WALL_T := 0.14
@@ -271,7 +272,11 @@ func _quad(a: Vector3, b: Vector3, c: Vector3, d: Vector3, col: Color, collide: 
 	# colour arrays cost quadratic time: reading a PackedVector3Array out of a
 	# nested container copies it, so every wall in the tower re-copied every
 	# wall built so far and a five-floor building never finished generating.
-	for p in [a, b, c, a, c, d]:
+	# REVERSED WINDING. Godot's front faces run the other way round from the
+	# order these quads are written in, so every box was showing its far side:
+	# you stood on a floor and saw the underside of the slab, with the ceiling
+	# painted in the colour of the room above it.
+	for p in [a, c, b, a, d, c]:
 		_v.append(p)
 		_c.append(lit)
 	if collide:
@@ -404,8 +409,12 @@ func _emit_slab(rect: Rect2, base: float, col: Color, holes: Array) -> void:
 func _walls(f: int) -> void:
 	var base := f * fheight
 	var top := fheight - SLAB_T
-	for y in range(bh):
-		for x in range(bw):
+	# FROM -1, not 0. Each cell only ever looks at its +x and +y neighbour, so
+	# starting at zero never examines the edge between "outside" and the first
+	# column -- and the west and north faces of the building were missing
+	# entirely. You stood in an office looking out at the void.
+	for y in range(-1, bh):
+		for x in range(-1, bw):
 			var a := room_of(f, x, y)
 			for dir in [0, 1]:
 				var b := room_of(f, x + 1, y) if dir == 0 else room_of(f, x, y + 1)
@@ -423,6 +432,19 @@ func _walls(f: int) -> void:
 				else:
 					mn = Vector3(x, base, y + 1 - WALL_T * 0.5)
 					size = Vector3(1, top, WALL_T)
+				# A SKIRTING BOARD. Two blank surfaces meeting at a line read as
+				# two boxes; the same two with a rail along the bottom read as a
+				# room, because it gives the eye something the right size to
+				# measure the space against. It is 120 mm, like a real one.
+				var skirt_mn := mn
+				var skirt_sz := size
+				skirt_sz.y = 0.12
+				if dir == 0:
+					skirt_mn.x -= 0.025
+					skirt_sz.x += 0.05
+				else:
+					skirt_mn.z -= 0.025
+					skirt_sz.z += 0.05
 				if doorset.has("%d,%d,%d,%d" % [f, x, y, dir]):
 					# A DOORWAY IS A GAP, not a decal. The head above it stays,
 					# so the opening reads as a door and not as a missing wall.
@@ -434,6 +456,7 @@ func _walls(f: int) -> void:
 						_box(lin, ls, col)
 					continue
 				_box(mn, size, col)
+				_box(skirt_mn, skirt_sz, SKIRT_COL, false)
 
 
 func _roof() -> void:
@@ -608,7 +631,7 @@ func _spawn_cart() -> void:
 	cart = preload("res://scripts/crashcart.gd").new()
 	cart.tower = self
 	cart.with_desktop = with_desktop
-	cart.position = Vector3(0.34, -1.34, -0.95)
+	cart.position = Vector3(0.30, -1.30, -0.82)
 	player.cam.add_child(cart)
 
 
