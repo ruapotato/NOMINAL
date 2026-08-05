@@ -1134,10 +1134,13 @@ static const Package PKG_HOME = {
       { "/home/nomowner/bin/logsweep/README",
         "logsweep -- abandoned, on purpose, and here is the honest reason.\n"
         "\n"
-        "WHAT IT WAS GOING TO BE. /var/log/messages had been growing since January\n"
-        "and logrotate's crontab line has never once produced a log entry, which\n"
-        "means it has never run. Rather than find out why, I decided to write my own.\n"
-        "This is the shape of every bad decision I have made on this machine.\n"
+        "(January.)\n"
+        "\n"
+        "WHAT IT WAS GOING TO BE. /var/log/messages has been growing since New\n"
+        "Year and logrotate is not keeping up with it. Rather than find out what\n"
+        "logrotate is actually doing, I decided to write my own. That is the shape\n"
+        "of every bad decision I have made on this machine: reaching for a new\n"
+        "thing instead of understanding the thing that is already there.\n"
         "\n"
         "WHY IT IS NOT FINISHED. Three reasons, and the third is the real one.\n"
         "\n"
@@ -1150,13 +1153,14 @@ static const Package PKG_HOME = {
         "     wrong for housekeeping, where you want to sweep four things and be told\n"
         "     which one refused.\n"
         "\n"
-        "  3. I had already written a script that tidied a directory automatically\n"
-        "     and it removed a kernel image and took the machine down for six hours.\n"
-        "     See ~/bin/cleanup, which is disabled, and /etc/crontab, where its job\n"
-        "     is commented out. Writing a SECOND unattended thing that deletes files,\n"
-        "     eight weeks after the first one, would have been the single stupidest\n"
-        "     act of my career here and I got about forty minutes into it before I\n"
-        "     noticed.\n"
+        "  3. I have ALREADY written one unattended thing that deletes files. It is\n"
+        "     ~/bin/cleanup, it tidies /boot, it has a crontab line, and I was very\n"
+        "     pleased with it in October. It has a pattern in it that I wrote from\n"
+        "     memory and have never tested against a real /boot. Writing a SECOND\n"
+        "     one before I have satisfied myself about the first would be, and I am\n"
+        "     quoting my own note here, the single stupidest act of my career. I got\n"
+        "     about forty minutes in before that occurred to me.\n"
+
         "\n"
         "WHAT IS LEFT is sweep.rc, which is all comments and is a perfectly good\n"
         "checklist that a person runs, and TODO, which is the list of what it would\n"
@@ -1168,10 +1172,18 @@ static const Package PKG_HOME = {
         "  grep logrotate /var/log/messages\n"
         "  grep logrotate /var/log/messages.1\n"
         "\n"
-        "Both of them have a line in. So logrotate is being started, and the log\n"
-        "grew until the disk was full anyway, and the interesting question was never\n"
-        "\"why does the job not run\" -- it was \"what does the job DO\". I spent\n"
-        "January on the wrong one of those, and then March happened.\n", 0644, NULL },
+        "Both of them have a line in. So logrotate IS being started, and the log\n"
+        "grew until the disk was full anyway, and the interesting question was\n"
+        "never \"why does the job not run\" -- it was \"what does the job DO\". I\n"
+        "spent January on the wrong one of those.\n"
+        "\n"
+        "(March. Adding this because leaving it out would be dishonest. On the 5th\n"
+        "~/bin/cleanup ran, matched its pattern against a filename it had never\n"
+        "seen, decided a live kernel image was stale, and removed it. Six hours.\n"
+        "Then on the 14th the log I never fixed filled the disk. Both of the\n"
+        "things I was worrying about in this file happened, in the order I was\n"
+        "worrying about them, and I had written the reasons down and done nothing.\n"
+        "Read ~/Documents/postmortem-march.txt and /var/log/messages.1.)\n", 0644, NULL },
       { "/home/nomowner/bin/logsweep/sweep.rc",
         "# logsweep/sweep.rc -- not a program. rc has five verbs (echo, mount, run,\n"
         "# exec, need) and stops at the first failure, so this could never have been\n"
@@ -2633,9 +2645,10 @@ static const Package PKG_FUN = {
         "somebody's shoulder, which is a real thing people want and is the\n"
         "only thing this offers.\n"
         "\n"
-        "`ls` does not list names beginning with a dot. `ls -a` does, and so\n"
-        "do `find` and `du`, which is worth remembering the next time a\n"
-        "directory looks emptier than the disk says it is.\n", 0644, NULL },
+        "`ls` does not list a name that begins with a dot. `ls -a` does, `find`\n"
+        "does -- `find <dir> -name \".*\"` finds nothing else -- and `du` counts\n"
+        "them into its total whether you can see them or not. Worth remembering\n"
+        "the next time a directory looks emptier than the disk says it is.\n", 0644, NULL },
       { "/usr/share/doc/nomfun/README",
         "nomfun 1.4 -- the fortune cookie, the cow, the train, and rot13.\n"
         "\n"
@@ -3615,6 +3628,96 @@ static void install_local_edits(Machine *m, uint64_t seed)
         "restart: always\n"
         "enabled: yes\n"
         "runlevel: 3\n" },
+
+      /* ---- a third batch, alongside the third generation of faults. Same
+       * rule as the second: every file that now HOLDS a fault needs a
+       * harmless edit of its own, or the fault set has quietly handed
+       * `pkg verify` back its oracle. Six of these ten are in files that a
+       * fault added in this tranche also writes. ---- */
+
+      /* THE BOOTLOADER CONFIG, EDITED AND FINE. Three faults live in this
+       * file now -- a default that is out of range, a second entry, a root
+       * named by device -- so an edit to it that is simply somebody being
+       * considerate is the most valuable decoy in the list. */
+      { "/boot/zbl/zbl.cfg",
+        "# timeout raised: the console cart takes twenty seconds to wake up\n"
+        "# and I kept missing the menu. -- nomowner\n"
+        "default 0\n"
+        "timeout 20\n"
+        "\n"
+        "entry \"NomnixOS 11.4\"\n"
+        "  kernel /boot/vmnomuz\n"
+        "  initrd /boot/initrd\n"
+        "  root UUID=8f41-2c07-a19d-5be3\n" },
+
+      /* /etc/shells matters now: getty checks it. A list somebody has added
+       * to is exactly as alarming and exactly as harmless as it looks. */
+      { "/etc/shells",
+        "/bin/sh\n"
+        "/bin/false\n"
+        "# the contractors get a restricted shell -- added 6 Feb\n"
+        "/bin/rbash\n" },
+
+      /* The runlevel script, which is where the console's account is named.
+       * An extra echo, and nothing else. */
+      { "/etc/rc.d/rc.3",
+        "# /etc/rc.d/rc.3 -- multi-user runlevel.\n"
+        "echo rc.3: entering multi-user\n"
+        "echo rc.3: site policy 4 applied -- see the runbook\n"
+        "exec /sbin/svcinit 3\n"
+        "exec /sbin/getty root\n" },
+
+      /* A service unit with a restart policy somebody thought about. */
+      { "/etc/services.d/nomde.svc",
+        "# /etc/services.d/nomde.svc\n"
+        "name: nomde\n"
+        "exec: /usr/bin/nomde\n"
+        "description: the display server\n"
+        "after: net\n"
+        "# always: the desk staff complain the moment it is not there\n"
+        "restart: always\n"
+        "enabled: yes\n"
+        "runlevel: 3 5\n" },
+
+      /* The audit trail, tuned. Its config is a bind target in one fault and
+       * a truncation target in another. */
+      { "/etc/audit/auditd.conf",
+        "# 8M was filling every fortnight; the volume has the room\n"
+        "log_file = /var/log/audit.log\n"
+        "max_log_file = 64\n" },
+
+      { "/etc/crontab",
+        "# m h dom mon dow  command\n"
+        "17 *  * * *  /usr/sbin/logrotate /etc/logrotate.conf\n"
+        "# the package cache never gets cleaned otherwise -- 2 June\n"
+        "30 4  * * 0  root  rm /var/cache/nomnix-1400.pkg\n" },
+
+      { "/etc/httpd/httpd.conf",
+        "Listen 80\n"
+        "DocumentRoot /srv/www\n"
+        "# renamed for the new certificate, 8 May\n"
+        "ServerName node.nomnix.org\n" },
+
+      { "/etc/nsswitch.conf",
+        "# files FIRST, deliberately: the entries in /etc/hosts are the\n"
+        "# authority on this network and dns is a second opinion.\n"
+        "passwd: files\n"
+        "group: files\n"
+        "hosts: files dns\n" },
+
+      { "/etc/pkg/pkg.conf",
+        "# how aggressive upgrades are allowed to be\n"
+        "# downgrades turned on for the rollback in March and left on,\n"
+        "# because we will need it again. -- nomowner\n"
+        "allow_downgrade = yes\n"
+        "check_signatures = yes\n" },
+
+      { "/etc/logrotate.d/syslog",
+        "/var/log/messages {\n"
+        "  daily\n"
+        "  rotate 30\n"
+        "  # a month of them since the March outage -- ops asked\n"
+        "}\n" },
     };
     const int NEDITS = (int)(sizeof EDITS / sizeof EDITS[0]);
 
