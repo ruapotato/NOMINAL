@@ -8,10 +8,6 @@
 
 config_version=5
 
-[autoload]
-
-Launch="*res://scripts/launch.gd"
-
 [animation]
 
 compatibility/default_parent_skeleton_in_mesh_instance_3d=true
@@ -19,9 +15,13 @@ compatibility/default_parent_skeleton_in_mesh_instance_3d=true
 [application]
 
 config/name="NOMINAL"
-run/main_scene="res://scenes/de.tscn"
+run/main_scene="res://scenes/tower.tscn"
 config/features=PackedStringArray("4.7", "GL Compatibility")
 boot_splash/show_image=false
+
+[autoload]
+
+Launch="*res://scripts/launch.gd"
 
 [debug]
 
