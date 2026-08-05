@@ -1571,6 +1571,31 @@ static struct Daemon *daemons(Machine *m)
  * from "will not boot" to "is not healthy" is what lets that be a ticket at
  * all -- and it is the commoner kind of call. */
 /* The first line of a file that is not blank and not a comment. */
+/* Does this unit's file ask to be started? `enabled: no` means it does not,
+ * which is the whole point of `svc disable`, and the health check has to
+ * respect it or disabling a service becomes a fault the player cannot undo. */
+static bool unit_wants_to_run(Vfs *fs, const char *name)
+{
+    char path[NOM_PATH_MAX];
+    snprintf(path, sizeof path, "/etc/services.d/%s.svc", name);
+    VNode *n = vfs_resolve(fs, path, NULL);
+    if (!n || n->kind != VN_FILE) return true;   /* no unit: judge by the boot */
+    const char *p = n->data.p, *end = p + n->data.len;
+    while (p && p < end) {
+        const char *nl = memchr(p, '\n', (size_t)(end - p));
+        size_t len = nl ? (size_t)(nl - p) : (size_t)(end - p);
+        if (len >= 8 && memcmp(p, "enabled:", 8) == 0) {
+            const char *v = p + 8;
+            while (v < p + len && (*v == ' ' || *v == '\t')) v++;
+            return !(v + 1 < p + len && (v[0] == 'n' || v[0] == 'N'));
+        }
+        if (!nl) break;
+        p = nl + 1;
+    }
+    return true;
+}
+
+
 static bool first_real_line(Vfs *fs, const char *path, char *out, size_t outsz)
 {
     VNode *n = vfs_resolve(fs, path, NULL);
@@ -1633,6 +1658,24 @@ int kernel_health(Machine *m, Buf *out)
 
     for (int i = 0; i < m->ndaemon; i++) {
         if (d[i].running) continue;
+        /* A DISABLED UNIT IS ONE NOBODY EXPECTS TO RUN.
+         *
+         * This counted every stopped daemon as a fault, and did not know what
+         * `enabled: no` means. So a machine that ships with postfix disabled --
+         * which our own healthy workstation does -- was fine only while nobody
+         * touched it, and became unfixable the moment somebody did.
+         *
+         * A playtester walked straight into it: `svc` showed postfix disabled
+         * among ten running services and the customer said it sends her email,
+         * so they enabled it, which is what the job asks for. `done` then
+         * called the rewritten unit file damage. They put it back, and `done`
+         * called postfix "stopped by hand". The only state the game accepted
+         * was postfix RUNNING with its unit still saying `enabled: no` -- a
+         * machine that silently loses mail at the next reboot -- and it closed
+         * the ticket claiming every service that should be running was
+         * running. Both halves false, and the correct play was the punished
+         * one. */
+        if (!unit_wants_to_run(fs, d[i].name)) continue;
         if (!dead) buf_puts(out, "services that should be running and are not:\n");
         buf_printf(out, "  %-14s %s\n", d[i].name,
                    d[i].gave_up ? "gave up after repeated failures"
