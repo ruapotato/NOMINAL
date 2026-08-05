@@ -25,6 +25,7 @@
 #include "machine.h"
 #include "kernel.h"
 #include "building.h"
+#include "site.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -98,6 +99,12 @@ typedef struct {
      * them would be the one the game charges for. */
     Building bld;
     bool     bld_ok;
+    /* THE SITE: what the player has bought, cabled and configured in that
+     * tower. There is exactly one inventory in this project and it is this
+     * one -- a second list of devices living in GDScript would be a second
+     * truth, and the two would disagree the first time a cable was refused. */
+    Site     site;
+    bool     site_ok;
 } Station;
 
 static SN sn_class, sn_parent;
@@ -122,6 +129,7 @@ static void station_free(void *userdata, GDExtensionClassInstancePtr instance)
     Station *st = (Station *)instance;
     if (!st) return;
     if (st->installed) machine_free(&st->m);
+    if (st->site_ok) site_free(&st->site);
     if (st->bld_ok) bld_free(&st->bld);
     buf_free(&st->scratch);
     nom_free(st);
@@ -614,6 +622,9 @@ static bool bld_ready(Station *st)
 static void m_bld_generate(Station *st, const GDExtensionConstTypePtr *args, void *ret)
 {
     uint64_t seed = (uint64_t)(*(const int64_t *)args[0]);
+    /* The site BORROWS the building. Regenerating under a live site would
+     * leave every device pointing into freed rooms, so the site goes first. */
+    if (st->site_ok) { site_free(&st->site); st->site_ok = false; }
     if (st->bld_ok) { bld_free(&st->bld); st->bld_ok = false; }
     if (!bld_generate(&st->bld, seed)) { c_to_gdstring(ret, ""); return; }
     st->bld_ok = true;
@@ -766,6 +777,102 @@ static void m_bld_floorplan(Station *st, const GDExtensionConstTypePtr *args, vo
     buf_free(&o);
 }
 
+/* --------------------------------------------------------------- the site
+ *
+ * The player's own network, in the tower the generator made. core/site.c owns
+ * all of it: what is installed, what is cabled, what it cost and whether the
+ * link came up. Nothing below computes anything -- site_cmd() is the same
+ * one-line-one-operation shell a blind playtester drives over a pipe, and the
+ * two dumps are reads in the same line-per-record shape as bld_rooms().
+ *
+ * This is why there is no inventory in GDScript. The 3D view asks where the
+ * boxes are and draws them; when it wants one moved it says so in a line of
+ * text, and the refusal it gets back is the real refusal. */
+
+static bool site_ready(Station *st)
+{
+    return st->site_ok && st->bld_ok;
+}
+
+/* site_start(int budget) -> String — day one on the current building: the
+ * ISP handoff in the MDF and nothing else. Idempotent; call it after
+ * bld_generate(). Empty string when there is no building to put it in. */
+static void m_site_start(Station *st, const GDExtensionConstTypePtr *args, void *ret)
+{
+    long budget = (long)(*(const int64_t *)args[0]);
+    if (!bld_ready(st)) { c_to_gdstring(ret, ""); return; }
+    if (st->site_ok) { site_free(&st->site); st->site_ok = false; }
+    if (!site_new(&st->site, &st->bld, st->bld.seed, budget)) {
+        c_to_gdstring(ret, "");
+        return;
+    }
+    st->site_ok = true;
+    Buf o; buf_init(&o);
+    site_dump(&st->site, &o);
+    c_to_gdstring(ret, o.p ? o.p : "");
+    buf_free(&o);
+}
+
+/* site_cmd(String line) -> String — one line, one operation. The whole game
+ * over a pipe, and the exact call the 3D view makes when a lead goes in. */
+static void m_site_cmd(Station *st, const GDExtensionConstTypePtr *args, void *ret)
+{
+    char line[512];
+    gdstring_to_c(args[0], line, sizeof line);
+    if (!site_ready(st)) { c_to_gdstring(ret, "there is no site yet\n"); return; }
+    Buf o; buf_init(&o);
+    site_cmd(&st->site, line, &o);
+    c_to_gdstring(ret, o.p ? o.p : "");
+    buf_free(&o);
+}
+
+/* site_devs() -> String — "i kind room floor tenant nports kindname name" per
+ * line. Where the boxes are, so the view can draw them in the racks. */
+static void m_site_devs(Station *st, const GDExtensionConstTypePtr *args, void *ret)
+{
+    (void)args;
+    if (!site_ready(st)) { c_to_gdstring(ret, ""); return; }
+    const Site *s = &st->site;
+    Buf o; buf_init(&o);
+    for (int i = 0; i < s->ndev; i++) {
+        const SiteDev *d = &s->dev[i];
+        buf_printf(&o, "%d %d %d %d %d %d %s %s\n", i, d->kind,
+                   (int)(int16_t)d->room, d->floor, d->tenant, d->nports,
+                   site_kind_name(d->kind), d->name);
+    }
+    c_to_gdstring(ret, o.p ? o.p : "");
+    buf_free(&o);
+}
+
+/* site_links() -> String — "i a aport b bport room_a room_b metres cost kind
+ * state" per line. The cables that really exist, so the tray above the
+ * corridor carries the runs the site model was charged for and no others. */
+static void m_site_links(Station *st, const GDExtensionConstTypePtr *args, void *ret)
+{
+    (void)args;
+    if (!site_ready(st)) { c_to_gdstring(ret, ""); return; }
+    const Site *s = &st->site;
+    Buf o; buf_init(&o);
+    for (int i = 0; i < s->nlink; i++) {
+        const SiteLink *l = &s->link[i];
+        buf_printf(&o, "%d %d %d %d %d %d %d %d %d %d %d\n", i, l->a, l->aport,
+                   l->b, l->bport, (int)(int16_t)l->room_a, (int)(int16_t)l->room_b,
+                   l->metres, l->cost, l->kind,
+                   l->cable < 0 ? -1 : (int)site_link_state(s, i));
+    }
+    c_to_gdstring(ret, o.p ? o.p : "");
+    buf_free(&o);
+}
+
+/* site_room_of(int dev) -> int — the room a device sits in, BLD_NOROOM for the
+ * handoff, which is on the far side of a wall socket. */
+static void m_site_room_of(Station *st, const GDExtensionConstTypePtr *args, void *ret)
+{
+    int d = (int)(*(const int64_t *)args[0]);
+    if (!site_ready(st) || d < 0 || d >= st->site.ndev) { *(int64_t *)ret = -1; return; }
+    *(int64_t *)ret = (int64_t)st->site.dev[d].room;
+}
+
 /* ------------------------------------------------------- method plumbing */
 typedef struct {
     const char *name;
@@ -814,6 +921,11 @@ static const MethodDef METHODS[] = {
     { "bld_walk",      m_bld_walk,      1, { GDEXTENSION_VARIANT_TYPE_INT }, GDEXTENSION_VARIANT_TYPE_STRING },
     { "bld_cable",     m_bld_cable,     1, { GDEXTENSION_VARIANT_TYPE_INT }, GDEXTENSION_VARIANT_TYPE_STRING },
     { "bld_floorplan", m_bld_floorplan, 1, { GDEXTENSION_VARIANT_TYPE_INT }, GDEXTENSION_VARIANT_TYPE_STRING },
+    { "site_start",    m_site_start,    1, { GDEXTENSION_VARIANT_TYPE_INT }, GDEXTENSION_VARIANT_TYPE_STRING },
+    { "site_cmd",      m_site_cmd,      1, { GDEXTENSION_VARIANT_TYPE_STRING }, GDEXTENSION_VARIANT_TYPE_STRING },
+    { "site_devs",     m_site_devs,     0, { 0 },                            GDEXTENSION_VARIANT_TYPE_STRING },
+    { "site_links",    m_site_links,    0, { 0 },                            GDEXTENSION_VARIANT_TYPE_STRING },
+    { "site_room_of",  m_site_room_of,  1, { GDEXTENSION_VARIANT_TYPE_INT }, GDEXTENSION_VARIANT_TYPE_INT },
 };
 #define NMETHODS ((int)(sizeof METHODS / sizeof METHODS[0]))
 
