@@ -169,6 +169,13 @@ static void new_ticket(Client *c, uint64_t seed, int faults)
         c->desk_up = true;
     }
     c->desk.peer = &c->m;
+    /* A new ticket is a new machine: you are not attached to it yet. This
+     * persisted, so from the second ticket onwards the shell was already
+     * "on their console" before you had reached it -- which is why `rcon
+     * connect` was rejecting the address the header had just printed. */
+    c->desk.sp_connected = false;
+    c->desk.sp_media = false;
+    c->desk.sp_bootdev = 0;
     snprintf(c->desk.peer_addr, sizeof c->desk.peer_addr,
              "10.0.2.%d", 60 + (int)(seed % 40));
 
@@ -242,16 +249,20 @@ static bool client_line(Client *c)
     }
 
     /* Three people, not one. */
-    if (strncmp(cmd, "sam ", 4) == 0 || strncmp(cmd, "ask sam ", 8) == 0) {
+    /* THE COMMAND IS THE PERSON'S NAME. `help` said sam/boss while the
+     * replies said "Ben:" and "Json:", and `ben`/`json` were not commands at
+     * all -- a playtester had to guess which of the two naming schemes was
+     * real. Both work now, and the help names the people. */
+    if (strncmp(cmd, "ben ", 4) == 0 || strncmp(cmd, "sam ", 4) == 0) {
         Buf o = {0};
-        colleague_ask(&c->m, "coworker", cmd + (cmd[0] == 's' ? 4 : 8), &o);
+        colleague_ask(&c->m, "coworker", cmd + 4, &o);
         if (o.len) send_all(c->fd, o.p, o.len);
         buf_free(&o);
         return true;
     }
-    if (strncmp(cmd, "boss ", 5) == 0 || strncmp(cmd, "ask boss ", 9) == 0) {
+    if (strncmp(cmd, "json ", 5) == 0 || strncmp(cmd, "boss ", 5) == 0) {
         Buf o = {0};
-        colleague_ask(&c->m, "manager", cmd + (cmd[0] == 'b' ? 5 : 9), &o);
+        colleague_ask(&c->m, "manager", cmd + 5, &o);
         if (o.len) send_all(c->fd, o.p, o.len);
         buf_free(&o);
         return true;
@@ -259,17 +270,20 @@ static bool client_line(Client *c)
 
     if (strcmp(cmd, "help") == 0) {
         send_str(c->fd,
-            "you are at a rescue shell with the customer's disk mounted.\n"
+            "you are at YOUR OWN workstation -- a healthy machine. the\n"
+            "customer's is somewhere else. the prompt tells you which is which:\n"
+            "  you@desk#    your machine\n"
+            "  root@node#   theirs, over the console\n"
             "\n"
             "  boot              try to boot the customer's disk\n"
             "  rescue            boot the rescue medium -- this always works\n"
             "  ticket [seed] [n] take a new ticket (n = how many faults)\n"
-            "  sam <question>    a technician at the next desk. They have NOT\n"
+            "  ben <question>    Ben, a technician at the next desk. He has NOT\n"
             "                    seen this machine and know only what you tell\n"
             "                    them -- useful for exactly what a colleague is\n"
             "                    useful for: say it out loud and they ask the\n"
             "                    obvious question you skipped\n"
-            "  boss <question>   the engineer who wrote the runbook. Knows how\n"
+            "  json <question>   Json, who wrote the runbook. Knows how\n"
             "                    the whole system works -- boot order, tools,\n"
             "                    where things live -- but has not seen your\n"
             "                    machine either. Ask about the SYSTEM\n"
@@ -336,8 +350,18 @@ static bool client_line(Client *c)
 
     Buf out = {0};
     /* On YOUR machine, unless you have attached to theirs -- in which case
-     * you are typing at their console, which is what a console is. */
-    kernel_run(c->desk.sp_connected ? &c->m : &c->desk, cmd, &out);
+     * you are typing at their console, which is what a console is.
+     *
+     * EXCEPT `rcon` ITSELF, which always runs on your workstation. The
+     * service processor belongs to the machine you are reaching FROM: their
+     * box has no route to itself, so once you attached, every further rcon
+     * command reported "no machine is reachable from here" and the whole
+     * feature died after the first connect. A playtester hit it on every
+     * ticket and never got to use media, boot or power at all. */
+    bool is_rcon = strncmp(cmd, "rcon", 4) == 0 &&
+                   (cmd[4] == 0 || cmd[4] == ' ');
+    Machine *on = (c->desk.sp_connected && !is_rcon) ? &c->m : &c->desk;
+    kernel_run(on, cmd, &out);
     if (out.len) send_all(c->fd, out.p, out.len);
     buf_free(&out);
     return true;

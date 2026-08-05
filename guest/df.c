@@ -23,6 +23,10 @@ void _start(void)
         i64 ic = sysc(SYS_dfused, 3, 0, 0);
         g_putln("FILESYSTEM      INODES     IUSED     IFREE  IUSE%");
         g_puts("/dev/sda1     ");
+        /* A filesystem cannot have more inodes in use than it has, and free
+         * cannot be negative. It printed 672/674/-1, which reads as a broken
+         * tool rather than a full one. */
+        if (iu > ic) iu = ic;
         g_putn(ic); g_puts("      ");
         g_putn(iu); g_puts("      ");
         g_putn(ic - iu); g_puts("      ");

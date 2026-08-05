@@ -226,6 +226,92 @@ void _start(void)
  */
 static int redirect_fd = -1;
 
+/* GLOBBING. `rm /tmp/*.tmp`
+ *
+ * A playtester met a machine with four hundred stale files in /tmp and no way
+ * to delete them: no glob, no `rm -r`, no `find`. The fault was technically
+ * solvable and practically not, and my solver never noticed because it walks
+ * the directory in C. Fifteen minutes of their time went into a dead end that
+ * a shell feature everybody expects would have closed in one line.
+ *
+ * Only * and ? and only in the last path component, which is where they
+ * matter. An unmatched pattern is left alone, as sh does. */
+static char globbuf[4096];
+
+static int glob_match(const char *pat, const char *nm)
+{
+    while (*pat && *nm) {
+        if (*pat == '*') {
+            pat++;
+            if (!*pat) return 1;
+            for (const char *q = nm; *q; q++)
+                if (glob_match(pat, q)) return 1;
+            return 0;
+        }
+        if (*pat != '?' && *pat != *nm) return 0;
+        pat++; nm++;
+    }
+    while (*pat == '*') pat++;
+    return !*pat && !*nm;
+}
+
+static int has_glob(const char *s2)
+{
+    for (; *s2; s2++) if (*s2 == '*' || *s2 == '?') return 1;
+    return 0;
+}
+
+/* Expand every globbed word of `in` into `out`. */
+static void glob_expand(const char *in, char *out, u64 cap)
+{
+    u64 o = 0;
+    const char *p = in;
+    while (*p) {
+        while (*p == ' ' && o + 1 < cap) { out[o++] = *p++; }
+        const char *w = p;
+        while (*p && *p != ' ') p++;
+        u64 wl = (u64)(p - w);
+        static char word[512];
+        if (wl >= sizeof word) wl = sizeof word - 1;
+        for (u64 i = 0; i < wl; i++) word[i] = w[i];
+        word[wl] = 0;
+
+        if (!has_glob(word)) {
+            for (u64 i = 0; i < wl && o + 1 < cap; i++) out[o++] = word[i];
+            continue;
+        }
+        /* split into directory and pattern */
+        static char dir[384], pat[128];
+        int slash = -1;
+        for (int i = (int)wl - 1; i >= 0; i--) if (word[i] == '/') { slash = i; break; }
+        if (slash < 0) { g_copy(dir, ".", sizeof dir); g_copy(pat, word, sizeof pat); }
+        else {
+            u64 dl = (u64)(slash == 0 ? 1 : slash);
+            for (u64 i = 0; i < dl && i < sizeof dir - 1; i++) dir[i] = word[i];
+            dir[dl] = 0;
+            g_copy(pat, word + slash + 1, sizeof pat);
+        }
+
+        int hits = 0;
+        static char nm[160];
+        for (int i = 0; i < 2048; i++) {
+            if (g_readdir(dir, i, nm) < 0) break;
+            if (!glob_match(pat, nm)) continue;
+            if (hits && o + 1 < cap) out[o++] = ' ';
+            if (slash >= 0) {
+                for (u64 k = 0; dir[k] && o + 1 < cap; k++) out[o++] = dir[k];
+                if (!(slash == 0) && o + 1 < cap) out[o++] = '/';
+                else if (slash == 0 && o + 1 < cap && out[o-1] != '/') out[o++] = '/';
+            }
+            for (u64 k = 0; nm[k] && o + 1 < cap; k++) out[o++] = nm[k];
+            hits++;
+        }
+        if (!hits)      /* nothing matched: leave the pattern, as sh does */
+            for (u64 i = 0; i < wl && o + 1 < cap; i++) out[o++] = word[i];
+    }
+    out[o < cap ? o : cap - 1] = 0;
+}
+
 static int run_line(char *cmd0)
 {
     /* A `for` is parsed BEFORE expansion. Expanding first would substitute
@@ -239,6 +325,13 @@ static int run_line(char *cmd0)
     }
     char *cmd = g_trim(expanded);
     if (!*cmd || *cmd == '#') return 0;
+
+    /* After $ substitution and before anything is run. */
+    if (!is_for(cmd) && has_glob(cmd)) {
+        glob_expand(cmd, globbuf, sizeof globbuf);
+        g_copy(expanded, globbuf, sizeof expanded);
+        cmd = g_trim(expanded);
+    }
 
     /* for NAME in A B C; do BODY; done
      *

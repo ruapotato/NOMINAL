@@ -156,6 +156,10 @@ static void diff_path(const char *owner, const char *path)
     /* Binary content is summarised, never dumped. A playtester ran
      * `pkg diff sysinit` and got pages of raw ELF; the useful facts are the
      * two sizes and the fact that they differ. */
+    /* is_text looks at the first 400 bytes; a short config file that differs
+     * somewhere later was being called binary purely because the two sides
+     * were the same length, leaving the player with no content at all and no
+     * way to see what was wrong. Judge the CONTENT, never the sizes. */
     if (!is_text(shipped, want) || !is_text(filebuf, have)) {
         g_puts("--- "); g_puts(path); g_puts("  shipped by "); g_puts(owner);
         g_puts(" ("); g_putn(want); g_putln(" bytes, binary)");
@@ -164,8 +168,12 @@ static void diff_path(const char *owner, const char *path)
         if (want == have) g_putln("    same size, contents differ");
         else if (have < want) g_putln("    SHORTER than it shipped -- truncated?");
         else g_putln("    LONGER than it shipped");
-        return;
-    }
+        /* AND STILL SAY WHERE. Returning here left the player with a file
+         * declared "binary", no content, and nothing to act on -- a
+         * NUL-corrupted unit file is exactly the case where you most need to
+         * know which byte went. It falls through to the byte-level report
+         * now, which prints a readable name for unprintable bytes. */
+    } else {
 
     g_puts("--- "); g_puts(path); g_puts("  shipped by ");
     g_puts(owner); g_puts(" ("); g_putn(want); g_putln(" bytes)");
@@ -177,6 +185,7 @@ static void diff_path(const char *owner, const char *path)
     /* A file with no trailing newline used to glue the next prompt onto the
      * end of its last line. */
     if (have && filebuf[have - 1] != '\n') g_puts("\n");
+    }
 
     /* WHEN THE TWO HALVES LOOK THE SAME, SAY WHAT ACTUALLY DIFFERS.
      * A file truncated by one byte printed two visually identical blocks and
@@ -198,8 +207,11 @@ static void diff_path(const char *owner, const char *path)
             g_puts("    the installed copy is ");
             g_putn(want - have);
             g_putln(" byte(s) SHORT -- it was truncated, not edited.");
-            if (want && shipped[want - 1] == '\n' &&
-                (!have || filebuf[have - 1] != '\n'))
+            /* Only say "the trailing newline" when that is ALL that is
+             * missing. It was said for a 43-byte truncation -- two whole
+             * config lines -- which reads as a stale hardcoded string and
+             * cost a playtester real confidence in the tool. */
+            if (want - have == 1 && shipped[want - 1] == '\n')
                 g_putln("    what is missing is the trailing newline.");
         } else {
             g_puts("    the installed copy has ");
