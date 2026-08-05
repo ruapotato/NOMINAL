@@ -792,6 +792,32 @@ int main(int argc, char **argv)
             machine_free(&m);
         }
 
+        /* A REBOOT TAKES THE OLD SCREEN WITH IT. Paging back up through a
+         * console the machine has since replaced would have her reading out
+         * lines that were printed before it was restarted, as though they
+         * were in front of her now. */
+        {
+            Machine m;
+            Buf o = {0};
+            ac_state(&m, 7113, 3, &o);
+            buf_free(&o);
+            o = (Buf){0};
+            customer_choose(&m, ac_find(&m, "\"can I have you run:\"  <command>"),
+                            "ls -l /mnt/etc", &o);
+            buf_free(&o);
+            AC(ac_find(&m, "yes -- scroll back up and read me what came before") > 0,
+               "a long listing left nothing to scroll back through");
+            o = (Buf){0};
+            customer_choose(&m, ac_find(&m, "ask her to turn it off and on again"),
+                            NULL, &o);
+            buf_free(&o);
+            AC(ac_find(&m, "yes -- scroll back up and read me what came before") < 0 &&
+               ac_find(&m, "ask her to read that last bit again, carefully") < 0,
+               "she is still offering to read back a screen the machine "
+               "replaced when it restarted");
+            machine_free(&m);
+        }
+
         /* SAME SEED, SAME CALL. The whole reason for taking the model out. */
         {
             Buf a = {0}, b = {0};

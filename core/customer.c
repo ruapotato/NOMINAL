@@ -591,6 +591,20 @@ static int count_lines(const Buf *b)
     return n;
 }
 
+/* WHAT SHE IS LOOKING AT STOPS EXISTING WHEN THE SCREEN DOES.
+ *
+ * Rebooting the machine clears the console, and the copy she was reading from
+ * is then a photograph of a screen that is no longer there -- so "scroll back
+ * up and read me what came before" would have read back lines the machine had
+ * printed before it was restarted, presented as what is in front of her now.
+ * That is the one thing she is never allowed to do. */
+static void forget_screen(Machine *m)
+{
+    buf_clear(&m->cust.screen);
+    m->cust.nlines = 0;
+    m->cust.scroll = 0;
+}
+
 /* Hand her something to read: she looks at the bottom of it. */
 static void put_screen(Machine *m, const char *text, size_t len)
 {
@@ -935,9 +949,7 @@ static void dictate(Machine *m, const char *arg, Buf *out)
     buf_printf(out, "  \"Alright... I have typed %s.\"\n", clean);
     if (!o.len) {
         say(out, "It did not say anything back. Just the prompt again.");
-        buf_clear(&m->cust.screen);
-        m->cust.nlines = 0;
-        m->cust.scroll = 0;
+        forget_screen(m);
         buf_free(&o);
         return;
     }
@@ -962,6 +974,7 @@ static void power_cycle(Machine *m, Buf *out)
 {
     m->cust.power_cycles++;
     m->cust.at_machine = true;
+    forget_screen(m);
     if (m->cust.disc_inserted) machine_boot_rescue(m);
     else                       machine_boot(m);
     buf_puts(&m->boot.console, "\n[power button pressed at the machine]\n");
@@ -1142,8 +1155,7 @@ void customer_choose(Machine *m, int idx, const char *arg, Buf *out)
         buf_puts(&m->boot.console,
                  "[powered off -- the screen is black and the fans have "
                  "stopped]\n");
-        buf_clear(&m->cust.screen);
-        m->cust.nlines = m->cust.scroll = 0;
+        forget_screen(m);
         m->cust.at_machine = true;
         say(out, "Held the button in... right, it has gone off. The screen is "
                  "black and the fan has stopped.");
@@ -1151,6 +1163,7 @@ void customer_choose(Machine *m, int idx, const char *arg, Buf *out)
 
     case O_ON:
         m->cust.at_machine = true;
+        forget_screen(m);
         if (m->cust.disc_inserted) machine_boot_rescue(m);
         else                       machine_boot(m);
         buf_puts(&m->boot.console, "\n[power button pressed at the machine]\n");

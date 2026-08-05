@@ -128,14 +128,6 @@ build/bf_asan: $(BF_SRC) core/machine.h core/nom.h core/abi.h core/cpu.h \
 	$(CC) $(CSTD) $(WARN) $(FPFLAGS) -O1 -g -fsanitize=address,undefined \
 	  -Icore -o $@ $(BF_SRC)
 
-# SAY WHICH BINARY THIS LEFT BEHIND.
-#
-# This target links build/bf with whatever flags it was invoked with, and it is
-# normally invoked without NOM_LLM -- so running it after `make bf NOM_LLM=1`
-# silently replaces the binary with a model-less one. The next --jsoncheck or
-# --toolcheck then measures an unplugged instrument. Those two gates now refuse
-# to run without a model, which is what makes this recoverable rather than
-# mysterious; this line is so nobody has to work out why.
 test-break: build/bf build/bf_asan build/faulthist
 	@./build/bf --health 20 | tail -1
 	@echo
@@ -156,11 +148,10 @@ test-break: build/bf build/bf_asan build/faulthist
 	    | sed "s/^/  $$n faults: /"; \
 	done
 	@echo
-	@if ./build/bf --jsoncheck 2>&1 | head -1 | grep -q "needs the model"; then \
-	  echo "NOTE: build/bf here has NO MODEL linked. --toolcheck and"; \
-	  echo "      --jsoncheck will refuse until you rebuild:"; \
-	  echo "        make bf NOM_LLM=1"; \
-	fi
+	@# Is the person in front of the machine honest, and does she constrain
+	@# you? This replaced --toolcheck and --jsoncheck, which existed only to
+	@# police a language model and took minutes of model time to do it.
+	@./build/bf --askcheck | tail -2
 
 
 all: $(BIN)
