@@ -59,7 +59,11 @@ Here the terminal is the machine, and it follows that:
     make test-break         the full gate set
 
     ./build/bf --desk       play a shift at a terminal, no GUI anywhere near it
-    ./build/bf --serve N    the same game over a socket, for playtesting
+    ./build/bf --serve N    the same game over a socket, for playtesting.
+                            `tower` stands you up out of the chair and into
+                            the building: walk it, buy the kit, run the
+                            copper, and get a shell on the box you cabled
+    ./build/bf --towersh S  that half alone, one line at a time, over a pipe
     ./build/bf --health     every pristine machine boots with every service up
     ./build/bf --solve 60   every generated fault is findable and repairable
     ./build/bf --askcheck   the person on the phone never says anything untrue
