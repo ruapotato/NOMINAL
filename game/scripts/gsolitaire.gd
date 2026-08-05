@@ -118,7 +118,13 @@ func _can_drop(card: Dictionary, dest: String, i: int) -> bool:
 		if not found[i].is_empty():
 			var t: Dictionary = found[i][found[i].size() - 1]
 			return int(card["s"]) == int(t["s"]) and int(card["r"]) == int(t["r"]) + 1
-		return int(card["r"]) == 0
+		# THE FOUNDATIONS ARE LABELLED, SO THEY HAVE TO MEAN IT. Each empty
+		# slot is drawn with its own suit under it -- spade, heart, diamond,
+		# club, left to right -- and any ace was accepted into any of them, so
+		# the first ace off the deck landed in the spade slot whatever it was.
+		# A playtester watched A(club) go home under a spade. Either the
+		# placeholder is a promise or it should not be drawn.
+		return int(card["r"]) == 0 and int(card["s"]) == i
 	if dest == "tab":
 		if tab[i].is_empty():
 			return int(card["r"]) == 12          # kings only, into empty columns

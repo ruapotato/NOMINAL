@@ -329,7 +329,14 @@ func _draw_foot() -> void:
 	draw_line(Vector2(0, y), Vector2(size.x, y), Color("#b3b0ab"))
 	var hint := ""
 	match tab:
-		0: hint = "this workstation's clock -- not the customer's"
+		# TWO CLOCKS, TWO TIMES. This window said the real time and the panel
+		# said `Mon 09:07`, and neither admitted the other existed -- a
+		# playtester reported them as one clock contradicting itself. They are
+		# two different facts and both are worth having: the panel counts the
+		# shift you are working, this counts the wall you are sitting under.
+		# The panel says "shift" after its time now; this says which one it is
+		# not.
+		0: hint = "the wall clock -- not the customer's, and not the shift clock in the panel"
 		1: hint = "arrows day, PgUp/PgDn month, T today"
 		2: hint = "space start/pause, R reset, up/down minutes, left/right 10s"
 		_: hint = "space start/stop, L lap, R reset"

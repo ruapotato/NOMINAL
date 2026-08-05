@@ -147,9 +147,15 @@ func _build_shell() -> void:
 	menu_layer.draw.connect(_draw_menu_layer)
 	add_child(menu_layer)
 
+	# THE BOTTOM PANEL WAS BELOW THE BOTTOM OF THE SCREEN. `size.y = FOOT_H`
+	# after a BOTTOM_WIDE preset moves the top edge down instead of the bottom
+	# edge up, so the workspace switcher sat at y=800 on an 800px desktop and
+	# nobody has ever seen it. Set the offsets, which is what the preset was
+	# going to be asked about anyway.
 	foot = Control.new()
 	foot.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
-	foot.size.y = FOOT_H
+	foot.offset_top = -FOOT_H
+	foot.offset_bottom = 0.0
 	foot.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	foot.draw.connect(_draw_foot)
 	add_child(foot)
@@ -282,41 +288,201 @@ func _draw_panel() -> void:
 	# The window list stops where the clock starts. It used to run straight
 	# under it, so the sixth window's title and the time were drawn on top of
 	# each other: `console - 10.0.2.84 (Fiona)node-4824 Mon 09:00`.
-	var list_end := panel.size.x - 200.0
-	var vis: Array = []
+	var lay := _tab_layout()
 	for w in windows:
-		if is_instance_valid(w) and w.visible:
-			vis.append(w)
-	var x := 106.0
-	for i in range(vis.size()):
-		var w: Control = vis[i]
-		var t := str(w.get_meta("title"))
-		var wd: float = min(210.0,
-			mono.get_string_size(t, HORIZONTAL_ALIGNMENT_LEFT, -1, 11).x + 18)
-		if x + wd > list_end:
-			# No room. Say how many are not shown rather than drawing them over
-			# the clock, and leave their tabs unset so a click by the clock
-			# cannot land on a window whose button is not there.
-			panel.draw_string(mono, Vector2(x + 2, 18), "+%d" % (vis.size() - i),
-				HORIZONTAL_ALIGNMENT_LEFT, -1, 11, PANEL_INK)
-			break
+		if is_instance_valid(w):
+			w.remove_meta("tab")
+	for t2 in lay["tabs"]:
+		var w: Control = t2["w"]
+		var r: Rect2 = t2["r"]
 		var on: bool = focused == w.get_meta("content")
-		panel.draw_rect(Rect2(x, 3, wd, PANEL_H - 7),
-			Color("#c2c8ce") if on else Color("#cfd4d9"))
-		panel.draw_rect(Rect2(x, 3, wd, PANEL_H - 7), PANEL_EDGE, false, 1.0)
-		panel.draw_string(mono, Vector2(x + 6, 18), t,
-			HORIZONTAL_ALIGNMENT_LEFT, wd - 10, 11, PANEL_INK)
-		w.set_meta("tab", Rect2(x, 3, wd, PANEL_H - 7))
-		x += wd + 4
+		panel.draw_rect(r, Color("#c2c8ce") if on else Color("#cfd4d9"))
+		panel.draw_rect(r, PANEL_EDGE, false, 1.0)
+		var lbl := _tab_label(w, r.size.x - 10.0)
+		panel.draw_string(mono, Vector2(r.position.x + 6, 18), str(lbl[0]),
+			HORIZONTAL_ALIGNMENT_LEFT, r.size.x - 10, int(lbl[1]), PANEL_INK)
+		w.set_meta("tab", r)
+	var hidden: Array = lay["hidden"]
+	if not hidden.is_empty():
+		var mr: Rect2 = lay["more"]
+		panel.draw_rect(mr, Color("#c2c8ce") if winlist_open else Color("#cfd4d9"))
+		panel.draw_rect(mr, PANEL_EDGE, false, 1.0)
+		panel.draw_string(mono, Vector2(mr.position.x + 5, 18),
+			"+%d" % hidden.size(), HORIZONTAL_ALIGNMENT_LEFT, mr.size.x - 8, 11,
+			PANEL_INK)
 
-	var rx := panel.size.x - 196
+	var rx := panel.size.x - _status_w() - 26.0
 	if alerts > 0:
 		panel.draw_rect(Rect2(rx, 6, 14, 14), ALERT)
 		panel.draw_string(mono, Vector2(rx + 4, 18), str(alerts),
 			HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color("#ffffff"))
-	panel.draw_string(mono, Vector2(panel.size.x - 170, 18),
-		"node-%d   %s" % [seed_no % 10000, _wallclock()],
-		HORIZONTAL_ALIGNMENT_LEFT, -1, 12, PANEL_INK)
+	panel.draw_string(mono, Vector2(panel.size.x - _status_w() - 8.0, 18),
+		_status_text(), HORIZONTAL_ALIGNMENT_LEFT, -1, 12, PANEL_INK)
+
+
+# THE PANEL NAMED SOMEBODY ELSE'S MACHINE, ON YOUR OWN PANEL.
+#
+# The top right read `node-4824` from the moment the desktop came up, before
+# any `rcon connect` -- the CUSTOMER's box, unlabelled, on the workstation
+# whose `uname -a` and /etc/hostname both say node-1. A playtester read it as
+# the name of the machine they were sitting at for two hours. It was also
+# invented here, out of the seed, which is the one thing nothing on this
+# desktop is allowed to do: the hostname is read off the workstation's own
+# /etc/hostname through its own shell, and the customer is named by the
+# address the ticket gave you, which is the fact `rcon connect` takes.
+#
+# Both halves are labelled, because "node-1  10.0.2.84" side by side is two
+# names and no relationship.
+var host := "node-?"
+
+func _read_host() -> String:
+	if machine == null:
+		return "node-?"
+	var h: String = str(machine.sh_on(0, "cat /etc/hostname")).strip_edges()
+	if h == "" or h.find("cannot") >= 0 or h.find("not found") >= 0:
+		return "node-?"
+	return h.split("\n")[0].strip_edges()
+
+
+func _status_text() -> String:
+	var short := "you: %s   %s shift" % [host, _wallclock()]
+	if addr == "":
+		return short
+	var full := "you: %s   call: %s   %s shift" % [host, addr, _wallclock()]
+	if mono.get_string_size(full, HORIZONTAL_ALIGNMENT_LEFT, -1, 12).x \
+			< panel.size.x * 0.40:
+		return full
+	return short
+
+
+# Where the window list has to stop. It was a hardcoded 200px, which was a
+# guess about a string that has since changed twice.
+func _status_w() -> float:
+	return mono.get_string_size(_status_text(), HORIZONTAL_ALIGNMENT_LEFT,
+		-1, 12).x
+
+
+# THE `+1` BUTTON DID NOTHING AT ALL.
+#
+# With nine windows open the ninth button was replaced by `+1`, and clicking it
+# was ignored -- the window was reachable only by launching the app again from
+# the Applications menu and hoping it raised the instance you already had. A
+# playtester hit this on an ordinary ticket. A control that does nothing is
+# worse than no control, because you spend the click and then doubt the rest of
+# the panel.
+#
+# Two things happen now. The buttons SQUEEZE first, down to a floor where a
+# name is still a name, so the common case of nine or ten windows simply fits.
+# Past that floor the overflow is a real button that drops the rest of the list
+# down out of the panel, and clicking a row raises that window.
+#
+# One function owns the geometry, used by the drawing and by the click test,
+# for the same reason _desk_slots() does: two copies of this arithmetic is how
+# you get a button that raises its neighbour.
+const TAB_MAX := 210.0
+const TAB_MIN := 84.0
+const MORE_W  := 34.0
+var winlist_open := false
+
+# A SQUEEZED BUTTON KEEPS ITS NAME. `log viewer - Rosa` cut to `log viewe` is
+# the desktop-icon bug again -- a cut-off word looks like the name of the
+# program. The customer's name is the part a narrow button can afford to lose,
+# because it is the same customer on every button; and if the application's own
+# name still will not fit, the label steps down a size rather than losing its
+# ending, exactly as the launcher labels do.
+func _tab_label(w: Control, avail: float) -> Array:
+	var t := str(w.get_meta("title"))
+	if mono.get_string_size(t, HORIZONTAL_ALIGNMENT_LEFT, -1, 11).x <= avail:
+		return [t, 11]
+	var k := str(w.get_meta("key"))
+	var fs := 11
+	while fs > 8 and mono.get_string_size(k, HORIZONTAL_ALIGNMENT_LEFT,
+			-1, fs).x > avail:
+		fs -= 1
+	return [k, fs]
+
+func _tab_layout() -> Dictionary:
+	var out := {"tabs": [], "hidden": [], "more": Rect2()}
+	var vis: Array = []
+	for w in windows:
+		if is_instance_valid(w) and w.visible:
+			vis.append(w)
+	if vis.is_empty():
+		return out
+	var x0 := 106.0
+	var end: float = max(x0 + MORE_W, panel.size.x - _status_w() - 34.0)
+	var room: float = end - x0
+
+	var wide: Array = []
+	var total := 0.0
+	for w in vis:
+		var wd: float = min(TAB_MAX, mono.get_string_size(str(w.get_meta("title")),
+			HORIZONTAL_ALIGNMENT_LEFT, -1, 11).x + 18)
+		wide.append(wd)
+		total += wd + 4.0
+	if total > room:
+		var each: float = max(TAB_MIN, room / float(vis.size()) - 4.0)
+		for i in range(wide.size()):
+			wide[i] = min(wide[i], each)
+
+	var x := x0
+	var n := 0
+	while n < vis.size():
+		# The last one does not have to leave room for a `+N` that will not
+		# be drawn.
+		var limit: float = end if n == vis.size() - 1 else end - MORE_W - 4.0
+		if x + wide[n] > limit:
+			break
+		out["tabs"].append({"w": vis[n], "r": Rect2(x, 3, wide[n], PANEL_H - 7)})
+		x += wide[n] + 4.0
+		n += 1
+	for j in range(n, vis.size()):
+		out["hidden"].append(vis[j])
+	if not out["hidden"].is_empty():
+		out["more"] = Rect2(x, 3, MORE_W, PANEL_H - 7)
+	return out
+
+
+const WL_ROW := 22.0
+
+func _winlist_rect() -> Rect2:
+	var lay := _tab_layout()
+	var hidden: Array = lay["hidden"]
+	if hidden.is_empty():
+		return Rect2()
+	var w := 230.0
+	for h in hidden:
+		w = max(w, mono.get_string_size(str(h.get_meta("title")),
+			HORIZONTAL_ALIGNMENT_LEFT, -1, 12).x + 24.0)
+	var mr: Rect2 = lay["more"]
+	var x: float = clampf(mr.position.x, 4.0, max(4.0, size.x - w - 4.0))
+	return Rect2(x, PANEL_H, w, WL_ROW * float(hidden.size()) + 8.0)
+
+
+func _winlist_hit(p: Vector2) -> Control:
+	var r := _winlist_rect()
+	if r.size.x <= 0.0 or not r.has_point(p):
+		return null
+	var hidden: Array = _tab_layout()["hidden"]
+	var i := int((p.y - r.position.y - 4.0) / WL_ROW)
+	return hidden[i] if i >= 0 and i < hidden.size() else null
+
+
+func _draw_winlist() -> void:
+	if not winlist_open:
+		return
+	var r := _winlist_rect()
+	if r.size.x <= 0.0:
+		return
+	menu_layer.draw_rect(Rect2(r.position + Vector2(3, 3), r.size), Color(0, 0, 0, 0.18))
+	menu_layer.draw_rect(r, Color("#f6f6f6"))
+	menu_layer.draw_rect(r, Color("#8b929b"), false, 1.0)
+	var y := r.position.y + 4.0
+	for h in _tab_layout()["hidden"]:
+		menu_layer.draw_string(mono, Vector2(r.position.x + 8, y + 15),
+			str(h.get_meta("title")), HORIZONTAL_ALIGNMENT_LEFT, r.size.x - 16,
+			12, Color("#1b1b1b"))
+		y += WL_ROW
 
 
 # THE CLOCK RAN BACKWARDS. It printed `Mon 09:%02d` with the SECONDS since
@@ -354,10 +520,37 @@ func _draw_foot() -> void:
 		foot.draw_rect(Rect2(r.position.x, r.position.y, r.size.x, 20), Color("#3c6eb4"))
 		foot.draw_string(mono, r.position + Vector2(8, 15), "new message",
 			HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color("#ffffff"))
-		foot.draw_string(mono, r.position + Vector2(8, 40), _alert_msg,
-			HORIZONTAL_ALIGNMENT_LEFT, r.size.x - 16, 12, INK)
-		foot.draw_string(mono, r.position + Vector2(8, 60),
+		# The message is what the toast is FOR, and it was drawn on one line and
+		# clipped: "my computer comes on, and something on it is not wor". The
+		# complaint is the first thing said about the machine and half of it
+		# was landing on the floor.
+		var ty := 38.0
+		for l in _wrap_toast(_alert_msg, r.size.x - 18.0):
+			foot.draw_string(mono, r.position + Vector2(8, ty), l,
+				HORIZONTAL_ALIGNMENT_LEFT, r.size.x - 16, 12, INK)
+			ty += 15.0
+		foot.draw_string(mono, r.position + Vector2(8, r.size.y - 6),
 			"click to open Chat", HORIZONTAL_ALIGNMENT_LEFT, -1, 10, DIM)
+
+
+const TOAST_LINES := 3
+
+func _wrap_toast(s: String, w: float) -> PackedStringArray:
+	var out := PackedStringArray()
+	var line := ""
+	for word in s.split(" ", false):
+		var t := word if line == "" else line + " " + word
+		if line != "" and mono.get_string_size(t, HORIZONTAL_ALIGNMENT_LEFT,
+				-1, 12).x > w:
+			out.append(line)
+			line = word
+			if out.size() == TOAST_LINES:
+				break
+		else:
+			line = t
+	if line != "" and out.size() < TOAST_LINES:
+		out.append(line)
+	return out
 
 
 # THE NOTIFICATION THAT WOULD NOT LEAVE. It was cleared in exactly one place --
@@ -391,7 +584,7 @@ func _toast_tick() -> void:
 			foot.queue_redraw()
 
 func _toast_rect() -> Rect2:
-	return Rect2(foot.size.x - 448.0, -78, 440.0, 72)
+	return Rect2(foot.size.x - 448.0, -104, 440.0, 98)
 
 
 # The same rectangle in screen coordinates, for the hit test.
@@ -428,9 +621,21 @@ func _panel_input(e: InputEvent) -> void:
 				move_child(panel, get_child_count() - 1)
 				menu_layer.queue_redraw()
 			return
-		if e.position.x > panel.size.x - 200 and alerts > 0:
+		if e.position.x > panel.size.x - _status_w() - 34.0 and alerts > 0:
 			_launch("chat")
 			return
+		var lay := _tab_layout()
+		if not lay["hidden"].is_empty() \
+				and (lay["more"] as Rect2).has_point(e.position):
+			winlist_open = not winlist_open
+			if menu_layer:
+				menu_open = false
+				move_child(menu_layer, get_child_count() - 1)
+				move_child(panel, get_child_count() - 1)
+				menu_layer.queue_redraw()
+			panel.queue_redraw()
+			return
+		winlist_open = false
 		for w in windows:
 			if is_instance_valid(w) and w.has_meta("tab") \
 			   and (w.get_meta("tab") as Rect2).has_point(e.position):
@@ -594,6 +799,7 @@ var menu_layer: Control
 
 
 func _draw_menu_layer() -> void:
+	_draw_winlist()
 	if not menu_open:
 		return
 	var r := _menu_rect()
@@ -670,21 +876,29 @@ func _bar_input(w: Control, e: InputEvent) -> void:
 			_raise(w)
 		else:
 			if _drag == w:
-				_snap(w)
+				_snap(w, w.position + e.position)
 			_drag = null
 	elif e is InputEventMouseMotion and _drag == w:
 		w.position += e.position - _dragfrom
-		w.position.y = max(PANEL_H, w.position.y)
+		# A WINDOW DRAGGED OFF THE LEFT EDGE NEVER CAME BACK. The top was
+		# clamped and the sides were not, so a window walked out past x=0 with
+		# its title bar -- the only handle it has -- off the screen with it, and
+		# the only way to get it back was to close it from the panel. Enough of
+		# the bar stays reachable to grab it again, which is the rule every
+		# window manager has: you may put a window almost anywhere, but not
+		# somewhere you cannot pick it up from.
+		var keep := 90.0
+		w.position.x = clampf(w.position.x, keep - w.size.x, size.x - keep)
+		w.position.y = clampf(w.position.y, PANEL_H, max(PANEL_H, size.y - FOOT_H - 20.0))
 
 
 # SNAPPING. Drag a window against an edge and it takes half the screen; into a
 # corner and it takes a quarter; against the top it fills the desktop. It is
 # the one window-manager feature people use without being taught, and on a job
 # where you are comparing your machine with somebody else's it is not a luxury.
-func _snap(w: Control) -> void:
+func _snap(w: Control, m: Vector2) -> void:
 	var W := size.x
 	var H := size.y - PANEL_H - FOOT_H
-	var m := get_global_mouse_position()
 	var l := m.x < 14
 	var r := m.x > W - 14
 	var t := m.y < PANEL_H + 14
@@ -1157,18 +1371,65 @@ func _check_closed() -> void:
 		foot.queue_redraw()
 
 
+# A NEW CALL IS NOT A NEW DESK.
+#
+# The moment a customer said thank you, this closed every window on the
+# screen: terminal scrollback, the browser page you had open, and the Notes
+# file you had been keeping since the start of the shift. A playtester lost a
+# scratchpad that way and said it "actively punishes taking notes" -- which is
+# exactly right, and it is the opposite of what the job is like. Nobody clears
+# their desk between phone calls.
+#
+# What DOES end with the ticket is the ticket. The console window is the
+# customer's screen over a service processor that has just been unplugged, so
+# it says so and goes; the chat is the same window with a new person in it, so
+# it is reset rather than destroyed; and the apps that follow whichever machine
+# is interesting are pointed at the new one. Everything that is YOURS stays
+# where you left it, including its scrollback.
+func _retarget() -> void:
+	for w in windows:
+		if not is_instance_valid(w):
+			continue
+		var c: Variant = w.get_meta("content")
+		if c == null or not is_instance_valid(c):
+			continue
+		# logview names the machine it is reading; so does its title.
+		if c.get("addr") != null:
+			c.set("addr", addr)
+		if c.get("cust") != null:
+			c.set("cust", cust)
+		if str(w.get_meta("key")) == "log viewer":
+			w.set_meta("title", "log viewer - %s" % cust)
+		if c.has_method("refresh"):
+			c.call("refresh")
+		w.queue_redraw()
+
+
 func _new_ticket() -> void:
 	closed = false
 	seed_no += 1
 	machine.take_ticket(seed_no, faults)
 	addr = machine.peer_addr()
 	cust = machine.customer_name()
-	for w in windows:
-		if is_instance_valid(w):
-			w.queue_free()
-	windows.clear()
-	focused = null
-	chat = null
+	host = _read_host()
+	# The one window that belonged to the old ticket. It is a view of a console
+	# nothing is attached to any more, and leaving it up would be the desktop
+	# showing a machine that is no longer there.
+	var con := _find("console - ")
+	while con != null:
+		windows.erase(con)
+		if focused == con.get_meta("content"):
+			focused = null
+		con.queue_free()
+		con = _find("console - ")
+	if chat != null and is_instance_valid(chat):
+		chat.call("reset", cust)
+		chat.call("seed_first",
+			"%s the sticker on the front says %s"
+				% [machine.call("complaint"), addr])
+	else:
+		chat = null
+	_retarget()
 	alerts = 1
 	# The badge is the first thing said about the machine, so it has to be
 	# true of THIS machine -- see the note at seed_first.
@@ -1213,30 +1474,53 @@ func _input(e: InputEvent) -> void:
 	# "open Chat to answer" and swallow nothing, because the footer panel it
 	# is drawn on ignores the mouse. It is tested here, ahead of the windows,
 	# for the same reason the menu is: it is drawn on top of them.
-	if _alert_msg != "" and e is InputEventMouseButton and e.pressed \
-			and e.button_index == MOUSE_BUTTON_LEFT \
-			and _toast_screen().has_point(get_global_mouse_position()):
+	if not (e is InputEventMouseButton and e.pressed
+			and (e as InputEventMouseButton).button_index == MOUSE_BUTTON_LEFT):
+		return
+	# WHERE THE CLICK WAS, NOT WHERE THE POINTER IS NOW.
+	#
+	# These three hit tests asked the OS for the mouse position instead of
+	# reading it off the event that is being handled, which is a second source
+	# of truth about a fact the event already carries -- and it is why "click to
+	# open Chat" opened nothing: the toast was dismissed by the click and the
+	# rect was tested against a pointer somewhere else entirely.
+	var at: Vector2 = (e as InputEventMouseButton).position
+	if _alert_msg != "" and _toast_screen().has_point(at):
 		_alert_msg = ""
 		_alert_shown = ""
 		foot.queue_redraw()
 		get_viewport().set_input_as_handled()
 		_launch("chat")
 		return
+	# A click IN the panel belongs to the panel: closing the popup here and
+	# letting the panel toggle it straight back on is a button that never
+	# closes.
+	if at.y < PANEL_H:
+		return
+	if winlist_open:
+		var hit := _winlist_hit(at)
+		winlist_open = false
+		menu_layer.queue_redraw()
+		panel.queue_redraw()
+		if hit != null:
+			get_viewport().set_input_as_handled()
+			_raise(hit)
+			return
 	if not menu_open:
 		return
-	if e is InputEventMouseButton and e.pressed and e.button_index == MOUSE_BUTTON_LEFT:
-		var r := _menu_rect()
-		var at := get_global_mouse_position()
-		if r.has_point(at):
-			var idx := int((at.y - r.position.y - 6) / MENU_ROW)
-			menu_open = false
-			menu_layer.queue_redraw()
-			get_viewport().set_input_as_handled()
-			if idx >= 0 and idx < LAUNCHERS.size():
-				_launch(LAUNCHERS[idx][1])
-		else:
-			menu_open = false
-			menu_layer.queue_redraw()
+	var r := _menu_rect()
+	if r.has_point(at):
+		# _menu_hit() is column-major and this was row-only, so the second
+		# column of the Applications menu launched the first column's app.
+		var idx := _menu_hit(at)
+		menu_open = false
+		menu_layer.queue_redraw()
+		get_viewport().set_input_as_handled()
+		if idx >= 0:
+			_launch(LAUNCHERS[idx][1])
+	else:
+		menu_open = false
+		menu_layer.queue_redraw()
 
 
 func _process(dt: float) -> void:

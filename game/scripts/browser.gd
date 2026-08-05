@@ -40,6 +40,7 @@ var machine: Object = null
 var url := ""                  # "" is the bookmarks page
 var addr := ""                 # what is typed in the address bar
 var editing := false           # is the address bar taking keys
+var sel_all := false           # the whole address is selected, ctrl+A style
 var raw := ""                  # the markup, exactly as the machine sent it
 var rows: Array = []           # laid-out lines, see _layout()
 var history: Array = []        # urls, most recent last
@@ -475,18 +476,42 @@ func _gui_input(e: InputEvent) -> void:
 
 	if editing:
 		accept_event()
+		# ctrl+A PUT AN `a` IN THE ADDRESS BAR. There was no select-all and no
+		# guard against modified keys, so the one keystroke everybody uses to
+		# replace an address turned `bofh.nomnix.org` into `abofh.nomnix.org`,
+		# and the only way to clear the field was to hold backspace. A modifier
+		# means the key is a command, not a letter: it never reaches the text.
+		if k.ctrl_pressed or k.meta_pressed or k.alt_pressed:
+			match k.keycode:
+				KEY_A:
+					sel_all = addr != ""
+				KEY_U, KEY_K:
+					addr = ""
+					sel_all = false
+			queue_redraw()
+			return
 		match k.keycode:
 			KEY_ENTER, KEY_KP_ENTER:
 				editing = false
+				sel_all = false
 				_go(addr)
 			KEY_ESCAPE:
 				editing = false
+				sel_all = false
 				addr = url
-			KEY_BACKSPACE:
-				if addr.length() > 0:
+			KEY_BACKSPACE, KEY_DELETE:
+				if sel_all:
+					addr = ""
+					sel_all = false
+				elif addr.length() > 0:
 					addr = addr.substr(0, addr.length() - 1)
 			_:
 				if k.unicode >= 32 and k.unicode < 127:
+					# Typing over a selection replaces it, which is the whole
+					# point of having one.
+					if sel_all:
+						addr = ""
+						sel_all = false
 					addr += char(k.unicode)
 		queue_redraw()
 		return
@@ -497,11 +522,13 @@ func _gui_input(e: InputEvent) -> void:
 			if k.ctrl_pressed:
 				editing = true
 				addr = url
+				sel_all = addr != ""
 			else:
 				return
 		KEY_ENTER, KEY_KP_ENTER:
 			editing = true
 			addr = url
+			sel_all = addr != ""
 		KEY_BACKSPACE:
 			_back()
 		KEY_LEFT:
@@ -606,16 +633,30 @@ func _draw() -> void:
 				# box every visit and a page keeps its own look.
 				var src := String(r.get("src", ""))
 				var hue: float = float(abs(src.hash()) % 360) / 360.0
-				var box := Rect2(PAD, y + 2.0, min(size.x - PAD * 2.0, 420.0), h - 6.0)
+				# THE BANNER ATE ITS OWN SENTENCE. The box was capped at 420px
+				# and the alt text was chopped two characters at a time with
+				# nothing to show for it, so nomnix.org's banner read "...For
+				# People Who Have Been Pag" -- which reads like the operating
+				# system's actual slogan rather than a rendering fault. Alt text
+				# is all the picture there is: it gets the width of the page, a
+				# second line, and a smaller size, before it loses a letter.
+				var box := Rect2(PAD, y + 2.0, size.x - PAD * 2.0, h - 6.0)
 				draw_rect(box, Color.from_hsv(hue, 0.30, 0.86))
 				draw_rect(box, Color.from_hsv(hue, 0.35, 0.55), false)
 				var alt := String(r.get("alt", ""))
-				var maxw := box.size.x - 12.0
-				while alt.length() > 3 and _wof(alt, 11) > maxw:
-					alt = alt.substr(0, alt.length() - 2)
-				draw_string(mono, Vector2(box.position.x + 6, box.position.y + 17),
-					alt, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color("#22262b"))
-				draw_string(mono, Vector2(box.position.x + 6, box.position.y + 31),
+				var maxw := box.size.x - 74.0
+				var afs := 11
+				var al := _alt_lines(alt, maxw, afs)
+				while afs > 8 and al.size() > 2:
+					afs -= 1
+					al = _alt_lines(alt, maxw, afs)
+				var ay := box.position.y + 15.0
+				for li in range(min(2, al.size())):
+					draw_string(mono, Vector2(box.position.x + 6, ay), al[li],
+						HORIZONTAL_ALIGNMENT_LEFT, -1, afs, Color("#22262b"))
+					ay += afs + 3.0
+				draw_string(mono,
+					Vector2(box.position.x + box.size.x - 56, box.position.y + 17),
 					"[image]", HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color("#4a4f55"))
 			"pre":
 				draw_rect(Rect2(PAD * 0.5, y, size.x - PAD, h), PRE_BG)
@@ -638,14 +679,27 @@ func _draw() -> void:
 			HORIZONTAL_ALIGNMENT_LEFT, -1, 10, DIM)
 
 
+# A LINK IS ONE LINK, HOWEVER MANY WORDS IT HAS.
+#
+# Wrapping splits a line into one item per word, and the underline and the hit
+# rect were drawn per item -- so the thread title on lists.nomnix.org came out
+# as nine separately-underlined words with nine gaps between them. Every one of
+# them worked, which is why it survived: it was only ever a drawing bug, and it
+# made a perfectly good page look broken. Adjacent runs that go to the same
+# place are one underline and one hit rect, which is also what `links` does at
+# a prompt.
 func _draw_items(items: Array, y: float, h: float) -> void:
+	var base := y + h - 5.0
+	var run_url := ""
+	var run_x0 := 0.0
+	var run_x1 := 0.0
+	var run_col := TEXT
 	for it in items:
 		var t: String = String(it["t"])
 		if t == "":
 			continue
 		var fs: int = int(it["fs"])
 		var x: float = PAD + float(it["x"])
-		var base := y + h - 5.0
 		var col: Color = it["col"]
 		draw_string(mono, Vector2(x, base), t,
 			HORIZONTAL_ALIGNMENT_LEFT, -1, fs, col)
@@ -655,8 +709,42 @@ func _draw_items(items: Array, y: float, h: float) -> void:
 			draw_string(mono, Vector2(x + 0.7, base), t,
 				HORIZONTAL_ALIGNMENT_LEFT, -1, fs, col)
 		var w := _wof(t, fs)
-		if bool(it["under"]):
-			draw_line(Vector2(x, base + 2.0), Vector2(x + w, base + 2.0), col)
 		var u := String(it["url"])
-		if u != "":
-			_hits.append({"rect": Rect2(x, y, w, h), "url": u})
+		if u != "" and u == run_url:
+			run_x1 = x + w
+		else:
+			_end_run(run_url, run_x0, run_x1, run_col, y, h, base)
+			run_url = u
+			run_x0 = x
+			run_x1 = x + w
+			run_col = col
+		if u == "" and bool(it["under"]):
+			draw_line(Vector2(x, base + 2.0), Vector2(x + w, base + 2.0), col)
+	_end_run(run_url, run_x0, run_x1, run_col, y, h, base)
+
+
+# Alt text wrapped on spaces, so a break falls between words and never inside
+# one. Two lines is what a 46px box holds.
+func _alt_lines(alt: String, w: float, fs: int) -> PackedStringArray:
+	var out := PackedStringArray()
+	var line := ""
+	for word in alt.split(" ", false):
+		var t := word if line == "" else line + " " + word
+		if line != "" and _wof(t, fs) > w:
+			out.append(line)
+			line = word
+		else:
+			line = t
+	if line != "":
+		out.append(line)
+	if out.is_empty():
+		out.append("")
+	return out
+
+
+func _end_run(u: String, x0: float, x1: float, col: Color,
+		y: float, h: float, base: float) -> void:
+	if u == "":
+		return
+	draw_line(Vector2(x0, base + 2.0), Vector2(x1, base + 2.0), col)
+	_hits.append({"rect": Rect2(x0, y, x1 - x0, h), "url": u})
