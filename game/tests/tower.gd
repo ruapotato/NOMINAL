@@ -219,12 +219,76 @@ func _init() -> void:
 	# ---- and the site model is the one that says what they are
 	var kit: Array = t.site_devs()
 	if kit.size() < 4:
-		fail("the MDF holds %d devices; it should hold the handoff and a few to set up"
+		fail("day one holds %d devices; it should hold the handoff and a delivery"
 			% kit.size())
 	else:
 		var names := ""
 		for d in kit: names += " " + str(d.name)
-		ok("day one in the MDF:" + names)
+		ok("day one:" + names)
+
+	# ---- THE DELIVERY IS IN GOODS IN, and getting it anywhere else is a walk.
+	# The README says hardware arrives somewhere rather than in an inventory,
+	# and this is the half of that claim the 3D has to honour: the boxes are
+	# on the floor of the loading bay, they are things you can walk up to, and
+	# picking one up and putting it down is what moves it.
+	var goods: int = t.find_room(0, t.K_GOODS)
+	if goods < 0:
+		fail("the tower has no goods in")
+	else:
+		var delivered := 0
+		var elsewhere := ""
+		for d in kit:
+			if int(d.kind) == 0:
+				continue                      # the ISP handoff, outside
+			if int(d.room) == goods: delivered += 1
+			else: elsewhere += " " + str(d.name)
+		if delivered < 3:
+			fail("only %d of the delivery is in goods in;%s is elsewhere"
+				% [delivered, elsewhere])
+		else:
+			ok("%d boxes delivered to goods in, not to the room you start in" % delivered)
+
+		# and every one of them is DRAWN there: a box the site says is in a
+		# room and the view does not show is a box nobody can walk up to.
+		var seen := 0
+		for d in t.devices:
+			var df: int = int(floor((d.pos.y + 0.3) / t.fheight))
+			if t.room_of(df, int(floor(d.pos.x)), int(floor(d.pos.z))) == goods:
+				seen += 1
+		if seen < 3:
+			fail("goods in holds 3 boxes and the view draws %d of them" % seen)
+		else:
+			ok("and all %d of them are standing on the floor of it" % seen)
+
+		# ---- CARRY ONE. Pick it up in goods in, walk it to the MDF, put it
+		# down, and the site has to agree that is where it now lives.
+		t.teleport(t.room_centre(goods) + Vector3(0, 0.4, 0))
+		for i in range(10):
+			await process_frame
+		var box := -1
+		for i in range(t.devices.size()):
+			if int(t.devices[i].get("site", -1)) >= 0 and t.devices[i].name == "core":
+				box = i
+		if box < 0:
+			fail("the switch that was delivered is not in the room to pick up")
+		else:
+			var said: String = t.carry_here(box)
+			if t.carrying < 0:
+				fail("could not pick the delivery up: " + said)
+			else:
+				ok("picked it up in goods in: " + said)
+				t.teleport(t.room_centre(mdf) + Vector3(0, 0.4, 0))
+				for i in range(10):
+					await process_frame
+				var put: String = t.drop_here()
+				var where := -1
+				for d in t.site_devs():
+					if str(d.name) == "core": where = int(d.room)
+				if where != mdf:
+					fail("put down in the MDF and the site says room %d: %s"
+						% [where, put])
+				else:
+					ok("carried to the MDF and the site agrees: " + put)
 	# nothing is cabled on day one: that is the job
 	if t.site_links().size() != 0:
 		fail("something was already cabled before the player touched it")

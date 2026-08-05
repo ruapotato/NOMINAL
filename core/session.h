@@ -59,6 +59,16 @@ typedef struct {
      * a person would do moving around."* If the socket could lay a cable
      * without the walk it would be playing a different game from the 3D and
      * would stop being a test of it. -1 in spool_kind means empty hands. */
+    /* WHAT IS IN YOUR HANDS. Kit is delivered to goods in on the ground
+     * floor and it does not get anywhere else on its own: somebody picks it
+     * up, walks it there, and puts it down. That walk is metres of real
+     * building and it is why where you put a box is a decision.
+     *
+     * One box, because both hands are on it -- which is also why you cannot
+     * be holding a drum of cable at the same time. Nothing here invents a
+     * weight: the catalogue is five things a person can lift, and the
+     * limits are the ones the object really has. -1 is empty hands. */
+    int      carrying;         /* the device you are carrying, or -1       */
     int      spool_kind;       /* CableKind, or -1                         */
     int      spool_left;       /* metres left on the drum                  */
     int      cab_dev, cab_port; /* the end already in a socket, or -1      */

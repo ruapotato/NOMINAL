@@ -78,6 +78,8 @@ const char *site_err_text(int e)
     case SITE_ESPACE:   return "the site is full";
     case SITE_EMONEY:   return "not enough money";
     case SITE_EIFACE:   return "no such interface on that box";
+    case SITE_ECABLED:  return "it has a cable in it -- unplug it first";
+    case SITE_EFIXED:   return "that is not yours to move";
     }
     return "?";
 }
@@ -259,6 +261,63 @@ int site_install(Site *s, int kind, int room, const char *name)
     s->money -= site_kind_price(kind);
     s->spent += site_kind_price(kind);
     return s->ndev++;
+}
+
+/* ------------------------------------------------------------- goods in */
+/* HARDWARE ARRIVES SOMEWHERE, and the somewhere is a room in the building.
+ *
+ * This is the difference between a game about a building and a game with a
+ * building drawn behind it. An order that appears in the room you are
+ * standing in makes every room equally far from the loading bay, which makes
+ * the floor plan scenery -- and the whole argument for the floor plan is
+ * that it is the price list. A switch that has to be carried up eight floors
+ * costs the walk, and the walk is a number bld_walk_all() already knows how
+ * to produce.
+ *
+ * Note what is NOT modelled: crates, pallets, a weight in kilogrammes, a
+ * trolley. This catalogue is five boxes a person can pick up, and inventing
+ * a weight limit for them would be a rule with a made-up number in it. The
+ * limits that ARE here come from the object: both hands are on the box, so
+ * you carry one at a time, and a box with a cable in it does not move. */
+int site_goods_room(const Site *s)
+{
+    if (!s->b) return -1;
+    int r = bld_find(s->b, 0, RM_GOODS);
+    if (r < 0) r = bld_find(s->b, 0, RM_LOBBY);
+    if (r < 0) r = bld_find(s->b, 0, RM_MDF);
+    return r;
+}
+
+int site_order(Site *s, int kind, const char *name)
+{
+    s->err = SITE_OK;
+    int goods = site_goods_room(s);
+    if (goods < 0) { s->err = SITE_ENOROOM; return -1; }
+    return site_install(s, kind, goods, name);
+}
+
+bool site_dev_cabled(const Site *s, int dev)
+{
+    if (dev < 0 || dev >= s->ndev) return false;
+    for (int p = 0; p < s->dev[dev].nports; p++)
+        if (net_port_state(s->net, s->dev[dev].node, p) != PORT_NOCABLE) return true;
+    return false;
+}
+
+bool site_move(Site *s, int dev, int room)
+{
+    s->err = SITE_OK;
+    if (dev < 0 || dev >= s->ndev) { s->err = SITE_ENODEV; return false; }
+    /* The handoff is the ISP's, in a room they have a key to and you do not.
+     * It is the one thing in the building that was not bought and is not
+     * moving. */
+    if (s->dev[dev].kind == SDEV_UPLINK) { s->err = SITE_EFIXED; return false; }
+    if (!s->b || room < 0 || room >= s->b->nrooms) { s->err = SITE_ENOROOM; return false; }
+    if (site_dev_cabled(s, dev)) { s->err = SITE_ECABLED; return false; }
+    s->dev[dev].room = (uint16_t)room;
+    s->dev[dev].floor = s->b->rooms[room].floor;
+    s->dev[dev].tenant = s->b->rooms[room].tenant;
+    return true;
 }
 
 int site_free_port(const Site *s, int dev)
@@ -686,8 +745,12 @@ bool site_cmd(Site *s, const char *line, Buf *out)
 
     if (strcmp(t[0], "help") == 0) {
         buf_puts(out,
-            "install <kind> <room> [name]   kinds: switch8 switch24 router pc server\n"
-            "                               rooms: #41, or f3.comms f0.mdf f2.office\n"
+            "order <kind> [name]            kinds: switch8 switch24 router pc server\n"
+            "                               it is delivered to goods in, on the\n"
+            "                               ground floor. Not to where you are.\n"
+            "move <dev> <room>              carry it there. Refused while it has a\n"
+            "                               cable in it. rooms: #41, f3.comms,\n"
+            "                               f0.mdf, f2.office\n"
             "cable <dev>:<port> <dev>:<port> [cat5e|cat6|fibre]\n"
             "uncable <n>                    pull one out\n"
             "addr <dev> <ip>/<bits>         an address on its first card\n"
@@ -731,15 +794,56 @@ bool site_cmd(Site *s, const char *line, Buf *out)
                         "site\n", (unsigned long long)site_host_frames(s));
         return true;
     }
-    if (strcmp(t[0], "install") == 0 && n >= 3) {
+    /* ORDERED, NOT PLACED. There used to be `install <kind> <room>`, which
+     * put a box wherever you named -- eight floors up, through a locked
+     * door, without anybody carrying it. That made the building scenery.
+     * Kit is delivered to goods in and carried from there, and this is the
+     * only way to bring any into the tower. */
+    if ((strcmp(t[0], "order") == 0 || strcmp(t[0], "buy") == 0) && n >= 2) {
         int kind = site_kind_by_name(t[1]);
-        int room = site_room_by_name(s, t[2]);
         if (kind < 0) { buf_printf(out, "no such kit: %s\n", t[1]); return true; }
+        int d = site_order(s, kind, n > 2 ? t[2] : NULL);
+        if (d < 0) { buf_printf(out, "refused: %s\n", site_err_text(s->err)); return true; }
+        int goods = site_goods_room(s);
+        buf_printf(out, "%s: a %s, %d port%s, %d paid, %ld left.\n",
+                   s->dev[d].name, site_kind_name(kind), s->dev[d].nports,
+                   s->dev[d].nports == 1 ? "" : "s", site_kind_price(kind), s->money);
+        buf_printf(out, "it is in %s #%d, on the ground floor. Somebody has to "
+                        "carry it: `move %s <room>`\n",
+                   bld_kind_name(s->b->rooms[goods].kind), goods, s->dev[d].name);
+        return true;
+    }
+    if (strcmp(t[0], "move") == 0 && n >= 3) {
+        int d = dev_arg(s, t[1]);
+        int room = site_room_by_name(s, t[2]);
+        if (d < 0) { buf_printf(out, "no such box: %s\n", t[1]); return true; }
         if (room < 0) { buf_printf(out, "no such room: %s\n", t[2]); return true; }
-        int d = site_install(s, kind, room, n > 3 ? t[3] : NULL);
-        if (d < 0) buf_printf(out, "refused: %s\n", site_err_text(s->err));
-        else buf_printf(out, "%s installed in room #%d, %d ports, %ld left\n",
-                        s->dev[d].name, room, s->dev[d].nports, s->money);
+        int was = s->dev[d].room;
+        if (!site_move(s, d, room)) {
+            buf_printf(out, "refused: %s\n", site_err_text(s->err));
+            if (s->err == SITE_ECABLED)
+                buf_puts(out, "  `links` says which cable, `uncable <n>` pulls "
+                              "it out. The copper is\n  bought and paid for and "
+                              "you will be buying it again.\n");
+            return true;
+        }
+        /* The metres a PERSON walks carrying it, which is not the metres a
+         * cable would take between the same two rooms -- see building.h. */
+        int m = -1;
+        if (was >= 0 && was < s->b->nrooms) {
+            double *dm = nom_alloc(sizeof(double) * (size_t)s->b->nrooms);
+            if (bld_walk_all(s->b, was, dm) && dm[room] < BLD_INF)
+                m = (int)(dm[room] + 0.5);
+            nom_free(dm);
+        }
+        buf_printf(out, "%s is in %s #%d now", s->dev[d].name,
+                   bld_kind_name(s->b->rooms[room].kind), room);
+        /* Zero metres is somebody putting a box down in the room they are
+         * already standing in, which is what a carry looks like when the
+         * view calls this on every threshold. Do not print a distance
+         * nobody walked. */
+        if (m > 0) buf_printf(out, ", carried %d m", m);
+        buf_puts(out, "\n");
         return true;
     }
     if (strcmp(t[0], "cable") == 0 && n >= 3) {

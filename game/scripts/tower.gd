@@ -657,6 +657,27 @@ func _rack_slot(i: int, nu: int) -> Dictionary:
 			"size": Vector3(0.68, h, RACK_W - 0.12), "face": Vector3(1, 0, 0)}
 
 
+# A box standing on the floor of a room, in a row along the low wall, front
+# out. This is where a delivery sits until somebody carries it: the height is
+# a box on the floor and not a slot at eye level, so it reads as kit that has
+# not been racked yet rather than as kit that has.
+func _floor_slot(room: int, k: int, nu: int) -> Dictionary:
+	var r: Dictionary = rooms[room]
+	var h: float = max(0.12, float(nu) * U)
+	var y: float = r.floor * fheight + 0.02
+	var along_x: bool = (r.x1 - r.x0) >= (r.y1 - r.y0)
+	var step: float = 0.85
+	if along_x:
+		var x: float = float(r.x0) + 0.9 + float(k) * step
+		x = min(x, float(r.x1) - 1.0)
+		return {"mn": Vector3(x, y, float(r.y0) + 0.7),
+				"size": Vector3(0.62, h, 0.62), "face": Vector3(0, 0, 1)}
+	var z: float = float(r.y0) + 0.9 + float(k) * step
+	z = min(z, float(r.y1) - 1.0)
+	return {"mn": Vector3(float(r.x0) + 0.7, y, z),
+			"size": Vector3(0.62, h, 0.62), "face": Vector3(1, 0, 0)}
+
+
 func racks_in(room: int) -> Array:
 	var out: Array = []
 	for i in range(racks.size()):
@@ -867,9 +888,14 @@ func _sign(p: Vector3, text: String, yaw: float, size: int, col: Color) -> void:
 #
 # core/site.c owns what is installed, what it cost and whether the link came
 # up. This calls it; it does not duplicate it. The day-one state is the ISP
-# handoff in the MDF and a small delivery of kit sitting in the racks with
-# nothing plugged into it, which is what the first morning of a new building
-# actually looks like.
+# handoff in the MDF and a delivery ON THE FLOOR OF GOODS IN with nothing
+# plugged into it, which is what the first morning of a new building actually
+# looks like: three boxes by the roller door and a walk ahead of you.
+#
+# It used to install them in the MDF, which was the same lie the README told
+# -- kit that arrives where you happen to be standing makes every room
+# equally close to the loading bay, and the floor plan stops being the price
+# list and becomes wallpaper. `order` is the only way kit enters the tower.
 
 func _site_start() -> void:
 	site_up = false
@@ -878,9 +904,9 @@ func _site_start() -> void:
 	if str(machine.site_start(60000)).strip_edges() == "":
 		return
 	site_up = true
-	for line in ["install router f0.mdf edge",
-			"install switch24 f0.mdf core",
-			"install server f0.mdf files"]:
+	for line in ["order router edge",
+			"order switch24 core",
+			"order server files"]:
 		machine.site_cmd(line)
 
 
@@ -1084,7 +1110,11 @@ func _place_devices() -> void:
 
 	# ---- what the SITE says is installed, in the racks of the room it says.
 	# This is a read of site_devs(). There is no list of devices in this file.
+	_on_floor = {}
+	var on_floor := _on_floor
 	for d in site_devs():
+		if d.i == carrying:
+			continue                          # it is in your hands, not in the room
 		var room: int = d.room
 		if room < 0 or room >= rooms.size():
 			room = mdf                       # the handoff is outside; land it in the MDF
@@ -1095,8 +1125,16 @@ func _place_devices() -> void:
 			slot = _rack_slot(i, nu)
 			if not slot.is_empty():
 				break
+		# NO RACK: IT IS ON THE FLOOR, AND IT IS DRAWN ON THE FLOOR. Goods in
+		# has a roller door and no cabinets, and a box that the site says is
+		# in a room and the view does not draw is a box nobody can walk up to
+		# -- which is how a delivery becomes invisible. Skipping it here was
+		# a comment saying "it is still on the floor" and nothing on any
+		# floor.
 		if slot.is_empty():
-			continue                          # no rack space: it is still on the floor
+			var k: int = int(on_floor.get(room, 0))
+			on_floor[room] = k + 1
+			slot = _floor_slot(room, k, nu)
 		# A managed box has a management line and no picture on the back of it.
 		_add_device(d.name, -2, false, true, slot.mn, slot.size,
 			DEV_COL.get(d.kindname, Color("#2f343a")), slot.face, d.nports, d.i)
@@ -1384,6 +1422,98 @@ func where_am_i() -> String:
 	return "floor %d  %s  (%.0f, %.0f m)" % [f, what, p.x, p.z]
 
 
+# ------------------------------------------------------------- carrying it
+#
+# THE OTHER HALF OF BUYING. Kit is delivered to goods in on the ground floor
+# and it does not get anywhere else on its own: you pick it up, you walk, you
+# put it down, and where you put it down is what every metre of copper is
+# then measured from. core/site.c refuses to move a box with a cable in it,
+# so this cannot be used to teleport a live switch; the refusal is the same
+# one the socket session prints, from the same function.
+#
+# One box, because both hands are on it. That is the same rule session.c
+# keeps, and it is the reason there is no inventory here.
+
+var carrying := -1                     # site index in your hands, or -1
+var _carry_room := -1
+var _on_floor := {}
+
+
+func player_room() -> int:
+	if player == null:
+		return NOROOM
+	var p := player.global_position
+	return room_of(player_floor(), int(floor(p.x)), int(floor(p.z)))
+
+
+# Pick the box in front of you up, or -- if your hands are full -- put down
+# what you are holding, here.
+func carry_here(dev: int) -> String:
+	if not site_up:
+		return ""
+	if carrying >= 0:
+		return drop_here()
+	if dev < 0:
+		return "there is nothing in reach to pick up."
+	var s: int = int(devices[dev].get("site", -1))
+	if s < 0:
+		return "%s is not yours to carry." % devices[dev].name
+	var room := player_room()
+	if room == NOROOM:
+		return "you are not standing in a room."
+	# site_move is the one that decides. A box with a cable in it does not
+	# move, and it says so in the words core/site.c uses.
+	var out: String = site("move %d #%d" % [s, room]).strip_edges()
+	if out.find("refused") >= 0:
+		return out
+	carrying = s
+	_carry_room = room
+	var n: Node = devices[dev].node
+	if n: n.queue_free()
+	devices.remove_at(dev)
+	if _cable_from == s:
+		_cable_from = -1
+	return "you pick it up. It goes where you go until you put it down."
+
+
+func drop_here() -> String:
+	if carrying < 0:
+		return "you are not carrying anything."
+	var room := player_room()
+	if room == NOROOM:
+		return "you are not standing in a room: nowhere to put it down."
+	var out: String = site("move %d #%d" % [carrying, room]).strip_edges()
+	var s := carrying
+	carrying = -1
+	_carry_room = -1
+	_place_one(s)
+	return out
+
+
+# One box, into the room the site says it is in: a rack slot if that room has
+# a frame with space in it, and the floor if it has not.
+func _place_one(s: int) -> void:
+	for d in site_devs():
+		if d.i != s:
+			continue
+		var room: int = d.room
+		if room < 0 or room >= rooms.size():
+			return
+		var nu: int = DEV_U.get(d.kindname, 1)
+		var slot := {}
+		for i in racks_in_fill_order(room):
+			slot = _rack_slot(i, nu)
+			if not slot.is_empty():
+				break
+		if slot.is_empty():
+			var k: int = int(_on_floor.get(room, 0))
+			_on_floor[room] = k + 1
+			slot = _floor_slot(room, k, nu)
+		_add_device(d.name, -2, false, true, slot.mn, slot.size,
+			DEV_COL.get(d.kindname, Color("#2f343a")), slot.face, d.nports, d.i)
+		return
+
+
 # RUN A CABLE, in the building, between two boxes. The price and the length
 # come out of site_cable() off the building's own tray graph -- this only says
 # which two ports the player meant.
@@ -1435,10 +1565,12 @@ func _process(_dt: float) -> void:
 			t += "\ncart: " + str(cart.status)
 		if _cable_from >= 0:
 			t += "\nspool in hand"
-		if near >= 0:
+		if carrying >= 0:
+			t += "\ncarrying kit in both hands   [G] put it down here"
+		elif near >= 0:
 			t += "\n%s in reach   [F] serial lead   [H] HDMI lead   [U] unplug" % devices[near].name
 			if int(devices[near].get("site", -1)) >= 0:
-				t += "   [C] cable"
+				t += "   [C] cable   [G] pick up"
 		if car != null:
 			t += "\nin the lift: press a floor number.  in service: %s" % str(car.serviced())
 		elif landing != null:
@@ -1459,6 +1591,18 @@ func _process(_dt: float) -> void:
 	if Input.is_key_pressed(KEY_C) and not _c_down and near >= 0:
 		print(cable_here(near))
 	_c_down = Input.is_key_pressed(KEY_C)
+	if Input.is_key_pressed(KEY_G) and not _g_down:
+		print(carry_here(near))
+	_g_down = Input.is_key_pressed(KEY_G)
+	# WHAT YOU ARE CARRYING IS IN THE ROOM YOU ARE IN, at every step of the
+	# walk -- not in an inventory that resolves when you put it down. The
+	# site is told the moment you cross the threshold, so `show` from a
+	# terminal in the middle of a carry says where the box really is.
+	if carrying >= 0:
+		var r := player_room()
+		if r != NOROOM and r != _carry_room:
+			_carry_room = r
+			site("move %d #%d" % [carrying, r])
 	if Input.is_key_pressed(KEY_E) and not _e_down and landing != null:
 		print(landing.call_to(player_floor()))
 	_e_down = Input.is_key_pressed(KEY_E)
@@ -1490,6 +1634,7 @@ var _f_down := false
 var _h_down := false
 var _u_down := false
 var _c_down := false
+var _g_down := false
 var _e_down := false
 var _o_down := false
 var _num_down := [false, false, false, false, false, false, false, false, false, false]

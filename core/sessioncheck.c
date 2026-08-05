@@ -61,8 +61,8 @@ static void check_verbs(int *passed, int *total)
        ses.s.ndev == 1 && ses.s.dev[ses.s.uplink].room == ses.room);
 
     static const char *VERB[] = {
-        "where", "look", "map", "go", "lift", "open", "buy", "spool",
-        "plug", "unplug", "cable", "uncable", "show", "links", "money",
+        "where", "look", "map", "go", "lift", "open", "buy", "carry", "drop",
+        "spool", "plug", "unplug", "cable", "uncable", "show", "links", "money",
         "demand", "rooms", "frames", "help", NULL
     };
     bool all = true;
@@ -169,16 +169,24 @@ static void check_reach(int *passed, int *total)
     if (!session_start(&ses, GATE_SEED, 100000)) { ck("a session starts", false); return; }
     Buf o = {0};
 
+    /* Ordered, delivered, and carried to the MDF, which is the only way a
+     * box gets anywhere. check_goods below is where that is picked apart;
+     * here it is just the setup for reaching one. */
+    int mdf = ses.room;
     say(&ses, "buy switch8 sw1", &o);
-    ck("kit is installed where you are standing, and charged for",
-       ses.s.ndev == 2 && ses.s.dev[1].room == ses.room && ses.s.money == 100000 - 120);
+    ck("kit is charged for and delivered to goods in, not to your feet",
+       ses.s.ndev == 2 && ses.s.money == 100000 - 120 &&
+       ses.s.dev[1].room == (uint16_t)site_goods_room(&ses.s) &&
+       ses.s.dev[1].room != (uint16_t)ses.room);
 
-    ck("naming a room instead is refused and says to walk there",
-       has(say(&ses, "buy switch8 f2.comms", &o), "room you are standing in") &&
-       ses.s.ndev == 2);
+    say(&ses, "go goods", &o);
+    say(&ses, "carry sw1", &o);
+    say(&ses, "go mdf", &o);
+    say(&ses, "drop", &o);
+    ck("and carrying it to the MDF is what puts it in the MDF",
+       ses.room == mdf && ses.s.dev[1].room == (uint16_t)mdf);
 
     /* Take a walk, and everything about that switch goes out of reach. */
-    int mdf = ses.room;
     for (int i = 0; i < ses.b.nrooms; i++)
         if (ses.b.rooms[i].floor == 0 && ses.b.rooms[i].kind == RM_LOBBY)
             { char c[32]; snprintf(c, sizeof c, "go #%d", i); say(&ses, c, &o); break; }
@@ -213,6 +221,119 @@ static void check_reach(int *passed, int *total)
     session_end(&ses);
 }
 
+/* ------------------------------------------------------------- goods in */
+/* THE CLAIM: "it arrives, and it arrives SOMEWHERE -- goods in, not your
+ * inventory. You carry it to where it needs to go."
+ *
+ * That was in the README for a fortnight while `buy` installed the box in
+ * whatever room the player happened to be standing in, which made the floor
+ * plan scenery: every room was equally close to the loading bay, so where
+ * you put a switch cost nothing but copper. These checks are the difference
+ * between the two games, and the last one is the point of the mechanic --
+ * carrying a box nearer really is cheaper, in metres of cable, measured by
+ * the building rather than asserted here. */
+static void check_goods(int *passed, int *total)
+{
+    P = passed; T = total;
+    printf("\ngoods in: a delivery is the start of a job\n");
+    Session ses;
+    if (!session_start(&ses, GATE_SEED, 100000)) { ck("a session starts", false); return; }
+    Buf o = {0};
+
+    int goods = site_goods_room(&ses.s);
+    ck("the tower has a goods in, on the ground floor, and it is not the MDF",
+       goods >= 0 && ses.b.rooms[goods].kind == RM_GOODS &&
+       ses.b.rooms[goods].floor == 0 && goods != ses.room);
+
+    /* Order it from the top of the building. It still lands downstairs. */
+    say(&ses, "open", &o);
+    say(&ses, "lift 2", &o);
+    say(&ses, "go comms", &o);
+    int up = ses.room;
+    const char *bought = say(&ses, "buy switch24 core", &o);
+    int d = site_dev_by_name(&ses.s, "core");
+    ck("a box ordered from floor two is delivered to the ground floor",
+       d > 0 && ses.s.dev[d].room == (uint16_t)goods && ses.room == up &&
+       has(bought, "goods in"));
+    ck("and the answer says how far away that is, in metres of building",
+       has(bought, "m from here") && has(bought, "carry core"));
+
+    ck("it is not where you are, so you cannot reach it",
+       has(say(&ses, "addr core 10.0.1.1/24", &o), "and you are not"));
+    ck("nor carry it from another floor",
+       has(say(&ses, "carry core", &o), "and you are not") && ses.carrying < 0);
+
+    /* Fetch it. */
+    say(&ses, "go goods", &o);
+    ck("`go goods` finds the delivery from anywhere in the tower",
+       ses.room == goods);
+    ck("and it is in that room, which is where `look` says it is",
+       has(say(&ses, "look", &o), "core") && has(o.p, "roller door"));
+
+    long walked = ses.walked;
+    ck("you can pick it up", has(say(&ses, "carry core", &o), "you pick core up") &&
+       ses.carrying == d);
+
+    say(&ses, "buy switch8 spare", &o);
+    int sp = site_dev_by_name(&ses.s, "spare");
+    ck("but only one at a time: both hands are on it",
+       has(say(&ses, "carry spare", &o), "both your hands") && ses.carrying == d);
+    ck("and a drum of cable is a thing you cannot hold as well",
+       has(say(&ses, "spool cat6", &o), "both hands too") && ses.spool_kind < 0);
+    ck("nor plug a lead into anything while holding it",
+       has(say(&ses, "plug spare", &o), "Put it down first"));
+
+    /* Carry it up. The metres are the building's, not this file's. */
+    say(&ses, "lift 2", &o);
+    const char *w = say(&ses, "go comms", &o);
+    ck("it goes where you go, and the walk is charged",
+       has(w, "carrying core") && ses.s.dev[d].room == (uint16_t)ses.room &&
+       ses.walked > walked);
+
+    ck("`drop` is what puts it in the room",
+       has(say(&ses, "drop", &o), "is in f2 comms cupboard") &&
+       ses.carrying < 0 && ses.s.dev[d].room == (uint16_t)up);
+
+    /* THE MEASUREMENT. The same cable, from where the van left it and from
+     * where the player carried it to. Nothing here decides which is shorter:
+     * bld_cable_all() does, on this tower's own tray. */
+    int mdf = bld_find(&ses.b, 0, RM_MDF);
+    int from_goods = site_metres(&ses.s, goods, mdf);
+    int from_comms = site_metres(&ses.s, up, mdf);
+    printf("    a run to the MDF is %d m from goods in and %d m from the "
+           "cupboard it was carried to\n", from_goods, from_comms);
+    ck("and where it ended up is what the copper is measured from",
+       from_goods > 0 && from_comms > 0 && from_goods != from_comms);
+
+    /* A box on the end of a cable does not move, and that is the object
+     * rather than a rule: the cable is bought, laid and in the socket. */
+    say(&ses, "go mdf", &o);
+    say(&ses, "spool cat6", &o);
+    say(&ses, "plug uplink:0", &o);
+    say(&ses, "go core", &o);
+    say(&ses, "plug core:0", &o);
+    ck("a cable comes up between the handoff and the box that was carried up",
+       ses.s.nlink == 1);
+    /* The drum is still in your hands after a run: put it back, or the
+     * refusal you get is about the drum and not about the box. */
+    say(&ses, "spool back", &o);
+    ck("and now it will not be picked up: there is a cable in it",
+       has(say(&ses, "carry core", &o), "cable in it") && ses.carrying < 0);
+    ck("`uncable` frees it, and it can be carried again",
+       has(say(&ses, "uncable 0", &o), "pulled out") &&
+       has(say(&ses, "carry core", &o), "you pick core up"));
+
+    /* And the one thing in the building that was never bought. */
+    say(&ses, "drop", &o);
+    say(&ses, "go mdf", &o);
+    ck("the ISP's handoff is not yours to carry anywhere",
+       has(say(&ses, "carry uplink", &o), "not yours to move"));
+
+    (void)sp;
+    buf_free(&o);
+    session_end(&ses);
+}
+
 /* --------------------------------------------- the whole build, blind */
 /* THE ONE THAT MATTERS. If this cannot be done over a socket then the game
  * cannot be playtested, and D23 says that means it will rot. */
@@ -224,10 +345,18 @@ static void check_build(int *passed, int *total)
     if (!session_start(&ses, GATE_SEED, 100000)) { ck("a session starts", false); return; }
     Buf o = {0};
 
+    /* THE WHOLE JOB, and the first six lines of it are a delivery being
+     * fetched. Three boxes, three trips, because a person carries one box:
+     * this is the shape the README describes and it has to be typeable by
+     * somebody who cannot see the building. */
     static const char *SCRIPT[] = {
         "buy router edge",
         "buy switch24 core",
         "buy server files",
+        "go goods",
+        "carry edge",  "go mdf", "drop",
+        "go goods", "carry core", "go mdf", "drop",
+        "go goods", "carry files", "go mdf", "drop",
         "spool cat6",
         "plug uplink:0", "plug edge:0",
         "plug edge:1",   "plug core:0",
@@ -247,7 +376,8 @@ static void check_build(int *passed, int *total)
             clean = false;
         }
     }
-    ck("fifteen lines of text, typed by somebody who cannot see, build it", clean);
+    ck("a delivery fetched, cabled and configured by somebody who cannot see",
+       clean);
 
     ck("every link came up", ses.s.nlink == 3 &&
        site_link_state(&ses.s, 0) == PORT_UP &&
@@ -306,6 +436,7 @@ int session_selfcheck(int *passed, int *total)
     check_verbs(passed, total);
     check_walking(passed, total);
     check_reach(passed, total);
+    check_goods(passed, total);
     check_build(passed, total);
     return 0;
 }

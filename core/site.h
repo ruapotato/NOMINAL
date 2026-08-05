@@ -87,6 +87,8 @@ typedef enum {
     SITE_ESPACE,      /* the site is full: no more devices or cables        */
     SITE_EMONEY,      /* not enough money                                   */
     SITE_EIFACE,      /* no such interface, or it is not that kind of box   */
+    SITE_ECABLED,     /* it has a cable in it: you cannot walk off with it  */
+    SITE_EFIXED,      /* the ISP's handoff is screwed to somebody's wall    */
     SITE_ERR_COUNT
 } SiteErr;
 const char *site_err_text(int e);
@@ -150,8 +152,32 @@ void site_credit(Site *s, long amount);
  * absent from here, which is the rule that keeps the game testable. */
 
 /* Put a box in a room. Charges for it. Returns the device, or -1 with
- * s->err set. */
+ * s->err set. THE PRIMITIVE, not the game: nothing a player types reaches
+ * this with a room of their choosing, because kit is delivered and carried.
+ * The gates below build worlds with it; site_order() is what play uses. */
 int  site_install(Site *s, int kind, int room, const char *name);
+
+/* --------------------------------------------------------- goods in */
+/* WHERE A DELIVERY LANDS. Not your inventory: a room, on the ground floor,
+ * with a roller door -- and the generator guarantees one (BC_PROGRAM fails a
+ * tower that has nowhere to take a delivery). The lobby is the fallback, and
+ * it is where a driver leaves a pallet when nobody answers the bell. */
+int  site_goods_room(const Site *s);
+/* Order kit. It is charged for, and it arrives in goods in, however many
+ * floors away from the person who ordered it that happens to be. Returns the
+ * device, or -1 with s->err set. */
+int  site_order(Site *s, int kind, const char *name);
+/* Carry it somewhere else. The same box, a different room -- the walk is the
+ * cost, and the building is what measures it.
+ *
+ * REFUSED WHILE ANYTHING IS PLUGGED INTO IT. That is not a rule about
+ * difficulty; it is the shape of the object. A box on the end of a cable
+ * does not move without the cable coming out, so `uncable` first, and pay
+ * for the copper again when you have decided where the thing lives. */
+bool site_move(Site *s, int dev, int room);
+/* Is there a cable in it? What makes site_move refuse, asked separately so a
+ * view can grey the action out rather than let a player try it. */
+bool site_dev_cabled(const Site *s, int dev);
 /* Run a cable between two ports. The length is the tray route through the
  * building and the price is by the metre. A run past what the cable can
  * carry is NOT refused -- it is laid, it is paid for, and it does not come

@@ -238,9 +238,16 @@ static bool walk_to(Session *ses, int dst, Buf *out, bool quiet)
     ses->walked += metres;
     int was = here_floor(ses);
     ses->room = dst;
+    /* WHAT YOU ARE CARRYING COMES WITH YOU, and it is in this room now --
+     * not in a pocket, not in an inventory. `look` in here shows it because
+     * it is here, which is the same reason `look` in goods in showed it
+     * before you picked it up. */
+    if (ses->carrying >= 0) site_move(&ses->s, ses->carrying, dst);
     if (!quiet) {
         buf_printf(out, "you walk %d m to %s", metres, w);
         if (ses->b.rooms[dst].floor != was) buf_puts(out, ", by the stairs");
+        if (ses->carrying >= 0)
+            buf_printf(out, ", carrying %s", ses->s.dev[ses->carrying].name);
         buf_puts(out, ".\n");
     }
     return true;
@@ -288,8 +295,15 @@ static void do_look(Session *ses, Buf *out)
     for (int i = 0; i < ses->s.ndev; i++) if (ses->s.dev[i].room == ses->room) {
         if (!n++) buf_puts(out, "  kit in this room:\n");
         dev_line(ses, i, out);
+        if (i == ses->carrying)
+            buf_puts(out, "      -- and it is in your hands, not on the floor\n");
     }
     if (!n) buf_puts(out, "  there is no kit in this room.\n");
+    /* GOODS IN IS WHERE ORDERS LAND, and a player who has not read the help
+     * finds that out by standing in it. */
+    if (rm->kind == RM_GOODS)
+        buf_puts(out, "  the roller door. Anything you order is left here, and "
+                      "carried out by you.\n");
 
     /* The ways out, because a player who cannot see the walls has to be told
      * where the doors are before `go` means anything. */
@@ -325,6 +339,9 @@ static void do_where(Session *ses, Buf *out)
     for (int i = 0; i < ses->s.ndev; i++) if (ses->s.dev[i].room == ses->room) n++;
     buf_printf(out, "%d box%s in reach, %d of %d floors in service\n",
                n, n == 1 ? "" : "es", ses->floors, ses->b.floors);
+    if (ses->carrying >= 0)
+        buf_printf(out, "you are carrying %s, in both hands\n",
+                   ses->s.dev[ses->carrying].name);
     if (ses->plugged >= 0)
         buf_printf(out, "the cart's %s lead is in %s\n", ses->hdmi ? "hdmi" : "serial",
                    ses->s.dev[ses->plugged].name);
@@ -382,9 +399,20 @@ static void do_help(const Session *ses, Buf *out)
         "  desk               walk back and sit down at your own workstation,\n"
         "                     where the support tickets are\n"
         "\n"
-        "BUYING. Kit is installed where you are standing.\n"
+        "BUYING, AND CARRYING IT IN. Kit is delivered to GOODS IN on the\n"
+        "ground floor -- not to your hands and not to the room you are\n"
+        "standing in. Getting it where it goes is a walk, and the walk is\n"
+        "metres of real building.\n"
         "  buy <kind> [name]  switch8 120   switch24 400   router 650\n"
         "                     pc 480        server 1350\n"
+        "  go goods           where the van left it\n"
+        "  carry <box>        pick it up. One box: both hands are on it, so\n"
+        "                     no drum of cable and no lead while you have it\n"
+        "  go <room>          walk it there. It goes where you go\n"
+        "  drop               put it down. That is where it lives, and every\n"
+        "                     metre of copper is measured from there\n"
+        "                     -- a box with a cable in it will not be picked\n"
+        "                     up again until you `uncable` it\n"
         "\n"
         "CABLING, which is four things a person does and four things you type:\n"
         "  spool cat6         take a drum off the shelf. cat5e, cat6, fibre\n"
@@ -453,6 +481,9 @@ static void do_lift(Session *ses, int f, Buf *out)
     if (from < 0 || to < 0) { buf_puts(out, "there is no lift in this building.\n"); return; }
     if (from != ses->room && !walk_to(ses, from, out, false)) return;
     ses->room = to;
+    /* THE LIFT IS WHY ANYBODY PUTS A SWITCH ON THE EIGHTH FLOOR. What is in
+     * your hands rides up in it with you. */
+    if (ses->carrying >= 0) site_move(&ses->s, ses->carrying, to);
     buf_printf(out, "floor %d.\n", f);
     do_look(ses, out);
 }
@@ -478,6 +509,14 @@ static void do_open(Session *ses, Buf *out)
 static void do_plug(Session *ses, const char *what, bool hdmi, Buf *out)
 {
     int d;
+    /* BOTH HANDS ARE ON THE BOX. A lead, a drum and a switch are three
+     * things and a person has two hands; this is the only thing stopping a
+     * player carrying a server round the building while typing at it. */
+    if (ses->carrying >= 0) {
+        buf_printf(out, "you are carrying %s in both hands. Put it down first: "
+                        "`drop`.\n", ses->s.dev[ses->carrying].name);
+        return;
+    }
     if (!need_here(ses, what, &d, out)) return;
     const SiteDev *dev = &ses->s.dev[d];
     if (hdmi) {
@@ -546,6 +585,11 @@ static CableKind kind_arg(const char *a, bool *ok)
 
 static void do_spool(Session *ses, int n, char *t[MAXTOK], Buf *out)
 {
+    if (n >= 2 && ses->carrying >= 0 && strcmp(t[1], "back") != 0) {
+        buf_printf(out, "you are carrying %s. A drum of cable takes both hands "
+                        "too: `drop` first.\n", ses->s.dev[ses->carrying].name);
+        return;
+    }
     /* `spool` on its own: what is in your hands. */
     if (n < 2) {
         if (ses->spool_kind < 0) {
@@ -815,6 +859,7 @@ bool session_start(Session *ses, uint64_t seed, long budget)
     ses->plugged = -1;
     ses->spool_kind = -1;
     ses->cab_dev = -1;
+    ses->carrying = -1;
     if (!bld_generate(&ses->b, seed)) return false;
     if (!site_new(&ses->s, &ses->b, seed, budget)) { bld_free(&ses->b); return false; }
     ses->room = bld_find(&ses->b, 0, RM_MDF);
@@ -1036,22 +1081,106 @@ bool session_line(Session *ses, const char *line, Buf *out)
             buf_printf(out, "no such kit: %s. switch8 switch24 router pc server\n", t[1]);
             return true;
         }
-        /* `install <kind> <room>` is site_cmd's spelling and it would put a
-         * box in a room the player is not in. You install kit where you are
-         * standing; that is the whole point of having a building. */
+        /* A room in the order is somebody expecting delivery to the floor
+         * they are on. Say where it really goes rather than silently naming
+         * the box after the room they typed. */
         if (n > 2 && site_room_by_name(&ses->s, t[2]) >= 0) {
-            buf_printf(out, "kit goes in the room you are standing in. Walk there "
-                            "first:\n  go %s\n  buy %s\n", t[2], t[1]);
+            buf_printf(out, "kit is not delivered to a room of your choosing. It "
+                            "comes to goods in\n  and somebody carries it. `buy %s`, "
+                            "then `go goods`, `carry`, walk, `drop`.\n", t[1]);
             return true;
         }
-        int d = site_install(&ses->s, kind, ses->room, n > 2 ? t[2] : NULL);
+        int d = site_order(&ses->s, kind, n > 2 ? t[2] : NULL);
         if (d < 0) { buf_printf(out, "refused: %s\n", site_err_text(ses->s.err)); return true; }
+        int goods = ses->s.dev[d].room;
         char w[48];
-        room_label(ses, ses->room, w, sizeof w);
-        buf_printf(out, "%s: a %s in %s. %d port%s, %d paid, %ld left.\n",
-                   ses->s.dev[d].name, site_kind_name(kind), w, ses->s.dev[d].nports,
+        room_label(ses, goods, w, sizeof w);
+        buf_printf(out, "%s: a %s, %d port%s, %d paid, %ld left.\n",
+                   ses->s.dev[d].name, site_kind_name(kind), ses->s.dev[d].nports,
                    ses->s.dev[d].nports == 1 ? "" : "s", site_kind_price(kind),
                    ses->s.money);
+        /* WHERE IT IS, AND HOW FAR THAT IS FROM YOU. The delivery is the
+         * start of a job, not the end of one, and the metres are the job. */
+        buf_printf(out, "the van leaves it in %s", w);
+        if (goods == ses->room) buf_puts(out, ", which is where you are standing.\n");
+        else {
+            double *dm = nom_alloc(sizeof(double) * (size_t)ses->b.nrooms);
+            double m = bld_walk_all(&ses->b, ses->room, dm) ? dm[goods] : BLD_INF;
+            nom_free(dm);
+            if (m < BLD_INF) buf_printf(out, ", %d m from here.\n", (int)(m + 0.5));
+            else buf_puts(out, ".\n");
+            buf_printf(out, "  `go goods`, `carry %s`, walk it to where it goes, "
+                            "`drop`.\n", ses->s.dev[d].name);
+        }
+        return true;
+    }
+    /* --------------------------------------------------- carrying it there */
+    /* The four words that turn a delivery into a rack: carry, walk, drop.
+     * Nothing here is a teleport and nothing here is free -- walk_to charges
+     * the metres, one box at a time, because both hands are on it. */
+    /* `lift` is the lift, and it is handled above: a verb that meant both
+     * "ride to floor 3" and "pick that switch up" would be one typo away
+     * from a walk nobody asked for. */
+    if (strcmp(t[0], "carry") == 0 || strcmp(t[0], "pick") == 0) {
+        int at = (strcmp(t[0], "pick") == 0 && n > 2 &&
+                  strcmp(t[1], "up") == 0) ? 2 : 1;
+        if (n <= at) {
+            if (ses->carrying >= 0)
+                buf_printf(out, "you are carrying %s. `drop` puts it down here.\n",
+                           ses->s.dev[ses->carrying].name);
+            else
+                buf_puts(out, "carry what? `look` says what is in this room. Kit is "
+                              "delivered to\n  goods in, so that is usually where it "
+                              "is: `go goods`.\n");
+            return true;
+        }
+        int d;
+        if (!need_here(ses, t[at], &d, out)) return true;
+        if (ses->carrying == d) {
+            buf_printf(out, "you are already carrying %s.\n", ses->s.dev[d].name);
+            return true;
+        }
+        if (ses->carrying >= 0) {
+            buf_printf(out, "both your hands are on %s. Put it down first: `drop`.\n",
+                       ses->s.dev[ses->carrying].name);
+            return true;
+        }
+        if (ses->spool_kind >= 0) {
+            buf_puts(out, "you have a drum of cable in your hands. `spool back` "
+                          "puts it on the shelf.\n");
+            return true;
+        }
+        if (!site_move(&ses->s, d, ses->room)) {
+            buf_printf(out, "refused: %s\n", site_err_text(ses->s.err));
+            if (ses->s.err == SITE_ECABLED)
+                buf_printf(out, "  %s is on the end of a cable. `links` says which "
+                                "one, `uncable <n>` pulls\n  it out -- and the copper "
+                                "is paid for, so moving a box costs the run.\n",
+                           ses->s.dev[d].name);
+            if (ses->s.err == SITE_EFIXED)
+                buf_puts(out, "  the handoff is the ISP's, on their wall, in their "
+                              "conduit.\n");
+            return true;
+        }
+        ses->carrying = d;
+        buf_printf(out, "you pick %s up. It goes where you go until you `drop` it.\n",
+                   ses->s.dev[d].name);
+        return true;
+    }
+    if (strcmp(t[0], "drop") == 0 || strcmp(t[0], "put") == 0 ||
+        strcmp(t[0], "place") == 0) {
+        if (ses->carrying < 0) {
+            buf_puts(out, "you are not carrying anything.\n");
+            return true;
+        }
+        int d = ses->carrying;
+        ses->carrying = -1;
+        site_move(&ses->s, d, ses->room);
+        char w[48];
+        room_label(ses, ses->room, w, sizeof w);
+        buf_printf(out, "%s is in %s now. %d port%s, and nothing in any of them "
+                        "yet.\n", ses->s.dev[d].name, w, ses->s.dev[d].nports,
+                   ses->s.dev[d].nports == 1 ? "" : "s");
         return true;
     }
     if (strcmp(t[0], "uncable") == 0 && n < 2) {

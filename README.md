@@ -19,8 +19,12 @@ That is the whole idea. Everything else follows from it.
    floors, more tenants, more demand.
 2. **Demand outgrows the infrastructure.** A floor of accountants wants a file
    server. A trading office wants latency. Somebody wants their own subnet.
-3. **You buy hardware.** It arrives, and it arrives *somewhere* — goods in, not
-   your inventory. You carry it to where it needs to go.
+3. **You buy hardware.** It arrives, and it arrives *somewhere* — goods in on
+   the ground floor, not your inventory. You carry it to where it needs to go,
+   one box at a time because both hands are on it, and the walk is metres of
+   real building. Put it down and that is where it lives: every metre of
+   copper afterwards is measured from there, and a box with a cable in it
+   will not be picked up again until you unplug it.
 4. **You make it physical.** Rack it, power it, run copper to the switch. You
    have a spool: cable costs by the metre and you choose the route. A permanent
    jack is tidier and costs by distance to install.

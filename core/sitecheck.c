@@ -446,10 +446,17 @@ static void check_demand(const Building *b)
 static void check_shell(const Building *b)
 {
     printf("\nthe whole thing, over a pipe\n");
+    /* ORDERED AND CARRIED, because that is what buying hardware is. Every
+     * one of these boxes is delivered to goods in on the ground floor and
+     * moved from there; `move` is the line that stands for the walk, and
+     * core/sessioncheck.c is where the walk itself is charged. */
     static const char *SCRIPT[] = {
-        "install switch8 f2.comms sw2",
-        "install router f0.mdf rt",
-        "install pc f2.office pc1",
+        "order switch8 sw2",
+        "move sw2 f2.comms",
+        "order router rt",
+        "move rt f0.mdf",
+        "order pc pc1",
+        "move pc1 f2.office",
         "cable rt:0 uplink:0 cat6",
         "cable rt:1 sw2:0 cat6",
         "cable pc1:0 sw2:1 cat6",
@@ -468,7 +475,8 @@ static void check_shell(const Building *b)
     Buf o = {0};
     for (int i = 0; SCRIPT[i]; i++)
         if (!site_cmd(&s, SCRIPT[i], &o)) understood = false;
-    ck("thirteen lines of text build a working network", understood);
+    ck("nineteen lines of text order it, carry it in and make it work",
+       understood);
 
     buf_clear(&o);
     site_cmd(&s, "ping pc1 198.51.100.1", &o);
