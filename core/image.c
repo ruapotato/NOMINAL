@@ -580,7 +580,7 @@ static const Package PKG_KERNEL = {
         "   MISSING on the versioned file, which is the link left dangling. Reinstall\n"
         "   this package; mkinitrd cannot help, because it never writes the links.\n",
         0644, NULL },
-    }, 13
+    }, 14
 };
 
 /* The userland that actually runs. */
@@ -2035,7 +2035,7 @@ static const Package PKG_SOUNDS = {
 };
 
 static const Package PKG_SHELL = {
-    "nomsh", "1.9", "the shell and the base tools",
+    "nomsh", "1.10", "the shell and the base tools",
     {
       { "/bin/rc",    NULL, 0755, NULL },
       { "/bin/sh",    NULL, 0755, NULL },
@@ -2103,6 +2103,12 @@ static const Package PKG_SHELL = {
        * missing, the answer is to build it, not to explain its absence. */
       { "/usr/bin/find", NULL, 0755, NULL },
       { "/bin/netstat",  NULL, 0755, NULL },
+      /* netstat says what the machine BELIEVES about the network. ping is
+       * the only program on it that makes the machine TRY, and it is the
+       * first thing anybody reaches for -- the management line beside the
+       * rack had a ping verb, the operating system did not, and the shell is
+       * where a sysadmin types it first. */
+      { "/bin/ping",     NULL, 0755, NULL },
       /* `init 6` worked and `reboot` did not. Nobody types `init 6` first. */
       { "/sbin/reboot",   NULL, 0755, NULL },
       { "/sbin/halt",     NULL, 0755, NULL },
@@ -2113,7 +2119,7 @@ static const Package PKG_SHELL = {
        * only the second name for it. */
       { "/sbin/telinit", NULL, 0755, NULL },
       { "/usr/share/doc/nomsh/README",
-        "nomsh 1.9 -- the shell and the base tools.\n"
+        "nomsh 1.10 -- the shell and the base tools.\n"
         "\n"
         "/bin/sh is the interactive shell. /bin/rc is a different program with a\n"
         "different job: rc runs SCRIPT FILES during the boot and knows five verbs\n"
@@ -2153,8 +2159,15 @@ static const Package PKG_SHELL = {
       { "/usr/share/doc/nomsh/CHANGELOG",
         "nomsh CHANGELOG -- newest first.\n"
         "\n"
-        "1.9  -- current.\n"
-        "       seq and rev. The shell has `for` and no arithmetic, so until seq\n"
+        "1.10 -- current. ping. Every other network tool on this machine reads\n"
+        "       state -- what address the card HAS, what the routing table SAYS,\n"
+        "       who has answered an arp. ping is the only one that makes the\n"
+        "       machine try, and it reports the six answers the stack really\n"
+        "       produces rather than collapsing them into `no reply`: a router\n"
+        "       with no route, a last hop with no arp answer, a ttl that ran out\n"
+        "       and a packet that never left this box are four different repairs.\n"
+        "\n"
+        "1.9  -- seq and rev. The shell has `for` and no arithmetic, so until seq\n"
         "       there was no way to write a loop over a count, and therefore no way\n"
         "       to demonstrate inode exhaustion to yourself on a machine that was\n"
         "       not already broken.\n"
@@ -2179,7 +2192,7 @@ static const Package PKG_SHELL = {
         "\n"
         "1.4  -- find and netstat, because everybody reached for them and they were\n"
         "       not there.\n", 0644, NULL },
-    }, 47
+    }, 48
 };
 
 
@@ -3003,6 +3016,91 @@ static const Package PKG_MAN = {
         "\n"
         "puts every one of them back.\n",
         0644, NULL },
+      /* THE PAGE THAT MATTERS MOST ON A NETWORK. ping is the only tool that
+       * makes the machine try, and the value is entirely in the fact that it
+       * answers six different ways. A page that said "it pings" would leave
+       * the player treating four different repairs as one dead end. */
+      { "/usr/share/man/ping",
+        "ping(1)\n\n"
+        "  ping [-c count] <address or name>     three by default\n"
+        "\n"
+        "A real echo request, out of this machine's card, down whatever cable\n"
+        "is in it. Everything else here reads state -- `netstat -i` says what\n"
+        "address the card HAS, `-r` what the table SAYS, `-A` who has\n"
+        "answered before. This is the one that tries.\n"
+        "\n"
+        "WHAT IT CAN SAY, and each line is a different repair:\n"
+        "\n"
+        "  reply ... time=N ms          it works.\n"
+        "  no answer                    it left this machine and nothing came\n"
+        "                               back. A filter dropping it, or a box\n"
+        "                               that is not running. A pristine machine\n"
+        "                               ships `policy drop` and no rule for\n"
+        "                               icmp, so it will not answer one --\n"
+        "                               `netstat -F` on the far end, if you can\n"
+        "                               reach it, and nft(8) for the rule.\n"
+        "  destination net unreachable  a ROUTER on the path had no route for\n"
+        "                               it and said so. The fault is past your\n"
+        "                               gateway, not on this box.\n"
+        "  destination host unreachable the last hop got no arp answer: that\n"
+        "                               address is on that wire and nothing on\n"
+        "                               it holds it. Usually a typo in an\n"
+        "                               address or a mask.\n"
+        "  time exceeded in transit     the ttl ran out. Two routers are\n"
+        "                               pointing at each other.\n"
+        "  network is unreachable       nothing was SENT: this machine's own\n"
+        "                               routing table has nothing to try.\n"
+        "                               `netstat -r`, and check the gateway.\n"
+        "  interface ... is down        no carrier or no address, so again\n"
+        "                               nothing was sent. `netstat -P`.\n"
+        "\n"
+        "The last two are local and the first four are not, which is the first\n"
+        "cut to make: they tell you whether to keep looking at this machine.\n"
+        "\n"
+        "A NAME IS RESOLVED FIRST, and its failure is reported separately, so\n"
+        "`cannot resolve` is never confused with `no answer` -- a broken\n"
+        "resolver and a broken route look identical otherwise.\n", 0644, NULL },
+      { "/usr/share/man/nft",
+        "nft(8)\n\n"
+        "  /usr/sbin/nft      reads /etc/nftables.conf at startup and LOADS it\n"
+        "\n"
+        "The rules are real: a packet that matches a drop is discarded on the\n"
+        "way in, before anything above IP sees it, and `netstat -F` prints the\n"
+        "running ruleset with what each rule has actually dropped. The file on\n"
+        "disk is what the machine is SUPPOSED to do; that is what it is doing.\n"
+        "The two drift the moment somebody edits the file and does not reload\n"
+        "it -- `svc reload nftables`, or `kill -HUP`.\n"
+        "\n"
+        "WHAT IT PARSES. A small subset, and this is all of it:\n"
+        "\n"
+        "  policy drop            what happens to a packet no rule matched\n"
+        "  policy accept\n"
+        "  tcp dport { 22, 80 } accept      a set of ports\n"
+        "  tcp dport 8080 drop              one port\n"
+        "  udp dport 53 accept\n"
+        "  icmp accept                      ping, and the errors that carry a\n"
+        "                                   diagnosis: unreachable, time\n"
+        "                                   exceeded\n"
+        "  icmp drop\n"
+        "  ip protocol icmp accept          the same rule, spelled in full\n"
+        "  tcp accept                       every port of one protocol\n"
+        "\n"
+        "The first rule that matches decides, in file order, and the policy is\n"
+        "applied last because that is what a policy is. A rule with no verdict\n"
+        "is skipped rather than guessed at.\n"
+        "\n"
+        "THE ONE THIS MACHINE SHIPS accepts tcp 22 and 80 and drops everything\n"
+        "else, and there is no connection tracking for anything but a socket\n"
+        "this machine already holds. So a pristine box will not answer a ping,\n"
+        "and that is not a fault: it is the ruleset, doing what it says. The\n"
+        "repair a real administrator makes is a line, not a policy:\n"
+        "\n"
+        "  sed -i \"s/tcp dport/icmp accept\\\\n    tcp dport/\" /etc/nftables.conf\n"
+        "  svc reload nftables\n"
+        "  netstat -F\n"
+        "\n"
+        "Turning the whole policy to accept works too, and opens every port on\n"
+        "the machine to do it.\n", 0644, NULL },
       { "/usr/share/man/rev",
         "rev(1)\n\n"
         "  rev [file ...]     reverse each line; with no file, stdin\n"
@@ -3018,7 +3116,7 @@ static const Package PKG_MAN = {
         "\n"
         "If that is not `cat /etc/hostname` then the pipe is what is wrong.\n",
         0644, NULL },
-    }, 12
+    }, 15
 };
 
 /* THE JOKE PACKAGE, built exactly like the serious ones.
@@ -3648,6 +3746,8 @@ void image_generated(const Machine *m, const char *path, Buf *out)
         buf_put(out, (const char *)GUEST_FIND, GUEST_FIND_LEN);
     else if (strcmp(path, "/bin/netstat") == 0)
         buf_put(out, (const char *)GUEST_NETSTAT, GUEST_NETSTAT_LEN);
+    else if (strcmp(path, "/bin/ping") == 0)
+        buf_put(out, (const char *)GUEST_PING, GUEST_PING_LEN);
     else if (strcmp(path, "/usr/bin/nomde") == 0)
         buf_put(out, (const char *)GUEST_NOMDE, GUEST_NOMDE_LEN);
     else if (strcmp(path, "/usr/bin/open") == 0)

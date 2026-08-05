@@ -98,24 +98,46 @@ static void install(void)
             else if (g_contains(t, "policy accept")) { policy_drop = 0; have_policy = 1; }
         }
 
+        /* WHICH PROTOCOL THIS LINE IS ABOUT. `icmp` is here because without
+         * it the only repair available for a box that would not answer a
+         * ping was turning the whole chain policy to accept -- which opens
+         * every port on the machine to fix one thing, and is not what any
+         * administrator would write. `ip protocol icmp` is the same rule
+         * spelled the long way, and both spellings appear in real rulesets. */
         int proto = 0;
-        char *r = word(t, "tcp");
-        if (r) proto = 6;
-        else { r = word(t, "udp"); if (r) proto = 17; }
+        char *r = word(t, "icmp");
+        if (r) proto = 1;
+        else if ((r = word(t, "tcp")) != 0) proto = 6;
+        else if ((r = word(t, "udp")) != 0) proto = 17;
+        else {
+            char *ip = word(t, "ip");
+            char *pr = ip ? word(ip, "protocol") : 0;
+            if (pr) {
+                if ((r = word(pr, "icmp")) != 0) proto = 1;
+                else if ((r = word(pr, "tcp")) != 0) proto = 6;
+                else if ((r = word(pr, "udp")) != 0) proto = 17;
+            }
+        }
         if (r) {
+            /* Accept unless the line says otherwise: an nftables rule with
+             * no verdict falls through, and treating a rule we could not
+             * read as a DROP would lock somebody out of a machine over a
+             * typo. */
+            int drop = g_contains(r, "drop") ? 1 : 0;
+            int verdict = drop || g_contains(r, "accept");
             char *d = word(r, "dport");
-            if (d) {
-                int drop = g_contains(d, "drop") ? 1 : 0;
-                /* Accept unless the line says otherwise: an nftables rule
-                 * with no verdict falls through, and treating a rule we
-                 * could not read as a DROP would lock somebody out of a
-                 * machine over a typo. */
-                if (!drop && !g_contains(d, "accept")) { *nl = save; q = *nl ? nl + 1 : nl; continue; }
+            if (d && verdict) {
                 for (;;) {
                     int p = next_port(&d);
                     if (p < 0) break;
                     rule(proto, p, drop);
                 }
+            } else if (!d && verdict) {
+                /* A whole protocol, every port of it. This is the only shape
+                 * icmp has -- it has no ports to name -- and it is what
+                 * `icmp accept` means. Port 0 in the kernel's filter is "any
+                 * port", so this is one rule and not sixty-five thousand. */
+                rule(proto, 0, drop);
             }
         }
         *nl = save; q = *nl ? nl + 1 : nl;
@@ -177,6 +199,18 @@ void _start(void)
      *   tcp dport { 22, 80 } accept    a set of ports
      *   tcp dport 8080 drop            one port
      *   udp dport 53 accept
+     *   icmp accept                    a protocol with no ports in it
+     *   ip protocol icmp accept        the same rule, spelled in full
+     *   tcp accept                     every port of one protocol
+     *
+     * ICMP IS NOT A LUXURY HERE. The shipped ruleset is `policy drop` plus
+     * two tcp ports, and there is no connection tracking beyond a socket
+     * this machine already holds -- so a pristine box does not answer a
+     * ping, and the echo REPLIES to its own pings are dropped on the way in
+     * too. That is honest and it is a good puzzle. What it must not be is a
+     * puzzle with one answer: without `icmp` the only repair this parser
+     * could express was flipping the whole policy to accept, which opens
+     * every port on the machine to fix one thing.
      *
      * Order matters and is preserved: the first rule that matches decides,
      * and the chain policy goes on the end, which is where a policy is. */

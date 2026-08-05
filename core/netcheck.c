@@ -22,6 +22,12 @@
 #include <string.h>
 #include "nom.h"
 #include "netstack.h"
+/* The last two checks boot a REAL machine and type at it, because the filter
+ * has two halves and the other one is a program. net_fw_add() is exercised
+ * above; nft(8) is what turns a line of somebody's config into a call to it,
+ * and a rule that parses and does not bite is worse than no rule at all. */
+#include "machine.h"
+#include "kernel.h"
 
 static int passed, total;
 
@@ -710,6 +716,120 @@ static void check_visible(void)
     net_free(n);
 }
 
+/* ------------------------------------------------- the filter, from inside */
+/* THE HALF THAT IS A PROGRAM. Everything in check_firewall() calls
+ * net_fw_add() directly. On a real machine nobody does that: they edit
+ * /etc/nftables.conf and reload the daemon, and what the filter then does is
+ * whatever nft(8) managed to parse. So this boots a machine, types at it, and
+ * asks the machine what it sees -- which is the only way to catch a rule that
+ * reads well and drops nothing.
+ *
+ * The shipped ruleset is `policy drop` plus tcp 22 and 80, so a pristine box
+ * does not answer a ping and its own echo replies are dropped on the way back
+ * in. That is a good puzzle and it stays. What is checked here is that it has
+ * more than one answer: `icmp accept` is the line an administrator would
+ * write, and it has to actually bite. */
+static Machine *NM;
+
+static const char *mrun(const char *line, Buf *o)
+{
+    buf_clear(o);
+    kernel_run(NM, line, o);
+    if (!o->len) buf_puts(o, "");
+    return o->p ? o->p : "";
+}
+
+static bool mhas(const char *line, const char *needle, Buf *o)
+{
+    return strstr(mrun(line, o), needle) != NULL;
+}
+
+/* Put a rule in front of the tcp line the ruleset already ships, reload, and
+ * hand back what `netstat -F` says the kernel is now running. */
+static const char *nft_rule(const char *rule, Buf *o)
+{
+    char cmd[256];
+    snprintf(cmd, sizeof cmd,
+             "sed -i \"s/tcp dport/%s\\n    tcp dport/\" /etc/nftables.conf", rule);
+    mrun(cmd, o);
+    mrun("svc reload nftables", o);
+    return mrun("netstat -F", o);
+}
+
+static void check_nft(void)
+{
+    printf("\nthe filter, as a machine really loads it\n");
+    Machine m;
+    memset(&m, 0, sizeof m);
+    machine_install(&m, 90210);
+    machine_boot(&m);
+    NM = &m;
+    Buf o = {0};
+    if (!m.boot.running) { ck("the machine boots", false); goto done; }
+
+    /* 10.0.2.2 is this machine's gateway and it answers an echo request.
+     * Whether THIS machine ever hears the answer is the filter's business. */
+    ck("a pristine box ships policy drop, and says so",
+       mhas("netstat -F", "any  any port    drop", &o) &&
+       strstr(o.p, "tcp  dport 22") && strstr(o.p, "tcp  dport 80"));
+
+    ck("so it cannot ping its own gateway: nothing comes back",
+       mhas("ping -c 1 10.0.2.2", "no answer", &o) &&
+       strstr(o.p, "1 sent, 0 received"));
+
+    ck("and nothing above IP was ever told -- the drop is silent",
+       !mhas("ping -c 1 10.0.2.2", "unreachable", &o));
+
+    const char *fw = nft_rule("icmp accept", &o);
+    ck("`icmp accept` becomes a real rule in the running filter",
+       strstr(fw, "icmp any port    accept") != NULL);
+
+    ck("and the box answers now, over the same wire and the same policy",
+       mhas("ping -c 1 10.0.2.2", "reply from 10.0.2.2", &o) &&
+       strstr(o.p, "1 sent, 1 received"));
+
+    ck("the rule counted what it let through", mhas("netstat -F", "icmp", &o) &&
+       strstr(o.p, "icmp any port    accept  matched 0") == NULL);
+
+    /* The policy is still drop. A player who wrote one line has not opened
+     * the machine up, which is the entire difference from the sledgehammer. */
+    ck("and the policy is still drop: one line is not `accept everything`",
+       mhas("netstat -F", "any  any port    drop", &o));
+
+    /* The long spelling, which is what a real ruleset usually carries. */
+    mrun("sed -i /icmp/d /etc/nftables.conf", &o);
+    fw = nft_rule("ip protocol icmp accept", &o);
+    ck("`ip protocol icmp accept` is the same rule spelled in full",
+       strstr(fw, "icmp any port    accept") != NULL &&
+       mhas("ping -c 1 10.0.2.2", "reply", &o));
+
+    /* And a verdict that goes the other way, which is the check that this is
+     * a parser and not a keyword that means "let icmp through". */
+    mrun("sed -i /icmp/d /etc/nftables.conf", &o);
+    fw = nft_rule("icmp drop", &o);
+    ck("`icmp drop` drops it, and the rule is what did it",
+       strstr(fw, "icmp any port    drop") != NULL &&
+       mhas("ping -c 1 10.0.2.2", "no answer", &o));
+
+    /* A protocol with no port named: every port of it. */
+    mrun("sed -i /icmp/d /etc/nftables.conf", &o);
+    fw = nft_rule("tcp accept", &o);
+    ck("`tcp accept` is one rule for every port of one protocol",
+       strstr(fw, "tcp  any port    accept") != NULL);
+
+    /* A line nobody can read is skipped, not guessed at. Treating an
+     * unreadable rule as a drop would lock a player out over a typo. */
+    mrun("sed -i /tcp/d /etc/nftables.conf", &o);
+    fw = nft_rule("icmp accpet", &o);
+    ck("a verdict nobody can read installs no rule at all",
+       strstr(fw, "icmp") == NULL);
+
+done:
+    buf_free(&o);
+    NM = NULL;
+    machine_free(&m);
+}
+
 int net_selfcheck(void)
 {
     passed = total = 0;
@@ -727,6 +847,7 @@ int net_selfcheck(void)
     check_http();
     check_determinism();
     check_visible();
+    check_nft();
     printf("\n%d/%d network checks pass\n", passed, total);
     return passed == total ? 0 : 1;
 }
