@@ -241,6 +241,8 @@ void site_dump(const Site *s, Buf *out);
 void site_dump_links(const Site *s, Buf *out);
 void site_dump_rooms(const Site *s, int floor, Buf *out);
 void site_dump_dev(Site *s, int dev, Buf *out);
+/* The same, minus the empty sockets. */
+void site_dump_dev_brief(Site *s, int dev, Buf *out);
 
 /* ONE LINE OF TEXT, ONE OPERATION. The whole game, over a pipe. Returns
  * false only when the line was not understood; a refusal is a true return

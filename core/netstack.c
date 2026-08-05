@@ -3189,13 +3189,18 @@ void net_dump_fw(const Net *n, int node, Buf *out)
     }
 }
 
-void net_dump_ports(const Net *n, int node, Buf *out)
+/* Twenty-four sockets with nothing in them is twenty-four lines of "no link",
+ * and it was printed in full every time somebody put a lead in a switch --
+ * which buries the two ports that matter under the twenty-two that do not.
+ * `empties` says whether they are worth the paper. */
+static void dump_ports(const Net *n, int node, Buf *out, bool empties)
 {
     if (node < 0 || node >= n->nnode || !n->node[node].used) return;
-    int first = n->node[node].port0;
+    int first = n->node[node].port0, quiet = 0;
     for (int i = 0; i < n->node[node].nports; i++) {
         int p = first + i;
         PortState st = port_state(n, p);
+        if (!empties && st == PORT_NOCABLE && n->port[p].cable < 0) { quiet++; continue; }
         const char *w = st == PORT_UP ? "up" :
                         st == PORT_DOWN_ADMIN ? "admin down" :
                         st == PORT_TOOLONG ? "no link (run too long)" : "no link";
@@ -3215,4 +3220,17 @@ void net_dump_ports(const Net *n, int node, Buf *out)
                    (unsigned long long)n->port[p].rx,
                    (unsigned long long)n->port[p].drops);
     }
+    if (quiet)
+        buf_printf(out, "%d more socket%s on the back of it, with nothing in "
+                        "%s\n", quiet, quiet == 1 ? "" : "s",
+                   quiet == 1 ? "it" : "them");
+}
+
+void net_dump_ports(const Net *n, int node, Buf *out)
+{
+    dump_ports(n, node, out, true);
+}
+void net_dump_ports_used(const Net *n, int node, Buf *out)
+{
+    dump_ports(n, node, out, false);
 }

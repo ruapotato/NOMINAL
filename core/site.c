@@ -692,14 +692,16 @@ void site_dump_rooms(const Site *s, int floor, Buf *out)
     }
 }
 
-void site_dump_dev(Site *s, int dev, Buf *out)
+static void dump_dev(Site *s, int dev, Buf *out, bool empties)
 {
     if (dev < 0 || dev >= s->ndev) { buf_puts(out, "no such device\n"); return; }
     SiteDev *d = &s->dev[dev];
     char w[48];
     where(s, d, w, sizeof w);
-    buf_printf(out, "%s: %s in %s\n", d->name, site_kind_name(d->kind), w);
-    net_dump_ports(s->net, d->node, out);
+    buf_printf(out, "%s: %s in %s, %d socket%s\n", d->name, site_kind_name(d->kind),
+               w, d->nports, d->nports == 1 ? "" : "s");
+    if (empties) net_dump_ports(s->net, d->node, out);
+    else net_dump_ports_used(s->net, d->node, out);
     if (site_kind_is_switch(d->kind)) {
         net_dump_fdb(s->net, d->node, out);
     } else {
@@ -708,6 +710,11 @@ void site_dump_dev(Site *s, int dev, Buf *out)
         net_dump_arp(s->net, d->node, out);
     }
 }
+
+void site_dump_dev(Site *s, int dev, Buf *out) { dump_dev(s, dev, out, true); }
+/* What a person reads when they have just put a lead in a box: what is
+ * plugged into it, not a list of the sockets that are empty. */
+void site_dump_dev_brief(Site *s, int dev, Buf *out) { dump_dev(s, dev, out, false); }
 
 /* ------------------------------------------------------------- the shell */
 /* One line, one operation. Deliberately dull to parse: a blind playtester

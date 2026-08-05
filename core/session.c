@@ -560,7 +560,7 @@ static void do_plug(Session *ses, const char *what, bool hdmi, Buf *out)
     }
     ses->where = SES_MGMT;
     buf_printf(out, "management line on %s\n\n", dev->name);
-    site_dump_dev(&ses->s, d, out);
+    site_dump_dev_brief(&ses->s, d, out);
     buf_puts(out, "\nthis line takes one operation at a time and the box is "
                   "assumed:\n  `addr 10.0.1.1/24`, `ping 10.0.1.10`, `help`, "
                   "`unplug`.\n");
@@ -702,6 +702,19 @@ static void spool_plug(Session *ses, const char *arg, Buf *out)
         buf_puts(out, "that is the end you already put in.\n");
         return;
     }
+    /* BOTH ENDS IN THE SAME BOX is a loop with no spanning tree, and the game
+     * refuses it when you ask for it in one line. It used to be reachable in
+     * two: leave an end in after a run that failed, plug the next end into
+     * the same switch, and you get a broadcast storm off a line that does not
+     * look like it made a cable at all. */
+    if (ses->cab_dev == d) {
+        buf_printf(out, "both ends would be in %s -- port %d and port %d. A cable "
+                        "from a switch\n  back into itself is a loop, and this one "
+                        "has no spanning tree in it.\n  `spool back` pulls the end "
+                        "you already put in out again.\n",
+                   ses->s.dev[d].name, ses->cab_port, port);
+        return;
+    }
     /* Both ends in hand. The copper goes through the tray, which is a
      * different route from the one you walked, and the drum has to have
      * enough on it -- a refusal that is arithmetic rather than a rule. */
@@ -765,6 +778,21 @@ static void do_cable(Session *ses, int n, char *t[MAXTOK], Buf *out)
     }
     if (a == b) { buf_puts(out, "both ends of that cable are the same box.\n"); return; }
 
+    /* AN END LEFT IN A SOCKET FROM AN EARLIER RUN. `cable` is a macro for
+     * four steps, and if one of them refuses, the end is still in the box --
+     * exactly as it would be for a person. What must not happen is the NEXT
+     * `cable` silently using it as its first end: that made `cable core:4
+     * edge:0` answer `link 4: core:3 to core:4`, a switch cabled to itself,
+     * from a line naming two different boxes. */
+    if (ses->cab_dev >= 0) {
+        buf_printf(out, "one end of the spool is already in %s port %d, from a run "
+                        "that did not\n  finish. `spool back` pulls it out, or walk "
+                        "to the other end and `plug` it in.\n",
+                   ses->s.dev[ses->cab_dev].name, ses->cab_port);
+        return;
+    }
+    int links_before = ses->s.nlink;
+
     if (ses->spool_kind < 0 || (n > 3)) {
         char *sp[MAXTOK]; int sn = 2;
         char kbuf[16];
@@ -791,8 +819,16 @@ static void do_cable(Session *ses, int n, char *t[MAXTOK], Buf *out)
     }
     spool_plug(ses, aend, out);
     if (ses->cab_dev < 0) return;                 /* the first end refused */
-    if (!dev_here(ses, b) && !walk_to(ses, ses->s.dev[b].room, out, false)) return;
-    spool_plug(ses, bend, out);
+    if (dev_here(ses, b) || walk_to(ses, ses->s.dev[b].room, out, false))
+        spool_plug(ses, bend, out);
+    /* AND IF IT DID NOT MAKE A CABLE, IT LEAVES NOTHING BEHIND. One line, one
+     * outcome: either there is a link or the drum is as it was. */
+    if (ses->s.nlink == links_before && ses->cab_dev >= 0) {
+        buf_printf(out, "no cable was run. The end comes back out of %s port %d "
+                        "and the spool is\n  whole again.\n",
+                   ses->s.dev[ses->cab_dev].name, ses->cab_port);
+        ses->cab_dev = -1;
+    }
 }
 
 /* ------------------------------------------- handing a line to site_cmd */

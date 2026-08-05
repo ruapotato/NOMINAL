@@ -336,6 +336,9 @@ void  net_dump_arp(const Net *n, int node, Buf *out);
 void  net_dump_sockets(const Net *n, int node, Buf *out);
 void  net_dump_fdb(const Net *n, int node, Buf *out);
 void  net_dump_ports(const Net *n, int node, Buf *out);
+/* The same, without the sockets that have nothing in them: a twenty-four
+ * port switch is two interesting lines and twenty-two of "no link". */
+void  net_dump_ports_used(const Net *n, int node, Buf *out);
 /* The RUNNING ruleset, with the count of what each rule has actually
  * dropped. A filter you cannot read is the one fault with no evidence at
  * all: the packet does not arrive and nothing anywhere says why. */
