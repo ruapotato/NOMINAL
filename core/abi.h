@@ -75,6 +75,19 @@ typedef unsigned long      uint64_t;
                              * captures its stdout back into it, which is all
                              * a pipeline is.                              */
 #define SYS_pipeout  1049   /* () -> flush the pipe buffer to the console  */
+#define SYS_piperead 1054   /* (buf, len) -> bytes taken OUT of the pipe
+                             * buffer, oldest first, and dropped from it.
+                             * This is what makes `>` work for a real program
+                             * rather than only for the echo builtin: the
+                             * shell runs the command with its stdout
+                             * captured, then pours the capture into a file.
+                             * It is also how `$(...)` gets its answer.    */
+#define SYS_setvar   1061   /* (name, value) -> 0 or -1. A shell variable.
+                             * It lives on the PROCESS, not in the shell,
+                             * because /bin/sh here runs once per command
+                             * line and exits -- exactly as cd does, and for
+                             * exactly the same reason.                    */
+#define SYS_getvar   1062   /* (name, buf, len) -> length, or -1 if unset  */
 #define SYS_reboot   1060   /* (halt) -> restarts THIS machine, the way the
                              * power button does. Never returns usefully.  */
 #define SYS_sp       1059   /* (op, arg, buf) -> the service processor of the

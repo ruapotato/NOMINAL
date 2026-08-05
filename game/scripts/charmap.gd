@@ -10,15 +10,16 @@
 #    itself, its code point in hex or decimal, and the block name. The box
 #    says so.
 #
-# 2. The desktop draws with ONE font -- ThemeDB.fallback_font, whatever Godot
-#    shipped -- and it does not cover Unicode. Every cell is probed with
-#    mono.has_char() and the ones it cannot draw are greyed and struck out
-#    rather than rendered, because an undrawable glyph comes out as a hollow
-#    box, a hollow box IS a character (U+25A1), and a grid full of them looks
-#    like a working font showing the wrong letters. Measured on this font:
-#    ASCII 95/95, Latin-1 Supplement 96/96, Cyrillic 254/255, Greek 75/143,
-#    Mathematical Operators 13/255, Box Drawing 0/128, Arrows 0/111. The
-#    greyed-out half of this window is a true statement about the font.
+# 2. The desktop draws with ONE font -- DejaVu Sans Mono, under game/fonts/ --
+#    and it does not cover Unicode. Every cell is probed with mono.has_char()
+#    and the ones it cannot draw are greyed and struck out rather than
+#    rendered, because an undrawable glyph comes out as a hollow box, a hollow
+#    box IS a character (U+25A1), and a grid full of them looks like a working
+#    font showing the wrong letters. Measured on this font: Basic Latin 95/95,
+#    Latin-1 Supplement 96/96, Cyrillic 180/256, Greek 116/144, Mathematical
+#    Operators 178/256, Box Drawing 128/128, Arrows 112/112, Letterlike
+#    Symbols 18/80. The greyed-out part of this window is a true statement
+#    about the font.
 #
 # The buffer at the bottom is the point of the app: click characters, then C
 # to put them on the system clipboard, which is Godot's clipboard and belongs
@@ -80,7 +81,7 @@ func _ready() -> void:
 	focus_mode = Control.FOCUS_ALL
 	mouse_filter = Control.MOUSE_FILTER_STOP
 	if mono == null:
-		mono = ThemeDB.fallback_font
+		mono = preload("res://scripts/uifont.gd").mono()
 	_load_block()
 	set_process(true)
 

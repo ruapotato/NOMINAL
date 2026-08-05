@@ -750,6 +750,51 @@ static int64_t kernel_syscall(Cpu *c, int64_t n, int64_t a0, int64_t a1,
         if (p->console && p->pipe.len) buf_put(p->console, p->pipe.p, p->pipe.len);
         buf_clear(&p->pipe);
         return 0;
+    case SYS_piperead: {
+        /* The other end of SYS_pipe: give the guest what the last stage
+         * wrote, oldest first, and forget it. `>` on a real program and
+         * `$(...)` are both this call plus somewhere to put the bytes. */
+        if (a1 <= 0) return -1;
+        size_t n = p->pipe.len < (size_t)a1 ? p->pipe.len : (size_t)a1;
+        if (!n) return 0;
+        if (!cpu_write(c, (uint64_t)a0, p->pipe.p, n)) return -1;
+        memmove(p->pipe.p, p->pipe.p + n, p->pipe.len - n);
+        p->pipe.len -= n;
+        return (int64_t)n;
+    }
+    case SYS_setvar: {
+        char nm[32], val[192];
+        if (!guest_str(c, (uint64_t)a0, nm, sizeof nm)) return -1;
+        if (!guest_str(c, (uint64_t)a1, val, sizeof val)) return -1;
+        if (!p->info || !nm[0]) return -1;
+        ProcInfo *pi = p->info;
+        for (int i = 0; i < pi->nvar; i++) {
+            if (strcmp(pi->var[i].name, nm) != 0) continue;
+            /* An empty value UNSETS, which is what `X=` means. */
+            if (!val[0]) { pi->var[i] = pi->var[--pi->nvar]; return 0; }
+            snprintf(pi->var[i].val, sizeof pi->var[i].val, "%s", val);
+            return 0;
+        }
+        if (!val[0]) return 0;
+        if (pi->nvar >= VAR_MAX) return -1;
+        snprintf(pi->var[pi->nvar].name, sizeof pi->var[0].name, "%s", nm);
+        snprintf(pi->var[pi->nvar].val,  sizeof pi->var[0].val,  "%s", val);
+        pi->nvar++;
+        return 0;
+    }
+    case SYS_getvar: {
+        char nm[32];
+        if (!guest_str(c, (uint64_t)a0, nm, sizeof nm)) return -1;
+        if (!p->info) return -1;
+        for (int i = 0; i < p->info->nvar; i++) {
+            if (strcmp(p->info->var[i].name, nm) != 0) continue;
+            size_t n = strlen(p->info->var[i].val);
+            if ((int64_t)n + 1 > a2) return -1;
+            return cpu_write(c, (uint64_t)a1, p->info->var[i].val, n + 1)
+                 ? (int64_t)n : -1;
+        }
+        return -1;
+    }
     case SYS_svcstart: {
         char path[NOM_PATH_MAX], name[64] = "";
         if (!guest_str(c, (uint64_t)a0, path, sizeof path)) return -1;
@@ -1277,6 +1322,10 @@ int64_t kernel_spawn_as(Machine *m, const char *path, const char *arg,
         if (parent && parent->info) {
             ns_copy(&pi->ns, &parent->info->ns);
             snprintf(pi->cwd, sizeof pi->cwd, "%s", parent->info->cwd);
+            /* And the variables, because an environment that a child cannot
+             * see is not an environment. */
+            memcpy(pi->var, parent->info->var, sizeof pi->var);
+            pi->nvar = parent->info->nvar;
             /* and the root: a child of a chrooted process is inside the same
              * chroot, which is the entire point of chroot */
             snprintf(pi->root, sizeof pi->root, "%s", parent->info->root);

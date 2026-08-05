@@ -74,7 +74,7 @@ func _ready() -> void:
 	focus_mode = Control.FOCUS_ALL
 	mouse_filter = Control.MOUSE_FILTER_STOP
 	if mono == null:
-		mono = ThemeDB.fallback_font
+		mono = preload("res://scripts/uifont.gd").mono()
 	# The canvas is panned and zoomed, so it CAN reach outside the control.
 	# Clipping is the guarantee that it never paints over the window frame.
 	clip_contents = true

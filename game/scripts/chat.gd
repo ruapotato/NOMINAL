@@ -46,7 +46,7 @@ func _ready() -> void:
 	focus_mode = Control.FOCUS_ALL
 	mouse_filter = Control.MOUSE_FILTER_STOP
 	if mono == null:
-		mono = ThemeDB.fallback_font
+		mono = preload("res://scripts/uifont.gd").mono()
 	set_process(true)
 	logs[2].append(["Json", "Morning. Shout if you get stuck -- I know how the box is put together, even if I cannot see yours."])
 	logs[1].append(["Ben", "Alright? I have not seen your machine, so tell me what it is doing."])
@@ -230,7 +230,12 @@ func _draw() -> void:
 		var speaker: String = entry[0]
 		var text: String = entry[1]
 		if speaker == "":
-			for l in _wrap(text, w, 11):
+			# WRAP AT THE SIZE IT IS DRAWN AT. This wrapped at 11 and drew at
+			# 12, so every line came out wider than the box it was measured
+			# for and the first thing the window ever says lost its last word:
+			# "the only pair of hands in t". You could fix it by resizing the
+			# window, which is not a thing a player should have to work out.
+			for l in _wrap(text, w, 12):
 				rows.append(l); cols.append(dim)
 			rows.append(""); cols.append(dim)
 			continue

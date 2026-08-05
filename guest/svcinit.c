@@ -155,7 +155,21 @@ void _start(void)
             else if (g_streq(restart[u], "always")) pol = 2;
             i64 rc = g_svcstart(execs[u], names[u], pol);
             int bad = (rc != 0);
+            /* SAY WHICH KIND OF FAILURE IT WAS.
+             *
+             * "failed to start" was the same five words for a unit pointing at
+             * a path that does not exist, a binary a hardening script had
+             * taken the execute bit off, a library at the wrong version, and a
+             * daemon that read its config and gave up -- four different
+             * afternoons behind one sentence, and the last line the console
+             * prints is the line a player reads first. The kernel already
+             * distinguishes them and hands back the reason; there was simply
+             * nothing here that looked at it. */
             const char *why = ": failed to start";
+            if (rc == SPAWN_ENOENT)       why = ": not found";
+            else if (rc == SPAWN_EPERM)   why = ": present, and not executable";
+            else if (rc == SPAWN_ENOEXEC) why = ": will not load -- check `ldd` on it";
+            else if (rc == SPAWN_EFAULT)  why = ": started and would not stay up";
             if (bad) {
                 g_puts("svcinit: ");
                 g_puts(names[u]);

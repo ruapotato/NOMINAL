@@ -21,12 +21,24 @@
 /* A running program. The table lives in the Machine because the machine IS
  * the computer: /proc is a view of this, not of anything on the disk, which
  * is why corrupting the disk cannot fabricate a process. */
+/* Shell variables belong to the PROCESS. /bin/sh on this machine runs once
+ * per command line and exits, so a variable it kept in its own memory would
+ * be gone before the player pressed return again -- which is why `X=5`
+ * followed by `echo $X` printed nothing. cwd and the namespace persist here
+ * for the identical reason, and now so does this. Sixteen is a shell, not an
+ * environment: enough for the handful of paths and uuids someone stashes
+ * while working a ticket. */
+#define VAR_MAX 16
+typedef struct { char name[32], val[192]; } ShVar;
+
 typedef struct {
     int      pid, ppid;
     char     name[64];
     char     arg[128];
     char     cwd[NOM_PATH_MAX];
     char     root[NOM_PATH_MAX];   /* chroot: what "/" means to this process */
+    ShVar    var[VAR_MAX];
+    int      nvar;
     Ns       ns;
     bool     alive;
     int64_t  exit_code;

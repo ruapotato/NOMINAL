@@ -49,6 +49,9 @@ static inline int  g_kill(int pid, int sig) { return (int)sysc(SYS_kill, pid, si
 static inline int  g_sigpend(void) { return (int)sysc(SYS_sigpend, 0, 0, 0); }
 static inline i64  g_pipe(const char *p, const char *a) { return sysc(SYS_pipe, (i64)p, (i64)a, 0); }
 static inline void g_pipeout(void) { sysc(SYS_pipeout, 0, 0, 0); }
+static inline i64  g_piperead(char *b, u64 n) { return sysc(SYS_piperead, (i64)b, (i64)n, 0); }
+static inline int  g_setvar(const char *n, const char *v) { return (int)sysc(SYS_setvar, (i64)n, (i64)v, 0); }
+static inline i64  g_getvar(const char *n, char *b, u64 c) { return sysc(SYS_getvar, (i64)n, (i64)b, (i64)c); }
 
 /* Read all of stdin. Filters use this when they are given no file, which is
  * what makes them usable in a pipeline. */

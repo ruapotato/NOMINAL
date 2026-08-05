@@ -733,12 +733,16 @@ static const char *MANAGER_BRIEF =
 "  dmesg [-1] [-f text] [-r root]   svc | svc status|enable|disable <name>\n"
 "  pkg list|owns|verify|diff|reinstall [--force] [--root DIR]\n"
 "  ldd [-r root] <prog>   df [-i]   blkid   mount   umount   fsck <dev>\n"
-"  ls  cat  stat  chmod  cp  mv  rm [-r]  touch  grep  sed  head  wc  echo\n"
+"  ls [-l] [-a] [-d]  cat  stat  chmod  cp  mv  rm [-r]  touch  mkdir [-p]\n"
+"  grep [-i] [-c] [-n] [-v]   sed   head [-n N]   tail [-n N]   wc [-l|-w|-c]\n"
+"  du [-s] [-h]   echo [-n]\n"
 "  find <dir> [-name pat] [-type f|d]     netstat\n"
 "  ps  ns  kill  chroot  man  links  mkinitrd  zbl-mkconfig  zbl-install\n"
 "  rcon connect|status|console|power|media|boot\n"
-"The shell has pipes, quoting, && || and `for i in a b; do ... done`, and\n"
-"globbing with * and ?.\n"
+"The shell has pipes, quoting, && || and `for i in a b; do ... done`,\n"
+"globbing with * and ?, redirection with > and >> on ANY command, variables\n"
+"(NAME=value, $NAME, $?) and command substitution with $(...).\n"
+"There is no separate stderr, so `2>/dev/null` does not work and is refused.\n"
 "\n"
 "WHAT A BROKEN UNIT FILE MEANS. A .svc file with no `exec` line is not\n"
 "disabled -- it is INVALID, and svcinit stops the boot on it. `enabled: no`\n"
@@ -754,7 +758,8 @@ static const char *MANAGER_BRIEF =
 "     /etc/net/interfaces and `svc status net`\n"
 "  no systemctl or journalctl -- services are `svc`, logs are `dmesg`\n"
 "  no apt, dpkg, rpm or yum -- packages are `pkg`\n"
-"  no tail, less, more, du, top, lsof, awk, curl or tar\n"
+"  no less, more, top, lsof, awk, curl or tar -- but `tail` and `du` are\n"
+"     there now, and `du -s` agrees with `df`\n"
 "\n"
 "NEVER INVENT ANYTHING. Do not name a command that is not on the list above.\n"
 "Do not describe behaviour you are unsure of. You wrote the runbook, so being\n"
@@ -786,6 +791,7 @@ static bool names_only_real_commands(const char *txt)
     static const char *REAL[] = {
         "dmesg","svc","pkg","ldd","df","blkid","mount","umount","fsck","ls",
         "cat","stat","chmod","cp","mv","rm","touch","grep","sed","head","wc",
+        "tail","du","mkdir",
         "echo","ps","ns","kill","chroot","man","links","mkinitrd",
         "zbl-mkconfig","zbl-install","rcon","sh","for","boot","rescue","ask",
         "find","netstat",

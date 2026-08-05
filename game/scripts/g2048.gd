@@ -51,7 +51,7 @@ func _ready() -> void:
 	focus_mode = Control.FOCUS_ALL
 	mouse_filter = Control.MOUSE_FILTER_STOP
 	if mono == null:
-		mono = ThemeDB.fallback_font
+		mono = preload("res://scripts/uifont.gd").mono()
 	rng.randomize()
 	if machine:
 		var t: String = machine.sh_on(0, "cat /root/.2048")

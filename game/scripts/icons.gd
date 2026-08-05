@@ -424,7 +424,7 @@ static func _app(c: CanvasItem, at: Vector2, sz: float) -> void:
 # =============================================================================
 func _ready() -> void:
 	if mono == null:
-		mono = ThemeDB.fallback_font
+		mono = preload("res://scripts/uifont.gd").mono()
 	if demo:
 		set_anchors_preset(Control.PRESET_FULL_RECT)
 		queue_redraw()

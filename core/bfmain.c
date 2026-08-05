@@ -18,6 +18,42 @@
  * being slow. Apache-2.0, so it is sellable. */
 #define NOM_DEFAULT_MODEL "game/models/Qwen2.5-3B-Instruct-Q4_K_M.gguf"
 
+/* Free the space and the inodes that are scratch BY DEFINITION.
+ *
+ * A full disk is not a package problem and no amount of reinstalling helps:
+ * every file is exactly right, there is simply nowhere to put the next one.
+ * A filesystem out of inodes cannot be helped by freeing bytes at all. What
+ * both have in common is that the answer is in a directory whose whole
+ * purpose is to hold things nobody owns -- a log, a spool, a cache -- so this
+ * removes what no package owns from exactly those places and nothing else.
+ *
+ * It knows nothing about which fault was injected. It is a rule about what
+ * those directories ARE. `prefix` is "/mnt" when the disk is mounted under a
+ * rescue system and "" when we are standing inside it.
+ */
+static void free_scratch(Machine *m, const char *prefix, Buf *o)
+{
+    char cmd[NOM_PATH_MAX * 2];
+    snprintf(cmd, sizeof cmd, "rm %s/var/log/messages", prefix);
+    kernel_run(m, cmd, o);
+
+    static const char *SCRATCH[] = {
+        "/var/spool/cron", "/var/cache", "/tmp", NULL };
+    for (int s = 0; SCRATCH[s]; s++) {
+        VNode *d = vfs_resolve(&m->disk, SCRATCH[s], NULL);
+        for (VNode *kid = d ? d->child : NULL; kid; ) {
+            VNode *next = kid->next;
+            char full[NOM_PATH_MAX];
+            snprintf(full, sizeof full, "%s/%s", SCRATCH[s], kid->name);
+            if (kid->kind == VN_FILE && !pkg_owns(m, full)) {
+                snprintf(cmd, sizeof cmd, "rm %s%s", prefix, full);
+                kernel_run(m, cmd, o);
+            }
+            kid = next;
+        }
+    }
+}
+
 int main(int argc, char **argv)
 {
     if (argc > 1 && strcmp(argv[1], "--health") == 0) {
@@ -110,6 +146,16 @@ int main(int argc, char **argv)
             kernel_run(&m, "fsck /dev/sda1", &o);
             kernel_run(&m, "mount /dev/sda1 /mnt", &o);
             kernel_run(&m, "for i in dev sys proc; do mount /$i /mnt/$i; done", &o);
+
+            /* SPACE BEFORE REPAIR, which is the order the previous
+             * administrator's notes give twice and for this exact reason: a
+             * reinstall onto a FULL disk truncates the file it is restoring
+             * and then cannot write it back, so the repair itself destroys
+             * /etc/passwd and the machine comes up with no account for root.
+             * One seed in sixty did precisely that, and the ladder had been
+             * freeing space at the END, where it is too late to help. */
+            free_scratch(&m, "/mnt", &o);
+
             /* Repair from OUTSIDE first. If the disk's libc is the wrong
              * version, nothing on it will run at all -- so chrooting in and
              * using its tools is not an option, and this is the only way
@@ -179,34 +225,8 @@ int main(int argc, char **argv)
                 snprintf(cmd, sizeof cmd, "pkg reinstall --force %s", m.pkg[k]->name);
                 kernel_run(&m, cmd, &o);
             }
-            /* A full disk is not a package problem and reinstalling cannot
-             * help: every file is exactly right, there is just nowhere to put
-             * the next one. Truncating a log is always safe. */
-            kernel_run(&m, "rm /var/log/messages", &o);
-
-            /* Nor is a filesystem out of INODES, and that one cannot be fixed
-             * by freeing bytes at all. Anything in a spool or cache directory
-             * that no package owns is scratch by definition -- which is a
-             * rule about what those directories ARE, not knowledge of the
-             * fault. */
-            {
-                static const char *SPOOL[] = {
-                    "/var/spool/cron", "/var/cache", "/tmp", NULL };
-                for (int s2 = 0; SPOOL[s2]; s2++) {
-                    VNode *d2 = vfs_resolve(&m.disk, SPOOL[s2], NULL);
-                    for (VNode *kid = d2 ? d2->child : NULL; kid; ) {
-                        VNode *next = kid->next;
-                        char full[NOM_PATH_MAX];
-                        snprintf(full, sizeof full, "%s/%s", SPOOL[s2], kid->name);
-                        if (kid->kind == VN_FILE && !pkg_owns(&m, full)) {
-                            char cmd[NOM_PATH_MAX + 8];
-                            snprintf(cmd, sizeof cmd, "rm %s", full);
-                            kernel_run(&m, cmd, &o);
-                        }
-                        kid = next;
-                    }
-                }
-            }
+            /* And again from inside, for anything the repair itself wrote. */
+            free_scratch(&m, "", &o);
             kernel_run(&m, "mkinitrd", &o);
             kernel_run(&m, "zbl-mkconfig", &o);
             kernel_run(&m, "zbl-install /dev/sda", &o);
@@ -683,7 +703,11 @@ int main(int argc, char **argv)
             }
             Buf out = {0};
             kernel_run(&m, line, &out);
-            fwrite(out.p, 1, out.len, stdout);
+            /* A command that says nothing leaves out.p NULL, and fwrite is
+             * declared never to take a null pointer even for zero bytes --
+             * which UBSan reports. Silent commands used to be rare; now that
+             * `X=5` and a successful `mkdir` are both silent, they are not. */
+            if (out.len) fwrite(out.p, 1, out.len, stdout);
             buf_free(&out);
         }
         machine_free(&m);

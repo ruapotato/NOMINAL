@@ -57,6 +57,7 @@ var pscroll := 0
 var findings: Array = []    # {pkg, path, what, detail} from `pkg verify <name>`
 var fsel := -1
 var vnote := ""             # what verify said when it had no findings to list
+var list_note := ""         # what `pkg list` said instead of a list of packages
 var diff: PackedStringArray = []   # `pkg diff <path>`, verbatim
 var diff_path := ""
 var dscroll := 0
@@ -91,7 +92,7 @@ func _ready() -> void:
 	focus_mode = Control.FOCUS_ALL
 	mouse_filter = Control.MOUSE_FILTER_STOP
 	if mono == null:
-		mono = ThemeDB.fallback_font
+		mono = preload("res://scripts/uifont.gd").mono()
 	refresh()
 
 
@@ -117,6 +118,22 @@ func refresh() -> void:
 	if sel >= 0 and sel < pkgs.size():
 		want = str(pkgs[sel]["name"])
 	_read_list(_sh("pkg list"))
+	# AN EMPTY WINDOW MUST SAY WHY IT IS EMPTY.
+	#
+	# A playtester opened this, pressed "verify again", and got nothing: the
+	# pane still said "nothing verified yet", no error, no explanation. Every
+	# button in here needs a selected package, there was no package to select
+	# because `pkg list` had come back with nothing usable, and nothing said
+	# so. The package database is ON THE MACHINE and it is one of the things
+	# that breaks -- a machine whose pkg-config-data is damaged is a machine
+	# where this window is empty FOR A REASON, and that reason is the
+	# diagnosis. So the command and its actual output go on the screen.
+	if pkgs.is_empty():
+		err = "`pkg list` returned no packages."
+		if list_note != "":
+			err += "  it said: " + list_note
+		else:
+			err += "  it printed nothing at all."
 	# Keep pointing at the same package across a refresh. The list is read
 	# from the disk every time and could in principle reorder; following the
 	# index rather than the name would silently move the selection.
@@ -136,9 +153,15 @@ func refresh() -> void:
 # package's version file, which is a version and a description on one line.
 func _read_list(out: String) -> void:
 	pkgs = []
+	list_note = ""
 	for line in out.split("\n"):
 		var t := line.strip_edges()
-		if t == "" or t.begins_with("pkg:"):
+		if t == "":
+			continue
+		if t.begins_with("pkg:"):
+			# What the tool complained about. It used to be dropped on the
+			# floor, which is how a window ends up empty and silent.
+			list_note += ("  |  " if list_note != "" else "") + t
 			continue
 		var f := t.split(" ", false)
 		if f.size() < 1:
@@ -157,10 +180,20 @@ func _verify() -> void:
 	findings = []
 	fsel = -1
 	vnote = ""
-	if machine == null or sel < 0 or sel >= pkgs.size():
+	if machine == null:
+		vnote = "no machine attached -- nothing to ask."
+		return
+	if sel < 0 or sel >= pkgs.size():
+		# Not "nothing verified yet". Nothing CAN be verified, and the reason
+		# is one line up in `err`; naming the command that would have done it
+		# is what lets you go and run it yourself.
+		vnote = "no package selected -- `pkg list` gave this window nothing to verify."
 		return
 	var name := str(pkgs[sel]["name"])
-	var out: String = _sh("pkg verify " + name)
+	var cmd := "pkg verify " + name
+	var out: String = _sh(cmd)
+	if out.strip_edges() == "":
+		vnote = "`%s` printed nothing." % cmd
 	for line in out.split("\n"):
 		if line.strip_edges() == "":
 			continue
@@ -175,6 +208,10 @@ func _verify() -> void:
 			continue
 		var f := t.split(" ", false)
 		if f.size() < 2:
+			# A line this window does not understand is still a line the tool
+			# printed. Showing it is the only way the two can be reconciled.
+			if vnote == "":
+				vnote = "`%s` said: %s" % [cmd, t]
 			continue
 		var what := ""
 		for i in range(2, f.size()):
@@ -329,6 +366,17 @@ func _after_move() -> void:
 
 func _click(k: String) -> void:
 	if sel < 0 or sel >= pkgs.size():
+		# A BUTTON THAT DOES NOTHING MUST AT LEAST SAY WHAT IT TRIED. This
+		# returned in silence when there was no package to act on, so "verify
+		# again" looked broken rather than blocked. Re-reading the list is
+		# always a legal thing to try, and it either finds packages this time
+		# or prints the reason it did not.
+		refresh()
+		status = "nothing to %s: " % k \
+			+ ("`pkg list` said " + list_note if list_note != ""
+				else "`pkg list` came back empty")
+		status_bad = true
+		queue_redraw()
 		return
 	var name := str(pkgs[sel]["name"])
 	match k:
@@ -399,13 +447,44 @@ func _draw() -> void:
 	draw_line(Vector2(0, TOP), Vector2(size.x, TOP), Color("#a9a6a1"))
 
 	if err != "":
-		draw_string(mono, Vector2(8, TOP + 20), err,
-			HORIZONTAL_ALIGNMENT_LEFT, -1, 12, RED)
+		# The buttons stay drawn. The window failed to read a package list;
+		# that is not a reason to take away the button that reads it again.
+		draw_rect(Rect2(0, TOP, size.x, size.y - TOP - BOT_H), WHITE)
+		var ey := TOP + 20.0
+		for l in _wrapped(err, size.x - 16.0, 12):
+			draw_string(mono, Vector2(8, ey), l,
+				HORIZONTAL_ALIGNMENT_LEFT, -1, 12, RED)
+			ey += 15.0
+		ey += 6.0
+		for l in ["this window runs `pkg` on the machine and shows what it said.",
+				"a machine whose package database is damaged has no list to give:",
+				"that is a finding, not a broken window. try it in a terminal."]:
+			draw_string(mono, Vector2(8, ey), _fit(str(l), size.x - 16.0, 10),
+				HORIZONTAL_ALIGNMENT_LEFT, -1, 10, DIM)
+			ey += 13.0
+		_draw_foot()
 		return
 
 	_draw_list(lw)
 	_draw_right(lw)
 	_draw_foot()
+
+
+# Wrap on spaces at the size it will be drawn at.
+func _wrapped(t: String, w: float, fs: int) -> PackedStringArray:
+	var out := PackedStringArray()
+	var line := ""
+	for word in t.split(" ", false):
+		var s := word if line == "" else line + " " + word
+		if mono.get_string_size(s, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x > w \
+				and line != "":
+			out.append(line)
+			line = word
+		else:
+			line = s
+	if line != "":
+		out.append(line)
+	return out
 
 
 func _draw_list(lw: float) -> void:

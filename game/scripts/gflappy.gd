@@ -106,7 +106,7 @@ func _ready() -> void:
 	# keeps being drawn across the wallpaper.
 	clip_contents = true
 	if mono == null:
-		mono = ThemeDB.fallback_font
+		mono = preload("res://scripts/uifont.gd").mono()
 	rng.randomize()
 	if machine:
 		var t: String = machine.sh_on(0, "cat /root/.flappy")

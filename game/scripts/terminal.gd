@@ -88,7 +88,7 @@ func _ready() -> void:
 	focus_mode = Control.FOCUS_ALL
 	mouse_filter = Control.MOUSE_FILTER_STOP
 	if mono == null:
-		mono = ThemeDB.fallback_font
+		mono = preload("res://scripts/uifont.gd").mono()
 	set_process(true)
 
 
@@ -530,6 +530,40 @@ func _rsearch_key(k: InputEventKey) -> bool:
 
 # ------------------------------------------------------------------ render --
 
+# IS THIS LINE A DIAGNOSTIC, OR A LINE THAT HAPPENS TO CONTAIN THE WORD.
+#
+# The rule was "does the line contain cannot/fail/not found/refusing anywhere",
+# and a playtester ran `pkg` with no arguments and watched one line of the grey
+# usage text come out RED: "chrooting into it -- which you cannot do when the".
+# It is prose, in the middle of a wrapped paragraph, and colouring it red says
+# an error happened when nothing did. Colour that fires on the wrong line is
+# worse than no colour, because red on this screen means "here is your fault".
+#
+# Every diagnostic in this system is written the unix way -- `tool: what went
+# wrong` -- so that is what is matched: an unindented line whose first word
+# ends in a colon, with the complaint after it. A wrapped continuation of that
+# message is indented or has no such prefix, so it stays plain, which is also
+# what it looks like in a real terminal.
+const ERR_WORDS := ["cannot", "fail", "not found", "no such", "refus",
+	"denied", "invalid", "unknown", "not a ", "missing"]
+
+func _is_error(line: String) -> bool:
+	if line == "" or line.begins_with(" ") or line.begins_with("\t"):
+		return false
+	var c := line.find(": ")
+	if c < 1 or c > 20:
+		return false
+	# `tool:` and `tool: path:` are prefixes; a sentence with a colon in it is
+	# not, and a sentence has spaces before the colon.
+	if line.substr(0, c).find(" ") >= 0:
+		return false
+	var rest := line.substr(c + 2).to_lower()
+	for w in ERR_WORDS:
+		if rest.find(w) >= 0:
+			return true
+	return false
+
+
 func _draw() -> void:
 	draw_rect(Rect2(Vector2.ZERO, size), bg)
 
@@ -568,8 +602,7 @@ func _draw() -> void:
 					draw_string(mono, Vector2(PAD + pw + cw, y), cur[caret],
 						HORIZONTAL_ALIGNMENT_LEFT, -1, 13, bg)
 		else:
-			if line.find("cannot") >= 0 or line.find("fail") >= 0 \
-			   or line.find("not found") >= 0 or line.find("refusing") >= 0:
+			if _is_error(line):
 				col = Color("#e06c75")
 			elif line.begins_with(prompt) or line.find("# ") == 0:
 				col = accent

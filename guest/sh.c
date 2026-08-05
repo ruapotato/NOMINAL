@@ -13,14 +13,29 @@
 
 static char line[GARG_MAX], cwd[256], tmp[512], expanded[GARG_MAX];
 
-/* One variable, set by `for`. A full environment is not what this shell is
- * for -- loops over a device list are, because that is the shape of the work:
+/* The `for` loop's variable. It shadows a real one for the length of the
+ * loop, as it does in sh:
  *   for i in dev sys proc; do mount /$i /mnt/$i; done
  */
-static char var_name[32], var_val[128];
+static char var_name[32], var_val[192];
 
-/* Substitute $name. Only the loop variable exists, so anything else expands
- * to nothing, exactly as an unset variable does in sh. */
+/* VARIABLES.
+ *
+ * `X=5` answered "X=5: command not found" and `echo $X` printed nothing, and
+ * both of those are things a person types in the first minute. The awkward
+ * part is that /bin/sh here runs ONCE PER COMMAND LINE and exits, so a
+ * variable kept in this program's memory would be gone before the next
+ * prompt. They live on the session PROCESS instead, through SYS_setvar --
+ * which is exactly where cd already keeps the working directory, and for
+ * exactly the same reason. */
+static int lookup(const char *nm, char *out, u64 cap)
+{
+    if (nm[0] && g_streq(nm, var_name)) { g_copy(out, var_val, cap); return 1; }
+    return g_getvar(nm, out, cap) >= 0;
+}
+
+/* Substitute $name, ${name} and $?. An unset name expands to nothing,
+ * exactly as it does in sh. */
 static void expand(const char *in, char *out, u64 cap)
 {
     u64 o = 0;
@@ -32,16 +47,25 @@ static void expand(const char *in, char *out, u64 cap)
              * followed by a letter, as in /mnt/${i}x */
             int braced = (in[j] == '{');
             if (braced) j++;
-            while (in[j] && k + 1 < sizeof nm &&
-                   ((in[j] >= 'a' && in[j] <= 'z') || (in[j] >= 'A' && in[j] <= 'Z') ||
-                    (in[j] >= '0' && in[j] <= '9') || in[j] == '_')) nm[k++] = in[j++];
-            nm[k] = 0;
-            if (braced && in[j] == '}') j++;
-            if (k && g_streq(nm, var_name)) {
-                for (u64 q = 0; var_val[q] && o + 1 < cap; q++) out[o++] = var_val[q];
+            /* $? is the status of the last command, and it is the whole
+             * reason a shell has a status at all. It is not a name, so it is
+             * matched before the name loop. */
+            if (in[j] == '?' && !braced) { nm[0] = '?'; nm[1] = 0; k = 1; j++; }
+            else {
+                while (in[j] && k + 1 < sizeof nm &&
+                       ((in[j] >= 'a' && in[j] <= 'z') || (in[j] >= 'A' && in[j] <= 'Z') ||
+                        (in[j] >= '0' && in[j] <= '9') || in[j] == '_')) nm[k++] = in[j++];
+                nm[k] = 0;
             }
-            i = j;
-            continue;
+            if (braced && in[j] == '}') j++;
+            if (k) {
+                char val[192];
+                if (lookup(nm, val, sizeof val))
+                    for (u64 q = 0; val[q] && o + 1 < cap; q++) out[o++] = val[q];
+                i = j;
+                continue;
+            }
+            /* A bare $ with nothing after it is a dollar sign. */
         }
         out[o++] = in[i++];
     }
@@ -62,12 +86,61 @@ static int is_for(const char *s2) { return is_for_impl(s2); }
 
 static const char *PATHDIRS[] = { "/bin", "/usr/bin", "/sbin", "/usr/sbin", 0 };
 
+/* Where a command's output ends up. A pipeline already runs every stage with
+ * its stdout captured; the only question left is what to do with the last
+ * stage's, and answering that question with "a file" is the whole of `>`. */
+#define OUT_CONSOLE (-1)
+#define OUT_KEEP    (-2)      /* leave it in the pipe for $(...) to read */
+
+static const char *resolve(const char *word)
+{
+    static char full[256];
+    NomStat st;
+    if (word[0] == '/' || word[0] == '.')
+        return g_stat(word, &st) == 0 ? word : 0;
+    for (int i = 0; PATHDIRS[i]; i++) {
+        g_copy(full, PATHDIRS[i], sizeof full);
+        g_cat(full, "/", sizeof full);
+        g_cat(full, word, sizeof full);
+        if (g_stat(full, &st) == 0) return full;
+    }
+    return 0;
+}
+
+/* Write, and SAY SO if it did not go. A redirect onto a full disk used to
+ * create the file, write nothing, and report success -- which is the exact
+ * failure `df` exists to explain, delivered as silence. */
+static int wr(int fd, const char *b, u64 n)
+{
+    if (n && sysc(SYS_write, fd, (i64)b, (i64)n) < 0) {
+        g_putln("sh: write failed -- no room on the disk, or the file is not");
+        g_putln("  writable. `df`, `df -i` and `ls -l` say which.");
+        return 1;
+    }
+    return 0;
+}
+
+/* Pour whatever the last stage wrote into a file descriptor. Chunked,
+ * because a redirected `cat /var/log/messages` is half a megabyte and this
+ * machine has no allocator to hold it in one piece. */
+static int pipe_to_fd(int fd)
+{
+    static char chunk[2048];
+    int bad = 0;
+    for (;;) {
+        i64 n = g_piperead(chunk, sizeof chunk);
+        if (n <= 0) break;
+        if (!bad) bad = wr(fd, chunk, (u64)n);
+    }
+    return bad;
+}
+
 /* a | b | c
  *
  * Each stage runs to completion and its output becomes the next stage's
  * input. There is no concurrency, which is right: these are filters, and a
  * filter that has not finished has nothing to say yet. */
-static int run_pipeline(char *s2)
+static int run_pipeline(char *s2, int dst)
 {
     int rc = 0;
     char *stage = s2;
@@ -93,18 +166,7 @@ static int run_pipeline(char *s2)
             char *rest = one;
             while (*rest && *rest != ' ' && *rest != '\t') rest++;
             if (*rest) { *rest++ = 0; while (*rest == ' ') rest++; }
-            static char full[256];
-            NomStat st;
-            const char *prog = 0;
-            if (one[0] == '/') { if (g_stat(one, &st) == 0) prog = one; }
-            else {
-                for (int i = 0; PATHDIRS[i] && !prog; i++) {
-                    g_copy(full, PATHDIRS[i], sizeof full);
-                    g_cat(full, "/", sizeof full);
-                    g_cat(full, one, sizeof full);
-                    if (g_stat(full, &st) == 0) prog = full;
-                }
-            }
+            const char *prog = resolve(one);
             if (!prog) {
                 g_puts(one);
                 g_putln(": command not found");
@@ -115,7 +177,9 @@ static int run_pipeline(char *s2)
         *bar = save;
         stage = save ? bar + 1 : 0;
     }
-    g_pipeout();
+    if (dst == OUT_CONSOLE)   g_pipeout();
+    else if (dst >= 0)        pipe_to_fd(dst);
+    /* OUT_KEEP: the caller is $(...) and will read it itself. */
     return rc;
 }
 
@@ -211,12 +275,95 @@ static int try_exec(const char *prog, const char *rest)
     return -2;
 }
 
+/* COMMAND SUBSTITUTION. `echo $(cat /etc/hostname)`
+ *
+ * This printed the literal text "(cat /etc/hostname)" -- the `$` was eaten as
+ * an unset variable and the parentheses were just characters -- and backticks
+ * did the same. It is the one shell feature that turns two commands into one
+ * answer, and on this machine it is what lets `mount UUID=$(blkid ...)` be a
+ * thing a person can type.
+ *
+ * The inner command runs through the ordinary pipeline machinery with its
+ * output KEPT rather than flushed, then read back out of the pipe. Trailing
+ * newlines go, embedded ones become spaces, exactly as sh does -- otherwise
+ * `$(ls /etc)` would produce a command line with newlines in the middle of it.
+ *
+ * The INNERMOST substitution is done first and the pass repeats, so a nested
+ * one works without this function ever calling itself. */
+static char subbuf[GARG_MAX];
+
+static int substitute(char *s2, u64 cap)
+{
+    for (int round = 0; round < 8; round++) {
+        /* The LAST `$(` is the innermost one, so a nested substitution is
+         * done from the inside out without this function recursing.
+         * Backticks do not nest -- there is no way for them to -- so the
+         * first one opens and the next one closes. */
+        char *open = 0; int backtick = 0;
+        for (char *q = s2; *q; q++)
+            if (q[0] == '$' && q[1] == '(') open = q;
+        if (!open) {
+            for (char *q = s2; *q; q++)
+                if (*q == '`') { open = q; backtick = 1; break; }
+        }
+        if (!open) return 0;
+        char *body = open + (backtick ? 1 : 2);
+        char *close = body;
+        while (*close && *close != (backtick ? '`' : ')')) close++;
+        if (!*close) {
+            g_putln(backtick ? "sh: unmatched `" : "sh: unmatched $(");
+            return 1;
+        }
+
+        static char inner[GARG_MAX];
+        u64 bl = (u64)(close - body);
+        if (bl >= sizeof inner) bl = sizeof inner - 1;
+        for (u64 i = 0; i < bl; i++) inner[i] = body[i];
+        inner[bl] = 0;
+
+        run_pipeline(inner, OUT_KEEP);
+        u64 got = 0;
+        for (;;) {
+            i64 n = g_piperead(subbuf + got, sizeof subbuf - 1 - got);
+            if (n <= 0) break;
+            got += (u64)n;
+            if (got + 1 >= sizeof subbuf) break;
+        }
+        subbuf[got] = 0;
+        while (got && (subbuf[got-1] == '\n' || subbuf[got-1] == '\r')) subbuf[--got] = 0;
+        for (u64 i = 0; i < got; i++) if (subbuf[i] == '\n' || subbuf[i] == '\r') subbuf[i] = ' ';
+
+        /* splice: [before][result][after] */
+        static char rebuilt[GARG_MAX];
+        u64 o = 0;
+        for (char *q = s2; q < open && o + 1 < cap; q++) rebuilt[o++] = *q;
+        for (u64 i = 0; i < got && o + 1 < cap; i++) rebuilt[o++] = subbuf[i];
+        for (char *q = close + 1; *q && o + 1 < cap; q++) rebuilt[o++] = *q;
+        rebuilt[o] = 0;
+        g_copy(s2, rebuilt, cap);
+    }
+    return 0;
+}
+
 void _start(void)
 {
     g_getarg(line, sizeof line);
     char *cmd = g_trim(line);
     if (!*cmd || *cmd == '#') g_exit(0);
-    g_exit(run_list(cmd));
+    int rc = run_list(cmd);
+    /* $? outlives this process, because this process is one command line and
+     * the person asking is on the next one. */
+    {
+        char st[16]; int i = 0, v = rc < 0 ? -rc : rc;
+        char t[12]; int k = 0;
+        if (!v) t[k++] = '0';
+        while (v) { t[k++] = (char)('0' + v % 10); v /= 10; }
+        if (rc < 0) st[i++] = '-';
+        while (k) st[i++] = t[--k];
+        st[i] = 0;
+        g_setvar("?", st);
+    }
+    g_exit(rc);
 }
 
 /* Output redirection. `>` truncates, `>>` appends. Implemented by running the
@@ -334,6 +481,15 @@ static void glob_expand(const char *in, char *out, u64 cap)
 
 static int run_line(char *cmd0)
 {
+    /* $(...) first, because its result is text that everything after this
+     * should treat as if the person had typed it -- including the glob. */
+    static char subst[GARG_MAX];
+    g_copy(subst, cmd0, sizeof subst);
+    if (g_contains(subst, "$(") || g_contains(subst, "`")) {
+        if (substitute(subst, sizeof subst)) return 1;
+        cmd0 = subst;
+    }
+
     /* A `for` is parsed BEFORE expansion. Expanding first would substitute
      * $i while the loop variable is still unset, so the body would be built
      * with empty values and the loop would run the wrong command every time.
@@ -410,25 +566,35 @@ static int run_line(char *cmd0)
         return 0;
     }
 
-    /* A pipeline is handled as a whole. Builtins do not pipe: cd and bind
-     * change this process, and there is nothing to pipe them to. */
-    for (char *q = cmd; *q; q++) {
-        if (*q != '|') continue;
-        return run_pipeline(cmd);
-    }
-
-    /* pull off a trailing > or >> before the verb is parsed */
+    /* Pull off a trailing > or >> BEFORE anything else looks at the line, so
+     * that a pipeline and a plain command reach the same code with the same
+     * destination already decided. Quotes hide a >, as they hide a pipe. */
     int append = 0;
     char *redir = 0;
-    for (char *q = cmd; *q; q++) {
-        if (*q != '>') continue;
-        redir = q;
-        *q = 0;
-        q++;
-        if (*q == '>') { append = 1; q++; }
-        while (*q == ' ') q++;
-        redir = q;
-        break;
+    {
+        char q = 0;
+        for (char *p = cmd; *p; p++) {
+            if (q)                          { if (*p == q) q = 0; continue; }
+            if (*p == '"' || *p == '\'')    { q = *p; continue; }
+            if (*p != '>') continue;
+            /* 2> is a different thing and this machine cannot honour it:
+             * there is one output stream, and every program on it reports
+             * its errors down the same pipe as its answers. Refusing is the
+             * only honest option -- accepting it would make `ls /nope
+             * 2>/dev/null` print the error anyway and look like a bug. */
+            if (p > cmd && p[-1] == '2' && (p == cmd + 1 || p[-2] == ' ')) {
+                g_putln("sh: 2>: this machine has one output stream, so there is");
+                g_putln("  no separate stderr to send anywhere. Errors come out");
+                g_putln("  with the answers; `> file` captures both.");
+                return 1;
+            }
+            *p = 0;
+            p++;
+            if (*p == '>') { append = 1; p++; }
+            while (*p == ' ') p++;
+            redir = p;
+            break;
+        }
     }
     if (redir && !*redir) { g_putln("sh: > needs a file"); return 1; }
     if (redir) {
@@ -439,6 +605,15 @@ static int run_line(char *cmd0)
         }
     }
     cmd = g_trim(cmd);
+
+    /* A pipeline is handled as a whole. Builtins do not pipe: cd and bind
+     * change this process, and there is nothing to pipe them to. */
+    for (char *q = cmd; *q; q++) {
+        if (*q != '|') continue;
+        int rc = run_pipeline(cmd, redirect_fd >= 0 ? redirect_fd : OUT_CONSOLE);
+        if (redirect_fd >= 0) { g_close(redirect_fd); redirect_fd = -1; }
+        return rc;   /* run_pipeline reports a failed write through wr() */
+    }
 
     /* split verb from the rest, keeping the rest intact for the child */
     char *rest = cmd;
@@ -464,6 +639,15 @@ static int run_line(char *cmd0)
     }
     if (g_streq(cmd, "pwd")) {
         g_getcwd(cwd, sizeof cwd);
+        /* A builtin redirects too. `pwd > f` writing to the console while
+         * leaving an empty file behind would be the worst of both. */
+        if (redirect_fd >= 0) {
+            g_cat(cwd, "\n", sizeof cwd);
+            int bad = wr(redirect_fd, cwd, g_strlen(cwd));
+            g_close(redirect_fd);
+            redirect_fd = -1;
+            return bad;
+        }
         g_putln(cwd);
         return 0;
     }
@@ -568,20 +752,24 @@ static int run_line(char *cmd0)
         if (enl && o + 1 < sizeof outb) outb[o++] = '\n';
 
         if (redirect_fd >= 0) {
-            sysc(SYS_write, redirect_fd, (i64)outb, (i64)o);
+            int bad = wr(redirect_fd, outb, o);
             g_close(redirect_fd);
             redirect_fd = -1;
-        } else {
-            g_write(1, outb, o);
+            return bad;
         }
+        g_write(1, outb, o);
         return 0;
     }
     if (g_streq(cmd, "help")) {
         g_putln("builtins:  cd  pwd  bind  unbind  echo  help");
         g_putln("           for i in a b c; do ... ; done      $i expands");
-        g_putln("           echo text > file        redirect (append with >>)");
+        g_putln("           NAME=value              a variable; $NAME expands it");
+        g_putln("           $?                      the last command's status");
+        g_putln("           $(command)              its output, as text");
+        g_putln("           cmd > file              redirect (append with >>)");
         g_putln("           a | b | c               pipelines");
-        g_putln("files:     ls cat cp mv rm touch grep head wc stat chmod sed");
+        g_putln("files:     ls cat cp mv rm touch mkdir grep head tail wc du");
+        g_putln("           stat chmod sed find");
         g_putln("system:    ps ns mount umount chroot df uname whoami pkg");
         g_putln("network:   links <host>[/path]      try links wiki.nomnix.org");
         g_putln("");
@@ -590,15 +778,56 @@ static int run_line(char *cmd0)
         return 0;
     }
 
+    /* NAME=value.
+     *
+     * Checked here, after the builtins, so that nothing named like an
+     * assignment can shadow one, and after expansion so that `X=$Y` and
+     * `X=$(blkid ...)` both mean what they look like. It answered
+     * "X=5: command not found" before, which is a shell telling you it is
+     * not a shell. */
+    {
+        char *eq = 0;
+        for (char *q = cmd; *q; q++) {
+            if (*q == '=') { eq = q; break; }
+            int ok = (*q >= 'a' && *q <= 'z') || (*q >= 'A' && *q <= 'Z') ||
+                     (*q == '_') || (q != cmd && *q >= '0' && *q <= '9');
+            if (!ok) break;
+        }
+        if (eq && eq != cmd) {
+            *eq = 0;
+            /* `X=one two` is an assignment of "one" and then a command, in
+             * real sh. Here the whole remainder is the value, which is what
+             * someone typing X=/mnt/etc/fstab actually wants and cannot be
+             * confused with anything else. */
+            static char val[192];
+            g_copy(val, eq + 1, sizeof val);
+            if (*rest) { g_cat(val, " ", sizeof val); g_cat(val, rest, sizeof val); }
+            if (g_setvar(cmd, val) != 0) {
+                g_puts("sh: "); g_puts(cmd);
+                g_putln(": no room for another variable (16 is the limit)");
+                return 1;
+            }
+            return 0;
+        }
+    }
+
+    /* An ordinary program. With a redirect it is run through the pipe -- the
+     * same machinery a pipeline uses -- and the capture is poured into the
+     * file. This used to say "only `echo` can redirect at the moment", which
+     * was an arbitrary restriction on the single most useful thing a shell
+     * does on a machine whose only editor is `echo >>` and `sed`. */
     if (redirect_fd >= 0) {
-        /* Only echo can redirect for now: a child process writes to the
-         * console through its own stdout and this shell cannot hand it a
-         * file descriptor without a real fork/exec. Saying so is better than
-         * silently dropping the output. */
+        const char *prog = resolve(cmd);
+        if (!prog) {
+            g_close(redirect_fd); redirect_fd = -1;
+            g_puts(cmd); g_putln(": command not found");
+            return 127;
+        }
+        int rc = (int)g_pipe(prog, rest);
+        int bad = pipe_to_fd(redirect_fd);
         g_close(redirect_fd);
         redirect_fd = -1;
-        g_putln("sh: only `echo` can redirect at the moment");
-        return 1;
+        return bad ? 1 : (rc == 0 ? 0 : 1);
     }
     int rc = try_exec(cmd, rest);
     if (rc == -2) { g_puts(cmd); g_putln(": command not found"); return 127; }

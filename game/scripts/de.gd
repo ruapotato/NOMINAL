@@ -102,7 +102,7 @@ const TITLES := {"term": "terminal - your", "chat": "chat", "files": "files",
 
 func _ready() -> void:
 	set_anchors_preset(Control.PRESET_FULL_RECT)
-	mono = ThemeDB.fallback_font
+	mono = preload("res://scripts/uifont.gd").mono()
 	if ClassDB.class_exists("NominalStation"):
 		machine = ClassDB.instantiate("NominalStation")
 	else:
@@ -113,6 +113,11 @@ func _ready() -> void:
 	# After the ticket, because the workstation is created with it.
 	_load_apps()
 	wall.queue_redraw()
+	# AFTER THE FIRST LAYOUT. `--open=` builds windows, and window placement is
+	# arithmetic on the size of the desktop, which is still zero until the tree
+	# has laid itself out once. Every window opened from the command line came
+	# out in the same clamped corner.
+	await get_tree().process_frame
 	_parse_args()
 
 
@@ -207,10 +212,59 @@ func _desk_slots() -> Array:
 			CELL))
 	return out
 
+# ICON LABELS GET THE WHOLE CELL, AND A SECOND LINE IF THEY NEED ONE.
+#
+# They were clipped to 50px under a 78px cell, so the desktop read "Minesw",
+# "Calculato", "Liquid W", "Disk Usa", "Characte", "Image Vi" -- six launchers
+# you have to click to identify. A cut-off word is worse than a small one: it
+# looks like the name of the program.
+const LABEL_W := CELL.x - 8.0
+
 func _draw_icon(c: Control, at: Vector2, label: String, kind: String) -> void:
 	Icons.draw_icon(c, at, 34.0, kind)
-	c.draw_string(mono, Vector2(at.x - 8, at.y + 44), label,
-		HORIZONTAL_ALIGNMENT_CENTER, 50, 11, Color("#ffffff"))
+	var x := at.x + 17.0 - LABEL_W / 2.0
+	var y := at.y + 44.0
+	for l in _label_lines(label):
+		c.draw_string(mono, Vector2(x, y), l,
+			HORIZONTAL_ALIGNMENT_CENTER, LABEL_W, 11, Color("#ffffff"))
+		y += 11.0
+
+
+# One line if it fits, otherwise split at the last space that does. A name with
+# no space in it that is still too wide -- there are none today -- is the only
+# case that gets shortened, and it is shortened with an ellipsis so you can see
+# that it was.
+func _label_lines(label: String) -> PackedStringArray:
+	if mono.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, 11).x <= LABEL_W:
+		return PackedStringArray([label])
+	var out := PackedStringArray()
+	var line := ""
+	for word in label.split(" ", false):
+		var t := word if line == "" else line + " " + word
+		if mono.get_string_size(t, HORIZONTAL_ALIGNMENT_LEFT, -1, 11).x > LABEL_W \
+				and line != "":
+			out.append(line)
+			line = word
+		else:
+			line = t
+	if line != "":
+		out.append(line)
+	# Two lines is what the cell has room for; a third would run into the icon
+	# below it.
+	while out.size() > 2:
+		out.remove_at(out.size() - 1)
+	for i in range(out.size()):
+		out[i] = _ellipsize(str(out[i]))
+	return out
+
+
+func _ellipsize(s: String) -> String:
+	if mono.get_string_size(s, HORIZONTAL_ALIGNMENT_LEFT, -1, 11).x <= LABEL_W:
+		return s
+	while s.length() > 1 and mono.get_string_size(s + "...",
+			HORIZONTAL_ALIGNMENT_LEFT, -1, 11).x > LABEL_W:
+		s = s.substr(0, s.length() - 1)
+	return s + "..."
 
 
 # A 16px version of the launcher icon, for the menu.
@@ -247,8 +301,25 @@ func _draw_panel() -> void:
 		panel.draw_string(mono, Vector2(rx + 4, 18), str(alerts),
 			HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color("#ffffff"))
 	panel.draw_string(mono, Vector2(panel.size.x - 170, 18),
-		"node-%d   Mon 09:%02d" % [seed_no % 10000, int(_clock) % 60],
+		"node-%d   %s" % [seed_no % 10000, _wallclock()],
 		HORIZONTAL_ALIGNMENT_LEFT, -1, 12, PANEL_INK)
+
+
+# THE CLOCK RAN BACKWARDS. It printed `Mon 09:%02d` with the SECONDS since
+# launch in the minutes field, so it climbed 09:00 to 09:59 and then fell back
+# to 09:00 -- a playtester caught it reading 09:42, 09:00, 09:44, 09:01 in
+# consecutive screenshots. Everything else on this desktop is a real reading
+# off a real machine, and the one decorative thing on it announced itself by
+# contradicting itself. A shift starts at 09:00 on a Monday and the minute
+# hand only goes forwards: a minute of the clock is a minute of the shift.
+const SHIFT_START := 9 * 60      # 09:00
+const DAYS := ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+func _wallclock() -> String:
+	var mins := SHIFT_START + int(_clock / 60.0)
+	var day: int = int(mins / (24 * 60)) % 7
+	mins = mins % (24 * 60)
+	return "%s %02d:%02d" % [DAYS[day], int(mins / 60), mins % 60]
 
 
 func _draw_foot() -> void:
@@ -263,17 +334,58 @@ func _draw_foot() -> void:
 			HORIZONTAL_ALIGNMENT_LEFT, -1, 11,
 			Color("#ffffff") if i == 0 else PANEL_INK)
 	if _alert_msg != "":
-		var w := 440.0
-		var r := Rect2(foot.size.x - w - 8, -78, w, 72)
+		var r := _toast_rect()
 		foot.draw_rect(r, Color("#fbfbfb"))
 		foot.draw_rect(r, Color("#3c6eb4"), false, 2.0)
-		foot.draw_rect(Rect2(r.position.x, r.position.y, w, 20), Color("#3c6eb4"))
+		foot.draw_rect(Rect2(r.position.x, r.position.y, r.size.x, 20), Color("#3c6eb4"))
 		foot.draw_string(mono, r.position + Vector2(8, 15), "new message",
 			HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color("#ffffff"))
 		foot.draw_string(mono, r.position + Vector2(8, 40), _alert_msg,
-			HORIZONTAL_ALIGNMENT_LEFT, w - 16, 12, INK)
+			HORIZONTAL_ALIGNMENT_LEFT, r.size.x - 16, 12, INK)
 		foot.draw_string(mono, r.position + Vector2(8, 60),
-			"open Chat to answer", HORIZONTAL_ALIGNMENT_LEFT, -1, 10, DIM)
+			"click to open Chat", HORIZONTAL_ALIGNMENT_LEFT, -1, 10, DIM)
+
+
+# THE NOTIFICATION THAT WOULD NOT LEAVE. It was cleared in exactly one place --
+# opening the chat window -- so a playtester who read the message and got on
+# with the job had it sitting over the bottom-right corner of the screen for
+# ninety minutes, covering whatever window was under it, ignoring clicks. A
+# toast is an interruption, and an interruption that does not end is furniture.
+#
+# It now expires on its own, and clicking it does the thing it is asking you to
+# do. The panel's red badge is NOT on a timer and does not move: the toast is
+# the interruption, the badge is the unread count, and the count is only
+# cleared by reading the message.
+#
+# The timer is armed by NOTICING the message change rather than by every place
+# that sets one, so a notification raised from anywhere -- a new ticket, a
+# closed one, a customer speaking up -- expires without having to remember to
+# arm it.
+const TOAST_LIFE := 12.0
+var _alert_at := 0.0
+var _alert_shown := ""
+
+func _toast_tick() -> void:
+	if _alert_msg != _alert_shown:
+		_alert_shown = _alert_msg
+		_alert_at = _clock
+		return
+	if _alert_msg != "" and _clock - _alert_at > TOAST_LIFE:
+		_alert_msg = ""
+		_alert_shown = ""
+		if foot:
+			foot.queue_redraw()
+
+func _toast_rect() -> Rect2:
+	return Rect2(foot.size.x - 448.0, -78, 440.0, 72)
+
+
+# The same rectangle in screen coordinates, for the hit test.
+func _toast_screen() -> Rect2:
+	var r := _toast_rect()
+	return Rect2(r.position + foot.position, r.size)
+
+
 
 
 func _wall_input(e: InputEvent) -> void:
@@ -316,11 +428,40 @@ func _panel_input(e: InputEvent) -> void:
 				return
 
 
+# WINDOWS REMEMBER THE SIZE YOU GAVE THEM, per application, for the session.
+#
+# Chat opens too small to read its own first line, so you resize it; close it,
+# open it again, and it is small again. Anything you have to do twice in a
+# session you will do ten times in a shift. The key is the application, not the
+# window: `console - 10.4.2.1 (Annika)` and `log viewer - Annika` are keyed on
+# `console` and `log viewer`, so the next ticket's console opens the size you
+# made the last one. Position is NOT remembered -- that is the cascade's job,
+# and a remembered position is how two windows end up on top of each other.
+var _geom := {}
+
+func _app_key(title: String) -> String:
+	var i := title.find(" - ")
+	return title.substr(0, i) if i > 0 else title
+
+
 func _win(title: String, rect: Rect2, content: Control) -> Control:
+	var key := _app_key(title)
+	if _geom.has(key):
+		rect.size = _geom[key]
+		# It was sized against a desktop that may since have changed shape.
+		rect.size.x = minf(rect.size.x, size.x - 20.0) if size.x > 40.0 else rect.size.x
+		rect.size.y = minf(rect.size.y, size.y - PANEL_H - FOOT_H - 16.0) \
+			if size.y > 100.0 else rect.size.y
+		if size.x > 40.0:
+			rect.position.x = clampf(rect.position.x, 0.0, size.x - rect.size.x)
+		if size.y > 100.0:
+			rect.position.y = clampf(rect.position.y, PANEL_H,
+				size.y - FOOT_H - rect.size.y)
 	var w := Control.new()
 	w.position = rect.position
 	w.size = rect.size
 	w.set_meta("title", title)
+	w.set_meta("key", key)
 	w.draw.connect(func(): _draw_win(w))
 	add_child(w)
 
@@ -368,6 +509,8 @@ func _draw_win(w: Control) -> void:
 
 
 func _relayout(w: Control) -> void:
+	if w.has_meta("key"):
+		_geom[w.get_meta("key")] = w.size
 	(w.get_meta("bar") as Control).size = Vector2(w.size.x, 20)
 	(w.get_meta("grip") as Control).position = Vector2(w.size.x - 18, w.size.y - 18)
 	(w.get_meta("content") as Control).size = Vector2(w.size.x - 6, w.size.y - 25)
@@ -396,18 +539,36 @@ func _raise(w: Control) -> void:
 # of room. Sizing them as fractions of the screen made them LOOK tiled even
 # though nothing was tiling them, which David spotted immediately. Tiling only
 # ever happens because you dragged a window to an edge.
+#
+# THE CASCADE STOPPED CASCADING AFTER THREE WINDOWS. The step was fixed at
+# seven positions and each one was then CLAMPED to fit the screen, so as soon
+# as a window was tall enough that step four hung off the bottom -- which at
+# 1280x800 is anything over about 540px, ie. most of them -- every subsequent
+# window was clamped to the SAME y. A playtester had five windows in one pile.
+# Two things were wrong: the run has to end where the room ends rather than at
+# a hardcoded seven, and when it ends the next window starts a new run instead
+# of landing on top of the last one. Windows bigger than the desktop are cut
+# down to it first, because a window you cannot reach the bottom of is worse
+# than a small one.
 var _cascade := 0
 
 func _cascade_at(w: float, h: float) -> Rect2:
+	# Before the first layout pass `size` is still zero -- which is when
+	# `--open=` runs -- and every window came out at the same clamped corner.
+	var W: float = size.x if size.x > 1.0 else 1280.0
+	var H: float = size.y if size.y > 1.0 else 800.0
+	var top := PANEL_H + 10.0
+	w = minf(w, W - 40.0)
+	h = minf(h, H - FOOT_H - top - 10.0)
 	var step := 28.0
-	var n := _cascade % 7
+	var maxx := W - w - 20.0
+	var maxy := H - FOOT_H - h - 10.0
+	var steps: int = clampi(int(minf(maxx - 120.0, maxy - top) / step), 1, 8)
+	var n: int = _cascade % steps
+	var run: int = int(_cascade / steps) % 3
 	_cascade += 1
-	var x := 120.0 + n * step
-	var y := PANEL_H + 30.0 + n * step
-	if x + w > size.x - 20:
-		x = max(120.0, size.x - w - 20)
-	if y + h > size.y - FOOT_H - 20:
-		y = max(PANEL_H + 10.0, size.y - FOOT_H - h - 20)
+	var x := clampf(120.0 + n * step + run * 13.0, 0.0, maxf(0.0, maxx))
+	var y := clampf(top + n * step + run * 13.0, top, maxf(top, maxy))
 	return Rect2(x, y, w, h)
 
 
@@ -610,20 +771,19 @@ func _launch(kind0: String) -> void:
 			# THE LOG VIEWER SHOWED YOUR OWN BOOT LOG, which is the one log
 			# nobody needs -- your workstation is fine. David: "Log view seems
 			# to have no point." It follows the CUSTOMER's machine now: their
-			# console if you are attached to it, their /var/log/boot.log if
-			# you can reach the disk, and it says which it is showing. R
-			# refreshes, so it is a monitor rather than a snapshot.
-			var l := preload("res://scripts/terminal.gd").new()
+			# console if you are attached to it, their previous boot or their
+			# /var/log/messages if you can reach the disk, and it says which it
+			# is showing.
+			#
+			# It was a terminal.gd with the prompt removed, which made it the
+			# console window twice over. It is its own app now, with the three
+			# things a console cannot do: grep, severity, and a choice of log.
+			var l := preload("res://scripts/logview.gd").new()
 			l.mono = mono
-			l.bg = TERM_BG
-			l.fg = TERM_FG
-			l.accent = GREEN
-			l.banner = []
-			l.prompt_fn = func() -> String: return ""
-			l.on_command = func(_s: String) -> String: return ""
-			var w2 := _win("log viewer - %s" % cust, _cascade_at(760, 440), l)
-			_refresh_log(l)
-			l.set_meta("is_log", true)
+			l.machine = machine
+			l.addr = addr
+			l.cust = cust
+			_win("log viewer - %s" % cust, _cascade_at(760, 440), l)
 		"manual":
 			var d := preload("res://scripts/manual.gd").new()
 			d.mono = mono
@@ -743,13 +903,34 @@ func _launch(kind0: String) -> void:
 # old sin in a new window. It falls back to the workstation when theirs is
 # dark, and the app says which it is looking at because `_sh` is asked fresh
 # every refresh: when their machine comes back, the next poll follows it.
+#
+# AND THE TITLE SAYS WHOSE MACHINE IT IS. "system monitor" over a column of
+# numbers taken from somebody else's box tells you nothing about whose
+# afternoon those numbers describe -- the playtester could not tell, and the
+# log viewer has said "log viewer - Annika" for weeks. The title is not fixed
+# at open, because the machine these apps read is not fixed either: it follows
+# the customer's box while it is up and falls back to your workstation while
+# it is down, so the title is rewritten by the same call that chooses. A title
+# that named the customer over your own workstation's numbers would be a
+# worse lie than the generic one.
 func _win_tool(title: String, script: String, rect: Rect2) -> Control:
 	var a: Control = load(script).new()
 	a.mono = mono
 	a.machine = machine
+	var box: Array = [null]
 	a.sh = func(cmd: String) -> String:
-		return str(machine.sh_on(1 if machine.booted() else 0, cmd))
-	_win(title, rect, a)
+		var theirs: bool = machine.booted()
+		var t2 := "%s - %s" % [title, cust if theirs else "your workstation"]
+		var w2: Variant = box[0]
+		if w2 != null and is_instance_valid(w2) and str(w2.get_meta("title")) != t2:
+			w2.set_meta("title", t2)
+			w2.queue_redraw()
+			if panel:
+				panel.queue_redraw()
+		return str(machine.sh_on(1 if theirs else 0, cmd))
+	var w := _win("%s - %s" % [title,
+		cust if machine.booted() else "your workstation"], rect, a)
+	box[0] = w
 	return a
 
 
@@ -866,32 +1047,7 @@ func _run(which: int, line: String) -> String:
 		var c: Variant = w.get_meta("content")
 		if c and c.has_method("refresh"):
 			c.call("refresh")
-		if c and c is Control and (c as Control).has_meta("is_log"):
-			_refresh_log(c)
 	return out
-
-
-# The moment the customer's machine comes up clean, say so -- loudly, in the
-# place the player is already looking, and on the panel.
-# What the customer's machine has said. Not ours.
-func _refresh_log(l: Control) -> void:
-	l.call("clear")
-	var con: String = machine.sh_on(0, "rcon console")
-	if con.strip_edges() != "" and con.find("not attached") < 0:
-		l.call("write", "=== console of %s (%s) ===\n\n" % [addr, cust])
-		l.call("write", con)
-		return
-	# Not attached: try their previous boot off the mounted disk.
-	var prev: String = machine.sh_on(0, "dmesg -r /mnt -1")
-	if prev.find("no boot log") < 0 and prev.strip_edges() != "":
-		l.call("write", "=== previous boot, from their disk at /mnt ===\n\n")
-		l.call("write", prev)
-		return
-	l.call("write",
-		"nothing to show yet.\n\n"
-		+ "this window follows the CUSTOMER's machine, not yours.\n"
-		+ "  `rcon connect " + addr + "` to see its console, or mount their\n"
-		+ "  disk and this will show their last boot instead.\n")
 
 
 # THE SOUND OF A BOX COMING BACK.
@@ -975,9 +1131,48 @@ func _new_ticket() -> void:
 	foot.queue_redraw()
 
 
+# THE NEXT CALL. A shift is not one ticket.
+#
+# The playtester finished a job, waited, checked the chat, checked the
+# Applications menu, browsed helpdesk.internal, and nothing ever came. The only
+# way to a second ticket was relaunching the game with `--seed=`, which is a
+# thing a player cannot know and should not have to. Closing a ticket now hands
+# you the next call after a breather, announced exactly the way the first one
+# is: the badge, the toast, and a customer already talking in the chat.
+#
+# It is scheduled by WATCHING `closed` rather than by hooking the code that
+# sets it, so what counts as a finished job stays the one decision it already
+# was, made in one place.
+const NEXT_TICKET_AFTER := 25.0
+var _next_at := 0.0
+
+func _shift_tick() -> void:
+	if closed:
+		if _next_at == 0.0:
+			_next_at = _clock + NEXT_TICKET_AFTER
+	elif _next_at != 0.0:
+		_next_at = 0.0
+	if _next_at > 0.0 and _clock >= _next_at:
+		_next_at = 0.0
+		_new_ticket()
+
+
 # The menu overlays windows, so it must see the click first. _input runs
 # before any control's _gui_input, which is exactly the priority a popup needs.
 func _input(e: InputEvent) -> void:
+	# THE TOAST IS A BUTTON. It says "click to open Chat" and it used to say
+	# "open Chat to answer" and swallow nothing, because the footer panel it
+	# is drawn on ignores the mouse. It is tested here, ahead of the windows,
+	# for the same reason the menu is: it is drawn on top of them.
+	if _alert_msg != "" and e is InputEventMouseButton and e.pressed \
+			and e.button_index == MOUSE_BUTTON_LEFT \
+			and _toast_screen().has_point(get_global_mouse_position()):
+		_alert_msg = ""
+		_alert_shown = ""
+		foot.queue_redraw()
+		get_viewport().set_input_as_handled()
+		_launch("chat")
+		return
 	if not menu_open:
 		return
 	if e is InputEventMouseButton and e.pressed and e.button_index == MOUSE_BUTTON_LEFT:
@@ -1012,6 +1207,8 @@ func _process(dt: float) -> void:
 	_boot_watch()
 
 	_clock += dt
+	_toast_tick()
+	_shift_tick()
 	if panel:
 		panel.queue_redraw()
 	if foot:
