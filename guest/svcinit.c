@@ -114,6 +114,43 @@ void _start(void)
             continue;
         }
 
+        /* A UNIT MAY BRING A DIRECTORY INTO PLACE BEFORE ANYTHING STARTS.
+         *
+         * `bind: TARGET AT` is the unit-file spelling of what rc.boot can
+         * already do, and it is how a configuration-management agent ships
+         * its own copy of a config tree: it binds it over the real one and
+         * every service started afterwards reads the agent's files instead.
+         * Nothing is corrupt when that happens -- `pkg verify` is perfectly
+         * clean, the file you `cat` is the right one, and the daemon is
+         * reading another one entirely. `ns <pid>` is the tool.
+         *
+         * Applied here, during the read, so it is in place before any service
+         * is started; a unit that only binds needs no exec line and is not a
+         * service at all. */
+        {
+            static char bnd[192];
+            get(body, "bind", bnd, sizeof bnd, "");
+            if (bnd[0]) {
+                char *bv[GARGS];
+                int bn = g_argv(bnd, bv);
+                if (bn >= 2 && g_bind(bv[0], bv[1]) == 0) {
+                    g_puts("svcinit: ");
+                    g_puts(nm0);
+                    g_puts(": bound ");
+                    g_puts(bv[0]);
+                    g_puts(" over ");
+                    g_putln(bv[1]);
+                } else {
+                    g_puts("svcinit: ");
+                    g_puts(nm0);
+                    g_putln(": bind failed");
+                }
+                static char ex0[160];
+                get(body, "exec", ex0, sizeof ex0, "");
+                if (!ex0[0]) continue;      /* a namespace unit, not a service */
+            }
+        }
+
         int u = nunits++;
         g_copy(unitname[u], name, sizeof unitname[u]);
         get(body, "name",        names[u],  sizeof names[u],  name);

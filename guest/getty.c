@@ -99,6 +99,41 @@ void _start(void)
         g_putln(" is not executable");
         g_exit(1);
     }
+    /* AND IS IT A LOGIN SHELL AT ALL.
+     *
+     * /etc/shells is the list of shells an account may log in with, and a
+     * hardening pass that prunes it is a real afternoon: the shell is there,
+     * it is executable, the account is fine, and login is refused because the
+     * path is not on the list. It was a file nothing on this machine read,
+     * which is worse than not having it. A machine with no /etc/shells at all
+     * is not a machine with no valid shells -- that is a missing file, and it
+     * is not this program's business to invent a policy for it. */
+    {
+        static char shells[2048], sline[256];
+        if (g_slurp("/etc/shells", shells, sizeof shells) > 0) {
+            int listed = 0;
+            char *s = shells;
+            while (*s && !listed) {
+                char *nl = s; while (*nl && *nl != '\n') nl++;
+                char save = *nl; *nl = 0;
+                g_copy(sline, s, sizeof sline);
+                *nl = save; s = *nl ? nl + 1 : nl;
+                char *t = g_trim(sline);
+                if (!*t || *t == '#') continue;
+                if (g_streq(t, shell)) listed = 1;
+            }
+            if (!listed) {
+                g_puts("getty: ");
+                g_puts(who);
+                g_puts("'s login shell ");
+                g_puts(shell);
+                g_putln(" is not listed in /etc/shells");
+                g_putln("       the account is refused a terminal -- no login");
+                g_exit(1);
+            }
+        }
+    }
+
     /* PASSWD AND SHADOW HAVE TO AGREE.
      *
      * The account exists and its shell is fine, and there is still no way in:

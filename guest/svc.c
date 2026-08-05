@@ -191,9 +191,21 @@ void _start(void)
         for (const char *q = rl; *q; q++)
             if (*q == '3') here = 1;
 
+        /* A UNIT WITH NO PROGRAM IN IT IS NOT A DEAD SERVICE.
+         *
+         * A unit whose only job is a `bind` starts nothing, so nothing is
+         * running it, so this reported it DEAD -- and the legend underneath
+         * then told the player to go and find out why a service had failed.
+         * There is no service. Saying what it actually does is the difference
+         * between a clue and a wild goose chase, and what it does is the
+         * whole fault when one of these turns up unowned. */
+        static char bnd[192];
+        get(body, "bind", bnd, sizeof bnd, "");
+
         const char *state;
         if (!g_streq(en, "yes"))        state = "disabled";
         else if (!here)                 state = "not at rl3";
+        else if (bnd[0] && g_streq(exec, "(none)")) state = "namespace";
         else if (is_running(exec))      state = "running";
         else                          { state = "DEAD"; any_dead = 1; }
 
@@ -201,7 +213,12 @@ void _start(void)
         for (u64 k = g_strlen(nm); k < 17; k++) g_puts(" ");
         g_puts(state);
         for (u64 k = g_strlen(state); k < 11; k++) g_puts(" ");
-        g_putln(exec);
+        if (bnd[0] && g_streq(exec, "(none)")) {
+            g_puts("bind ");
+            g_putln(bnd);
+        } else {
+            g_putln(exec);
+        }
     }
     /* Only explain DEAD when something is. The legend on every healthy
      * machine is furniture the eye stops seeing. */

@@ -682,8 +682,18 @@ int main(int argc, char **argv)
         int nf = argc > 3 ? atoi(argv[3]) : 1;
         Machine m; char what[512] = "";
         machine_install(&m, sd);
+        /* A REBOOT HERE DESTROYS A WHOLE CLASS OF TICKET.
+         *
+         * machine_break has already booted the machine -- that is how it
+         * knows the ticket is a ticket -- and its console is right there.
+         * Booting a second time threw that away and, worse, silently repaired
+         * every fault whose whole nature is that a running process is out of
+         * step with a file: the daemon simply read the config again on the way
+         * up. So `--sh` could never show a stale-configuration ticket, which
+         * is the one the previous administrator's notes spend a whole item on.
+         * Only boot when there is no ticket to look at. */
         if (nf > 0) machine_break(&m, sd, nf, what, sizeof what);
-        machine_boot(&m);
+        else        machine_boot(&m);
         fwrite(m.boot.console.p, 1, m.boot.console.len, stdout);
         {
             Buf sick = {0};

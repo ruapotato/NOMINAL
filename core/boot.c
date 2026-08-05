@@ -11,6 +11,7 @@
  */
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <stdarg.h>
 #include "nom.h"
 #include "machine.h"
@@ -89,6 +90,35 @@ static bool fail(Machine *m, BootCtx *c, BootStage at, const char *fmt, ...)
     m->boot.running   = false;
     say(c, "%s", m->boot.reason);
     return false;
+}
+
+/* THE INITRD PROMISED A SHELL IT DOES NOT HAVE.
+ *
+ * Four boot failures ended "entering emergency shell", and a player who went
+ * looking for it found this instead, from the person standing at the machine:
+ * "There is nowhere to type it. It has not finished starting up -- there is
+ * no prompt, just the writing that stopped."  A console that names a way out
+ * that is not there is the same lie as a console faking a boot, and it is
+ * worse than saying nothing, because the player spends the next ten minutes
+ * hunting for the prompt rather than reaching for the rescue medium.
+ *
+ * A REAL emergency shell was the other option and it is not the right one
+ * here. /bin is on the filesystem that would not mount, so the shell would
+ * have to live inside the image -- and this machine's initrd is BUILT, by
+ * mkinitrd, out of nothing but the modules in /lib/modules. Putting a
+ * userland in it means mkinitrd has to put one there too, or rebuilding the
+ * initrd silently removes the rescue tool the console just recommended. That
+ * is a second fault class invented to serve a message.
+ *
+ * So the message tells the truth: this image carries drivers and no shell,
+ * the machine stops here, and the way in is the medium that has a userland
+ * on it. Every stop in the initrd says the same thing in the same words. */
+static void initrd_no_shell(BootCtx *c)
+{
+    say(c, "initrd: this image carries driver modules and no shell, so there");
+    say(c, "        is no prompt here and nothing to type at. The machine stops.");
+    say(c, "        Bring it up on the rescue medium to reach the disk:");
+    say(c, "        rcon media insert / rcon boot media / rcon power cycle");
 }
 
 /* Anything read off a damaged disk can be arbitrary bytes, and it gets echoed
@@ -171,6 +201,106 @@ static bool cfg_get(const Buf *b, const char *key, char *out, size_t outsz)
         p = nl ? nl + 1 : NULL;
     }
     return false;
+}
+
+/* A BOOTLOADER CONFIGURATION HAS ENTRIES, AND ONE OF THEM IS THE DEFAULT.
+ *
+ * The loader used to read the first `kernel`, `initrd` and `root` line
+ * anywhere in the file and ignore `default` and `entry` completely -- so the
+ * menu it printed was decoration, and the commonest real bootloader mistake
+ * there is (an upgrade appends an entry, the default still names the old one)
+ * could not be expressed at all. Now the file is read the way zbl reads it:
+ * lines before the first `entry` are global, each `entry` opens a block, and
+ * `default N` says which block to boot.
+ *
+ * A config with no `entry` line at all is still read whole, because that is
+ * what a truncated or hand-written one looks like and it should fail on what
+ * it is missing rather than on its shape.
+ */
+static int cfg_entry_count(const Buf *b)
+{
+    int n = 0;
+    const char *p = b->p, *end = b->p + b->len;
+    while (p && p < end) {
+        const char *nl = memchr(p, '\n', (size_t)(end - p));
+        size_t len = nl ? (size_t)(nl - p) : (size_t)(end - p);
+        const char *s = p;
+        while (len && (*s == ' ' || *s == '\t')) { s++; len--; }
+        if (len >= 5 && strncmp(s, "entry", 5) == 0 &&
+            (len == 5 || s[5] == ' ' || s[5] == '\t')) n++;
+        p = nl ? nl + 1 : NULL;
+    }
+    return n;
+}
+
+/* The bytes of entry `idx`, not including the `entry` line itself. */
+static bool cfg_entry_range(const Buf *b, int idx, Buf *out)
+{
+    int n = -1;
+    const char *p = b->p, *end = b->p + b->len;
+    const char *start = NULL;
+    while (p && p < end) {
+        const char *nl = memchr(p, '\n', (size_t)(end - p));
+        size_t len = nl ? (size_t)(nl - p) : (size_t)(end - p);
+        const char *s = p;
+        size_t sl = len;
+        while (sl && (*s == ' ' || *s == '\t')) { s++; sl--; }
+        bool is_entry = sl >= 5 && strncmp(s, "entry", 5) == 0 &&
+                        (sl == 5 || s[5] == ' ' || s[5] == '\t');
+        if (is_entry) {
+            if (start) { out->p = (char *)start; out->len = (size_t)(p - start);
+                         out->cap = 0; return true; }
+            n++;
+            if (n == idx) start = nl ? nl + 1 : end;
+        }
+        p = nl ? nl + 1 : NULL;
+    }
+    if (!start) return false;
+    out->p = (char *)start;
+    out->len = (size_t)(end - start);
+    out->cap = 0;
+    return true;
+}
+
+/* The version an image says it is, out of its own header line: the second
+ * word of "\x7fKRNL 6.4.11 rv64" or "\x7fINITRD 6.4.11". A kernel and its
+ * modules and its initrd all have to be the same one, and the whole family of
+ * upgrade failures is what happens when they are not. */
+static void image_version(const Buf *b, char *out, size_t outsz)
+{
+    out[0] = '\0';
+    if (!b->len) return;
+    const char *p = b->p, *end = b->p + b->len;
+    const char *nl = memchr(p, '\n', (size_t)(end - p));
+    if (nl) end = nl;
+    while (p < end && *p != ' ') p++;             /* past the magic word */
+    while (p < end && *p == ' ') p++;
+    const char *s = p;
+    while (p < end && *p != ' ' && *p != '\r') p++;
+    size_t n = (size_t)(p - s);
+    if (n >= outsz) n = outsz - 1;
+    memcpy(out, s, n);
+    out[n] = '\0';
+}
+
+/* What is actually installed under /lib/modules, as a list. Saying this is
+ * what separates "the kernel is the wrong one" from "the modules are the
+ * wrong ones", which are opposite repairs. */
+static void modules_installed(Machine *m, char *out, size_t outsz)
+{
+    size_t o = 0;
+    out[0] = '\0';
+    VNode *d = vfs_lookup(&m->disk, "/lib/modules");
+    for (VNode *k = d ? d->child : NULL; k; k = k->next) {
+        if (k->kind != VN_DIR) continue;
+        size_t n = strlen(k->name);
+        if (o + n + 3 >= outsz) break;
+        if (o) { out[o++] = ','; out[o++] = ' '; }
+        memcpy(out + o, k->name, n);
+        o += n;
+        out[o] = '\0';
+    }
+    if (!o) snprintf(out, outsz, "(nothing)");
 }
 
 /* Does this initrd carry a module by this name? */
@@ -353,6 +483,25 @@ void machine_boot(Machine *m)
     say(c, "  memory ....... 512 MB ok");
     say(c, "  cpu .......... rv64im @ 1 core");
     say(c, "  storage ...... /dev/sda 1 partition, /dev/sr0 removable");
+    /* WHAT THE FIRMWARE HAS BEEN TOLD TO BOOT, which is not a file and which
+     * no package owns. Somebody put the installer in, set the boot order to
+     * the optical drive, finished the job and took the disc out -- and the
+     * machine has been coming up ever since only because nobody rebooted it.
+     * Every file on the disk is perfect and there is nothing to boot.
+     *
+     * `zbl-install` puts the order back, the way grub-install rewrites the
+     * firmware's boot entry, and so does `rcon boot disk` from the service
+     * processor. */
+    say(c, "  boot order ... %s", m->sp_bootdev == 1
+                                  ? "/dev/sr0 (removable)"
+                                  : "/dev/sda, /dev/sr0 (removable)");
+    if (m->sp_bootdev == 1 && !m->sp_media) {
+        say(c, "zbios: /dev/sr0: no medium in the drive");
+        fail(m, c, BOOT_FIRMWARE,
+             "zbios: nothing to boot -- the boot order lists only the "
+             "removable drive");
+        goto done;
+    }
     if (!m->bootsector) {
         fail(m, c, BOOT_FIRMWARE, "no bootable device -- insert boot media");
         goto done;
@@ -410,16 +559,37 @@ void machine_boot(Machine *m)
         }
     }
 
+    /* WHICH ENTRY. A menu with three lines on it boots one of them, and which
+     * one is `default`. An entry that is not there is a real and thoroughly
+     * ordinary mistake -- somebody adds a test entry, boots it, deletes the
+     * entry and leaves the default pointing past the end of the list. */
+    Buf ent = f;
+    {
+        int nent = cfg_entry_count(&f);
+        char ds[32];
+        int def = cfg_get(&f, "default", ds, sizeof ds) ? atoi(ds) : 0;
+        if (nent > 0) {
+            if (def < 0 || def >= nent || !cfg_entry_range(&f, def, &ent)) {
+                fail(m, c, BOOT_LOADER,
+                     "zbl: default entry %d: there %s only %d entr%s in this "
+                     "configuration", def, nent == 1 ? "is" : "are", nent,
+                     nent == 1 ? "y" : "ies");
+                goto done;
+            }
+            say(c, "zbl: booting entry %d of %d", def, nent);
+        }
+    }
+
     char kpath[NOM_PATH_MAX], ipath[NOM_PATH_MAX], rootspec[64];
-    if (!cfg_get(&f, "kernel", kpath, sizeof kpath)) {
+    if (!cfg_get(&ent, "kernel", kpath, sizeof kpath)) {
         fail(m, c, BOOT_LOADER, "zbl: no kernel line in configuration");
         goto done;
     }
-    if (!cfg_get(&f, "initrd", ipath, sizeof ipath)) {
+    if (!cfg_get(&ent, "initrd", ipath, sizeof ipath)) {
         fail(m, c, BOOT_LOADER, "zbl: no initrd line in configuration");
         goto done;
     }
-    if (!cfg_get(&f, "root", rootspec, sizeof rootspec)) {
+    if (!cfg_get(&ent, "root", rootspec, sizeof rootspec)) {
         fail(m, c, BOOT_LOADER, "zbl: no root line in configuration");
         goto done;
     }
@@ -443,7 +613,14 @@ void machine_boot(Machine *m)
         fail(m, c, BOOT_KERNEL, "zbl: %s: bad magic -- not a kernel image", kpath);
         goto done;
     }
-    say(c, "zbl: loading %s", kpath);
+    /* WHICH KERNEL THIS ACTUALLY IS, out of the image rather than out of its
+     * filename. The two can disagree -- a restore from backup, a downgrade,
+     * an image copied over the top of another one -- and when they do, the
+     * name on the disk is the thing lying. */
+    char kver[32], scrubv[64];
+    image_version(&f, kver, sizeof kver);
+    say(c, "zbl: loading %s (%s)", kpath,
+        clean(kver, strlen(kver), scrubv, sizeof scrubv));
 
     /* ---- initrd: find and mount the root filesystem ---- */
     m->boot.reached = BOOT_INITRD;
@@ -464,7 +641,8 @@ void machine_boot(Machine *m)
         fail(m, c, BOOT_INITRD, "zbl: %s: bad magic -- not an initrd image", ipath);
         goto done;
     }
-    say(c, "kernel 6.4.11 booting");
+    say(c, "kernel %s booting",
+        clean(kver, strlen(kver), scrubv, sizeof scrubv));
 
     /* The initrd must carry the driver for the root device and the filesystem
      * it is formatted with. This is the classic one: regenerate the initrd
@@ -476,8 +654,10 @@ void machine_boot(Machine *m)
         say(c, "initrd: no driver for the root device (virtio_blk)");
         m->boot.emergency = 1;
         fail(m, c, BOOT_INITRD,
-             "initrd: waiting for %s ... timed out (30s), entering emergency shell",
+             "initrd: waiting for %s ... timed out (30s), and no driver was "
+             "going to appear",
              rootspec);
+        initrd_no_shell(c);
         goto done;
     }
     if (!initrd_has_module(&f, "ext4")) {
@@ -487,22 +667,44 @@ void machine_boot(Machine *m)
         say(c, "initrd: no filesystem driver for ext4");
         m->boot.emergency = 1;
         fail(m, c, BOOT_INITRD,
-             "initrd: mount %s: unknown filesystem type, entering emergency shell",
+             "initrd: mount %s: unknown filesystem type",
              rootspec);
+        initrd_no_shell(c);
         goto done;
     }
 
     /* The root the bootloader named has to be the root that exists. */
     const char *want = rootspec;
     char scrubu[256];
-    if (strncmp(want, "UUID=", 5) == 0) want += 5;
-    if (strcmp(want, m->root_uuid) != 0) {
-        m->boot.emergency = 1;
-        fail(m, c, BOOT_INITRD,
-             "initrd: waiting for /dev/disk/by-uuid/%s ... timed out (30s), "
-             "entering emergency shell",
-             clean(want, strlen(want), scrubu, sizeof scrubu));
-        goto done;
+    /* A ROOT NAMED BY DEVICE, WHICH IS HOW IT WAS DONE BEFORE UUIDS AND HOW
+     * people still write it by hand. It is legal and it works right up until
+     * a disk is added and the numbering moves under it, which is exactly why
+     * the installer writes a uuid instead. Either the node is there or it is
+     * not, and that is a different sentence from "no disk carries that
+     * uuid". */
+    if (want[0] == '/') {
+        /* This machine has one partition and it is /dev/sda1. Anything else
+         * named as a device is a node that is not here. */
+        if (strcmp(want, "/dev/sda1") != 0) {
+            m->boot.emergency = 1;
+            fail(m, c, BOOT_INITRD,
+                 "initrd: waiting for %s ... timed out (30s), no such device "
+                 "on this machine",
+                 clean(want, strlen(want), scrubu, sizeof scrubu));
+            initrd_no_shell(c);
+            goto done;
+        }
+    } else {
+        if (strncmp(want, "UUID=", 5) == 0) want += 5;
+        if (strcmp(want, m->root_uuid) != 0) {
+            m->boot.emergency = 1;
+            fail(m, c, BOOT_INITRD,
+                 "initrd: waiting for /dev/disk/by-uuid/%s ... timed out (30s), "
+                 "no disk here carries that uuid",
+                 clean(want, strlen(want), scrubu, sizeof scrubu));
+            initrd_no_shell(c);
+            goto done;
+        }
     }
     /* The filesystem is checked before it is mounted, by the initrd, which is
      * the only thing running at this point. A machine that stops here has a
@@ -518,6 +720,56 @@ void machine_boot(Machine *m)
         goto done;
     }
     say(c, "initrd: mounted %s on /", rootspec);
+
+    /* AND NOW THE KERNEL WANTS ITS MODULES, which live on the filesystem that
+     * has only just been mounted. /lib/modules/<version> is a directory per
+     * kernel, and an upgrade that lands one half of the pair leaves the two
+     * out of step: either the modules are for a kernel that is not here, or
+     * the kernel is one the modules were never built for. The console says
+     * which, because the repairs are opposite -- reinstall the kernel package
+     * in one direction, and in the other the image is the odd one out. */
+    if (kver[0]) {
+        char moddir[NOM_PATH_MAX];
+        snprintf(moddir, sizeof moddir, "/lib/modules/%s", kver);
+        VNode *md = vfs_lookup(&m->disk, moddir);
+        bool empty = true;
+        for (VNode *k = md ? md->child : NULL; k; k = k->next)
+            if (k->kind == VN_FILE) { empty = false; break; }
+        if (!md || md->kind != VN_DIR || empty) {
+            char have[160], sv3[64];
+            modules_installed(m, have, sizeof have);
+            say(c, "kernel: /lib/modules holds: %s", have);
+            m->boot.emergency = 1;
+            fail(m, c, BOOT_KERNEL,
+                 "kernel: %s: no modules for this kernel -- the image and "
+                 "/lib/modules are out of step",
+                 clean(moddir, strlen(moddir), sv3, sizeof sv3));
+            goto done;
+        }
+    }
+
+    /* AND THE INITRD BELONGS TO A KERNEL TOO. It carries that kernel's
+     * modules and nothing else can load them, so an image built for another
+     * version is not a smaller problem than a missing one. This is checked
+     * AFTER /lib/modules, deliberately: when the kernel image itself is the
+     * wrong one, everything disagrees with it at once and the console should
+     * say which single thing is the odd one out, not blame the initrd for
+     * being right. The repair here is `mkinitrd`, which builds one for the
+     * kernel that is actually installed. */
+    {
+        char iver[32], sv2[64], sv4[64];
+        image_version(&f, iver, sizeof iver);
+        if (kver[0] && iver[0] && strcmp(kver, iver) != 0) {
+            m->boot.emergency = 1;
+            fail(m, c, BOOT_INITRD,
+                 "initrd: %s was built for %s, and this kernel is %s -- "
+                 "the initrd is the odd one out",
+                 ipath,
+                 clean(iver, strlen(iver), sv2, sizeof sv2),
+                 clean(kver, strlen(kver), sv4, sizeof sv4));
+            goto done;
+        }
+    }
 
     /* ---- PID 1: from here it is real, executed userland ----
      * The kernel does exactly what a kernel does: it finds /sbin/init and
