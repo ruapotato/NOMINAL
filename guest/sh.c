@@ -558,14 +558,38 @@ static int run_line(char *cmd0)
             return 1;
         }
 
+        /* THE WORD LIST WAS 512 BYTES AND TRUNCATED IN SILENCE.
+         * `for i in $(seq 1 300); do touch /tmp/f$i; done` created a hundred
+         * and fifty-four files and said nothing, because 512 bytes of the
+         * substitution is exactly seq's first 154 numbers. A loop that runs
+         * half the times you asked and reports success is the worst kind of
+         * bug in a game about believing what the machine tells you. It is
+         * GARG_MAX now, like every other argument buffer, and it SAYS SO when
+         * it still does not fit. */
         char *wv[GARGS];
-        static char wcopy[512];
+        static char wcopy[GARG_MAX];
+        if (g_strlen(words_start) >= sizeof wcopy) {
+            g_putln("sh: for: the word list is longer than one command line --");
+            g_putln("  loop over fewer things, or write them to a file.");
+            return 1;
+        }
         g_copy(wcopy, words_start, sizeof wcopy);
         int wn = g_argv(wcopy, wv);
+        if (g_argv_over) {
+            g_puts("sh: for: more than ");
+            g_putn(GARGS);
+            g_putln(" words to loop over -- narrow the list.");
+            return 1;
+        }
+        static char bodycopy[1024];
+        if (g_strlen(body) >= sizeof bodycopy) {
+            g_putln("sh: for: the loop body is too long -- put it in a shorter");
+            g_putln("  form, or run the steps one at a time.");
+            return 1;
+        }
         g_copy(var_name, nm, sizeof var_name);
         for (int i = 0; i < wn; i++) {
             g_copy(var_val, wv[i], sizeof var_val);
-            static char bodycopy[1024];
             g_copy(bodycopy, body, sizeof bodycopy);
             int rc = run_list(bodycopy);
             if (rc != 0) { var_name[0] = 0; return rc; }

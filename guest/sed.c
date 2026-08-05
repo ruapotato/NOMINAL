@@ -10,13 +10,14 @@
  */
 #include "gsys.h"
 
-static char arg[512], buf[65536], out[65536];
+static char arg[GARG_MAX], buf[65536], out[65536];
 
 void _start(void)
 {
     g_getarg(arg, sizeof arg);
     char *v[GARGS];
     int n = g_argv(arg, v);
+    g_argv_warn("sed");
 
     int inplace = 0, ai = 0;
     if (n > 0 && g_streq(v[0], "-i")) { inplace = 1; ai = 1; }

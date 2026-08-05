@@ -495,7 +495,460 @@ static const Package PKG_HOME = {
         "which is the whole reason the flag exists.\n"
         "\n"
         "-- nomowner, who did not do that, once, for about ten minutes\n", 0644, NULL },
-    }, 19
+      /* ---- THE PREVIOUS ADMINISTRATOR, AT LENGTH.
+       *
+       * Eight files was a person you could sense. This is a person you can
+       * RECONSTRUCT: a diary that runs October to March and gets shorter and
+       * flatter as it goes, a hand-kept command log of the two nights that
+       * went wrong, a vendor thread that never once answers the question, a
+       * note-to-self and the note six weeks later that withdraws it, and an
+       * automation project abandoned for a reason its own README states.
+       *
+       * Every technical sentence in every one of them is true of THIS
+       * machine and was checked by running it. That is not a constraint on
+       * the writing, it is the point of it: a player who reads the home
+       * directory out of curiosity comes back to the bench better at the
+       * job, and a player who reads it and is lied to never reads anything
+       * again. ---- */
+      { "/home/nomowner/Documents/diary.txt",
+        "Work diary. Started it because a manager asked for \"visibility\" and kept it\n"
+        "because it turned out to be the only place the reasons get written down.\n"
+        "\n"
+        "--- OCTOBER ---\n"
+        "\n"
+        "3rd. Took the box over properly today. Nobody has run `pkg verify` on it\n"
+        "since it was built. It comes back with a handful of CHANGED files and every\n"
+        "single one of them is somebody's decision from some afternoon nobody wrote\n"
+        "down. That is not a fault list. It took me an hour to be sure of that and it\n"
+        "is the most useful hour I have spent here.\n"
+        "\n"
+        "11th. `ls /boot` is a lie and I want that on a poster. The versioned image\n"
+        "was gone and the symlink pointing at it was fine, so the listing looked\n"
+        "perfect and the loader said the kernel was missing. `stat /boot/vmnomuz`\n"
+        "took four seconds. I did not do that first.\n"
+        "\n"
+        "19th. Wrote the cleanup script. It tidies /boot. I am pleased with it.\n"
+        "\n"
+        "24th. Two services dead, everything else fine. Spent forty minutes on the\n"
+        "two services before it occurred to me to ask what they have in common, which\n"
+        "is `ldd`, which is one command. httpd and auditd both compress what they\n"
+        "write, so both need libz -- and of the services that come up at boot, only\n"
+        "those two do. (`links` needs it as well and postfix would if it were\n"
+        "enabled, so that is four binaries on the whole disk and `ldd` names them\n"
+        "one at a time.) Everything dead means libc. Two things dead means asking\n"
+        "what those two have in common.\n"
+        "\n"
+        "--- NOVEMBER ---\n"
+        "\n"
+        "6th. HALYARD kickoff. Scope: everything. I said the current arrangement is\n"
+        "one machine and one person and neither is documented. Minuted as \"concerns\n"
+        "noted\".\n"
+        "\n"
+        "14th. The vendor agent again. A .svc in /etc/services.d marked critical, so\n"
+        "the boot stops dead for a monitoring tool nobody asked for. `pkg owns` it\n"
+        "and nothing owns it, which is the whole diagnosis. Deleted it. Second time.\n"
+        "\n"
+        "21st. Quiet week. Read the whole of /etc for no reason and found four files\n"
+        "I did not know were being read by anything. Recommend this to everybody.\n"
+        "\n"
+        "30th. Somebody bound a directory over /etc while testing something and went\n"
+        "home. Every file passed verify. The machine read the wrong ones all evening.\n"
+        "`ns` would have shown me in four seconds and I did not think to run it,\n"
+        "because who binds anything over /etc.\n"
+        "\n"
+        "--- DECEMBER ---\n"
+        "\n"
+        "8th. Nothing broke this week and I do not trust it.\n"
+        "\n"
+        "18th. Filled /boot doing an upgrade and the new initrd wrote short. The file\n"
+        "was there. It was half a file. The write \"succeeded\". I have started saying\n"
+        "`df` out loud before I do anything, like a prayer.\n"
+        "\n"
+        "--- JANUARY ---\n"
+        "\n"
+        "7th. /var/log/messages is 200K and growing. Logrotate is configured. The\n"
+        "crontab line is there. There is no evidence it has ever run. A job with no\n"
+        "log has never run.\n"
+        "\n"
+        "15th. Still growing. Put it on the TODO. It is now on the TODO twice.\n"
+        "\n"
+        "20th. HALYARD is parked. The charter lists me as a key person dependency\n"
+        "with the mitigation left blank. I read that sentence about six times.\n"
+        "\n"
+        "29th. Ticket 8841 reopened. sshd came back mode 000. It is R.'s hardening\n"
+        "script, again, and `pkg verify openssh` says MODE and not CHANGED, which\n"
+        "means nothing is damaged and `chmod 755` is the whole repair. I wrote this\n"
+        "down properly in Documents so I stop explaining it from memory.\n"
+        "\n"
+        "--- FEBRUARY ---\n"
+        "\n"
+        "4th. Learned something I should have known for years. `pkg verify` says\n"
+        "nothing at all about the mode of a directory nothing owns. Wrote it up\n"
+        "somewhere quieter.\n"
+        "\n"
+        "12th. Postfix relay moved. Edited main.cf. Did not restart it. Spent an hour\n"
+        "reading a config file that was correct while a process that had never read\n"
+        "it did something else. /run/<name>.state is what the process actually loaded\n"
+        "and I now check it first, every time.\n"
+        "\n"
+        "--- MARCH ---\n"
+        "\n"
+        "2nd. The disk filled. syslogd could not write its own startup line, so the\n"
+        "first thing to fail was the logger, and the logger was innocent. Two hours.\n"
+        "Postmortem in Documents. Action items: rotate the logs, alert on usage,\n"
+        "write the postmortem. Guess which one is done.\n"
+        "\n"
+        "5th. The cleanup script ran. It removed /boot/vmnomuz-6.4.11 because the\n"
+        "filename did not match a pattern I wrote in October when I was pleased with\n"
+        "myself. Six hours down. The job is commented out in /etc/crontab now and it\n"
+        "is staying commented out and I have written that on the script, on the\n"
+        "crontab and in ~/TODO, which is three places and one too few.\n"
+        "\n"
+        "9th. Handed in my notice.\n"
+        "\n"
+        "14th. Writing the handover. There is nobody to hand it to, so it is going in\n"
+        "Documents and on the blog and I have said the same six things in both, and\n"
+        "if you are reading this in some later month: the six things are true and the\n"
+        "machine will teach you them again anyway.\n"
+        "\n"
+        "20th. Last one. Nothing on this box is mysterious. Every single thing it has\n"
+        "ever done to me it explained on the console first and I was not reading.\n", 0644, NULL },
+      { "/home/nomowner/.sh_history",
+        "# sh here does not keep a history -- there is no `history`, and the builtins\n"
+        "# are cd, pwd, bind, unbind, echo and help, which is all of them. So this is\n"
+        "# one I kept by hand, badly, out of a habit from a shell that did. Mostly it\n"
+        "# is the nights that went wrong, because those are the ones worth keeping.\n"
+        "#\n"
+        "# --- 2 March, the disk ---\n"
+        "svc\n"
+        "svc status syslog\n"
+        "cat /etc/syslog.conf\n"
+        "ls /var/log\n"
+        "pkg verify syslog\n"
+        "pkg reinstall syslog\n"
+        "svc status syslog\n"
+        "df\n"
+        "du -s /var /usr /home\n"
+        "du /var/log\n"
+        "wc /var/log/messages\n"
+        "tail /var/log/messages\n"
+        "rm /var/log/messages\n"
+        "svc\n"
+        "df\n"
+        "# two hours before the `df`. it is the second command in checkboot for a\n"
+        "# reason and I wrote checkboot.\n"
+        "#\n"
+        "# --- 5 March, the kernel ---\n"
+        "dmesg\n"
+        "ls /boot\n"
+        "stat /boot/vmnomuz\n"
+        "pkg verify kernel-default\n"
+        "pkg reinstall kernel-default\n"
+        "stat /boot/vmnomuz\n"
+        "reboot\n"
+        "grep cleanup /var/log/messages.1\n"
+        "cat /home/nomowner/bin/cleanup\n"
+        "sed -i /cleanup/d /etc/crontab\n"
+        "cat /etc/crontab\n"
+        "# then put the line back with DISABLED on it, because a deleted line is a\n"
+        "# thing the next person re-invents and a commented one is a warning.\n"
+        "#\n"
+        "# --- odds and ends ---\n"
+        "ldd /usr/sbin/httpd\n"
+        "ldd /usr/sbin/sshd\n"
+        "blkid\n"
+        "cat /boot/zbl/zbl.cfg\n"
+        "ns\n"
+        "find /var -type f\n"
+        "netstat\n"
+        "cat /run/postfix.state\n"
+        "ps\n"
+        "kill -HUP 14\n"
+        "pkg owns /etc/services.d/zephyr-agent.svc\n"
+        "rm /etc/services.d/zephyr-agent.svc\n"
+        "ls -a\n"
+        "rot13 .local-notes\n"
+        "fortune /home/nomowner/fortunes\n"
+        "cowsay -f tux it was always dns except here where it is /etc/hosts\n"
+        "sl\n", 0644, NULL },
+      { "/home/nomowner/Documents/vendor-zephyr.txt",
+        "ZEPHYR SYSTEMS -- the whole correspondence, kept because nobody believes me.\n"
+        "\n"
+        "----- to support@zephyrsys, 14 November\n"
+        "Your agent has installed a unit file at /etc/services.d/zephyr-agent.svc on\n"
+        "one of our machines. It is marked `critical: yes`, which on NomnixOS means\n"
+        "the boot STOPS if it will not start. It would not start. The machine did not\n"
+        "come up. Please confirm which of your products installed it.\n"
+        "\n"
+        "----- from support@zephyrsys, 14 November (automatic)\n"
+        "Thank you for contacting Zephyr Systems. Your case cannot be created because\n"
+        "you do not have a support contract. Please contact your account manager.\n"
+        "\n"
+        "----- to support@zephyrsys, 21 November\n"
+        "There is no account manager listed. Repeating the question: which product\n"
+        "installs zephyr-agent.svc?\n"
+        "\n"
+        "----- from support@zephyrsys, 3 December\n"
+        "Please see KB1041.\n"
+        "\n"
+        "----- to support@zephyrsys, 3 December\n"
+        "KB1041 says to reinstall the operating system. I am not going to do that. I\n"
+        "have run `pkg owns` on the file and NOTHING on this machine owns it, which\n"
+        "means no package we installed put it there and no package can take it away.\n"
+        "Deleting the file is the fix and it worked in about ten seconds. I am asking\n"
+        "so that it does not happen a third time.\n"
+        "\n"
+        "----- from support@zephyrsys, 3 December (automatic)\n"
+        "This case has been closed as RESOLVED (customer self-service).\n"
+        "\n"
+        "----- to support@zephyrsys, 14 January\n"
+        "It happened a third time.\n"
+        "\n"
+        "----- from support@zephyrsys, 14 January (automatic)\n"
+        "Thank you for contacting Zephyr Systems.\n"
+        "\n"
+        "-----\n"
+        "\n"
+        "WHAT I ACTUALLY LEARNED, which is worth more than the agent cost us:\n"
+        "\n"
+        "  A unit file no package owns is invisible to every instinct you have.\n"
+        "  `pkg verify` is CLEAN, because verify compares what is installed against\n"
+        "  the manifests, and a file no manifest mentions cannot differ from\n"
+        "  anything. The boot still stops. `pkg owns <the file>` is the one command\n"
+        "  that answers it, and \"nothing owns it\" is a real answer and not an error.\n"
+        "\n"
+        "  Their downloads page is all Windows executables. This machine is a 64-bit\n"
+        "  RISC box; the loader reads the header, sees a program for a machine that\n"
+        "  is not this one, and refuses to run it. That refusal looks exactly like a\n"
+        "  package built for the wrong architecture, which is a fault we have really\n"
+        "  had, so it is worth having seen the message once on purpose.\n"
+        "\n"
+        "  links support.zephyrsys.com/kb1041\n", 0644, NULL },
+      { "/home/nomowner/Documents/scratch-jan.txt",
+        "(scratch, 20 January)\n"
+        "\n"
+        "Working theory after this morning: when something is wrong, reinstall the\n"
+        "package that owns it. It has worked every single time this month. verify\n"
+        "names the file, `pkg owns` names the package, `pkg reinstall` puts it back,\n"
+        "done, and I am home by six.\n"
+        "\n"
+        "Going to stop over-thinking this job. It is a lookup table and I have been\n"
+        "treating it like detective work.\n"
+        "\n"
+        "  pkg verify\n"
+        "  pkg owns <file>\n"
+        "  pkg reinstall <package>\n"
+        "\n"
+        "Three commands. Print it out.\n", 0644, NULL },
+      { "/home/nomowner/Documents/scratch-mar.txt",
+        "(scratch, 5 March -- six weeks after the other one, read that one first)\n"
+        "\n"
+        "Withdrawing the January note entirely. I have left it in Documents on\n"
+        "purpose, because being wrong in writing is the only way I learn anything.\n"
+        "\n"
+        "It is not a lookup table, and here is the list of times it is not:\n"
+        "\n"
+        "  - The boot sector is not a file. No package owns it. verify is clean and\n"
+        "    the machine will not boot. `zbl-install` is the repair and no reinstall\n"
+        "    on earth reaches it.\n"
+        "\n"
+        "  - The bootloader config with a well-formed UUID that is not this disk's.\n"
+        "    Reinstalling the zbl package writes the config for the machine it was\n"
+        "    BUILT for. `zbl-mkconfig` writes one for the machine in front of you.\n"
+        "    Putting a file back is not the same act as making it true.\n"
+        "\n"
+        "  - The repository channel. If /etc/pkg/repos.d says testing, then verify\n"
+        "    says CHANGED and reinstall cheerfully fetches the same wrong version\n"
+        "    back and reports that it restored everything. It is not lying to you.\n"
+        "    It is doing exactly what you asked. Fix the source first.\n"
+        "\n"
+        "  - A full disk. Nothing is corrupt, every hash matches, and there is\n"
+        "    nowhere to put the next byte. `df`.\n"
+        "\n"
+        "  - A stray unit no package owns. See the Zephyr file.\n"
+        "\n"
+        "  - A config somebody edited on purpose. Reinstall keeps it, which is a\n"
+        "    kindness; --force takes their afternoon away.\n"
+        "\n"
+        "Six of them, in six weeks, and every one is a case where the January note\n"
+        "would have had me destroying evidence with a straight face.\n"
+        "\n"
+        "New version of the card:\n"
+        "\n"
+        "  read the console        it says where it stopped\n"
+        "  find out what CHANGED   verify, diff, and read the diff\n"
+        "  then change ONE thing\n"
+        "\n"
+        "and not the other order.\n", 0644, NULL },
+      { "/home/nomowner/bin/logsweep/README",
+        "logsweep -- abandoned, on purpose, and here is the honest reason.\n"
+        "\n"
+        "WHAT IT WAS GOING TO BE. /var/log/messages had been growing since January\n"
+        "and logrotate's crontab line has never once produced a log entry, which\n"
+        "means it has never run. Rather than find out why, I decided to write my own.\n"
+        "This is the shape of every bad decision I have made on this machine.\n"
+        "\n"
+        "WHY IT IS NOT FINISHED. Three reasons, and the third is the real one.\n"
+        "\n"
+        "  1. /bin/rc is the only thing here that runs a script FILE, and rc knows\n"
+        "     five verbs: echo, mount, run, exec, need. There is no `if`, there is no\n"
+        "     test, and there is no way to ask how big a file is. Everything this\n"
+        "     needed to decide, it could not decide.\n"
+        "\n"
+        "  2. rc stops at the FIRST failure. That is right for a boot and exactly\n"
+        "     wrong for housekeeping, where you want to sweep four things and be told\n"
+        "     which one refused.\n"
+        "\n"
+        "  3. I had already written a script that tidied a directory automatically\n"
+        "     and it removed a kernel image and took the machine down for six hours.\n"
+        "     See ~/bin/cleanup, which is disabled, and /etc/crontab, where its job\n"
+        "     is commented out. Writing a SECOND unattended thing that deletes files,\n"
+        "     eight weeks after the first one, would have been the single stupidest\n"
+        "     act of my career here and I got about forty minutes into it before I\n"
+        "     noticed.\n"
+        "\n"
+        "WHAT IS LEFT is sweep.rc, which is all comments and is a perfectly good\n"
+        "checklist that a person runs, and TODO, which is the list of what it would\n"
+        "have needed. Both are more useful than the script would have been.\n"
+        "\n"
+        "THE ACTUAL FIX, which I never did: find out why the logrotate line never\n"
+        "runs. `grep logrotate /var/log/messages` and `grep logrotate\n"
+        "/var/log/messages.1` -- crond logs a CMD line every time it starts a job,\n"
+        "so if there is no line, there was no job. A job with no log has never run.\n", 0644, NULL },
+      { "/home/nomowner/bin/logsweep/sweep.rc",
+        "# logsweep/sweep.rc -- not a program. rc has five verbs (echo, mount, run,\n"
+        "# exec, need) and stops at the first failure, so this could never have been\n"
+        "# one. It is a checklist. Type the lines.\n"
+        "#\n"
+        "# ORDER MATTERS: measure before you delete anything, because the thing that\n"
+        "# is big is almost never the thing you expected and deleting the wrong file\n"
+        "# is how a tidy-up becomes a ticket.\n"
+        "#\n"
+        "#   df                        is there actually a problem\n"
+        "#   df -i                     ...or is it the other kind of problem\n"
+        "#   du -s /var /usr /home     which branch\n"
+        "#   du /var/log               which directory in it\n"
+        "#   wc /var/log/messages      how many lines is \"big\"\n"
+        "#   find /var -type f         when du says a directory is big and every\n"
+        "#                             file in it is small, this is what shows you\n"
+        "#                             that there are four hundred of them\n"
+        "#   tail /var/log/messages    read the end before you delete the file\n"
+        "#   rm /var/log/messages      syslogd writes a fresh one at the next boot\n"
+        "#   svc                       did anything that could not write come back\n"
+        "#\n"
+        "# The one that is not obvious: a log that ate the disk is ONE enormous file\n"
+        "# and `wc` finds it immediately. A cache that ate the disk is hundreds of\n"
+        "# ordinary files, none of them remarkable, and no amount of looking at files\n"
+        "# will show it to you -- you have to look at the DIRECTORY. That is `find`,\n"
+        "# and it is why it is on this list twice as far as I am concerned.\n", 0644, NULL },
+      { "/home/nomowner/bin/logsweep/TODO",
+        "logsweep -- what it would have needed. Kept as a description of the gap.\n"
+        "\n"
+        "- a way to ask how big a file is, from a script. `wc` and `du` will tell a\n"
+        "  PERSON. rc cannot read the answer back, because rc has no variables and no\n"
+        "  command substitution. /bin/sh has both; rc is what runs script files.\n"
+        "- a conditional of any kind.\n"
+        "- a dry run that prints what it would delete and deletes nothing. Anything\n"
+        "  that deletes files unattended and has no dry run is a loaded weapon in a\n"
+        "  drawer, and I know because I left one in a drawer in October.\n"
+        "- a lock, so it cannot run twice.\n"
+        "- somewhere to log what it did. A job that has no log has never run, and\n"
+        "  that cuts both ways: I would not have been able to prove it HAD run.\n"
+        "\n"
+        "Conclusion after writing all that down: the tool I actually wanted is\n"
+        "logrotate, which is installed, configured, and has a crontab line. Find out\n"
+        "why the line never fires. Do not write a second one.\n", 0644, NULL },
+      { "/home/nomowner/.profile",
+        "# ~/.profile\n"
+        "#\n"
+        "# It does nothing. /etc/profile is the login profile on this machine and it\n"
+        "# sets PATH; there is no per-user profile and nothing reads this file. I\n"
+        "# worked that out by reading /bin/sh and /sbin/login rather than by wondering\n"
+        "# about it for a year, which I recommend.\n"
+        "#\n"
+        "# What I wanted was aliases, and this shell has none. The builtins are cd,\n"
+        "# pwd, bind, unbind, echo and help, and that is the complete list -- `help`\n"
+        "# prints it. So there is nothing to alias with, and typing `pkg verify` in\n"
+        "# full has not actually cost me anything except this file.\n"
+        "#\n"
+        "# The things I would have aliased, for whoever wants them typed out:\n"
+        "#\n"
+        "#   pkg verify                what differs from what shipped\n"
+        "#   df ; df -i                the two different questions\n"
+        "#   svc                       what should be running and is not\n"
+        "#   dmesg                     what the machine said on the way up\n"
+        "#\n"
+        "# Four commands. Keeping this file so the next person does not spend an\n"
+        "# evening finding out the same nothing.\n", 0644, NULL },
+      /* HIDDEN, AND WORTH FINDING.
+       *
+       * `ls` does not list a name beginning with a dot, so neither this nor
+       * the command log above appears in ~ at all until somebody thinks to
+       * type `ls -a`, or runs `find /home -type f`, or notices that `du`
+       * counts bytes nothing in the listing accounts for. Three real tools,
+       * three real ways in, and no way to stumble on it.
+       *
+       * What it pays out is the story -- who R. is, what HALYARD did to this
+       * person -- and ONE technical fact that is stated nowhere else on the
+       * machine and is verifiably true: `pkg verify` reports the mode of a
+       * directory a package OWNS and cannot say a word about any other, so
+       * `chmod 700 /usr/sbin` leaves verify perfectly clean while every
+       * binary underneath becomes unreachable. That is a real fault in the
+       * catalogue and this is the only place the tool's blind spot is
+       * written down.
+       *
+       * It is rot13, which is not security and the file says so itself. It
+       * is the thing people really use rot13 for: not being read by
+       * accident. `rot13 .local-notes` is the whole of it. */
+      { "/home/nomowner/.local-notes",
+        "Guvf bar vf ebg13 orpnhfr gur ynfg gvzr V jebgr qbja jung V npghnyyl gubhtug,\n"
+        "fbzrobql ernq vg bire zl fubhyqre ng gur fgnaqhc. Vg vf abg n frperg. Vg vf\n"
+        "whfg abg n guvat V jnagrq ernq ol nppvqrag. `ebg13 .ybpny-abgrf` tvirf vg\n"
+        "fgenvtug onpx, juvpu vf gur jubyr bs gur frphevgl urer naq V xabj vg.\n"
+        "\n"
+        "GUR CNEG V PBHYQ ABG CHG VA GUR UNAQBIRE\n"
+        "\n"
+        "E. vf Ebo, va Snpvyvgvrf. Gvpxrg 8841 vf uvf uneqravat fpevcg naq va nobhg\n"
+        "svir jrrxf vg jvyy or uvf uneqravat fpevcg ntnva. Ur vf abg znyvpvbhf naq ur\n"
+        "vf abg pneryrff; ur jnf gbyq gb znxr gur rfgngr pbzcyvnag, unaqrq n fpevcg,\n"
+        "naq tvira abjurer gb grfg vg. Qb abg svtug uvz. Fraq uvz gur gvpxrg ahzore\n"
+        "naq gur bar yvar gung znggref: cxt irevsl fnlf ZBQR naq abg PUNATRQ, fb\n"
+        "abguvat jnf qnzntrq, naq puzbq vf gur ragver ercnve.\n"
+        "\n"
+        "UNYLNEQ yvfgrq zr nf n xrl crefba qrcraqrapl jvgu \"ZVGVTNGVBA: abar\n"
+        "vqragvsvrq\", naq gura cnexrq vgfrys. Gung fragrapr vf fgvyy ba gur byq jvxv.\n"
+        "V fgbccrq orvat natel nobhg vg va Wnahnel, naq gung vf nobhg jura V qrpvqrq\n"
+        "gb tb. Vs lbh ner ernqvat guvf, lbh ner gur zvgvtngvba. V nz fbeel.\n"
+        "\n"
+        "GUR CNEG GUNG VF NPGHNYYL HFRSHY\n"
+        "\n"
+        "Vg vf abg va abgrf.gkg orpnhfr vg gbbx zr hagvy Sroehnel gb or fher bs vg.\n"
+        "\n"
+        "  cxt irevsl pnaabg frr gur zbqr bs zbfg qverpgbevrf.\n"
+        "\n"
+        "N cnpxntr erpbeqf gur qverpgbevrf vg BJAF. flfybt bjaf /ine/ybt, onfr bjaf\n"
+        "/eha naq /gzc naq /ine/pnpur, peba bjaf /ine/fcbby/peba, uggcq bjaf /fei/jjj,\n"
+        "abzqr bjaf /eha/abzqr -- naq irevsl purpxf rnpu bs gubfr sbe rkvfgrapr naq\n"
+        "sbe zbqr, yvxr nal bgure yvar va gur znavsrfg. Rirel bgure qverpgbel ba guvf\n"
+        "znpuvar orybatf gb abobql ng nyy: /rgp, /hfe/fova, /obbg, /yvo, /ubzr.\n"
+        "Punatr gur zbqr bs bar bs gubfr naq irevsl vf pyrna, naq fgnlf pyrna, naq\n"
+        "rirel svyr haqrearngu vg vf cresrpgyl vagnpg naq pbzcyrgryl haernpunoyr.\n"
+        "\n"
+        "  puzbq 700 /hfe/fova       cxt irevsl fnlf abguvat jungfbrire\n"
+        "  puzbq 700 /ine/ybt        cxt irevsl flfybt fnlf ZBQR\n"
+        "\n"
+        "Gur fnzr pbzznaq, qbvat gur fnzr xvaq bs qnzntr, naq gur gbby nafjref va gjb\n"
+        "qvssrerag jnlf sbe n ernfba gung unf abguvat gb qb jvgu juvpu bar vf jbefr.\n"
+        "Fb jura n jubyr urnygul gerr unf tbar haernqnoyr ng bapr, jung vf jebat vf\n"
+        "gur jnl VA naq abg gur pbagragf, naq gur bayl guvat ba guvf znpuvar gung\n"
+        "jvyy gryy lbh fb vf\n"
+        "\n"
+        "  yf -yq <gur qverpgbel>\n"
+        "\n"
+        "V ybfg zbfg bs n Guhefqnl gb gung. Abobql fubhyq unir gb ybfr n frpbaq bar.\n"
+        "\n"
+        "-- abzbjare\n", 0644, NULL },
+    }, 29
 };
 
 static const Package PKG_SSH = {
@@ -817,6 +1270,14 @@ static const Package PKG_SHELL = {
       { "/bin/tail", NULL, 0755, NULL },
       { "/bin/du", NULL, 0755, NULL },
       { "/bin/mkdir", NULL, 0755, NULL },
+      /* `seq` is here rather than in the joke package because it is the only
+       * way to say "do that four hundred times" on a shell that has `for` and
+       * no arithmetic -- which is what it takes to fill a filesystem's inode
+       * table by hand and watch `df` and `df -i` disagree with each other.
+       * `rev` is here because it is two hundred bytes and it is the shortest
+       * proof that a pipeline really carries bytes: rev | rev is identity. */
+      { "/bin/seq", NULL, 0755, NULL },
+      { "/bin/rev", NULL, 0755, NULL },
       { "/bin/uname", NULL, 0755, NULL },
       { "/bin/whoami", NULL, 0755, NULL },
       { "/bin/df", NULL, 0755, NULL },
@@ -841,7 +1302,7 @@ static const Package PKG_SHELL = {
        * runs it with a runlevel, so that is what init.c does now. This is
        * only the second name for it. */
       { "/sbin/telinit", NULL, 0755, NULL },
-    }, 43
+    }, 45
 };
 
 
@@ -1129,7 +1590,55 @@ static const Package PKG_MAN = {
         "It fails when the parent is not writable, when the root is mounted\n"
         "read-only, and when the filesystem is out of inodes -- `ls -ld` on\n"
         "the parent, `mount`, and `df -i` respectively.\n", 0644, NULL },
-    }, 9
+      { "/usr/share/man/seq",
+        "seq(1)\n\n"
+        "  seq LAST                 1 .. LAST\n"
+        "  seq FIRST LAST           FIRST .. LAST\n"
+        "  seq FIRST STEP LAST      FIRST, FIRST+STEP, ... not past LAST\n"
+        "\n"
+        "One number per line. A negative STEP counts down; a STEP of zero is\n"
+        "refused, because nothing on this machine can interrupt a loop that\n"
+        "never ends. An empty range prints nothing and succeeds, so\n"
+        "`for i in $(seq 1 0)` runs zero times rather than failing.\n"
+        "\n"
+        "This shell has `for` and `$(...)` and no arithmetic, so seq is how a\n"
+        "count becomes a loop. A loop takes at most 256 words and says so if\n"
+        "it is given more, so a big count is two loops:\n"
+        "\n"
+        "  for i in $(seq 1 250); do touch /tmp/a$i; done\n"
+        "  for i in $(seq 1 250); do touch /tmp/b$i; done\n"
+        "  df\n"
+        "  df -i\n"
+        "\n"
+        "Do that on a healthy machine and watch the two answers come apart.\n"
+        "`df` still reports about half a megabyte free -- five hundred empty\n"
+        "files cost no bytes worth counting -- and `touch` cannot create one\n"
+        "more, because they cost an inode each and the inodes are gone. That\n"
+        "is the whole of why `df` and `df -i` are two different questions, and\n"
+        "it is worth doing once on a machine that is not broken so that you\n"
+        "recognise it on one that is.\n"
+        "\n"
+        "  rm /tmp/a*\n"
+        "  rm /tmp/b*\n"
+        "\n"
+        "puts every one of them back.\n",
+        0644, NULL },
+      { "/usr/share/man/rev",
+        "rev(1)\n\n"
+        "  rev [file ...]     reverse each line; with no file, stdin\n"
+        "\n"
+        "The trailing newline stays where it is, and a stray carriage return\n"
+        "at the end of a line is dropped rather than reversed to the front of\n"
+        "it.\n"
+        "\n"
+        "It is its own undo, which makes it the cheapest test that a pipeline\n"
+        "on this machine really carries bytes rather than pretending to:\n"
+        "\n"
+        "  cat /etc/hostname | rev | rev\n"
+        "\n"
+        "If that is not `cat /etc/hostname` then the pipe is what is wrong.\n",
+        0644, NULL },
+    }, 11
 };
 
 /* THE JOKE PACKAGE, built exactly like the serious ones.
@@ -1151,6 +1660,12 @@ static const Package PKG_FUN = {
       { "/usr/bin/fortune", NULL, 0755, NULL },
       { "/usr/bin/cowsay",  NULL, 0755, NULL },
       { "/usr/bin/sl",      NULL, 0755, NULL },
+      /* rot13 is in the joke package and is not a joke. It is here because
+       * somebody on this machine used it for exactly what people really use
+       * it for: stopping a sentence being read by ACCIDENT by whoever walks
+       * past. Running it twice is the undo, which is the entire security
+       * model and the man page says so. */
+      { "/usr/bin/rot13",   NULL, 0755, NULL },
       /* One per line, because `fortune` reads a line and because that makes
        * the file greppable. Blank lines and #comments are skipped, and an
        * indented line continues the one above it -- which is the same shape
@@ -1252,7 +1767,30 @@ static const Package PKG_FUN = {
         "It does not animate. Nothing on this machine redraws the screen, and a\n"
         "program that pretended to would be the only dishonest thing in\n"
         "/usr/bin, so the train is drawn all at once with its smoke behind it.\n", 0644, NULL },
-    }, 7
+      { "/usr/share/man/rot13",
+        "rot13(1)\n\n"
+        "  rot13 [file ...]   rotate letters by thirteen; with no file, stdin\n"
+        "\n"
+        "Letters move thirteen places and wrap. Digits, punctuation and\n"
+        "spacing are untouched, so a file that has been through rot13 keeps\n"
+        "its shape -- which is how you can tell rot13 from damage at a glance:\n"
+        "the line lengths are right and the words are the right lengths and\n"
+        "none of it is words.\n"
+        "\n"
+        "Thirteen is half of twenty-six, so it is its own undo:\n"
+        "\n"
+        "  rot13 somefile | rot13\n"
+        "\n"
+        "gives the file back. THIS IS NOT ENCRYPTION and nothing about it is\n"
+        "private: anybody who can run rot13 can undo rot13. It is for keeping\n"
+        "a punchline, a spoiler or an opinion from being read by ACCIDENT over\n"
+        "somebody's shoulder, which is a real thing people want and is the\n"
+        "only thing this offers.\n"
+        "\n"
+        "`ls` does not list names beginning with a dot. `ls -a` does, and so\n"
+        "do `find` and `du`, which is worth remembering the next time a\n"
+        "directory looks emptier than the disk says it is.\n", 0644, NULL },
+    }, 9
 };
 
 static const Package PKG_MAIL = {
@@ -1538,6 +2076,12 @@ void image_generated(const Machine *m, const char *path, Buf *out)
         buf_put(out, (const char *)GUEST_DU, GUEST_DU_LEN);
     else if (strcmp(path, "/bin/mkdir") == 0)
         buf_put(out, (const char *)GUEST_MKDIR, GUEST_MKDIR_LEN);
+    else if (strcmp(path, "/bin/rev") == 0)
+        buf_put(out, (const char *)GUEST_REV, GUEST_REV_LEN);
+    else if (strcmp(path, "/bin/seq") == 0)
+        buf_put(out, (const char *)GUEST_SEQ, GUEST_SEQ_LEN);
+    else if (strcmp(path, "/usr/bin/rot13") == 0)
+        buf_put(out, (const char *)GUEST_ROT13, GUEST_ROT13_LEN);
     else if (strcmp(path, "/bin/uname") == 0)
         buf_put(out, (const char *)GUEST_UNAME, GUEST_UNAME_LEN);
     else if (strcmp(path, "/bin/whoami") == 0)
@@ -1752,6 +2296,10 @@ void machine_install(Machine *m, uint64_t seed)
         "/usr/share/applications", "/run/nomde",
         "/etc/net", "/etc/rc.d", "/etc/services.d", "/etc/ssh", "/etc/udev",
         "/etc/udev/rules.d", "/home", "/home/nomowner", "/home/nomowner/bin",
+        /* A half-finished project gets a directory, the way a half-finished
+         * project always does: a README, the thing that is not a program,
+         * and the list of what it would have needed. */
+        "/home/nomowner/bin/logsweep",
         /* A HOME DIRECTORY LOOKS LIKE SOMEBODY LIVES IN IT. Everything was
          * dumped straight in /home/nomowner, which is not what anyone's home
          * looks like -- there is always a Desktop, always a Documents, always

@@ -1,12 +1,13 @@
 /* /bin/cat — print a file. Refuses binaries, because a screen of ELF is not
  * evidence, it is noise. */
 #include "gsys.h"
-static char arg[256], buf[32768];
+static char arg[GARG_MAX], buf[32768];
 void _start(void)
 {
     g_getarg(arg, sizeof arg);
     char *v[GARGS];
     if (g_argv(arg, v) < 1) { g_putln("usage: cat <file>"); g_exit(1); }
+    g_argv_warn("cat");
     i64 n = g_slurp(v[0], buf, sizeof buf);
     if (n < 0) { g_puts("cat: "); g_puts(v[0]); g_putln(": cannot read"); g_exit(1); }
     int printable = 0, look = (int)(n < 200 ? n : 200);

@@ -1,11 +1,12 @@
 /* /bin/stat — what the kernel thinks a path is. */
 #include "gsys.h"
-static char arg[256];
+static char arg[GARG_MAX];
 void _start(void)
 {
     g_getarg(arg, sizeof arg);
     char *v[GARGS];
     if (g_argv(arg, v) < 1) { g_putln("usage: stat <path>"); g_exit(1); }
+    g_argv_warn("stat");
     NomStat st;
     if (g_stat(v[0], &st) != 0) {
         g_puts("stat: "); g_puts(v[0]);

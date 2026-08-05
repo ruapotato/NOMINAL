@@ -12,7 +12,7 @@
  */
 #include "gsys.h"
 
-static char arg[512];
+static char arg[GARG_MAX];
 static const char *pat = 0;
 static int want_kind = 0;          /* 0 any, 1 file, 2 dir */
 static int hits = 0;

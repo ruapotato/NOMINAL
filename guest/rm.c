@@ -8,7 +8,7 @@
  */
 #include "gsys.h"
 
-static char arg[512];
+static char arg[GARG_MAX];
 
 /* Depth first, because a directory cannot go until it is empty. */
 static int rm_tree(const char *path, int depth)
@@ -38,6 +38,7 @@ void _start(void)
     g_getarg(arg, sizeof arg);
     char *v[GARGS];
     int n = g_argv(arg, v);
+    g_argv_warn("rm");
     int rec = 0, i = 0;
     if (n > 0 && (g_streq(v[0], "-r") || g_streq(v[0], "-rf") ||
                   g_streq(v[0], "-fr"))) { rec = 1; i = 1; }
