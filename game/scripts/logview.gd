@@ -57,7 +57,8 @@ const ERR_WORDS := ["cannot", "failed", "fail", "no such", "not found",
 	"refus", "panic", "oom", "corrupt", "unreadable", "no account",
 	"read-only", "denied", "timed out", "aborted", "unknown"]
 const WARN_WORDS := ["warn", "retry", "missing", "degraded", "skipped",
-	"stale", "no boot log", "not mounted"]
+	"stale", "no boot log", "not mounted", "did not start", "waiting for",
+	"giving up"]
 const OK_WORDS := ["started", "mounted", "ok", "up", "listening"]
 
 var raw: PackedStringArray = []

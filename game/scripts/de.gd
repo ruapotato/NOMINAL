@@ -279,13 +279,27 @@ func _draw_panel() -> void:
 		HORIZONTAL_ALIGNMENT_LEFT, -1, 12, PANEL_INK)
 	panel.draw_line(Vector2(96, 4), Vector2(96, PANEL_H - 4), PANEL_EDGE)
 
-	var x := 106.0
+	# The window list stops where the clock starts. It used to run straight
+	# under it, so the sixth window's title and the time were drawn on top of
+	# each other: `console - 10.0.2.84 (Fiona)node-4824 Mon 09:00`.
+	var list_end := panel.size.x - 200.0
+	var vis: Array = []
 	for w in windows:
-		if not is_instance_valid(w) or not w.visible:
-			continue
+		if is_instance_valid(w) and w.visible:
+			vis.append(w)
+	var x := 106.0
+	for i in range(vis.size()):
+		var w: Control = vis[i]
 		var t := str(w.get_meta("title"))
 		var wd: float = min(210.0,
 			mono.get_string_size(t, HORIZONTAL_ALIGNMENT_LEFT, -1, 11).x + 18)
+		if x + wd > list_end:
+			# No room. Say how many are not shown rather than drawing them over
+			# the clock, and leave their tabs unset so a click by the clock
+			# cannot land on a window whose button is not there.
+			panel.draw_string(mono, Vector2(x + 2, 18), "+%d" % (vis.size() - i),
+				HORIZONTAL_ALIGNMENT_LEFT, -1, 11, PANEL_INK)
+			break
 		var on: bool = focused == w.get_meta("content")
 		panel.draw_rect(Rect2(x, 3, wd, PANEL_H - 7),
 			Color("#c2c8ce") if on else Color("#cfd4d9"))
