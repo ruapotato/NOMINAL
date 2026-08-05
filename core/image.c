@@ -668,6 +668,18 @@ static const Package PKG_HAMDE = {
         "Exec=svcman\n"
         "Icon=svc\n"
         "Comment=Start, stop and read what died\n", 0644, NULL },
+      /* The music player reads /usr/share/sounds the way this desktop reads
+       * /usr/share/applications: the playlist is a directory listing, so
+       * `rm /usr/share/sounds/hamnix-demo.wav` empties the playlist and
+       * `pkg reinstall nomnix-sounds` fills it again. A player with its
+       * tracks compiled into the window would be a second source of truth
+       * about a filesystem the player can already read with `ls`. */
+      { "/usr/share/applications/music.desktop",
+        "[Desktop Entry]\n"
+        "Name=Music\n"
+        "Exec=music\n"
+        "Icon=music\n"
+        "Comment=Play what is in /usr/share/sounds\n", 0644, NULL },
       /* Where the display server takes requests. A file, because a file can
        * be looked at: `cat /run/nomde/requests` shows what was asked for,
        * which is the debuggability the socket version would not have. */
@@ -685,7 +697,30 @@ static const Package PKG_HAMDE = {
        * the directories it needs, or it cannot be repaired. */
       { "/run/nomde", NULL, 0755, NULL, true },
       { "/usr/share/applications", NULL, 0755, NULL, true },
-    }, 27
+    }, 28
+};
+
+/* THE SOUNDS ARE FILES, AND A PACKAGE OWNS THEM.
+ *
+ * The desktop plays the real samples out of its own resources -- a WAV is a
+ * megabyte of PCM and the guest disk is modelled byte for byte, so putting
+ * the audio itself on it would cost the player's RAM for nothing anybody can
+ * hear. What lives here is the ENTRY: a name, a mode, an owner and a size,
+ * which is everything `ls`, `pkg verify` and `pkg reinstall` need. The music
+ * player lists this directory and shows what it finds, so deleting a track
+ * removes it from the playlist and reinstalling this package brings it back.
+ * That is the same bargain /usr/share/applications already makes with the
+ * launcher, and it is what stops the playlist being a hardcoded array that
+ * disagrees with the disk. */
+static const Package PKG_SOUNDS = {
+    "nomnix-sounds", "1.2", "the system sounds",
+    {
+      { "/usr/share/sounds", NULL, 0755, NULL, true },
+      { "/usr/share/sounds/boot-jingle.wav",
+        "RIFF WAVE 44100Hz 16bit stereo -- the startup jingle\n", 0644, NULL },
+      { "/usr/share/sounds/hamnix-demo.wav",
+        "RIFF WAVE 44100Hz 16bit stereo -- Hamnix music demo\n", 0644, NULL },
+    }, 3
 };
 
 static const Package PKG_SHELL = {
@@ -1161,6 +1196,7 @@ static const Package PKG_AUDIT = {
 static const Package *IMAGE[] = {
     &PKG_BASE, &PKG_USERS, &PKG_BOOTLOADER, &PKG_KERNEL, &PKG_SYSINIT,
     &PKG_SHELL, &PKG_UDEV, &PKG_SYSLOG, &PKG_NET, &PKG_SSH, &PKG_HAMDE,
+    &PKG_SOUNDS,
     &PKG_HOME, &PKG_PKGCONF, &PKG_LIBC, &PKG_ZLIB, &PKG_CRON, &PKG_LOGROTATE, &PKG_NTP,
     &PKG_HTTPD, &PKG_FIREWALL, &PKG_MAN, &PKG_MAIL, &PKG_ACCT, &PKG_TZ,
     &PKG_TERMINFO, &PKG_AUDIT, &PKG_FUN,

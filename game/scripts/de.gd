@@ -93,7 +93,7 @@ const TITLES := {"term": "terminal - your", "chat": "chat", "files": "files",
 	"notes": "notes", "log": "log viewer", "manual": "manual", "g2048": "2048",
 	"gflappy": "flappy", "gworms": "worms", "browser": "browser",
 	"gsnake": "snake", "gmines": "minesweeper", "gblocks": "blocks",
-	"gsolitaire": "solitaire", "gliquid": "liquid war",
+	"gsolitaire": "solitaire", "gliquid": "liquid war", "music": "music",
 	"calc": "calculator", "sysmon": "system monitor",
 	"pkgman": "package manager", "svcman": "service manager"}
 
@@ -556,7 +556,7 @@ const EXEC_MAP := {
 	"gmines": "gmines", "minesweeper": "gmines",
 	"gblocks": "gblocks", "blocks": "gblocks",
 	"gsolitaire": "gsolitaire", "solitaire": "gsolitaire",
-	"gliquid": "gliquid", "liquid": "gliquid",
+	"gliquid": "gliquid", "liquid": "gliquid", "music": "music",
 	"calc": "calc", "calculator": "calc",
 	"sysmon": "sysmon", "pkgman": "pkgman", "svcman": "svcman",
 }
@@ -668,6 +668,11 @@ func _launch(kind0: String) -> void:
 			g8.mono = mono
 			g8.machine = machine
 			_win("liquid war", _cascade_at(760, 520), g8)
+		"music":
+			var mu := preload("res://scripts/music.gd").new()
+			mu.mono = mono
+			mu.machine = machine
+			_win("music", _cascade_at(560, 420), mu)
 		"calc":
 			var ca := preload("res://scripts/calc.gd").new()
 			ca.mono = mono
@@ -832,6 +837,40 @@ func _refresh_log(l: Control) -> void:
 		+ "  disk and this will show their last boot instead.\n")
 
 
+# THE SOUND OF A BOX COMING BACK.
+#
+# There is exactly one moment in a shift worth a noise, and it is not this
+# program starting up: it is the customer's machine reaching a login prompt
+# after you fixed whatever was stopping it. That is the thing the whole job is
+# for, and until now it happened in silence while you were reading a console.
+#
+# It is an EDGE, not a state: booted() going false -> true. Playing it on the
+# state would retrigger every frame the machine is up, and playing it at
+# _ready would fire on your own workstation's startup -- which is not an
+# event, it boots healthy every single time and nobody in this game ever
+# waited for it. `booted()` is the CUSTOMER's machine and only theirs, so the
+# workstation cannot set this off at all; _was_booted is re-armed from the new
+# machine in _new_ticket so a ticket that happens to arrive already running
+# does not congratulate you for it.
+var _jingle: AudioStreamPlayer = null
+var _was_booted := false
+
+func _boot_watch() -> void:
+	if machine == null:
+		return
+	var up: bool = machine.booted()
+	if up and not _was_booted:
+		# Loaded on the first boot, not at scene load: a shift where nothing
+		# ever comes up never pays for the sample.
+		if _jingle == null:
+			_jingle = AudioStreamPlayer.new()
+			_jingle.stream = load("res://sounds/boot-jingle.wav")
+			add_child(_jingle)
+		if _jingle.stream != null:
+			_jingle.play()
+	_was_booted = up
+
+
 func _check_closed() -> void:
 	if closed or machine == null:
 		return
@@ -872,6 +911,9 @@ func _new_ticket() -> void:
 	chat = null
 	alerts = 1
 	_alert_msg = "%s: my computer will not start. are you there?" % cust
+	# Re-arm the jingle against THIS machine's state. A ticket whose machine
+	# is already up is not a boot you performed.
+	_was_booted = machine.booted()
 	panel.queue_redraw()
 	foot.queue_redraw()
 
@@ -907,6 +949,10 @@ func _process(dt: float) -> void:
 			for r in req.split("\n"):
 				if r.strip_edges() != "":
 					_launch(r.strip_edges())
+
+	# Whatever brought the machine up -- a command you typed, a request off
+	# /run/nomde/requests, a power cycle from the console -- it came up here.
+	_boot_watch()
 
 	_clock += dt
 	if panel:

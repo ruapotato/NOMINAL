@@ -80,6 +80,7 @@ static func draw_icon(c: CanvasItem, at: Vector2, sz: float, kind: String) -> vo
 		"worms": _worms(c, at, sz)
 		"liquid": _liquid(c, at, sz)
 		"flappy": _flappy(c, at, sz)
+		"music": _music(c, at, sz)
 		_: _app(c, at, sz)
 
 
@@ -89,7 +90,7 @@ static func kinds() -> PackedStringArray:
 		"term", "chat", "files", "notes", "log", "manual", "browser",
 		"game", "calc", "sysmon", "pkg", "svc", "editor",
 		"snake", "mines", "blocks", "cards", "worms", "liquid", "flappy",
-		"app"])
+		"music", "app"])
 
 
 # =============================================================================
@@ -375,6 +376,23 @@ static func _flappy(c: CanvasItem, at: Vector2, sz: float) -> void:
 		_pt(at, sz, 0.46, 0.44), _pt(at, sz, 0.60, 0.49),
 		_pt(at, sz, 0.46, 0.54)]), ORANGE)
 	c.draw_circle(_pt(at, sz, 0.36, 0.43), sz * 0.04, INK)
+
+
+# Music: charcoal, like every other window onto something the machine is
+# doing, with two beamed quavers in amber. A note is a shape, not a letter --
+# and amber is the one accent the charcoal icons had not spent yet, so this
+# reads apart from the terminal's green chevron and the monitor's green plot
+# at sixteen pixels, which is where icons go to die.
+static func _music(c: CanvasItem, at: Vector2, sz: float) -> void:
+	_card(c, _body(at, sz), CHAR, CHAR_EDGE, sz)
+	var w: float = sz * 0.075
+	c.draw_circle(_pt(at, sz, 0.33, 0.72), sz * 0.115, AMBER)
+	c.draw_circle(_pt(at, sz, 0.67, 0.63), sz * 0.115, AMBER)
+	c.draw_line(_pt(at, sz, 0.435, 0.72), _pt(at, sz, 0.435, 0.32), AMBER, w)
+	c.draw_line(_pt(at, sz, 0.775, 0.63), _pt(at, sz, 0.775, 0.23), AMBER, w)
+	c.draw_colored_polygon(PackedVector2Array([
+		_pt(at, sz, 0.40, 0.32), _pt(at, sz, 0.81, 0.23),
+		_pt(at, sz, 0.81, 0.36), _pt(at, sz, 0.40, 0.45)]), AMBER)
 
 
 # The fallback. An unknown application still gets a deliberate mark: the same
