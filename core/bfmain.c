@@ -172,7 +172,7 @@ int main(int argc, char **argv)
     }
 
     if (argc > 2 && strcmp(argv[1], "--solve") == 0) {
-        int n = atoi(argv[2]), visible = 0, fixed = 0, made = 0;
+        int n = atoi(argv[2]), visible = 0, fixed = 0, made = 0, handed = 0;
         for (int i = 0; i < n; i++) {
             Machine m; char what[512];
             machine_install(&m, (uint64_t)(5000 + i));
@@ -289,7 +289,19 @@ int main(int argc, char **argv)
             machine_boot(&m);
             Buf sick = {0};
             int dead = kernel_health(&m, &sick);
-            if (m.boot.running && dead == 0) fixed++;
+            /* AND CAN IT BE HANDED BACK. A repaired machine that the game
+             * will not let you sign off is a job that never ends, which is
+             * exactly what a playtester found: they repaired seven machines
+             * and no ticket ever closed. The ladder proves the tools can fix
+             * it; this proves the game agrees they did. */
+            if (m.boot.running && dead == 0) {
+                fixed++;
+                Buf hb = {0};
+                if (machine_handback(&m, &hb)) handed++;
+                else printf("NOT HANDED BACK seed %d: %s\n%.*s\n",
+                            5000 + i, what, (int)hb.len, hb.p);
+                buf_free(&hb);
+            }
             else if (!m.boot.running)
                 printf("UNFIXABLE seed %d: %s\n           %s\n",
                        5000 + i, what, m.boot.reason);
@@ -301,6 +313,7 @@ int main(int argc, char **argv)
         }
         printf("\n%d tickets: %d visible to pkg verify, %d repaired by the tools\n",
                made, visible, fixed);
+        printf("%d of those handed back and closed\n", handed);
         return 0;
     }
 
@@ -622,6 +635,18 @@ int main(int argc, char **argv)
             size_t l = strlen(line);
             while (l && (line[l-1] == '\n' || line[l-1] == '\r')) line[--l] = 0;
             if (strcmp(line, "quit") == 0) break;
+            /* The same hand-back the socket server offers, through the same
+             * function. Two front ends that can disagree about whether a job
+             * is finished are two different games. */
+            if (strcmp(line, "done") == 0 || strcmp(line, "handback") == 0) {
+                Buf hb = {0};
+                machine_handback(&cust, &hb);
+                fwrite(hb.p, 1, hb.len, stdout);
+                buf_free(&hb);
+                printf("you@desk# ");
+                fflush(stdout);
+                continue;
+            }
             if (strncmp(line, "ask ", 4) == 0) {
                 Buf a = {0};
                 customer_ask(&cust, line + 4, &a);

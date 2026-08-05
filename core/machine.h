@@ -294,6 +294,16 @@ int machine_collateral(Machine *m, Buf *out);
 /* Damage still on the disk, whether or not the machine boots. A ticket is
  * "prove it is healthy", not "prove it starts today". */
 int machine_outstanding(Machine *m, Buf *out);
+
+/* Hand the machine back. Writes what the customer says and, if the claim does
+ * not hold, what is still wrong -- at the customer's level of knowledge, so
+ * naming the fault stays the player's job. Returns true if the ticket closed.
+ *
+ * ONE FUNCTION BECAUSE THERE ARE THREE FRONT ENDS. The socket server, the
+ * --desk loop and the desktop must not be able to disagree about whether a
+ * job is finished; that is the same rule that keeps the desktop a view of the
+ * machine rather than a second opinion about it. */
+bool machine_handback(Machine *m, Buf *out);
 /* Ask the customer to DO something. Returns false if the request was not
  * understood as an action, in which case it was a question. */
 bool customer_do(Machine *m, const char *request, Buf *out);
@@ -310,8 +320,12 @@ uint64_t machine_inodes_used(const Machine *m);
 
 /* Start a program as a long-lived service. Returns 0 if it is now running,
  * or a negative SPAWN_* if it could not be started at all. */
+/* `inherit` is the namespace the caller was standing in: a service inherits
+ * its parent's view of the filesystem like any other child, so a bind made
+ * before the services start applies to them too. NULL means an empty one. */
 int64_t kernel_start_daemon(Machine *m, const char *path, const char *arg,
-                            const char *name, int restart, Buf *console);
+                            const char *name, int restart, Buf *console,
+                            const Ns *inherit);
 /* Let every running daemon have another slice of cpu. A daemon that exits or
  * faults during its slice has crashed, and says so. */
 void kernel_tick(Machine *m, int slices, Buf *console);

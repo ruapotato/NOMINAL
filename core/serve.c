@@ -244,6 +244,30 @@ static bool client_line(Client *c)
      * the documented flow. Hanging up on it stranded the player. */
     if (strcmp(cmd, "quit") == 0) return false;
 
+    /* THERE WAS NO WAY TO FINISH A JOB.
+     *
+     * A blind playtester repaired seven machines and wrote: "The customer
+     * never says it's working, no ticket is marked resolved... `[UP at
+     * target]` is the entire payoff and it's easy to miss." Worse, `rcon
+     * power cycle` does not print that line at all, so their first fully
+     * repaired ticket ended in silence. A shift made of jobs that never end
+     * is not a shift.
+     *
+     * `done` is the hand-back, and it is a CLAIM the game checks rather than
+     * a button that congratulates you. Signing off a machine that is still
+     * broken is the mistake this job actually punishes -- so the refusal
+     * names what is still wrong at the customer's level of knowledge and
+     * leaves the diagnosis where it belongs. And a machine sitting on the
+     * rescue medium is not repaired however healthy it looks: that image was
+     * never broken. */
+    if (strcmp(cmd, "done") == 0 || strcmp(cmd, "handback") == 0) {
+        Buf hb = {0};
+        machine_handback(&c->m, &hb);
+        send_all(c->fd, hb.p, hb.len);
+        buf_free(&hb);
+        return true;
+    }
+
     /* `boot` AND `rescue` ARE THE POWER BUTTON, AND YOU ARE NOT IN THE ROOM.
      *
      * They used to reach straight into the customer's Machine and run the
@@ -360,6 +384,10 @@ static bool client_line(Client *c)
             "\n"
             "  boot              try to boot the customer's disk\n"
             "  rescue            boot the rescue medium -- this always works\n"
+            "  done              hand the machine back. checks your claim: it\n"
+            "                    must boot from ITS OWN disk with every service\n"
+            "                    up and nothing left differing from what its\n"
+            "                    packages shipped. this is how a job ends\n"
             "  ticket [seed] [n] take a new ticket (n = how many faults)\n"
             "  ben <question>    Ben, a technician at the next desk. He has NOT\n"
             "                    seen this machine and know only what you tell\n"
