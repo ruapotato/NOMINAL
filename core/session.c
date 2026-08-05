@@ -119,6 +119,20 @@ static bool dev_here(const Session *ses, int dev)
  * wrong place. */
 static int dev_arg(const Session *ses, const char *a)
 {
+    /* `addr edge:1 10.0.1.1/24` names a SOCKET on a box, the same spelling
+     * `plug` and `cable` use. The box is what you have to be standing in
+     * front of, so the lookup stops at the colon -- without this, the one
+     * verb that gives a router its second address answered "there is no box
+     * called edge:1 in this building". */
+    char buf[64];
+    const char *colon = strchr(a, ':');
+    if (colon) {
+        size_t k = (size_t)(colon - a);
+        if (k >= sizeof buf) k = sizeof buf - 1;
+        memcpy(buf, a, k);
+        buf[k] = 0;
+        a = buf;
+    }
     int d = site_dev_by_name(&ses->s, a);
     if (d >= 0) return d;
     if (a[0] >= '0' && a[0] <= '9') {

@@ -80,6 +80,12 @@ const char *site_err_text(int e)
     case SITE_EIFACE:   return "no such interface on that box";
     case SITE_ECABLED:  return "it has a cable in it -- unplug it first";
     case SITE_EFIXED:   return "that is not yours to move";
+    case SITE_EADDR:    return "that is the network or broadcast address of "
+                               "its own subnet, not a machine's";
+    case SITE_EVLAN:    return "a vlan is a number from 1 to 4094";
+    case SITE_ENOTSW:   return "only a switch has ports with vlans on them -- "
+                               "on a router, `subif <box> <nic> <vlan> <ip>`";
+    case SITE_EOFF:     return "it is switched off";
     }
     return "?";
 }
@@ -127,7 +133,7 @@ bool site_new(Site *s, const Building *b, uint64_t seed, long budget)
     d->floor = 0;
     d->nports = 1;
     snprintf(d->name, sizeof d->name, "uplink");
-    d->node = net_add_host(s->net, d->name);
+    d->node = net_add_host_nics(s->net, d->name, d->nports);
     if (d->node < 0) return false;
     s->uplink = s->ndev++;
 
@@ -254,9 +260,14 @@ int site_install(Site *s, int kind, int room, const char *name)
     /* Two boxes with one name is a diagnosis nobody can perform. */
     if (site_dev_by_name(s, d->name) >= 0)
         snprintf(d->name, sizeof d->name, "%s%d", site_kind_name(kind), s->ndev);
+    /* THE PORTS ON THE BACK ARE THE PORTS IT HAS. A server sold with two
+     * sockets used to be given four in the network world, so `site` and
+     * `netstat` disagreed about the same box, and three of a router's four
+     * ports were holes with no card behind them. One number, from the
+     * catalogue, used by both. */
     d->node = site_kind_is_switch(kind)
               ? net_add_switch(s->net, d->name, d->nports)
-              : net_add_host(s->net, d->name);
+              : net_add_host_nics(s->net, d->name, d->nports);
     if (d->node < 0) { s->err = SITE_ESPACE; return -1; }
     s->money -= site_kind_price(kind);
     s->spent += site_kind_price(kind);
@@ -388,10 +399,30 @@ static bool host_dev(const Site *s, int dev)
     return dev >= 0 && dev < s->ndev && !site_kind_is_switch(s->dev[dev].kind);
 }
 
+/* THE TWO ADDRESSES IN A SUBNET THAT ARE NOT A MACHINE'S. A /30 has four
+ * addresses and two of them are usable; giving a box the fourth one and
+ * letting it answer taught a player that the arithmetic they had done in
+ * their head was wrong when it was right. Refused, and the refusal says
+ * which two are left. */
+static bool usable_host_addr(uint32_t ip, uint32_t mask)
+{
+    int bits = net_mask_len(mask);
+    if (bits >= 31 || bits <= 0) return true;      /* a /31 is all there is */
+    if ((ip & ~mask) == 0) return false;                        /* network */
+    if ((ip | mask) == 0xffffffffu) return false;             /* broadcast */
+    return true;
+}
+
 bool site_addr(Site *s, int dev, int ifx, uint32_t ip, uint32_t mask)
 {
     s->err = SITE_OK;
     if (!host_dev(s, dev) || ifx < 0 || ifx >= NET_IF_MAX) { s->err = SITE_EIFACE; return false; }
+    /* A card it has not got, or a subinterface nobody created. `subif` is
+     * what makes one; this is not. */
+    if (ifx >= s->dev[dev].nports && !net_if_exists(s->net, s->dev[dev].node, ifx)) {
+        s->err = SITE_EIFACE; return false;
+    }
+    if (ip && !usable_host_addr(ip, mask)) { s->err = SITE_EADDR; return false; }
     net_if_addr(s->net, s->dev[dev].node, ifx, ip, mask);
     return true;
 }
@@ -409,21 +440,34 @@ bool site_forwarding(Site *s, int dev, bool on)
     net_forwarding(s->net, s->dev[dev].node, on);
     return true;
 }
-bool site_subif(Site *s, int dev, int ifx, int nic, int vlan,
-                uint32_t ip, uint32_t mask)
+/* ONE SOCKET, A SUBNET PER VLAN. The interface index is not the player's to
+ * choose: they name the card and the tag, and the box either finds the
+ * subinterface it already has for that pair or makes one. An address of zero
+ * takes it away again -- which is how a router leaves a vlan. */
+bool site_subif(Site *s, int dev, int nic, int vlan, uint32_t ip, uint32_t mask)
 {
     s->err = SITE_OK;
-    if (!host_dev(s, dev) || ifx < 0 || ifx >= NET_IF_MAX) { s->err = SITE_EIFACE; return false; }
+    if (!host_dev(s, dev)) { s->err = SITE_EIFACE; return false; }
     if (nic < 0 || nic >= s->dev[dev].nports) { s->err = SITE_ENOPORT; return false; }
-    net_if_port(s->net, s->dev[dev].node, ifx, nic);
-    net_if_vlan(s->net, s->dev[dev].node, ifx, vlan);
-    net_if_addr(s->net, s->dev[dev].node, ifx, ip, mask);
+    if (vlan < 1 || vlan > 4094) { s->err = SITE_EVLAN; return false; }
+    if (ip && !usable_host_addr(ip, mask)) { s->err = SITE_EADDR; return false; }
+    int node = s->dev[dev].node;
+    int ifx = net_if_subif(s->net, node, nic, vlan);
+    if (ifx < 0) { s->err = SITE_EIFACE; return false; }
+    if (!ip) { net_if_del(s->net, node, ifx); return true; }
+    net_if_addr(s->net, node, ifx, ip, mask);
     return true;
 }
+/* A VLAN IS A PROPERTY OF A SWITCH PORT. It used to be settable on a router
+ * and did nothing at all: the frame's tag is what a host looks at, and a
+ * host looks at its interface's tag and never at its port's. Answering "set"
+ * to a line that changes nothing is worse than refusing it, because the
+ * player then trusts it and goes looking somewhere else. */
 bool site_port_vlan(Site *s, int dev, int port, int vlan)
 {
     s->err = SITE_OK;
     if (dev < 0 || dev >= s->ndev) { s->err = SITE_ENODEV; return false; }
+    if (!site_kind_is_switch(s->dev[dev].kind)) { s->err = SITE_ENOTSW; return false; }
     if (port < 0 || port >= s->dev[dev].nports) { s->err = SITE_ENOPORT; return false; }
     net_port_mode(s->net, s->dev[dev].node, port, PORT_ACCESS);
     net_port_vlan(s->net, s->dev[dev].node, port, vlan);
@@ -433,6 +477,7 @@ bool site_port_trunk(Site *s, int dev, int port, int vlan)
 {
     s->err = SITE_OK;
     if (dev < 0 || dev >= s->ndev) { s->err = SITE_ENODEV; return false; }
+    if (!site_kind_is_switch(s->dev[dev].kind)) { s->err = SITE_ENOTSW; return false; }
     if (port < 0 || port >= s->dev[dev].nports) { s->err = SITE_ENOPORT; return false; }
     net_port_mode(s->net, s->dev[dev].node, port, PORT_TRUNK);
     if (vlan > 0) net_trunk_allow(s->net, s->dev[dev].node, port, vlan);
@@ -705,6 +750,22 @@ static bool parse_cidr(const char *s, uint32_t *ip, uint32_t *mask)
     return true;
 }
 
+/* A NUMBER, AND NOTHING BUT. atoi("eth0") is 0, and a parser that accepts it
+ * turns a line that reads correctly into a line that does something else in
+ * silence. */
+static bool small_number(const char *a, int *out)
+{
+    if (!a || !*a) return false;
+    int v = 0;
+    for (const char *p = a; *p; p++) {
+        if (*p < '0' || *p > '9') return false;
+        v = v * 10 + (*p - '0');
+        if (v > 9999) return false;
+    }
+    *out = v;
+    return true;
+}
+
 static int dev_arg(const Site *s, const char *a)
 {
     int d = site_dev_by_name(s, a);
@@ -753,11 +814,14 @@ bool site_cmd(Site *s, const char *line, Buf *out)
             "                               f0.mdf, f2.office\n"
             "cable <dev>:<port> <dev>:<port> [cat5e|cat6|fibre]\n"
             "uncable <n>                    pull one out\n"
-            "addr <dev> <ip>/<bits>         an address on its first card\n"
+            "addr <dev>[:<nic>] <ip>/<bits> an address on a card. `addr rt 1.2.3.4/30`\n"
+            "                               is the first socket, `addr rt:1 ...` the\n"
+            "                               second -- which is how a router gets a WAN\n"
+            "                               side and a LAN side\n"
             "gw <dev> <ip>                  default gateway\n"
             "router <dev> on|off            forward between its interfaces\n"
-            "subif <dev> <if> <nic> <vlan> <ip>/<bits>   a tagged subinterface\n"
-            "vlan <dev> <port> <n>          an access port in a vlan\n"
+            "subif <dev> <nic> <vlan> <ip>/<bits>   a tagged subinterface on a card\n"
+            "vlan <dev> <port> <n>          a switch's access port, in a vlan\n"
             "trunk <dev> <port> <vlan>...   a trunk, and what it may carry\n"
             "dhcpd <dev> <first> <count> <bits> <gw> <dns>\n"
             "dhcp <dev>                     ask for a lease, for real\n"
@@ -866,11 +930,31 @@ bool site_cmd(Site *s, const char *line, Buf *out)
         return true;
     }
     if (strcmp(t[0], "addr") == 0 && n >= 3) {
-        int d = dev_arg(s, t[1]);
+        /* `addr edge 198.51.100.2/30` is the first card, and `addr edge:1
+         * 10.0.1.1/24` is the second one. The colon is the spelling `cable`
+         * and `plug` already use for a socket on the back of a box, so a
+         * router's WAN side and LAN side are addressed the same way they are
+         * cabled. */
+        int d = -1, ifx = 0;
+        if (!port_arg(s, t[1], &d, &ifx)) { d = dev_arg(s, t[1]); ifx = 0; }
         uint32_t ip, mask;
         if (d < 0 || !parse_cidr(t[2], &ip, &mask)) { buf_puts(out, "?\n"); return true; }
-        buf_printf(out, "%s\n", site_addr(s, d, 0, ip, mask)
-                   ? "set" : site_err_text(s->err));
+        if (site_addr(s, d, ifx, ip, mask)) { buf_puts(out, "set\n"); return true; }
+        buf_printf(out, "%s\n", site_err_text(s->err));
+        if (s->err == SITE_EIFACE && ifx >= s->dev[d].nports)
+            buf_printf(out, "  %s has %d socket%s, numbered 0 to %d. A tagged\n"
+                            "  subinterface is `subif %s <nic> <vlan> <ip>/<bits>`.\n",
+                       s->dev[d].name, s->dev[d].nports,
+                       s->dev[d].nports == 1 ? "" : "s", s->dev[d].nports - 1,
+                       s->dev[d].name);
+        if (s->err == SITE_EADDR) {
+            char a[20], b[20];
+            net_fmt_ip((ip & mask) + 1, a, sizeof a);
+            net_fmt_ip((ip | ~mask) - 1, b, sizeof b);
+            buf_printf(out, "  a /%d runs from %s to %s: %d machine%s.\n",
+                       net_mask_len(mask), a, b, site_hosts_in_mask(mask),
+                       site_hosts_in_mask(mask) == 1 ? "" : "s");
+        }
         return true;
     }
     if (strcmp(t[0], "gw") == 0 && n >= 3) {
@@ -887,12 +971,24 @@ bool site_cmd(Site *s, const char *line, Buf *out)
                    ? "set" : site_err_text(s->err));
         return true;
     }
-    if (strcmp(t[0], "subif") == 0 && n >= 6) {
+    if (strcmp(t[0], "subif") == 0 && n >= 5) {
+        /* `subif <box> <nic> <vlan> <ip>/<bits>`. There used to be an
+         * interface index in front of the nic, and both of them went through
+         * atoi, so `subif edge wan eth0 100 198.51.100.2/30` -- which reads
+         * perfectly -- meant interface 0 on card 0 and silently replaced the
+         * box's only address. Numbers only, and they are checked. */
         int d = dev_arg(s, t[1]);
         uint32_t ip, mask;
-        if (d < 0 || !parse_cidr(t[5], &ip, &mask)) { buf_puts(out, "?\n"); return true; }
-        buf_printf(out, "%s\n", site_subif(s, d, atoi(t[2]), atoi(t[3]),
-                                           atoi(t[4]), ip, mask)
+        if (d < 0) { buf_puts(out, "?\n"); return true; }
+        int nic, vlan;
+        if (!small_number(t[2], &nic) || !small_number(t[3], &vlan)) {
+            buf_printf(out, "subif <box> <nic> <vlan> <ip>/<bits>\n"
+                            "  the nic is a socket number and the vlan is a tag: "
+                            "`subif %s 0 30 10.0.30.1/24`\n", s->dev[d].name);
+            return true;
+        }
+        if (!parse_cidr(t[4], &ip, &mask)) { buf_puts(out, "?\n"); return true; }
+        buf_printf(out, "%s\n", site_subif(s, d, nic, vlan, ip, mask)
                    ? "set" : site_err_text(s->err));
         return true;
     }
@@ -980,7 +1076,28 @@ bool site_cmd(Site *s, const char *line, Buf *out)
         if (d < 0 || !net_parse_ip(t[2], &ip)) { buf_puts(out, "?\n"); return true; }
         Buf page = {0};
         int st = net_http_get(s->net, s->dev[d].node, ip, 80, t[3], &page);
-        buf_printf(out, "HTTP %d, %u bytes\n", st, (unsigned)page.len);
+        if (st >= 100) buf_printf(out, "HTTP %d, %u bytes\n", st, (unsigned)page.len);
+        else {
+            /* `HTTP -1, 0 bytes` IS NOT A STATUS. There was no reply, and the
+             * interesting question is how far it got -- so ask the wire the
+             * same way a person would, with a ping, and say which of the two
+             * different faults this is. */
+            char a[20];
+            net_fmt_ip(ip, a, sizeof a);
+            int rtt = 0;
+            PingResult pr = net_ping(s->net, s->dev[d].node, ip, &rtt);
+            buf_printf(out, "no reply from %s port 80\n", a);
+            if (pr != PING_OK)
+                buf_printf(out, "  and %s does not answer a ping either: %s.\n"
+                                "  This is a routing or addressing fault, not a "
+                                "web one.\n", a, net_ping_text(pr));
+            else
+                buf_printf(out, "  %s answers a ping in %d ms, so the copper and "
+                                "the routing are fine.\n  Nothing accepted the "
+                                "connection: either no service is listening on\n"
+                                "  port 80, or a filter is dropping it. `show` the "
+                                "far box.\n", a, rtt);
+        }
         buf_free(&page);
         return true;
     }

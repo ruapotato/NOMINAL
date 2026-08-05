@@ -460,23 +460,43 @@ static int add_node(Net *n, NodeKind k, const char *name, int nports)
     return id;
 }
 
-int net_add_host(Net *n, const char *name)
+/* EVERY HOLE IN THE BACK OF THE BOX IS A REAL CARD.
+ *
+ * It used to be one card on port 0 and three sockets wired to nothing. A
+ * frame arriving on port 1 landed on a port that reported `up`, counted a
+ * rx, and then found no interface that claimed it -- so it was dropped with
+ * nothing anywhere saying so, and a router had one working port. Moving the
+ * same cable to port 0 fixed it, which is the exact shape of a bug that
+ * makes a competent person think they are the problem.
+ *
+ * So a host is created with one interface per socket: eth0 on port 0, eth1
+ * on port 1, each with its own factory address and no IP until somebody
+ * gives it one. Tagged subinterfaces are stacked ON TOP of these, from
+ * index nports upwards, by net_if_subif. */
+int net_add_host_nics(Net *n, const char *name, int nics)
 {
     if (n->nhost >= NET_NODES_MAX) return -1;
-    int id = add_node(n, NODE_HOST, name, NET_HOST_NICS);
+    if (nics < 1) nics = 1;
+    if (nics > NET_HOST_NICS) nics = NET_HOST_NICS;
+    int id = add_node(n, NODE_HOST, name, nics);
     if (id < 0) return -1;
     n->node[id].sub = n->nhost++;
     Host *h = &n->host[n->node[id].sub];
     memset(h, 0, sizeof *h);
     h->next_eph = 49152;
-    /* One interface, wired to port 0, with a real address on it. A second
-     * NIC is a purchase, and net_if_port is how it gets wired. */
-    h->ifc[0].used = true;
-    h->ifc[0].up = true;
-    h->ifc[0].port = n->node[id].port0;
-    factory_mac(n, h->ifc[0].mac);
-    for (int i = 1; i < NET_IF_MAX; i++) h->ifc[i].port = -1;
+    for (int i = 0; i < NET_IF_MAX; i++) h->ifc[i].port = -1;
+    for (int i = 0; i < nics; i++) {
+        h->ifc[i].used = true;
+        h->ifc[i].up = true;
+        h->ifc[i].port = n->node[id].port0 + i;
+        factory_mac(n, h->ifc[i].mac);
+    }
     return id;
+}
+
+int net_add_host(Net *n, const char *name)
+{
+    return net_add_host_nics(n, name, NET_HOST_NICS);
 }
 
 int net_add_switch(Net *n, const char *name, int nports)
@@ -760,6 +780,66 @@ void net_if_vlan(Net *n, int node, int ifx, int vlan)
 {
     Host *h = host_of(n, node);
     if (h && ifx >= 0 && ifx < NET_IF_MAX) h->ifc[ifx].vlan = vlan;
+}
+/* A TAGGED SUBINTERFACE ON A CARD THAT ALREADY EXISTS, which is how one
+ * socket terminates a subnet per vlan. It never touches the card underneath
+ * it -- that was the whole bug: a verb documented as "add a subinterface"
+ * reconfigured eth0 instead, so a router had one address and could not have a
+ * WAN side and a LAN side at the same time.
+ *
+ * Asking twice for the same vlan on the same card gives the same interface
+ * back, because it is the same interface. */
+int net_if_subif(Net *n, int node, int nic, int vlan)
+{
+    Host *h = host_of(n, node);
+    if (!h || vlan < 1 || vlan > 4094) return -1;
+    int p = pid_of(n, node, nic);
+    if (p < 0) return -1;
+    for (int i = 0; i < NET_IF_MAX; i++)
+        if (h->ifc[i].used && h->ifc[i].port == p && h->ifc[i].vlan == vlan) return i;
+    /* Above the cards: eth0..eth<nports-1> are sockets and nothing else may
+     * take one of those numbers. */
+    for (int i = n->node[node].nports; i < NET_IF_MAX; i++) {
+        if (h->ifc[i].used) continue;
+        h->ifc[i].used = true;
+        h->ifc[i].up = true;
+        h->ifc[i].port = p;
+        h->ifc[i].vlan = vlan;
+        factory_mac(n, h->ifc[i].mac);
+        return i;
+    }
+    return -1;
+}
+/* Take one away again. A card is a hole in the box and does not go anywhere;
+ * a subinterface is configuration and does. */
+bool net_if_del(Net *n, int node, int ifx)
+{
+    Host *h = host_of(n, node);
+    if (!h || ifx < n->node[node].nports || ifx >= NET_IF_MAX) return false;
+    if (!h->ifc[ifx].used) return false;
+    memset(&h->ifc[ifx], 0, sizeof h->ifc[ifx]);
+    h->ifc[ifx].port = -1;
+    return true;
+}
+/* Which socket an interface hangs off, and what tag it wears. Both are
+ * printed, because a player who cannot see the box has no other way to find
+ * out which card an address is on. */
+int net_if_nic(const Net *n, int node, int ifx)
+{
+    const Host *h = chost_of(n, node);
+    if (!h || ifx < 0 || ifx >= NET_IF_MAX || !h->ifc[ifx].used) return -1;
+    int p = h->ifc[ifx].port;
+    return p < 0 ? -1 : n->port[p].index;
+}
+int net_if_get_vlan(const Net *n, int node, int ifx)
+{
+    const Host *h = chost_of(n, node);
+    return (h && ifx >= 0 && ifx < NET_IF_MAX) ? h->ifc[ifx].vlan : 0;
+}
+bool net_if_exists(const Net *n, int node, int ifx)
+{
+    const Host *h = chost_of(n, node);
+    return h && ifx >= 0 && ifx < NET_IF_MAX && h->ifc[ifx].used;
 }
 void net_port_vlan(Net *n, int node, int port, int vlan)
 {
@@ -2963,6 +3043,20 @@ void net_step(Net *n, int ticks)
  * machine can print it. These are the functions the guest tools read
  * through, and they are the same text in every front end.
  */
+/* WHAT AN INTERFACE IS CALLED. eth1 is the second socket on the back;
+ * eth0.30 is a tagged subinterface riding on the first one. The two are
+ * different things and a player who cannot see the box has only this name to
+ * tell them apart. */
+static void if_name(const Net *n, int node, int ifx, char *out, size_t cap)
+{
+    const Host *h = chost_of(n, node);
+    int nic = net_if_nic(n, node, ifx);
+    int vlan = h ? h->ifc[ifx].vlan : 0;
+    if (ifx < n->node[node].nports || nic < 0) snprintf(out, cap, "eth%d", ifx);
+    else if (vlan) snprintf(out, cap, "eth%d.%d", nic, vlan);
+    else snprintf(out, cap, "eth%d:%d", nic, ifx);
+}
+
 void net_dump_ifaces(const Net *n, int node, Buf *out)
 {
     const Host *h = chost_of(n, node);
@@ -2974,7 +3068,9 @@ void net_dump_ifaces(const Net *n, int node, Buf *out)
         net_fmt_mac(f->mac, mac, sizeof mac);
         net_fmt_ip(f->ip, ip, sizeof ip);
         PortState ps = f->port >= 0 ? port_state(n, f->port) : PORT_NOCABLE;
-        buf_printf(out, "eth%d: %s %s link/ether %s\n", i,
+        char nm[24];
+        if_name(n, node, i, nm, sizeof nm);
+        buf_printf(out, "%s: %s %s link/ether %s\n", nm,
                    f->up ? "UP" : "DOWN",
                    ps == PORT_UP ? "LOWER_UP" :
                    ps == PORT_NOCABLE ? "NO-CARRIER" :
@@ -2998,7 +3094,9 @@ void net_dump_routes(const Net *n, int node, Buf *out)
         const Iface *f = &h->ifc[i];
         if (!f->used || !f->ip || !f->mask || !f->up) continue;
         net_fmt_ip(f->ip & f->mask, d, sizeof d);
-        buf_printf(out, "%s/%d dev eth%d scope link\n", d, net_mask_len(f->mask), i);
+        char nm[24];
+        if_name(n, node, i, nm, sizeof nm);
+        buf_printf(out, "%s/%d dev %s scope link\n", d, net_mask_len(f->mask), nm);
     }
     for (int i = 0; i < NET_ROUTE_MAX; i++) {
         const Route *r = &h->rt[i];

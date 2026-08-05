@@ -362,7 +362,7 @@ static void check_build(int *passed, int *total)
         "plug edge:1",   "plug core:0",
         "plug core:1",   "plug files:0",
         "addr edge 198.51.100.2/30",
-        "subif edge 1 1 0 10.0.1.1/24",
+        "addr edge:1 10.0.1.1/24",
         "router edge on",
         "addr files 10.0.1.10/24",
         "gw files 10.0.1.1",

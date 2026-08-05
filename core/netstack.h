@@ -171,6 +171,10 @@ uint64_t net_now(const Net *n);
 
 /* --------------------------------------------------------------- L1      */
 int   net_add_host(Net *n, const char *name);
+/* A box with the sockets it really has on the back of it, each of them a
+ * real card. A pc has one and a router has four, and `show` and `netstat`
+ * are then counting the same holes. */
+int   net_add_host_nics(Net *n, const char *name, int nics);
 int   net_add_switch(Net *n, const char *name, int nports);
 int   net_node_count(const Net *n);
 const char *net_node_name(const Net *n, int node);
@@ -201,6 +205,18 @@ void  net_port_mode(Net *n, int node, int port, PortMode m);
 void  net_trunk_allow(Net *n, int node, int port, int vlan);
 /* Tag frames leaving a host interface, for a machine plugged into a trunk. */
 void  net_if_vlan(Net *n, int node, int ifx, int vlan);
+/* A TAGGED SUBINTERFACE ON A CARD. Returns the interface index, existing or
+ * new, or -1. It adds one; it never overwrites the card underneath, which is
+ * the difference between a router with a WAN side and a LAN side and a router
+ * with one address. Subinterfaces are numbered above the sockets. */
+int   net_if_subif(Net *n, int node, int nic, int vlan);
+/* Remove one. A socket cannot be removed -- it is a hole in a box. */
+bool  net_if_del(Net *n, int node, int ifx);
+/* Which socket an interface hangs off (-1 if none), what tag it wears, and
+ * whether it is there at all. */
+int   net_if_nic(const Net *n, int node, int ifx);
+int   net_if_get_vlan(const Net *n, int node, int ifx);
+bool  net_if_exists(const Net *n, int node, int ifx);
 int   net_fdb_count(const Net *n, int node);
 /* Forget everything learned. A real switch command, and the honest way to
  * find out whether a problem is a stale forwarding entry: clear it and see

@@ -89,6 +89,10 @@ typedef enum {
     SITE_EIFACE,      /* no such interface, or it is not that kind of box   */
     SITE_ECABLED,     /* it has a cable in it: you cannot walk off with it  */
     SITE_EFIXED,      /* the ISP's handoff is screwed to somebody's wall    */
+    SITE_EADDR,       /* the network or broadcast address of its own subnet */
+    SITE_EVLAN,       /* not a vlan number                                  */
+    SITE_ENOTSW,      /* only a switch has ports with vlans on them         */
+    SITE_EOFF,        /* it is switched off, and an off box is not on a net */
     SITE_ERR_COUNT
 } SiteErr;
 const char *site_err_text(int e);
@@ -188,14 +192,19 @@ PortState site_link_state(const Site *s, int link);
 /* The tray distance between two rooms, patch leads included, or -1. */
 int  site_metres(const Site *s, int room_a, int room_b);
 
-/* Configuration, one line of a real config file at a time. */
+/* Configuration, one line of a real config file at a time. `ifx` is the card:
+ * 0 is the first socket on the back, 1 the second, and an index above the
+ * sockets is a subinterface site_subif already made. THIS IS HOW A ROUTER
+ * GETS A SECOND ADDRESS -- there used to be no verb that did, so a router
+ * could not have a WAN side and a LAN side, so it could not route. */
 bool site_addr(Site *s, int dev, int ifx, uint32_t ip, uint32_t mask);
 bool site_gateway(Site *s, int dev, uint32_t gw);
 bool site_forwarding(Site *s, int dev, bool on);
 /* A tagged subinterface: how one router terminates many subnets down one
- * trunk, which is how anybody with more vlans than sockets does it. */
-bool site_subif(Site *s, int dev, int ifx, int nic, int vlan,
-                uint32_t ip, uint32_t mask);
+ * trunk, which is how anybody with more vlans than sockets does it. It ADDS
+ * an interface to the named card and never touches the card itself. An
+ * address of zero removes it. */
+bool site_subif(Site *s, int dev, int nic, int vlan, uint32_t ip, uint32_t mask);
 bool site_port_vlan(Site *s, int dev, int port, int vlan);
 bool site_port_trunk(Site *s, int dev, int port, int vlan);
 bool site_dhcpd(Site *s, int dev, uint32_t first, int count, uint32_t mask,

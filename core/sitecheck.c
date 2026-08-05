@@ -97,7 +97,7 @@ static void check_empty(const Building *b)
        net_ping(s.net, s.dev[pc].node, s.wan_isp, &rtt) != PING_OK);
 
     site_addr(&s, rt, 0, s.wan_you, s.wan_mask);
-    site_subif(&s, rt, 1, 1, 0, net_ip(10, 0, 1, 1), net_mask_bits(24));
+    site_addr(&s, rt, 1, net_ip(10, 0, 1, 1), net_mask_bits(24));
     site_forwarding(&s, rt, true);
     site_gateway(&s, rt, s.wan_isp);
     ck("configured, the machine on floor 3 reaches the internet",
@@ -262,8 +262,8 @@ static void check_tenants(const Building *b)
     site_port_trunk(&s, sw, 0, 20);
     site_port_vlan(&s, sw, 1, 10);
     site_port_vlan(&s, sw, 2, 20);
-    site_subif(&s, rt, 1, 0, 10, net_ip(10, 0, 10, 1), net_mask_bits(24));
-    site_subif(&s, rt, 2, 0, 20, net_ip(10, 0, 20, 1), net_mask_bits(24));
+    site_subif(&s, rt, 0, 10, net_ip(10, 0, 10, 1), net_mask_bits(24));
+    site_subif(&s, rt, 0, 20, net_ip(10, 0, 20, 1), net_mask_bits(24));
     site_forwarding(&s, rt, true);
     site_addr(&s, a, 0, net_ip(10, 0, 10, 10), net_mask_bits(24));
     site_gateway(&s, a, net_ip(10, 0, 10, 1));
@@ -283,7 +283,7 @@ static void check_tenants(const Building *b)
 
     /* Take the router's leg out of one vlan and the neighbour disappears --
      * because the only path was the one that was built. */
-    site_subif(&s, rt, 2, 0, 20, 0, 0);
+    site_subif(&s, rt, 0, 20, 0, 0);
     ck("take the router out of one vlan and the way across is gone",
        net_ping(s.net, s.dev[a].node, net_ip(10, 0, 20, 10), &rtt) != PING_OK);
     site_free(&s);
@@ -351,7 +351,7 @@ static void check_flat(const Building *b)
         site_port_trunk(&seg, core, g + 1, 10 + g);
         site_port_trunk(&seg, core, 0, 10 + g);
         site_port_trunk(&seg, gsw[g], 0, 10 + g);
-        site_subif(&seg, grt, 1 + g, 0, 10 + g,
+        site_subif(&seg, grt, 0, 10 + g,
                    net_ip(10, 0, 10 + g, 1), net_mask_bits(24));
     }
     site_forwarding(&seg, grt, true);
@@ -461,7 +461,7 @@ static void check_shell(const Building *b)
         "cable rt:1 sw2:0 cat6",
         "cable pc1:0 sw2:1 cat6",
         "addr rt 198.51.100.2/30",
-        "subif rt 1 1 0 192.168.7.1/24",
+        "addr rt:1 192.168.7.1/24",
         "router rt on",
         "gw rt 198.51.100.1",
         "addr pc1 192.168.7.10/24",
