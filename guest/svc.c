@@ -393,7 +393,7 @@ void _start(void)
     }
 
     int any_dead = 0, any_odd = 0;
-    g_putln("SERVICE          STATE           EXEC");
+    g_putln("SERVICE          STATE          EXEC");
     for (int i = 0; i < 256; i++) {
         if (g_readdir("/etc/services.d", i, name) < 0) break;
         if (!g_endswith(name, ".svc")) continue;
