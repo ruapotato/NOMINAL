@@ -88,6 +88,17 @@ func write(s: String) -> void:
 	queue_redraw()
 
 
+# The screen went black. Used when a machine is power cycled: what follows is
+# this boot, not this boot appended to the last one.
+func clear() -> void:
+	lines = PackedStringArray()
+	cur = ""
+	caret = 0
+	pending = ""
+	scroll = 0
+	queue_redraw()
+
+
 func _trim() -> void:
 	while lines.size() > MAX_LINES:
 		lines.remove_at(0)
@@ -163,6 +174,12 @@ func _gui_input(e: InputEvent) -> void:
 		return
 	var k := e as InputEventKey
 	accept_event()
+
+	# An empty prompt means there is nothing here to type at -- a console
+	# showing a machine that never booted. Swallow the key rather than
+	# collecting a line nobody will ever run.
+	if str(prompt_fn.call()) == "":
+		return
 
 	match k.keycode:
 		KEY_ENTER, KEY_KP_ENTER:
@@ -260,7 +277,7 @@ func _draw() -> void:
 			var pw := mono.get_string_size(prompt, HORIZONTAL_ALIGNMENT_LEFT, -1, 13).x
 			draw_string(mono, Vector2(PAD + pw, y), cur,
 				HORIZONTAL_ALIGNMENT_LEFT, -1, 13, fg)
-			if has_focus() and blink < 0.25:
+			if has_focus() and blink < 0.25 and prompt != "":
 				var cw := mono.get_string_size(cur.substr(0, caret),
 					HORIZONTAL_ALIGNMENT_LEFT, -1, 13).x
 				var w := mono.get_string_size("M", HORIZONTAL_ALIGNMENT_LEFT, -1, 13).x

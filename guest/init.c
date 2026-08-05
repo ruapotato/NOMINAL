@@ -11,6 +11,41 @@ static char buf[8192];
 
 void _start(void)
 {
+    /* ALSO TELINIT. On a real system /sbin/init is pid 1 AND the command a
+     * user runs to change runlevel, and which one it is depends entirely on
+     * whether it was given an argument. Without this, `init 0` spawned pid
+     * 1's program again, it ignored the argument, and the whole boot sequence
+     * ran a second time -- so every runlevel, including halt, looked like a
+     * reboot. */
+    {
+        static char arg[64];
+        g_getarg(arg, sizeof arg);
+        char *v[GARGS];
+        if (g_argv(arg, v) >= 1 && v[0][0] >= '0' && v[0][0] <= '9') {
+            char r = v[0][0];
+            if (r == '0') {
+                g_putln("The system is going down for halt NOW!");
+                sysc(SYS_reboot, 1, 0, 0);
+                g_exit(0);
+            }
+            if (r == '6') {
+                g_putln("The system is going down for reboot NOW!");
+                sysc(SYS_reboot, 0, 0, 0);
+                g_exit(0);
+            }
+            if (r == '1' || r == '3' || r == '5') {
+                g_puts("init: switching to runlevel ");
+                g_putln(v[0]);
+                g_putln("  (this restarts the service set, so the machine boots again)");
+                sysc(SYS_reboot, 0, 0, 0);
+                g_exit(0);
+            }
+            g_puts("init: unknown runlevel: "); g_putln(v[0]);
+            g_putln("  0 halt  1 single user  3 multi-user  5 graphical  6 reboot");
+            g_exit(1);
+        }
+    }
+
     g_putln("init: pid 1 starting");
 
     if (g_slurp("/etc/inittab", buf, sizeof buf) < 0) {

@@ -63,6 +63,15 @@ func seed_first(text: String) -> void:
 	queue_redraw()
 
 
+# A line the customer says without being asked -- used when their machine
+# comes back up, because a job that ends in silence does not feel finished.
+func say_from_customer(text: String) -> void:
+	logs[0].append([cust_name, text])
+	who = 0
+	scroll = 0
+	queue_redraw()
+
+
 func reset(name: String) -> void:
 	cust_name = name
 	logs[0] = [["", "%s is on the line. They are not technical, and they are the only pair of hands in the room." % name]]

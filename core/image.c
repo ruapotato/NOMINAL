@@ -512,7 +512,12 @@ static const Package PKG_SHELL = {
       { "/sbin/reboot",   NULL, 0755, NULL },
       { "/sbin/halt",     NULL, 0755, NULL },
       { "/sbin/poweroff", NULL, 0755, NULL },
-    }, 39
+      /* `init 0` rebooted the machine because nothing implemented it. On a
+       * real system /sbin/init IS pid 1 and ALSO acts as telinit when a user
+       * runs it with a runlevel, so that is what init.c does now. This is
+       * only the second name for it. */
+      { "/sbin/telinit", NULL, 0755, NULL },
+    }, 40
 };
 
 
@@ -1038,6 +1043,8 @@ void image_generated(const Machine *m, const char *path, Buf *out)
         buf_put(out, (const char *)GUEST_NOMDE, GUEST_NOMDE_LEN);
     else if (strcmp(path, "/usr/bin/open") == 0)
         buf_put(out, (const char *)GUEST_OPEN, GUEST_OPEN_LEN);
+    else if (strcmp(path, "/sbin/telinit") == 0)
+        buf_put(out, (const char *)GUEST_INIT, GUEST_INIT_LEN);
     else if (strcmp(path, "/sbin/reboot") == 0 ||
              strcmp(path, "/sbin/halt") == 0 ||
              strcmp(path, "/sbin/poweroff") == 0)

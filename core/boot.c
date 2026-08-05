@@ -298,7 +298,14 @@ void machine_boot(Machine *m)
     unsigned mode = 0;
 
     /* ---- firmware ---- */
-    say(c, "zbios 1.4  node-%s", m->id);
+    /* A REAL POST, because a machine coming up should look like a machine
+     * coming up. David: "if you power cycle we should clear the console and
+     * show a grub like boot process." The screen is cleared by the caller;
+     * this is what fills it. */
+    say(c, "zbios 1.4  --  node-%s", m->id);
+    say(c, "  memory ....... 512 MB ok");
+    say(c, "  cpu .......... rv64im @ 1 core");
+    say(c, "  storage ...... /dev/sda 1 partition, /dev/sr0 removable");
     if (!m->bootsector) {
         fail(m, c, BOOT_FIRMWARE, "no bootable device -- insert boot media");
         goto done;
@@ -316,7 +323,15 @@ void machine_boot(Machine *m)
         goto done;
     default: break;
     }
-    say(c, "zbl 2.06  loading configuration");
+    say(c, "");
+    say(c, "zbl 2.06");
+    say(c, "  +----------------------------------------------+");
+    say(c, "  | NomnixOS 11.4                                |");
+    say(c, "  | NomnixOS 11.4 (single user)                  |");
+    say(c, "  | rescue medium                                |");
+    say(c, "  +----------------------------------------------+");
+    say(c, "  booting the default entry in 0s...");
+    say(c, "");
 
     /* Validate the whole file before using any of it, the way a real loader
      * does. Random damage inside a config should say WHICH LINE it choked on;

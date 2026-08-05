@@ -57,6 +57,11 @@ var cust := "the customer"
 
 var chat: Control
 var alerts := 0
+# HAS THE TICKET BEEN FINISHED. David fixed a machine, told the customer, and
+# nothing happened -- "no, oh thank you it's booting now, no closure or new
+# issue came up". A job you have done should end, visibly, and the next one
+# should arrive.
+var closed := false
 var _alert_msg := ""
 var _clock := 0.0
 var _shot_path := ""
@@ -119,6 +124,18 @@ func _build_shell() -> void:
 	panel.gui_input.connect(_panel_input)
 	add_child(panel)
 
+	# THE MENU IS ITS OWN LAYER, ABOVE EVERY WINDOW.
+	#
+	# It was drawn on the wallpaper, which is the bottom of the stack, so it
+	# appeared behind whatever was open -- a menu you cannot see is not a
+	# menu. It is kept last in the child order along with the panel, and the
+	# window raise code puts them back on top.
+	menu_layer = Control.new()
+	menu_layer.set_anchors_preset(Control.PRESET_FULL_RECT)
+	menu_layer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	menu_layer.draw.connect(_draw_menu_layer)
+	add_child(menu_layer)
+
 	foot = Control.new()
 	foot.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
 	foot.size.y = FOOT_H
@@ -138,7 +155,7 @@ func _draw_wall() -> void:
 		_draw_icon(wall, Vector2(24, y), spec[0], spec[2] if spec.size() > 2 else spec[1])
 		y += 62
 
-	if menu_open:
+	if false:
 		var r := _menu_rect()
 		wall.draw_rect(r, Color("#f6f6f6"))
 		wall.draw_rect(r, Color("#8b929b"), false, 1.0)
@@ -285,7 +302,8 @@ func _wall_input(e: InputEvent) -> void:
 				if idx >= 0 and idx < LAUNCHERS.size():
 					_launch(LAUNCHERS[idx][1])
 			menu_open = false
-			wall.queue_redraw()
+			if menu_layer:
+				menu_layer.queue_redraw()
 			return
 		var y := PANEL_H + 14.0
 		for spec in LAUNCHERS:
@@ -299,7 +317,10 @@ func _panel_input(e: InputEvent) -> void:
 	if e is InputEventMouseButton and e.pressed and e.button_index == MOUSE_BUTTON_LEFT:
 		if e.position.x < 96:
 			menu_open = not menu_open
-			wall.queue_redraw()
+			if menu_layer:
+				move_child(menu_layer, get_child_count() - 1)
+				move_child(panel, get_child_count() - 1)
+				menu_layer.queue_redraw()
 			return
 		if e.position.x > panel.size.x - 200 and alerts > 0:
 			_launch("chat")
@@ -372,6 +393,10 @@ func _raise(w: Control) -> void:
 	w.visible = true
 	move_child(w, get_child_count() - 1)
 	move_child(foot, get_child_count() - 1)
+	if menu_layer:
+		move_child(menu_layer, get_child_count() - 1)
+	if panel:
+		move_child(panel, get_child_count() - 1)
 	focused = w.get_meta("content")
 	for x in windows:
 		if is_instance_valid(x):
@@ -405,6 +430,23 @@ func _cascade_at(w: float, h: float) -> Rect2:
 # worse than not having it -- a menu that does not open reads as a broken
 # desktop rather than an unfinished one.
 var menu_open := false
+var menu_layer: Control
+
+
+func _draw_menu_layer() -> void:
+	if not menu_open:
+		return
+	var r := _menu_rect()
+	menu_layer.draw_rect(Rect2(r.position + Vector2(3, 3), r.size), Color(0, 0, 0, 0.18))
+	menu_layer.draw_rect(r, Color("#f6f6f6"))
+	menu_layer.draw_rect(r, Color("#8b929b"), false, 1.0)
+	var my := r.position.y + 6
+	for spec in LAUNCHERS:
+		menu_layer.draw_string(mono, Vector2(r.position.x + 30, my + 17), spec[0],
+			HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color("#1b1b1b"))
+		_draw_icon_small(menu_layer, Vector2(r.position.x + 6, my + 4),
+			spec[2] if spec.size() > 2 else spec[1])
+		my += MENU_ROW
 const MENU_W := 190.0
 const MENU_ROW := 26.0
 
@@ -539,6 +581,12 @@ func _launch(kind0: String) -> void:
 			n.machine = machine
 			_win("notes", _cascade_at(500, 340), n)
 		"log":
+			# THE LOG VIEWER SHOWED YOUR OWN BOOT LOG, which is the one log
+			# nobody needs -- your workstation is fine. David: "Log view seems
+			# to have no point." It follows the CUSTOMER's machine now: their
+			# console if you are attached to it, their /var/log/boot.log if
+			# you can reach the disk, and it says which it is showing. R
+			# refreshes, so it is a monitor rather than a snapshot.
 			var l := preload("res://scripts/terminal.gd").new()
 			l.mono = mono
 			l.bg = TERM_BG
@@ -547,8 +595,9 @@ func _launch(kind0: String) -> void:
 			l.banner = []
 			l.prompt_fn = func() -> String: return ""
 			l.on_command = func(_s: String) -> String: return ""
-			_win("log viewer - your workstation", _cascade_at(720, 420), l)
-			l.call("write", machine.sh_on(0, "dmesg"))
+			var w2 := _win("log viewer - %s" % cust, _cascade_at(760, 440), l)
+			_refresh_log(l)
+			l.set_meta("is_log", true)
 		"manual":
 			var d := preload("res://scripts/manual.gd").new()
 			d.mono = mono
@@ -600,7 +649,14 @@ func _open_terminal(which: int, title: String, rect: Rect2) -> Control:
 		"`rcon connect <address>` reaches a customer's machine.", ""])
 	var target := which
 	t.prompt_fn = func() -> String:
-		return "root@node# " if target == 1 else "you@desk# "
+		if target == 1:
+			# NO PROMPT ON A MACHINE THAT DID NOT BOOT. Showing `root@node#`
+			# and then answering every command with "no shell here" is worse
+			# than showing nothing: the prompt is a promise. A console
+			# attached to a dead box shows the screen, and the screen has no
+			# shell on it.
+			return "root@node# " if machine.booted() else ""
+		return "you@desk# "
 	t.on_command = func(line: String) -> String:
 		return _run(target, line)
 	_win(title, rect, t)
@@ -629,12 +685,7 @@ func _run(which: int, line: String) -> String:
 	# screen; if it never reached a shell, there is no shell to type at, and
 	# that IS the diagnosis.
 	if target == 1 and not machine.booted():
-		return "\n[no shell here -- this machine did not finish booting]\n" \
-			+ "  what it managed to say is above. from YOUR terminal:\n" \
-			+ "    rcon console                what it said\n" \
-			+ "    rcon media insert           put the rescue medium in\n" \
-			+ "    rcon boot media             boot from it next time\n" \
-			+ "    rcon power cycle            restart it\n"
+		return ""
 
 	var out: String = machine.sh_on(target, s)
 
@@ -649,13 +700,24 @@ func _run(which: int, line: String) -> String:
 				"\n-- their machine is NOT up: there is no shell to type at. --\n" \
 				+ "-- drive it from your own terminal with `rcon`. --\n")
 
+	_check_closed()
+
 	# Anything that changes the customer's power state changes what the
 	# console shows, so repaint it.
-	if is_rcon and (s.find("power") >= 0 or s.find("boot") >= 0):
+	# A POWER CYCLE CLEARS THE SCREEN. Appending the new boot underneath the
+	# old one is not what a monitor does -- the machine went off, the screen
+	# went black, and what you see afterwards is this boot and only this boot.
+	if is_rcon and (s.find("power") >= 0 or s.find("boot media") >= 0
+			or s.find("boot disk") >= 0):
 		var con := _find("console - ")
 		if con:
 			var c2: Control = con.get_meta("content")
-			c2.call("write", "\n" + machine.sh_on(0, "rcon console"))
+			c2.call("clear")
+			c2.call("write", machine.sh_on(0, "rcon console"))
+			if machine.booted():
+				c2.call("write",
+					"\n*** this machine is UP. it reached a login prompt. ***\n"
+					+ "*** you have a shell here now. ***\n")
 
 	for w in windows:
 		if not is_instance_valid(w):
@@ -663,10 +725,62 @@ func _run(which: int, line: String) -> String:
 		var c: Variant = w.get_meta("content")
 		if c and c.has_method("refresh"):
 			c.call("refresh")
+		if c and c is Control and (c as Control).has_meta("is_log"):
+			_refresh_log(c)
 	return out
 
 
+# The moment the customer's machine comes up clean, say so -- loudly, in the
+# place the player is already looking, and on the panel.
+# What the customer's machine has said. Not ours.
+func _refresh_log(l: Control) -> void:
+	l.call("clear")
+	var con: String = machine.sh_on(0, "rcon console")
+	if con.strip_edges() != "" and con.find("not attached") < 0:
+		l.call("write", "=== console of %s (%s) ===\n\n" % [addr, cust])
+		l.call("write", con)
+		return
+	# Not attached: try their previous boot off the mounted disk.
+	var prev: String = machine.sh_on(0, "dmesg -r /mnt -1")
+	if prev.find("no boot log") < 0 and prev.strip_edges() != "":
+		l.call("write", "=== previous boot, from their disk at /mnt ===\n\n")
+		l.call("write", prev)
+		return
+	l.call("write",
+		"nothing to show yet.\n\n"
+		+ "this window follows the CUSTOMER's machine, not yours.\n"
+		+ "  `rcon connect " + addr + "` to see its console, or mount their\n"
+		+ "  disk and this will show their last boot instead.\n")
+
+
+func _check_closed() -> void:
+	if closed or machine == null:
+		return
+	if not machine.healthy():
+		return
+	closed = true
+	var con := _find("console - ")
+	if con:
+		var c2: Control = con.get_meta("content")
+		c2.call("write",
+			"\n===============================================\n"
+			+ "  THIS MACHINE IS FIXED.\n"
+			+ "  every service that should be running is running.\n"
+			+ "===============================================\n")
+	if chat:
+		chat.call("say_from_customer",
+			"Oh brilliant -- it has come back up. Everything is where it was. "
+			+ "Thank you, honestly. I will let you go.")
+	alerts += 1
+	_alert_msg = "%s: it is working again. ticket closed." % cust
+	if panel:
+		panel.queue_redraw()
+	if foot:
+		foot.queue_redraw()
+
+
 func _new_ticket() -> void:
+	closed = false
 	seed_no += 1
 	machine.take_ticket(seed_no, faults)
 	addr = machine.peer_addr()
@@ -681,6 +795,26 @@ func _new_ticket() -> void:
 	_alert_msg = "%s: my computer will not start. are you there?" % cust
 	panel.queue_redraw()
 	foot.queue_redraw()
+
+
+# The menu overlays windows, so it must see the click first. _input runs
+# before any control's _gui_input, which is exactly the priority a popup needs.
+func _input(e: InputEvent) -> void:
+	if not menu_open:
+		return
+	if e is InputEventMouseButton and e.pressed and e.button_index == MOUSE_BUTTON_LEFT:
+		var r := _menu_rect()
+		var at := get_global_mouse_position()
+		if r.has_point(at):
+			var idx := int((at.y - r.position.y - 6) / MENU_ROW)
+			menu_open = false
+			menu_layer.queue_redraw()
+			get_viewport().set_input_as_handled()
+			if idx >= 0 and idx < LAUNCHERS.size():
+				_launch(LAUNCHERS[idx][1])
+		else:
+			menu_open = false
+			menu_layer.queue_redraw()
 
 
 func _process(dt: float) -> void:
