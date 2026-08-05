@@ -28,11 +28,33 @@ D = os.environ.get('NOMPLAY_DIR', '/tmp/nomplay')
 # than any bug in the game. Appending to a file cannot deadlock.
 CMDS, LOG, PID = D + '/cmds', D + '/out', D + '/pid'
 # The prompt says which machine you are on, so there is more than one.
-PROMPTS = (b'you@desk# ', b'root@node# ', b'rescue# ')
+# The prompt says which machine you are on, so there is more than one -- and
+# since the tower landed, the prompt also says which ROOM you are in, so there
+# are hundreds. A playtester reported that every tower command waited out the
+# full silence fallback because none of these matched `f0 MDF> `, and that
+# fixing it would roughly triple playtest throughput. They were right: the
+# whole point of this client is that it knows when the machine has finished
+# talking.
+PROMPTS = (b'you@desk# ', b'root@node# ', b'rescue# ', b'mgmt@')
+
+
+def _at_tower_prompt(buf):
+    """`f0 MDF> `, `f3 comms cupboard> `, `root@files# ` -- a room or a box.
+
+    Matching the shape rather than a list, because the room names come from a
+    generated building and there is no fixed set of them."""
+    tail = buf[-64:]
+    nl = tail.rfind(b'\n')
+    line = tail[nl + 1:] if nl >= 0 else tail
+    if line.endswith(b'> ') and line[:1] == b'f' and b' ' in line:
+        return True
+    return line.endswith(b'# ') and b'@' in line
 
 
 def _at_prompt(buf):
-    return any(buf.endswith(p) for p in PROMPTS)
+    if any(buf.endswith(p) for p in PROMPTS):
+        return True
+    return _at_tower_prompt(buf)
 
 
 def relay(port):
