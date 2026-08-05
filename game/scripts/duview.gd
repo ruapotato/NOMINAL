@@ -35,6 +35,8 @@ var root := "/"
 var here := "/"                # what the treemap is showing
 var kids: Dictionary = {}      # dir path -> Array of {name, full, dir, size}
 var total: Dictionary = {}     # dir path -> bytes under it
+var nfiles: Dictionary = {}    # dir path -> files under it, recursively
+var ndirs: Dictionary = {}     # dir path -> directories under it
 var err := ""
 
 var scanning := false
@@ -108,6 +110,8 @@ func _has_machine() -> bool:
 func rescan() -> void:
 	kids = {}
 	total = {}
+	nfiles = {}
+	ndirs = {}
 	order = []
 	pending = []
 	n_dirs = 0
@@ -236,6 +240,8 @@ func _sum() -> void:
 	for i in range(order.size() - 1, -1, -1):
 		var d: String = str(order[i])
 		var t := 0
+		var fc := 0
+		var dc := 0
 		var list: Array = kids.get(d, [])
 		for j in range(list.size()):
 			var e: Dictionary = list[j]
@@ -244,9 +250,17 @@ func _sum() -> void:
 				e["size"] = sub
 				list[j] = e
 				t += sub
+				# Counted per directory, not globally. The footer used to show
+				# the whole disk's file count beside whatever directory you had
+				# clicked into, which reads as a claim about that directory.
+				fc += int(nfiles.get(e["full"], 0))
+				dc += 1 + int(ndirs.get(e["full"], 0))
 			else:
 				t += int(e["size"])
+				fc += 1
 		total[d] = t
+		nfiles[d] = fc
+		ndirs[d] = dc
 
 
 # ---------------------------------------------------------------- treemap
@@ -577,7 +591,8 @@ func _draw_foot() -> void:
 		msg = "scanning..."
 	else:
 		msg = "%s   %s in %d files, %d directories" % [here,
-			_bytes(int(total.get(here, 0))), n_files, n_dirs]
+			_bytes(int(total.get(here, 0))), int(nfiles.get(here, 0)),
+			int(ndirs.get(here, 0))]
 		if skipped_empty > 0:
 			msg += "   (%d empty entries have no tile)" % skipped_empty
 	draw_string(mono, Vector2(8, y + 12), _fit(msg, size.x - 16.0, 10),

@@ -109,7 +109,6 @@ var cact := PackedByteArray()         # chunks to simulate this frame
 var cnext := PackedByteArray()        # chunks to simulate next frame
 
 var rowcnt := PackedInt32Array()      # non-empty cells per row; empty rows are free
-var col := PackedInt32Array()         # scratch: colour id per cell of one row
 var pal: Array = []                   # colour id -> Color
 
 var brush := 5
@@ -146,7 +145,6 @@ func _ready() -> void:
 	cact.resize(CCW * CCH)
 	cnext.resize(CCW * CCH)
 	rowcnt.resize(GH)
-	col.resize(GW)
 	_build_palette()
 	if machine:
 		var t: String = machine.sh_on(0, "cat /root/.sand")
@@ -808,41 +806,36 @@ func _draw() -> void:
 			HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color("#f0e6c0"))
 
 
-# The whole reason the materials are flat: one pass per row, merging equal
-# colours into a single rect. A screen of settled sand is a few hundred rects
-# instead of nineteen thousand.
+# The whole reason the materials are flat. Colour is material plus a row band,
+# and the band is constant across a row, so a run of equal colour IS a run of
+# equal material -- which means the run-length pass can read the grid directly
+# and never build a scratch row. That halves the cost of this loop, and this
+# loop was costing as much as the physics.
 func _draw_cells() -> void:
 	var w := cell_px
+	var wq := w + 0.5                # a hair of overlap, so no seams show
 	for y in range(GH):
 		if rowcnt[y] == 0:
 			continue
 		var rowbase := y * GW
 		var band := (y >> 1) & 1
-		var any := false
-		for x in range(GW):
-			var m := mat[rowbase + x]
-			var c := 0
-			if m != EMPTY:
-				any = true
-				if m == FIRE:
-					c = 24 + clampi(3 - ((aux[rowbase + x] & 127) >> 4), 0, 3)
-				elif m == LAVA:
-					c = 28 + band
-				else:
-					c = m * 2 + band
-			col[x] = c
-		if not any:
-			continue
 		var yy := org.y + y * w
 		var x0 := 0
 		while x0 < GW:
-			var c0 := col[x0]
+			var m0 := mat[rowbase + x0]
 			var x1 := x0 + 1
-			while x1 < GW and col[x1] == c0:
+			while x1 < GW and mat[rowbase + x1] == m0:
 				x1 += 1
-			if c0 != 0:
-				draw_rect(Rect2(org.x + x0 * w, yy, (x1 - x0) * w + 0.5, w + 0.5),
-					pal[c0])
+			if m0 != EMPTY:
+				if m0 == FIRE:
+					# Flames are the one thing drawn per cell: a fire's colour
+					# is how much life it has left, and there are never many.
+					for fx in range(x0, x1):
+						draw_rect(Rect2(org.x + fx * w, yy, wq, wq),
+							pal[24 + clampi(3 - ((aux[rowbase + fx] & 127) >> 4), 0, 3)])
+				else:
+					draw_rect(Rect2(org.x + x0 * w, yy, (x1 - x0) * w + 0.5, wq),
+						pal[m0 * 2 + band])
 			x0 = x1
 
 

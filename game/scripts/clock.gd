@@ -422,7 +422,10 @@ func _draw_face(r: Rect2, h: int, m: int, s: int) -> void:
 func _cal_grid(body: Rect2) -> Dictionary:
 	var top := body.position.y + 40.0
 	var cw := body.size.x / 7.0
-	var ch: float = maxf(10.0, (body.position.y + body.size.y - top - 4.0) / 6.0)
+	# 16 pixels held back for the line that spells the selected date out. At
+	# 320x240 the six rows otherwise run underneath it and the last week of
+	# the month is printed through a sentence.
+	var ch: float = maxf(10.0, (body.position.y + body.size.y - top - 16.0) / 6.0)
 	return {"top": top, "cw": cw, "ch": ch}
 
 

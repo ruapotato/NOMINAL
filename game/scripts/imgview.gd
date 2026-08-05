@@ -41,6 +41,15 @@ var raw_bytes := 0           # what ls -l said the file is, in bytes
 
 var zoom := 1.0
 var pan := Vector2.ZERO
+# The measured size of the text at zoom 1, and the view size that the current
+# fit was computed for. Both exist because of the same bug: _ready() loads a
+# file before the desktop has given this control its size, so the first fit
+# was computed against a zero-sized window and every file opened at the
+# minimum zoom in the top-left corner. Fit is now recomputed whenever the
+# window it was fitted to is no longer the window we have.
+var content := Vector2.ONE
+var fitted_for := Vector2.ZERO
+var auto_fit := true
 var dragging := false
 var drag_from := Vector2.ZERO
 var pan_from := Vector2.ZERO
@@ -202,6 +211,9 @@ func _load() -> void:
 	# one row for every file on the disk.
 	while lines.size() > 1 and lines[lines.size() - 1] == "":
 		lines.remove_at(lines.size() - 1)
+	_measure()
+	auto_fit = true
+	fitted_for = Vector2.ZERO
 	fit()
 
 
@@ -219,38 +231,47 @@ func _view() -> Rect2:
 	return Rect2(0, TOP, size.x, maxf(20.0, size.y - TOP - BOT))
 
 
-func _char_w() -> float:
-	return mono.get_string_size("M", HORIZONTAL_ALIGNMENT_LEFT, -1, BASE_FS).x
-
-
 func _line_h() -> float:
-	return float(BASE_FS) + 3.0
+	return maxf(float(BASE_FS) + 3.0, mono.get_height(BASE_FS))
+
+
+# The widest line is MEASURED, not counted. The desktop's font is whatever
+# Godot's fallback is and it is proportional, so "longest line in characters"
+# is not the widest line in pixels -- fitting on a character count left every
+# file scaled too small and pushed to the left of the window.
+func _measure() -> void:
+	var w := 1.0
+	for l in lines:
+		w = maxf(w, mono.get_string_size(l, HORIZONTAL_ALIGNMENT_LEFT, -1, BASE_FS).x)
+	content = Vector2(w, maxf(1.0, float(lines.size()) * _line_h()))
 
 
 func _content() -> Vector2:
-	var cols := 0
-	for l in lines:
-		cols = maxi(cols, l.length())
-	return Vector2(maxf(1.0, float(cols) * _char_w()),
-		maxf(1.0, float(lines.size()) * _line_h()))
+	return content
 
 
 func fit() -> void:
-	var c := _content()
 	var v := _view().size - Vector2(16, 16)
-	zoom = clampf(minf(v.x / c.x, v.y / c.y), MIN_ZOOM, MAX_ZOOM)
+	if v.x < 8.0 or v.y < 8.0:
+		# No window yet. Do not record this as the fit; _draw will redo it.
+		return
+	zoom = clampf(minf(v.x / content.x, v.y / content.y), MIN_ZOOM, MAX_ZOOM)
+	auto_fit = true
+	fitted_for = _view().size
 	_centre()
 	queue_redraw()
 
 
 func one_to_one() -> void:
 	zoom = 1.0
+	auto_fit = false
+	fitted_for = _view().size
 	_centre()
 	queue_redraw()
 
 
 func _centre() -> void:
-	var c := _content() * zoom
+	var c := content * zoom
 	var v := _view().size
 	pan = Vector2(maxf(8.0, (v.x - c.x) / 2.0), maxf(8.0, (v.y - c.y) / 2.0))
 
@@ -279,6 +300,8 @@ func _zoom_at(f: float, at: Vector2) -> void:
 	zoom = clampf(zoom * f, MIN_ZOOM, MAX_ZOOM)
 	if old > 0.0:
 		pan -= local * (zoom / old - 1.0)
+	auto_fit = false
+	fitted_for = v.size
 	_clamp_pan()
 	queue_redraw()
 
@@ -347,6 +370,17 @@ func _fit_text(t: String, w: float, fs: int) -> String:
 func _draw() -> void:
 	draw_rect(Rect2(Vector2.ZERO, size), CHROME)
 	var v := _view()
+	# The window has been resized (or has just been given a size for the first
+	# time) since the current scale was worked out. In fit mode, refit; if the
+	# user has zoomed by hand, leave their scale alone and just keep the text
+	# from sliding off the edge.
+	if v.size != fitted_for:
+		if auto_fit:
+			fit()
+			v = _view()
+		else:
+			fitted_for = v.size
+			_clamp_pan()
 	draw_rect(v, PAPER)
 
 	draw_rect(Rect2(0, 0, size.x, TOP), Color("#e4e4e4"))

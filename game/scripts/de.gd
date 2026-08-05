@@ -94,6 +94,8 @@ const TITLES := {"term": "terminal - your", "chat": "chat", "files": "files",
 	"gflappy": "flappy", "gworms": "worms", "browser": "browser",
 	"gsnake": "snake", "gmines": "minesweeper", "gblocks": "blocks",
 	"gsolitaire": "solitaire", "gliquid": "liquid war", "music": "music",
+	"clock": "clock", "imgview": "image viewer", "archman": "archive manager",
+	"duview": "disk usage", "charmap": "character map", "search": "search",
 	"calc": "calculator", "sysmon": "system monitor",
 	"pkgman": "package manager", "svcman": "service manager"}
 
@@ -557,6 +559,8 @@ const EXEC_MAP := {
 	"gblocks": "gblocks", "blocks": "gblocks",
 	"gsolitaire": "gsolitaire", "solitaire": "gsolitaire",
 	"gliquid": "gliquid", "liquid": "gliquid", "music": "music",
+	"clock": "clock", "imgview": "imgview", "archman": "archman",
+	"duview": "duview", "charmap": "charmap", "search": "search",
 	"calc": "calc", "calculator": "calc",
 	"sysmon": "sysmon", "pkgman": "pkgman", "svcman": "svcman",
 }
@@ -673,6 +677,36 @@ func _launch(kind0: String) -> void:
 			mu.mono = mono
 			mu.machine = machine
 			_win("music", _cascade_at(560, 420), mu)
+		"clock":
+			var cl := preload("res://scripts/clock.gd").new()
+			cl.mono = mono
+			cl.machine = machine
+			_win("clock", _cascade_at(480, 420), cl)
+		"imgview":
+			var iv := preload("res://scripts/imgview.gd").new()
+			iv.mono = mono
+			iv.machine = machine
+			_win("image viewer", _cascade_at(640, 480), iv)
+		"archman":
+			var am := preload("res://scripts/archman.gd").new()
+			am.mono = mono
+			am.machine = machine
+			_win("archive manager", _cascade_at(720, 480), am)
+		"duview":
+			var dv := preload("res://scripts/duview.gd").new()
+			dv.mono = mono
+			dv.machine = machine
+			_win("disk usage", _cascade_at(720, 500), dv)
+		"charmap":
+			var cm := preload("res://scripts/charmap.gd").new()
+			cm.mono = mono
+			cm.machine = machine
+			_win("character map", _cascade_at(620, 460), cm)
+		"search":
+			var se := preload("res://scripts/search.gd").new()
+			se.mono = mono
+			se.machine = machine
+			_win("search", _cascade_at(640, 440), se)
 		"calc":
 			var ca := preload("res://scripts/calc.gd").new()
 			ca.mono = mono

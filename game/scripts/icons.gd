@@ -81,6 +81,12 @@ static func draw_icon(c: CanvasItem, at: Vector2, sz: float, kind: String) -> vo
 		"liquid": _liquid(c, at, sz)
 		"flappy": _flappy(c, at, sz)
 		"music": _music(c, at, sz)
+		"clock": _clock(c, at, sz)
+		"imgview": _imgview(c, at, sz)
+		"archman": _archman(c, at, sz)
+		"duview": _duview(c, at, sz)
+		"charmap": _charmap(c, at, sz)
+		"search": _search(c, at, sz)
 		_: _app(c, at, sz)
 
 
@@ -90,7 +96,8 @@ static func kinds() -> PackedStringArray:
 		"term", "chat", "files", "notes", "log", "manual", "browser",
 		"game", "calc", "sysmon", "pkg", "svc", "editor",
 		"snake", "mines", "blocks", "cards", "worms", "liquid", "flappy",
-		"music", "app"])
+		"music", "clock", "imgview", "archman", "duview", "charmap",
+		"search", "app"])
 
 
 # =============================================================================
@@ -448,3 +455,87 @@ func _draw() -> void:
 		if mono != null:
 			draw_string(mono, Vector2(x, y + 100), all[i],
 				HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Color("#22262b"))
+
+
+# Clock: a pale face, a rim, two hands and four tick marks. No numerals --
+# a dial is legible at 16px, digits are not.
+static func _clock(c: CanvasItem, at: Vector2, sz: float) -> void:
+	var mid: Vector2 = _pt(at, sz, 0.5, 0.5)
+	c.draw_circle(mid, sz * 0.42, PAPER)
+	c.draw_arc(mid, sz * 0.42, 0.0, TAU, 32, INK, _bw(sz) * 1.3)
+	for i in range(4):
+		var a: float = float(i) * TAU / 4.0
+		var d := Vector2(sin(a), -cos(a))
+		c.draw_line(mid + d * sz * 0.34, mid + d * sz * 0.40, LINE, _bw(sz))
+	# Ten past ten, because that is the shape every clock is photographed in
+	# and the two hands never overlap in it.
+	c.draw_line(mid, mid + Vector2(0.34, -0.11).normalized() * sz * 0.30,
+		INK, _bw(sz) * 1.2)
+	c.draw_line(mid, mid + Vector2(-0.22, -0.30).normalized() * sz * 0.22,
+		INK, _bw(sz) * 1.6)
+	c.draw_circle(mid, sz * 0.045, RED)
+
+
+# Image viewer: a framed picture -- sky, a hill and a sun. It shows text on
+# this machine, but the ICON has to say "viewer" in one glance.
+static func _imgview(c: CanvasItem, at: Vector2, sz: float) -> void:
+	var b: Rect2 = _body(at, sz)
+	_card(c, b, SKY, INK, sz)
+	c.draw_circle(_pt(at, sz, 0.68, 0.30), sz * 0.09, AMBER)
+	var hill := PackedVector2Array([
+		_pt(at, sz, 0.06, 0.92), _pt(at, sz, 0.34, 0.44),
+		_pt(at, sz, 0.58, 0.92)])
+	c.draw_colored_polygon(hill, GREEN_D)
+	var hill2 := PackedVector2Array([
+		_pt(at, sz, 0.40, 0.92), _pt(at, sz, 0.64, 0.56),
+		_pt(at, sz, 0.94, 0.92)])
+	c.draw_colored_polygon(hill2, GREEN)
+	_card(c, b, Color(0, 0, 0, 0), INK, sz)
+
+
+# Archive manager: a carton like pkg, but strapped shut -- a package you
+# open rather than a package you install.
+static func _archman(c: CanvasItem, at: Vector2, sz: float) -> void:
+	var b: Rect2 = _rc(at, sz, 0.10, 0.22, 0.80, 0.68)
+	_card(c, b, WOOD, WOOD_D, sz)
+	_chip(c, _rc(at, sz, 0.06, 0.14, 0.88, 0.16), AMBER)
+	c.draw_rect(_rc(at, sz, 0.44, 0.14, 0.12, 0.76), WOOD_D)
+	c.draw_rect(_rc(at, sz, 0.30, 0.46, 0.40, 0.09), SLATE)
+
+
+# Disk usage: a treemap -- four blocks of different sizes in one frame,
+# which is exactly what the app draws.
+static func _duview(c: CanvasItem, at: Vector2, sz: float) -> void:
+	var b: Rect2 = _body(at, sz)
+	_card(c, b, PAPER, INK, sz)
+	_chip(c, _rc(at, sz, 0.11, 0.13, 0.44, 0.46), BLUE)
+	_chip(c, _rc(at, sz, 0.57, 0.13, 0.32, 0.28), TEAL)
+	_chip(c, _rc(at, sz, 0.57, 0.43, 0.32, 0.16), AMBER)
+	_chip(c, _rc(at, sz, 0.11, 0.61, 0.78, 0.26), RED)
+
+
+# Character map: a grid of cells with two of them filled -- a table of
+# glyphs, without drawing a glyph the font might not have.
+static func _charmap(c: CanvasItem, at: Vector2, sz: float) -> void:
+	var b: Rect2 = _body(at, sz)
+	_card(c, b, PAPER, INK, sz)
+	_chip(c, _rc(at, sz, 0.14, 0.19, 0.20, 0.20), BLUE)
+	_chip(c, _rc(at, sz, 0.62, 0.55, 0.20, 0.20), ORANGE)
+	for i in range(1, 3):
+		var t: float = 0.14 + float(i) * 0.24
+		c.draw_line(_pt(at, sz, t, 0.14), _pt(at, sz, t, 0.86), GREY_D, _bw(sz))
+		c.draw_line(_pt(at, sz, 0.10, t + 0.05), _pt(at, sz, 0.90, t + 0.05),
+			GREY_D, _bw(sz))
+
+
+# Search: a magnifier over a page. The lens is empty glass, not a letter.
+static func _search(c: CanvasItem, at: Vector2, sz: float) -> void:
+	var b: Rect2 = _rc(at, sz, 0.10, 0.08, 0.66, 0.72)
+	_card(c, b, PAPER, LINE, sz)
+	_rule(c, at, sz, 0.18, 0.26, 0.44, GREY_D)
+	_rule(c, at, sz, 0.18, 0.40, 0.34, GREY_D)
+	var lens: Vector2 = _pt(at, sz, 0.58, 0.58)
+	c.draw_circle(lens, sz * 0.21, Color(1, 1, 1, 0.55))
+	c.draw_arc(lens, sz * 0.21, 0.0, TAU, 24, BLUE_D, _bw(sz) * 1.6)
+	c.draw_line(lens + Vector2(0.15, 0.15) * sz, _pt(at, sz, 0.90, 0.90),
+		BLUE_D, _bw(sz) * 2.0)

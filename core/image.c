@@ -680,6 +680,42 @@ static const Package PKG_HAMDE = {
         "Exec=music\n"
         "Icon=music\n"
         "Comment=Play what is in /usr/share/sounds\n", 0644, NULL },
+      { "/usr/share/applications/clock.desktop",
+        "[Desktop Entry]\n"
+        "Name=Clock\n"
+        "Exec=clock\n"
+        "Icon=clock\n"
+        "Comment=Time, calendar, timer and stopwatch\n", 0644, NULL },
+      { "/usr/share/applications/imgview.desktop",
+        "[Desktop Entry]\n"
+        "Name=Image Viewer\n"
+        "Exec=imgview\n"
+        "Icon=imgview\n"
+        "Comment=Look at what is picture-shaped\n", 0644, NULL },
+      { "/usr/share/applications/archman.desktop",
+        "[Desktop Entry]\n"
+        "Name=Archive Manager\n"
+        "Exec=archman\n"
+        "Icon=archman\n"
+        "Comment=Browse a package as a tree of files\n", 0644, NULL },
+      { "/usr/share/applications/duview.desktop",
+        "[Desktop Entry]\n"
+        "Name=Disk Usage\n"
+        "Exec=duview\n"
+        "Icon=duview\n"
+        "Comment=Where the disk went\n", 0644, NULL },
+      { "/usr/share/applications/charmap.desktop",
+        "[Desktop Entry]\n"
+        "Name=Character Map\n"
+        "Exec=charmap\n"
+        "Icon=charmap\n"
+        "Comment=Every character the font can draw\n", 0644, NULL },
+      { "/usr/share/applications/search.desktop",
+        "[Desktop Entry]\n"
+        "Name=Search\n"
+        "Exec=search\n"
+        "Icon=search\n"
+        "Comment=A front end to find\n", 0644, NULL },
       /* Where the display server takes requests. A file, because a file can
        * be looked at: `cat /run/nomde/requests` shows what was asked for,
        * which is the debuggability the socket version would not have. */
@@ -697,7 +733,7 @@ static const Package PKG_HAMDE = {
        * the directories it needs, or it cannot be repaired. */
       { "/run/nomde", NULL, 0755, NULL, true },
       { "/usr/share/applications", NULL, 0755, NULL, true },
-    }, 28
+    }, 34
 };
 
 /* THE SOUNDS ARE FILES, AND A PACKAGE OWNS THEM.

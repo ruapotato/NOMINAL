@@ -107,7 +107,6 @@ var flash := PackedByteArray()         # 1 = part of a found bridge, going away
 var seen := PackedByteArray()          # flood-fill visited stamps
 var stack := PackedInt32Array()        # flood-fill stack, reused every check
 var doomed := PackedInt32Array()       # cells the current flash will remove
-var col := PackedInt32Array()          # scratch: colour id per cell of one row
 
 var bag: Array = []
 var piece := -1
@@ -146,7 +145,6 @@ func _ready() -> void:
 	grid.resize(NCELL)
 	flash.resize(NCELL)
 	seen.resize(NCELL)
-	col.resize(GW)
 	if machine:
 		var t: String = machine.sh_on(0, "cat /root/.sandtris")
 		if t.strip_edges().is_valid_int():
@@ -479,10 +477,15 @@ func _draw() -> void:
 		# The ghost matters more here than in blocks: the piece lands on a slope,
 		# not a flat row, and the slope is what decides where the sand goes.
 		var gy := _drop_y()
+		# The ghost is the piece's own colour, faint: a neutral grey ghost on a
+		# near-black well reads as a solid dark block, which is exactly the thing
+		# a player must not mistake it for.
+		var gc: Color = SANDC[pcol * 2]
+		gc.a = 0.3
 		for c in SHAPES[piece][rot % 4]:
 			var o: Vector2i = Vector2i(pos.x, gy) + (c as Vector2i) * BLK
 			draw_rect(Rect2(org + Vector2(o.x, o.y) * cell_px,
-				Vector2(BLK, BLK) * cell_px), GHOST)
+				Vector2(BLK, BLK) * cell_px), gc)
 		for c2 in SHAPES[piece][rot % 4]:
 			var o2: Vector2i = pos + (c2 as Vector2i) * BLK
 			_draw_block(org + Vector2(o2.x, o2.y) * cell_px, BLK * cell_px, pcol)
@@ -498,34 +501,35 @@ func _draw() -> void:
 			HORIZONTAL_ALIGNMENT_CENTER, box.size.x, 12, INK)
 
 
-# One pass per row, merging equal colours into single rects. A settled board is
-# a few hundred draw calls rather than nine thousand six hundred.
+# One pass per row, merging equal colours into single rects, reading the grid
+# directly -- the row band is constant across a row, so a run of equal colour is
+# a run of equal cell value. The mass that is currently flashing is drawn after,
+# straight from the doomed list, so the run-length pass never has to ask about
+# it.
 func _draw_sand() -> void:
 	var w := cell_px
+	var wq := w + 0.5
 	for y in range(GH):
 		var rowbase := y * GW
 		var band := (y >> 1) & 1
-		var any := false
-		for x in range(GW):
-			var m := grid[rowbase + x]
-			var c := 0
-			if m != 0:
-				any = true
-				c = 40 if flash[rowbase + x] != 0 else m * 2 + band
-			col[x] = c
-		if not any:
-			continue
 		var yy := org.y + y * w
 		var x0 := 0
 		while x0 < GW:
-			var c0 := col[x0]
+			var m0 := grid[rowbase + x0]
 			var x1 := x0 + 1
-			while x1 < GW and col[x1] == c0:
+			while x1 < GW and grid[rowbase + x1] == m0:
 				x1 += 1
-			if c0 != 0:
-				var cc: Color = Color("#fbf3d0") if c0 == 40 else SANDC[c0]
-				draw_rect(Rect2(org.x + x0 * w, yy, (x1 - x0) * w + 0.5, w + 0.5), cc)
+			if m0 != 0:
+				draw_rect(Rect2(org.x + x0 * w, yy, (x1 - x0) * w + 0.5, wq),
+					SANDC[m0 * 2 + band])
 			x0 = x1
+	if flash_t <= 0.0:
+		return
+	# The found bridge, glowing, on top of whatever colour it used to be.
+	var glow := Color("#fbf3d0")
+	glow.a = clamp(flash_t / FLASH, 0.25, 1.0)
+	for i in doomed:
+		draw_rect(Rect2(org.x + float(i % GW) * w, org.y + float(i / GW) * w, wq, wq), glow)
 
 
 func _draw_block(o: Vector2, s: float, c: int) -> void:
