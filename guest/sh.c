@@ -691,9 +691,9 @@ static int run_line(char *cmd0)
              * only mistake was skipping `mount`. */
             g_puts("chroot: "); g_puts(v[0]);
             g_putln(": nothing is mounted there, so there is nothing to");
-            g_puts("  chroot into. "); g_puts(v[0]);
-            g_putln(" is an empty directory on the rescue");
-            g_putln("  medium itself. Mount the customer's disk on it first:");
+            g_puts("  chroot into -- "); g_puts(v[0]);
+            g_putln(" is an empty directory on this machine.");
+            g_putln("  Mount the customer's disk on it first:");
             g_puts("      mount /dev/sda1 "); g_putln(v[0]);
             g_putln("  `mount` with no arguments prints what is mounted where.");
             return 1;

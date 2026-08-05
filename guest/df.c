@@ -24,8 +24,9 @@ static void unreachable(const char *what)
     g_puts(what);
     g_putln(" to report)");
     g_putln("");
-    g_putln("The rescue medium is a read-only live image with no space of");
-    g_putln("its own. /dev/sda1 is a device until you mount it:");
+    g_putln("/dev/sda1 is a device until something mounts it, and this");
+    g_putln("machine is running a live image with no space of its own.");
+    g_putln("Mount it and df will measure it:");
     g_putln("      mount /dev/sda1 /mnt");
 }
 
