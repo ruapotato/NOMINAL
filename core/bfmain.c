@@ -14,6 +14,7 @@
 #include "kernel.h"
 #include "building.h"
 #include "netstack.h"
+#include "site.h"
 
 /* The network's own gate. See core/netcheck.c. */
 int net_selfcheck(void);
@@ -444,6 +445,60 @@ int main(int argc, char **argv)
      * other gate, and that they run in milliseconds. */
     if (argc > 1 && strcmp(argv[1], "--netcheck") == 0)
         return net_selfcheck();
+
+    /* THE JOIN. A building with no network in it and a network with no
+     * building around it were each finished and each useless. --sitecheck is
+     * the gate on the seam between them. */
+    if (argc > 1 && strcmp(argv[1], "--sitecheck") == 0)
+        return site_selfcheck();
+
+    /* THE SITE, OVER A PIPE. The 3D view cannot be playtested and blind
+     * agents found roughly forty bugs in this project, so ordering,
+     * carrying, cabling and configuring all have to be reachable from a
+     * terminal. `--sitesh <seed>` reads one operation per line on stdin and
+     * is the same set of calls the view will make; `--site <seed>` shows an
+     * empty tower and what its tenants are going to ask for. */
+    if (argc > 2 && (strcmp(argv[1], "--sitesh") == 0 ||
+                     strcmp(argv[1], "--site") == 0)) {
+        uint64_t seed = strtoull(argv[2], NULL, 10);
+        long budget = argc > 3 ? strtol(argv[3], NULL, 10) : 60000;
+        Building b;
+        if (!bld_generate(&b, seed)) {
+            printf("seed %llu makes no building\n", (unsigned long long)seed);
+            return 1;
+        }
+        Site s;
+        if (!site_new(&s, &b, seed, budget)) {
+            printf("seed %llu has nowhere for the uplink to land\n",
+                   (unsigned long long)seed);
+            bld_free(&b);
+            return 1;
+        }
+        Buf o = {0};
+        if (strcmp(argv[1], "--site") == 0) {
+            buf_printf(&o, "building %llu: %d floors, %d rooms, %d tenancies\n\n",
+                       (unsigned long long)seed, b.floors, b.nrooms, b.ntenants);
+            site_dump(&s, &o);
+            buf_putc(&o, '\n');
+            site_dump_demand(&s, &o);
+            fwrite(o.p, 1, o.len, stdout);
+        } else {
+            char line[512];
+            while (fgets(line, sizeof line, stdin)) {
+                size_t n = strlen(line);
+                while (n && (line[n - 1] == '\n' || line[n - 1] == '\r')) line[--n] = 0;
+                if (strcmp(line, "quit") == 0 || strcmp(line, "exit") == 0) break;
+                buf_clear(&o);
+                site_cmd(&s, line, &o);
+                fwrite(o.p, 1, o.len, stdout);
+                fflush(stdout);
+            }
+        }
+        buf_free(&o);
+        site_free(&s);
+        bld_free(&b);
+        return 0;
+    }
 
     if (argc > 1 && strcmp(argv[1], "--health") == 0) {
         /* A PRISTINE machine must be healthy: it boots, and every service it
