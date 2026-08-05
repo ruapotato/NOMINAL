@@ -320,6 +320,9 @@ struct Net {
     Switch   sw[NET_SWITCH_MAX];
     int      nsw;
     Sock     sock[NET_SOCK_MAX];
+    /* Extra addresses a host answers for. Pooled, because one machine in the
+     * world has thirty of them and every other machine has none. */
+    struct { int node; uint32_t ip; bool used; } alias[NET_ALIAS_MAX];
     InFlight q[NET_QUEUE_MAX];
     uint32_t qseq;
     uint64_t qdrops;
@@ -649,10 +652,17 @@ static void port_tx(Net *n, int p, const uint8_t *data, int len)
     f->inport = other;
     f->len = (uint16_t)len;
     f->seq = n->qseq++;
-    /* Propagation plus serialisation, rounded to the tick. A hundred metres
-     * of copper is half a microsecond, so everything on a LAN lands on the
-     * next tick; the length is here because a fibre run across a campus does
-     * not, and because the number has to come from the cable. */
+    /* PROPAGATION ONLY, rounded to the tick. A hundred metres of copper is
+     * half a microsecond, so everything on a LAN lands on the next tick; the
+     * length is here because a run across a campus does not, and because the
+     * number has to come from the cable rather than from a constant.
+     *
+     * NOT serialisation. A frame takes the same time on this wire whether the
+     * link negotiated a gigabit or ten, so net_port_speed is something the
+     * player can read and diagnose from and is not yet something they can
+     * feel. Saying otherwise in this comment would be the first lie in the
+     * file; when transfers get long enough for the difference to matter, the
+     * byte count and the speed are both right here. */
     uint32_t delay = 1 + (uint32_t)(c->metres / 250);
     f->due = (uint32_t)(n->now + delay);
     memcpy(f->data, data, (size_t)len);
@@ -1076,6 +1086,29 @@ void net_if_addr(Net *n, int node, int ifx, uint32_t ip, uint32_t mask)
     h->ifc[ifx].ip = ip;
     h->ifc[ifx].mask = mask;
 }
+bool net_if_alias(Net *n, int node, uint32_t ip)
+{
+    if (!host_of(n, node)) return false;
+    for (int i = 0; i < NET_ALIAS_MAX; i++)
+        if (n->alias[i].used && n->alias[i].node == node && n->alias[i].ip == ip)
+            return true;
+    for (int i = 0; i < NET_ALIAS_MAX; i++)
+        if (!n->alias[i].used) {
+            n->alias[i].used = true;
+            n->alias[i].node = node;
+            n->alias[i].ip = ip;
+            return true;
+        }
+    return false;
+}
+static bool alias_held(const Net *n, int node, uint32_t ip)
+{
+    for (int i = 0; i < NET_ALIAS_MAX; i++)
+        if (n->alias[i].used && n->alias[i].node == node && n->alias[i].ip == ip)
+            return true;
+    return false;
+}
+
 uint32_t net_if_get_addr(const Net *n, int node, int ifx)
 {
     const Host *h = chost_of(n, node);
@@ -1384,6 +1417,7 @@ static PingResult ip_output_if(Net *n, int node, int force_if, uint32_t dst,
             ip_input(n, node, i, pkt, len);
             return PING_OK;
         }
+    if (alias_held(n, node, dst)) { ip_input(n, node, ifx, pkt, len); return PING_OK; }
 
     uint8_t dmac[6];
     bool bcast = (dst == 0xffffffffu) ||
@@ -1445,10 +1479,11 @@ static void tcp_input(Net *n, int node, int ifx, uint32_t src, uint32_t dst,
                       const uint8_t *seg, int len);
 
 /* Is this address one of ours, or one that everyone on our wire answers to? */
-static int ip_is_local(Host *h, uint32_t dst, bool *bcast)
+static int ip_is_local(const Net *n, int node, Host *h, uint32_t dst, bool *bcast)
 {
     *bcast = false;
     if (dst == 0xffffffffu) { *bcast = true; return 1; }
+    if (alias_held(n, node, dst)) return 1;
     for (int i = 0; i < NET_IF_MAX; i++) {
         Iface *f = &h->ifc[i];
         if (!f->used || !f->up) continue;
@@ -1511,11 +1546,32 @@ static void ip_input(Net *n, int node, int ifx, uint8_t *pkt, int len)
     uint8_t proto = pkt[9];
 
     bool bcast = false;
-    if (ip_is_local(h, dst, &bcast)) {
-        uint16_t dport = 0;
-        if ((proto == IP_PROTO_TCP || proto == IP_PROTO_UDP) && total >= hlen + 4)
+    if (ip_is_local(n, node, h, dst, &bcast)) {
+        uint16_t dport = 0, sport = 0;
+        if ((proto == IP_PROTO_TCP || proto == IP_PROTO_UDP) && total >= hlen + 4) {
+            sport = get16(pkt + hlen);
             dport = get16(pkt + hlen + 2);
-        if (!fw_pass(h, FW_IN, proto, dport, src)) {
+        }
+        /* IS THIS THE ANSWER TO SOMETHING WE ASKED?
+         *
+         * Every real filter has this, and a ruleset with `policy drop` is
+         * unusable without it: the reply to your own outbound connection
+         * arrives on a high port nobody would ever write a rule for, so a
+         * machine that filtered it could make connections and never hear
+         * back. Tracked by looking for a socket already holding the exact
+         * four-tuple -- which is the connection, so this is not a shortcut
+         * around the filter, it is the filter's established state. */
+        bool established = false;
+        if (proto == IP_PROTO_TCP || proto == IP_PROTO_UDP)
+            for (int i = 0; i < NET_SOCK_MAX; i++) {
+                Sock *c = &n->sock[i];
+                if (!c->used || c->node != node || c->proto != proto) continue;
+                if (c->state == TCP_LISTEN && c->proto == IP_PROTO_TCP) continue;
+                if (c->lport != dport) continue;
+                if (c->proto == IP_PROTO_UDP) { established = true; break; }
+                if (c->rport == sport && c->raddr == src) { established = true; break; }
+            }
+        if (!established && !fw_pass(h, FW_IN, proto, dport, src)) {
             h->ifc[ifx].rx_drop++;
             trace(n, "%s filter drop proto %d port %d", n->node[node].name, proto, dport);
             return;
@@ -1609,6 +1665,15 @@ static void arp_input(Net *n, int node, int ifx, const uint8_t *a, int len)
         if (!f->used || !f->up || !f->ip || f->ip != tip) continue;
         arp_emit(n, node, h, i, 2, sip, smac, smac);
         return;
+    }
+    /* An alias is answered for out of the interface the question arrived on,
+     * which is what makes thirty virtual hosts on one NIC reachable. */
+    if (alias_held(n, node, tip) && h->ifc[ifx].used && h->ifc[ifx].up) {
+        Iface *f = &h->ifc[ifx];
+        uint32_t save = f->ip;
+        f->ip = tip;
+        arp_emit(n, node, h, ifx, 2, sip, smac, smac);
+        f->ip = save;
     }
     (void)ifx;
 }
@@ -1758,6 +1823,38 @@ static int sock_alloc(Net *n, int node, uint8_t proto)
 void net_sock_free(Net *n, int sock)
 {
     if (sock >= 0 && sock < NET_SOCK_MAX) n->sock[sock].used = false;
+}
+void net_release_host(Net *n, int node)
+{
+    Host *h = host_of(n, node);
+    if (!h) return;
+    net_close_all(n, node);
+    for (int i = 0; i < NET_ROUTE_MAX; i++) h->rt[i].used = false;
+    for (int i = 0; i < NET_ARP_MAX; i++)   h->arp[i].used = false;
+    for (int i = 0; i < NET_FW_MAX; i++)    h->fw[i].used = false;
+    h->forwarding = false;
+    h->resolver = 0;
+    h->dhcpd = h->dnsd = h->httpd = false;
+    for (int i = 0; i < NET_ALIAS_MAX; i++)
+        if (n->alias[i].used && n->alias[i].node == node) n->alias[i].used = false;
+    int first = n->node[node].port0, last = first + n->node[node].nports;
+    for (int p = first; p < last; p++)
+        if (n->port[p].cable >= 0) net_uncable(n, n->port[p].cable);
+    for (int i = 0; i < NET_IF_MAX; i++) {
+        Iface *f = &h->ifc[i];
+        if (!f->used) continue;
+        f->ip = f->mask = 0;
+        f->vlan = 0;
+        f->up = (i == 0);
+        f->rx_pkt = f->tx_pkt = f->rx_drop = 0;
+        /* The MAC stays. It is burned into the card. */
+    }
+}
+
+void net_close_all(Net *n, int node)
+{
+    for (int i = 0; i < NET_SOCK_MAX; i++)
+        if (n->sock[i].used && n->sock[i].node == node) n->sock[i].used = false;
 }
 int net_sock_node(const Net *n, int sock)
 {
@@ -2941,6 +3038,33 @@ void net_dump_fdb(const Net *n, int node, Buf *out)
         buf_printf(out, "%s  vlan %-4d port %-3d age %llus\n", mac, e->vlan,
                    n->port[e->port].index,
                    (unsigned long long)((n->now - e->seen) / 1000));
+    }
+}
+
+void net_dump_fw(const Net *n, int node, Buf *out)
+{
+    const Host *h = chost_of(n, node);
+    if (!h) return;
+    for (int i = 0; i < NET_FW_MAX; i++) {
+        const FwRule *r = &h->fw[i];
+        if (!r->used) continue;
+        buf_printf(out, "%-8s ", r->chain == FW_IN ? "input" :
+                                 r->chain == FW_OUT ? "output" : "forward");
+        if (r->proto == FW_ANY_PROTO) buf_puts(out, "any  ");
+        else buf_printf(out, "%-4s ", r->proto == IP_PROTO_TCP ? "tcp" :
+                                      r->proto == IP_PROTO_UDP ? "udp" :
+                                      r->proto == IP_PROTO_ICMP ? "icmp" : "?");
+        if (r->dport) buf_printf(out, "dport %-6u", r->dport);
+        else          buf_puts(out, "any port   ");
+        if (r->srcmask) {
+            char a[20];
+            net_fmt_ip(r->srcnet, a, sizeof a);
+            buf_printf(out, " from %s/%d", a, net_mask_len(r->srcmask));
+        }
+        buf_printf(out, " %-6s  matched %llu\n",
+                   r->action == FW_ACCEPT ? "accept" :
+                   r->action == FW_DROP ? "drop" : "reject",
+                   (unsigned long long)r->hits);
     }
 }
 

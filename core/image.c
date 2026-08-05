@@ -4676,8 +4676,16 @@ int machine_outstanding(Machine *m, Buf *out)
     return bad;
 }
 
+/* Take the box off the network on the way out. Without this every finished
+ * ticket left a machine holding a switch port and a DHCP lease it was never
+ * going to give back, so the twenty-fifth ticket in a run found the switch
+ * full -- and what a ticket's network looked like depended on how many had
+ * run before it, which is a seed that stops reproducing. See netsite.c. */
+void netsite_detach(Machine *m);
+
 void machine_free(Machine *m)
 {
+    netsite_detach(m);
     for (int i = 0; i < 8; i++) buf_free(&m->local_orig[i]);
     kernel_stop_daemons(m);
     vfs_free(&m->disk);

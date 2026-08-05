@@ -22,8 +22,19 @@
 #include "ns.h"
 #include "kernel.h"
 
-const char *net_dns(const char *host);
-bool net_fetch(const char *ip, const char *path, Buf *out);
+/* THE NETWORK, WHICH IS NOW A NETWORK. These used to be net_dns() and
+ * net_fetch(): two table lookups in net_sites.c that could not fail for any
+ * reason a player could find. They go through core/netsite.c now, which puts
+ * a query on a wire and waits for a packet -- so a machine with a dead
+ * resolver, a stopped netd or an address it never got from DHCP fails here,
+ * and fails differently in each case. */
+bool netsite_dns(Machine *m, const char *name, char *out, size_t cap);
+bool netsite_http(Machine *m, const char *ip, const char *path, Buf *out);
+void netsite_info(Machine *m, int op, Buf *out);
+int  netsite_ping(Machine *m, const char *dst, int *rtt);
+void netsite_fw_clear(Machine *m);
+void netsite_fw_add(Machine *m, int chain, int proto, int dport, int drop);
+void netsite_trace(Machine *m, int on);
 
 #define FD_MAX      16
 #define SPAWN_DEPTH  8
@@ -639,24 +650,59 @@ static int64_t kernel_syscall(Cpu *c, int64_t n, int64_t a0, int64_t a1,
         return 0;
     }
     case SYS_dns: {
-        char name[128];
+        /* A real query, over UDP, to whatever address /etc/resolv.conf
+         * names. It can time out, and when it does it has really waited. */
+        char name[128], ip[64];
         if (!guest_str(c, (uint64_t)a0, name, sizeof name)) return -1;
-        const char *ip = net_dns(name);
-        if (!ip) return -1;
+        if (!netsite_dns(p->m, name, ip, sizeof ip)) return -1;
         size_t n = strlen(ip);
         if ((int64_t)n + 1 > a2) return -1;
         return cpu_write(c, (uint64_t)a1, ip, n + 1) ? (int64_t)n : -1;
     }
     case SYS_http: {
+        /* A real connection: a three-way handshake, a request line, a status
+         * line, a body, and a teardown. It takes an ADDRESS and never a
+         * name, which is what keeps "works by ip, not by name" reachable. */
         char ip[64], path[NOM_PATH_MAX];
         if (!guest_str(c, (uint64_t)a0, ip, sizeof ip)) return -1;
         if (!guest_str(c, (uint64_t)a1, path, sizeof path)) return -1;
         Buf b = {0};
         int64_t r = -1;
-        if (net_fetch(ip, path, &b) && b.len < (1u << 16) &&
+        if (netsite_http(p->m, ip, path, &b) && b.len < (1u << 16) &&
             cpu_write(c, (uint64_t)a2, b.p, b.len + 1))
             r = (int64_t)b.len;
         buf_free(&b);
+        return r;
+    }
+    case SYS_netinfo: {
+        /* Everything the machine can be shown about its own network, as
+         * text. Read out of the running stack, never out of a config: an
+         * address here is one that was really configured, and a neighbour
+         * here is one that really answered. */
+        Buf b = {0};
+        netsite_info(p->m, (int)a0, &b);
+        int64_t r = -1;
+        if ((int64_t)b.len + 1 <= a2 && cpu_write(c, (uint64_t)a1, b.p ? b.p : "", b.len + 1))
+            r = (int64_t)b.len;
+        buf_free(&b);
+        return r;
+    }
+    case SYS_netctl:
+        switch ((int)a0) {
+        case NETCTL_FWCLEAR: netsite_fw_clear(p->m); return 0;
+        case NETCTL_FWADD:
+            netsite_fw_add(p->m, (int)((a1 >> 24) & 0xff), (int)((a1 >> 16) & 0xff),
+                           (int)(a1 & 0xffff), (int)a2);
+            return 0;
+        case NETCTL_TRACE:   netsite_trace(p->m, (int)a1); return 0;
+        default: return -1;
+        }
+    case SYS_ping: {
+        char dst[64];
+        if (!guest_str(c, (uint64_t)a0, dst, sizeof dst)) return -1;
+        int rtt = 0;
+        int r = netsite_ping(p->m, dst, &rtt);
+        if (a1) cpu_write(c, (uint64_t)a1, &rtt, sizeof rtt);
         return r;
     }
     case SYS_mkdir: {
@@ -1615,6 +1661,24 @@ static bool first_real_line(Vfs *fs, const char *path, char *out, size_t outsz)
         }
         p = nl ? nl + 1 : NULL;
     }
+    return false;
+}
+
+/* IS THAT SERVICE ACTUALLY RUNNING RIGHT NOW.
+ *
+ * The network needs this and nothing else could answer it: kernel_health
+ * reports what is WRONG, and a caller that wants one bit about one daemon had
+ * to parse prose. netsite.c asks it about netd, because a machine whose
+ * network daemon refused to start is a machine with no address -- and that
+ * has to be read off the daemon table rather than guessed at from the config
+ * file, since the whole point is that the file can be fine and the daemon can
+ * still have died. */
+bool kernel_svc_running(Machine *m, const char *name)
+{
+    if (!m || !m->daemon) return false;
+    struct Daemon *d = daemons(m);
+    for (int i = 0; i < m->ndaemon; i++)
+        if (d[i].running && strcmp(d[i].name, name) == 0) return true;
     return false;
 }
 

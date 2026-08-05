@@ -143,6 +143,47 @@ typedef unsigned long      uint64_t;
                              * which is what makes "works by ip, not by name"
                              * a diagnosis you can actually reach.          */
 
+/* THE NETWORK, AS SEEN FROM INSIDE THE MACHINE.
+ *
+ * If a player cannot see a frame they cannot diagnose a network, so these
+ * three are not conveniences -- they are the whole reason the stack under
+ * them is worth having. Everything they return is read out of the running
+ * network: an address that was really configured, a neighbour that really
+ * answered, a socket that is really in that state. Nothing is derived from
+ * what a config file INTENDED. */
+#define SYS_netinfo  1064   /* (op, buf, len) -> bytes of text, or -1       */
+#define SYS_netctl   1065   /* (op, a, b) -> 0 or -1: change the running
+                             * filter, or turn the capture on              */
+#define SYS_ping     1066   /* (addr, rttbuf, 0) -> a PING_* code. A real
+                             * echo request down a real wire; the codes are
+                             * distinct because "no route", "host
+                             * unreachable" and "no answer" are three
+                             * different repairs.                          */
+
+#define NETINFO_IFACE  0    /* addresses, masks, carrier, counters          */
+#define NETINFO_ROUTE  1    /* the routing table, connected routes included */
+#define NETINFO_ARP    2    /* who answered, and how long ago               */
+#define NETINFO_SOCK   3    /* real sockets in real TCP states              */
+#define NETINFO_TRACE  4    /* the packet capture, one frame per line       */
+#define NETINFO_PORT   5    /* the physical port: link, speed, duplex       */
+#define NETINFO_FW     6    /* the running ruleset, and what each rule has
+                             * really dropped. A filter nobody can read is a
+                             * fault with no evidence at all: the packet does
+                             * not arrive and nothing says why.             */
+
+#define NETCTL_FWCLEAR 0    /* forget the running ruleset                   */
+#define NETCTL_FWADD   1    /* a = chain<<24 | proto<<16 | dport, b = drop  */
+#define NETCTL_TRACE   2    /* a = 1 to start capturing, 0 to stop          */
+
+/* What came back from a ping, in the order a person eliminates them. */
+#define NPING_OK           0
+#define NPING_TIMEOUT      1
+#define NPING_NET_UNREACH  2
+#define NPING_HOST_UNREACH 3
+#define NPING_TTL          4
+#define NPING_NO_ROUTE     5
+#define NPING_IF_DOWN      6
+
 #define MNT_BIND  1         /* `at` is another path, not a device           */
 #define MNT_RO    2         /* mount read-only; on / it is a remount        */
 

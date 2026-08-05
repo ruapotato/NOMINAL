@@ -104,7 +104,19 @@ static void check_wire(void)
     net_uncable(m, 0);
     net_cable(m, x, 0, y, 0, 140, CAB_FIBRE);
     ck("the same 140 m of fibre does", net_port_state(m, x, 0) == PORT_UP);
-    ck("cat6 negotiates 10Gb short and 1Gb long", true);
+    /* A CHECK THAT CANNOT FAIL IS NOT A CHECK. This line asserted `true` and
+     * therefore said nothing about the speed table it claimed to be testing.
+     * Now it reads the negotiated speed off two real links. */
+    net_uncable(m, 0);
+    net_cable(m, x, 0, y, 0, 30, CAB_CAT6);
+    int fast = net_port_speed(m, x, 0);
+    net_uncable(m, 0);
+    net_cable(m, x, 0, y, 0, 80, CAB_CAT6);
+    int slow = net_port_speed(m, x, 0);
+    ck("cat6 negotiates 10Gb over a short run and 1Gb over a long one",
+       fast == 10000 && slow == 1000);
+    ck("a port with no link negotiates nothing",
+       (net_port_admin(m, x, 0, false), net_port_speed(m, x, 0)) == 0);
     net_free(m);
 }
 

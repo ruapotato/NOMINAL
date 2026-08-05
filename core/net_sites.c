@@ -304,14 +304,39 @@ static const Page PAGES[] = {
 "<ul>"
 "<li>NAMES -- /etc/hosts is consulted first, then the nameserver named in\n"
 "/etc/resolv.conf. Break either and some names still resolve.</li>"
-"<li>LISTENING -- netstat prints what is actually listening, read out of\n"
-"/proc, so a daemon that died shows nothing at all and a daemon whose config\n"
-"was edited shows the port the config NOW says.</li>"
+"<li>LISTENING -- netstat prints the sockets the kernel really has open, so a\n"
+"daemon that died shows nothing at all, and a daemon that is running with a\n"
+"configuration somebody edited and never reloaded shows the port it ACTUALLY\n"
+"LOADED, not the one the file now says. When netstat and the config file\n"
+"disagree, that gap IS the fault, and the fix is a reload rather than an\n"
+"edit.</li>"
 "</ul>"
 "<p><b>links 10.0.2.20/boot</b> reaches this wiki by address with no resolver\n"
 "in the way. If that works and <i>links wiki.nomnix.org/boot</i> does not, the\n"
 "fault is in resolution and nowhere else -- read /etc/hosts, check its MODE\n"
-"with stat, and read /etc/resolv.conf for a nameserver line.</p>"
+"with stat, and read /etc/resolv.conf for a nameserver line. A nameserver\n"
+"line pointing at an address with nothing on it does not say so: the query\n"
+"goes out, nothing comes back, and you wait. That pause is the symptom.</p>"
+"<h2>Looking below the names</h2>"
+"<p>netstat takes one flag at a time, and each shows a different layer:</p>"
+"<pre>netstat        sockets: listening, connected, and in what TCP state\n"
+"netstat -i     the interface: address, mask, carrier, packet counts\n"
+"netstat -r     the routing table, connected routes included\n"
+"netstat -A     the arp cache -- who on this wire has answered\n"
+"netstat -P     the physical port: link, speed, duplex, errors\n"
+"netstat -W     start capturing packets\n"
+"netstat -w     print what has been captured</pre>"
+"<p>Work down them. <i>-i</i> with no address means nothing configured it --\n"
+"look at the <b>net</b> service, because netd is what applies\n"
+"/etc/net/interfaces and a netd that refused to start leaves the interface\n"
+"exactly as blank as a missing config would. <i>-P</i> saying no link is a\n"
+"cable, not a setting. <i>-A</i> empty after you have tried to reach\n"
+"something on your own subnet means nothing answered, which is a machine that\n"
+"is not there or an address that is not on this wire.</p>"
+"<p><i>-W</i> then <i>-w</i> is the last resort and the most honest one: it\n"
+"prints the frames. An arp who-has with no reply, a tcp [S] with no [S.] back,\n"
+"an icmp unreachable from a router you did not expect to hear from -- each of\n"
+"those names the layer that is broken without anybody having to guess.</p>"
 "<p>netstat showing a port nobody expected, or not showing one everybody does,\n"
 "is worth more than any status page. Compare it with <b>svc</b> and with\n"
 "/run/&lt;name&gt;.state before you believe either.</p>"
@@ -2440,12 +2465,36 @@ static const Page PAGES[] = {
 #define NPAGES ((int)(sizeof PAGES / sizeof PAGES[0]))
 
 /* Resolve a hostname the way a nameserver would. Returns NULL if the name is
- * not known -- which is a real answer, not an error. */
+ * not known -- which is a real answer, not an error.
+ *
+ * This is now the ZONE FILE, not the resolver. Nothing in the machine calls
+ * it any more: netsite.c loads these pairs into a real nameserver at
+ * 10.0.2.3, and a program inside the machine gets them by sending a query
+ * over UDP and waiting for a packet back. Which is why pointing resolv.conf
+ * at an address with nothing on it now fails the way it should. */
 const char *net_dns(const char *host)
 {
     for (int i = 0; i < NPAGES; i++)
         if (strcmp(PAGES[i].host, host) == 0) return PAGES[i].ip;
     return NULL;
+}
+
+/* Walk the hosts on this web, one entry per DISTINCT name, so the site can
+ * be loaded into a nameserver and onto a web server at start of day. The
+ * pages themselves are not enumerated: what a server serves is still
+ * net_fetch's business, and it is still keyed by address. */
+int net_site_hosts(int i, const char **host, const char **ip)
+{
+    int seen = 0;
+    for (int k = 0; k < NPAGES; k++) {
+        bool dup = false;
+        for (int j = 0; j < k; j++)
+            if (strcmp(PAGES[j].host, PAGES[k].host) == 0) { dup = true; break; }
+        if (dup) continue;
+        if (seen == i) { *host = PAGES[k].host; *ip = PAGES[k].ip; return 1; }
+        seen++;
+    }
+    return 0;
 }
 
 /* Fetch by ADDRESS, not by name: the browser has already resolved. That split

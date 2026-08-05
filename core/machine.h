@@ -279,6 +279,25 @@ typedef struct Machine_ {
     ProcInfo proc[PROC_MAX];
     int      nproc;        /* high-water mark, so exited pids stay visible */
     int      next_pid;
+
+    /* WHERE THIS BOX IS ON THE WIRE.
+     *
+     * The network is not per machine -- it is one world that every machine
+     * is plugged into, because that is what a network is and because a
+     * megabyte of frame queue per machine would price a tower out. All the
+     * machine keeps is which node it is, which configuration that node was
+     * built from, and which generation of the world it belongs to. Zero
+     * means "not plugged in yet", which is what a zeroed Machine is.
+     *
+     * NOTHING HERE IS A NETWORK FACT. There is no address, no route and no
+     * reachability in this struct, deliberately: the moment a machine
+     * cached its own address, the address on the wire and the address in
+     * the struct could disagree, and every tool would have to pick one. See
+     * core/netsite.c. */
+    int      net_node;
+    int      net_port;     /* which port of the switch the cable is in */
+    uint32_t net_cfg;
+    uint32_t net_gen;
 } Machine;
 
 /* Build a pristine installation. Deterministic: same seed, same machine. */

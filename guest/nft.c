@@ -46,6 +46,84 @@ static void publish(void)
     g_close(fd);
 }
 
+/* Is `w` the next word of `p`, followed by a space or a delimiter? */
+static char *word(char *p, const char *w)
+{
+    u64 k = 0;
+    while (w[k] && p[k] == w[k]) k++;
+    if (w[k]) return 0;
+    char c = p[k];
+    if (c && c != ' ' && c != '\t' && c != '{') return 0;
+    p += k;
+    while (*p == ' ' || *p == '\t') p++;
+    return p;
+}
+
+/* Pull the next decimal out of p, advancing it. Returns -1 at the end. */
+static int next_port(char **pp)
+{
+    char *p = *pp;
+    while (*p && (*p < '0' || *p > '9')) {
+        if (*p == '}' || *p == '\n') { *pp = p; return -1; }
+        p++;
+    }
+    if (*p < '0' || *p > '9') { *pp = p; return -1; }
+    int v = 0;
+    while (*p >= '0' && *p <= '9') v = v * 10 + (*p++ - '0');
+    *pp = p;
+    return v;
+}
+
+/* chain<<24 | proto<<16 | dport, and a drop flag: the shape SYS_netctl takes. */
+static void rule(int proto, int dport, int drop)
+{
+    g_netctl(NETCTL_FWADD, ((i64)0 << 24) | ((i64)proto << 16) | (i64)dport, drop);
+}
+
+static void install(void)
+{
+    g_netctl(NETCTL_FWCLEAR, 0, 0);
+    int policy_drop = 0, have_policy = 0;
+
+    char *q = conf;
+    while (*q) {
+        char *nl = q; while (*nl && *nl != '\n') nl++;
+        char save = *nl; *nl = 0;
+        char *t = g_trim(q);
+
+        /* "type filter hook input priority 0; policy drop;" -- the policy is
+         * remembered and applied last, because that is what a policy is. */
+        if (g_contains(t, "policy")) {
+            if (g_contains(t, "policy drop")) { policy_drop = 1; have_policy = 1; }
+            else if (g_contains(t, "policy accept")) { policy_drop = 0; have_policy = 1; }
+        }
+
+        int proto = 0;
+        char *r = word(t, "tcp");
+        if (r) proto = 6;
+        else { r = word(t, "udp"); if (r) proto = 17; }
+        if (r) {
+            char *d = word(r, "dport");
+            if (d) {
+                int drop = g_contains(d, "drop") ? 1 : 0;
+                /* Accept unless the line says otherwise: an nftables rule
+                 * with no verdict falls through, and treating a rule we
+                 * could not read as a DROP would lock somebody out of a
+                 * machine over a typo. */
+                if (!drop && !g_contains(d, "accept")) { *nl = save; q = *nl ? nl + 1 : nl; continue; }
+                for (;;) {
+                    int p = next_port(&d);
+                    if (p < 0) break;
+                    rule(proto, p, drop);
+                }
+            }
+        }
+        *nl = save; q = *nl ? nl + 1 : nl;
+    }
+    /* Everything that matched nothing. */
+    if (have_policy && policy_drop) rule(0, 0, 1);
+}
+
 static const char *KEY = "table";
 void _start(void)
 {
@@ -83,6 +161,27 @@ void _start(void)
         }
     }
 
+    /* INSTALL THE RULES, so that the file is not merely readable but LOADED.
+     *
+     * This is the difference between a daemon that validates a config and a
+     * firewall. Until now nft parsed /etc/nftables.conf, decided it looked
+     * like a ruleset, and stopped -- so a rule saying `drop` dropped nothing
+     * and a port that was supposed to be closed was open. Now each line
+     * becomes a rule in the kernel's filter, and a packet that matches it is
+     * really discarded, on the way in, before anything above IP sees it.
+     *
+     * The subset is small and it is the subset this file's own shipped
+     * ruleset uses:
+     *
+     *   policy drop / policy accept    what happens to what no rule matched
+     *   tcp dport { 22, 80 } accept    a set of ports
+     *   tcp dport 8080 drop            one port
+     *   udp dport 53 accept
+     *
+     * Order matters and is preserved: the first rule that matches decides,
+     * and the chain policy goes on the end, which is where a policy is. */
+    install();
+
     /* Publish what was actually loaded. The file on disk says what the
      * machine is SUPPOSED to do; this says what the running process is
      * actually doing, and the two drift the moment somebody edits a config
@@ -93,7 +192,10 @@ void _start(void)
      * anyone has asked it to re-read its configuration. */
     for (;;) {
         if (g_sigpend() == SIG_HUP) {
-            if (g_slurp(CONF[0], conf, sizeof conf) >= 0) publish();
+            /* A reload replaces the ruleset. It does not add to it, which is
+             * what made an edited config that removed a rule leave the rule
+             * running until the next reboot. */
+            if (g_slurp(CONF[0], conf, sizeof conf) >= 0) { install(); publish(); }
         }
     }
 }

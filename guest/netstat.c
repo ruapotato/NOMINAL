@@ -1,101 +1,112 @@
-/* /bin/netstat — what is listening, and on what.
+/* /bin/netstat — what the network is actually doing.
  *
- * Derived, never declared. The address comes from /etc/net/interfaces, and a
- * port is listed only if the service that opens it is ACTUALLY RUNNING --
- * read out of /proc, the same place `ps` reads. So a web server that died
- * shows nothing, and a web server whose config was edited shows the port the
- * config now says.
+ * DERIVED, NEVER DECLARED, and now derived from the network rather than from
+ * the files that configure it. Every line below comes out of the running
+ * stack: an address that was really assigned, a neighbour that really
+ * answered an ARP request, a socket really sitting in that TCP state, a port
+ * that really has a cable in it.
  *
- * That is the whole reason it earns a place: it answers "is it actually
- * listening" with evidence rather than intention.
+ * That distinction is the whole reason this program is worth having. The old
+ * version read /etc/net/interfaces and printed the address the file asked
+ * for, which meant a machine whose network daemon had died reported an
+ * address it did not have. It could not have been otherwise -- there was
+ * nothing else to read. Now there is.
+ *
+ *   netstat        sockets: what is listening, and what is connected
+ *   netstat -i     interfaces: address, mask, carrier, packet counts
+ *   netstat -r     the routing table, connected routes included
+ *   netstat -A     the ARP cache: who answered, and how long ago
+ *   netstat -P     the physical port: link, speed, duplex, errors
+ *   netstat -F     the running firewall rules, and what they have dropped
+ *   netstat -w     the packet capture, one frame per line
+ *   netstat -W     start capturing (it is off until you ask)
+ *
+ * If a player cannot see a frame they cannot diagnose a network, which is
+ * what -w is for. It is off by default because a capture nobody asked for is
+ * a ring buffer nobody is paying for.
  */
 #include "gsys.h"
 
-static char buf[4096];
-static char procbuf[2048];
-static char pname[64];
+static char buf[16384];
+static char arg[256];
 
-/* first value of "key" in a config, ignoring case of the key's first letter */
-static int field(const char *body, const char *key, char *out, u64 outsz)
+static void show(int op, const char *empty)
 {
-    u64 kl = g_strlen(key);
-    for (const char *p = body; *p; ) {
-        const char *nl = p; while (*nl && *nl != '\n') nl++;
-        const char *t = p;
-        while (*t == ' ' || *t == '\t') t++;
-        u64 k = 0;
-        while (k < kl && t[k] == key[k]) k++;
-        if (k == kl) {
-            const char *q = t + kl;
-            while (*q == ' ' || *q == '\t' || *q == '=' || *q == ':') q++;
-            u64 o = 0;
-            while (q < nl && *q != ' ' && *q != '\n' && o < outsz - 1) out[o++] = *q++;
-            out[o] = 0;
-            if (out[0]) return 1;
-        }
-        p = *nl ? nl + 1 : nl;
-    }
-    return 0;
-}
-
-static int running(const char *exec)
-{
-    static char pdir[96];
-    for (int i = 0; i < 256; i++) {
-        if (g_readdir("/proc", i, pname) < 0) break;
-        g_copy(pdir, "/proc/", sizeof pdir);
-        g_cat(pdir, pname, sizeof pdir);
-        g_cat(pdir, "/status", sizeof pdir);
-        if (g_slurp(pdir, procbuf, sizeof procbuf) < 0) continue;
-        static char nm[128], stt[32];
-        if (!field(procbuf, "name", nm, sizeof nm)) continue;
-        field(procbuf, "state", stt, sizeof stt);
-        if (g_streq(nm, exec) && g_streq(stt, "running")) return 1;
-    }
-    return 0;
+    i64 n = g_netinfo(op, buf, sizeof buf);
+    if (n < 0) { g_putln("netstat: the kernel has no network state to report"); return; }
+    if (n == 0) { g_putln(empty); return; }
+    g_puts(buf);
+    if (buf[n - 1] != '\n') g_putln("");
 }
 
 void _start(void)
 {
-    static char addr[64] = "0.0.0.0";
-    if (g_slurp("/etc/net/interfaces", buf, sizeof buf) >= 0)
-        field(buf, "address", addr, sizeof addr);
-    /* A machine on dhcp has no address until it has one. Printing "dhcp:22"
-     * reads as a hostname; `*` is what every netstat prints for "any". */
-    if (addr[0] < '0' || addr[0] > '9') g_copy(addr, "*", sizeof addr);
+    arg[0] = 0;
+    g_getarg_raw(arg, sizeof arg);
+    char *t = g_trim(arg);
 
-    g_putln("PROTO  LOCAL ADDRESS          STATE       SERVICE");
+    if (g_streq(t, "-i")) {
+        show(NETINFO_IFACE, "no interfaces are configured");
+        g_exit(0);
+    }
+    if (g_streq(t, "-r")) {
+        g_putln("DESTINATION      GATEWAY / DEVICE");
+        show(NETINFO_ROUTE,
+             "the routing table is empty -- this machine cannot send anywhere");
+        g_exit(0);
+    }
+    if (g_streq(t, "-A")) {
+        g_putln("ADDRESS          HARDWARE ADDRESS");
+        show(NETINFO_ARP,
+             "the arp cache is empty -- nothing on this wire has answered yet");
+        g_exit(0);
+    }
+    if (g_streq(t, "-P")) {
+        show(NETINFO_PORT, "this machine has no network port");
+        g_exit(0);
+    }
+    if (g_streq(t, "-F")) {
+        g_putln("CHAIN    PROTO MATCH        VERDICT");
+        show(NETINFO_FW,
+             "the filter is empty -- every packet is accepted");
+        g_exit(0);
+    }
+    if (g_streq(t, "-W")) {
+        g_netctl(NETCTL_TRACE, 1, 0);
+        g_putln("capturing. `netstat -w` shows what has been seen since now.");
+        g_exit(0);
+    }
+    if (g_streq(t, "-w")) {
+        i64 n = g_netinfo(NETINFO_TRACE, buf, sizeof buf);
+        if (n <= 0) {
+            g_putln("nothing captured.");
+            g_putln("  the capture is off until you start it: netstat -W");
+            g_exit(0);
+        }
+        g_puts(buf);
+        g_exit(0);
+    }
+    if (t[0] == '-') {
+        g_puts("netstat: no such option: "); g_putln(t);
+        g_putln("usage: netstat [-i interfaces | -r routes | -A arp |");
+        g_putln("                -P port | -F firewall |");
+        g_putln("                -W capture on | -w show capture]");
+        g_exit(1);
+    }
 
-    int any = 0;
-    /* ssh */
-    if (running("/usr/sbin/sshd")) {
-        static char port[16] = "22";
-        if (g_slurp("/etc/ssh/sshd_config", buf, sizeof buf) >= 0)
-            field(buf, "Port", port, sizeof port);
-        g_puts("tcp    "); g_puts(addr); g_puts(":"); g_puts(port);
-        for (u64 k = g_strlen(addr) + g_strlen(port) + 1; k < 22; k++) g_puts(" ");
-        g_putln(" LISTEN      sshd");
-        any = 1;
-    }
-    /* http */
-    if (running("/usr/sbin/httpd")) {
-        static char port[16] = "80";
-        if (g_slurp("/etc/httpd/httpd.conf", buf, sizeof buf) >= 0)
-            field(buf, "Listen", port, sizeof port);
-        g_puts("tcp    "); g_puts(addr); g_puts(":"); g_puts(port);
-        for (u64 k = g_strlen(addr) + g_strlen(port) + 1; k < 22; k++) g_puts(" ");
-        g_putln(" LISTEN      httpd");
-        any = 1;
-    }
-    /* mail */
-    if (running("/usr/sbin/postfix")) {
-        g_puts("tcp    "); g_puts(addr); g_putln(":25            LISTEN      postfix");
-        any = 1;
-    }
-    if (!any)
-        g_putln("(nothing is listening -- no network service is running)");
+    /* No argument: the sockets. Real ones -- a service that died has no
+     * socket here, and a service running with a stale configuration is
+     * listening on the port it actually loaded, not the one the file now
+     * says. That is the difference this program exists to show. */
+    g_putln("PROTO  LOCAL ADDRESS         PEER                  STATE");
+    i64 n = g_netinfo(NETINFO_SOCK, buf, sizeof buf);
+    if (n <= 0)
+        g_putln("(nothing is listening -- no network service has a socket open)");
+    else
+        g_puts(buf);
 
     g_putln("");
-    g_puts("interface  "); g_putln(addr[0] ? addr : "not configured");
+    g_putln("interface:");
+    show(NETINFO_IFACE, "  none configured");
     g_exit(0);
 }

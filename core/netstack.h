@@ -59,6 +59,7 @@
 #define NET_SOCK_MAX     64     /* global: sockets are rare and buffers big */
 #define NET_LEASE_MAX    32
 #define NET_ZONE_MAX     64
+#define NET_ALIAS_MAX    64     /* extra addresses, pooled across the world */
 #define NET_QUEUE_MAX   256     /* frames in flight anywhere in the world   */
 #define NET_FRAME_MAX  1518     /* 1500 MTU + 14 ethernet + 4 for a tag     */
 #define NET_TRACE_MAX   512
@@ -209,6 +210,13 @@ void  net_fmt_ip(uint32_t ip, char *out, size_t cap);
 void  net_fmt_mac(const uint8_t mac[6], char *out, size_t cap);
 
 void  net_if_addr(Net *n, int node, int ifx, uint32_t ip, uint32_t mask);
+/* A SECOND ADDRESS ON THE SAME INTERFACE. One machine answering for many
+ * addresses is ordinary -- a web server with forty virtual hosts on it does
+ * exactly this -- and it is how the whole fake internet fits on one box
+ * without pretending each of its sites is a separate machine. Aliases are
+ * held in a small pool for the world rather than per host, because almost no
+ * host has one. */
+bool  net_if_alias(Net *n, int node, uint32_t ip);
 uint32_t net_if_get_addr(const Net *n, int node, int ifx);
 uint32_t net_if_get_mask(const Net *n, int node, int ifx);
 void  net_route_add(Net *n, int node, uint32_t dst, uint32_t mask, uint32_t gw, int ifx);
@@ -244,6 +252,16 @@ void  net_tcp_close(Net *n, int sock);
 TcpState net_tcp_state(const Net *n, int sock);
 int   net_sock_node(const Net *n, int sock);
 void  net_sock_free(Net *n, int sock);
+/* Every socket on this machine, gone. What a reboot does, and what applying
+ * a new configuration has to do before it opens the new ones -- otherwise
+ * the old listener is still bound and the port looks taken. */
+void  net_close_all(Net *n, int node);
+/* Take a machine off the network without forgetting it exists: sockets shut,
+ * addresses and routes gone, cables out, but the node and its factory MAC
+ * kept so that plugging the same box back in is the same box. That identity
+ * is what makes a DHCP server hand it the lease it had before, and it is why
+ * this is not the same as deleting a host. */
+void  net_release_host(Net *n, int node);
 
 /* --------------------------------------------------------------- filter  */
 void  net_fw_add(Net *n, int node, FwChain c, int proto, uint16_t dport,
@@ -285,6 +303,10 @@ void  net_dump_arp(const Net *n, int node, Buf *out);
 void  net_dump_sockets(const Net *n, int node, Buf *out);
 void  net_dump_fdb(const Net *n, int node, Buf *out);
 void  net_dump_ports(const Net *n, int node, Buf *out);
+/* The RUNNING ruleset, with the count of what each rule has actually
+ * dropped. A filter you cannot read is the one fault with no evidence at
+ * all: the packet does not arrive and nothing anywhere says why. */
+void  net_dump_fw(const Net *n, int node, Buf *out);
 /* Frames handled anywhere in the last second of wire time. A quiet network is
  * a handful; a broadcast storm is thousands, and this is how the player sees
  * one without us ever deciding that a loop exists. */
