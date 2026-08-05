@@ -169,7 +169,7 @@ static void new_ticket(Client *c, uint64_t seed, int faults)
     }
     /* One ticket in five is air-gapped: no service processor, no route, and
      * the only terminal you have is the person in front of it. */
-    c->m.airgapped = ((seed / 7) % 5) == 0;
+    c->m.airgapped = machine_airgapped(seed);
 
     if (!c->desk_up) {
         machine_install(&c->desk, 1);

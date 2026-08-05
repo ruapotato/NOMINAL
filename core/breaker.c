@@ -2516,6 +2516,24 @@ bool machine_corrupt(Machine *m, Rng *r, char *what, size_t whatsz)
     return true;
 }
 
+/* IS THIS TICKET AIR-GAPPED? A property of the seed, so every front end
+ * agrees without having to pass it around.
+ *
+ * It used to be ((seed / 7) % 5) == 0, and dividing by seven made SEVEN
+ * ADJACENT SEEDS IDENTICAL. A player does not sample seeds at random, they
+ * take tickets in order, so what that arithmetic produced was runs: a
+ * playtester drew seeds 2206-2210 and got five air-gapped calls in a row, and
+ * an air-gapped call is a whole different set of tools. One in five is the
+ * right RATE and it was never the problem; the correlation between
+ * neighbours was. Hashing the seed keeps the rate and kills the run.
+ */
+bool machine_airgapped(uint64_t seed)
+{
+    Rng r;
+    rng_seed(&r, seed ^ 0xa17c9a99e5b1d3c7ULL);
+    return rng_next(&r) % 5 == 0;
+}
+
 /* Break the machine for real: keep damaging a fresh copy until it stops
  * booting. This is generate-and-test — the engine proves the ticket is a
  * ticket by trying to boot it — and it is why the corruption can be totally
@@ -2554,16 +2572,26 @@ bool machine_break(Machine *m, uint64_t seed, int nfaults, char *what, size_t wh
     enum { WANT_ANY, WANT_UP, WANT_STALE };
     int want = WANT_ANY;
     {
+        /* AND THE SHAPE IS DEALT ROUND THE TABLE TOO, FOR THE SAME REASON.
+         *
+         * Rolling it independently per seed gives the right rate and the
+         * wrong experience: a playtester drew eleven consecutive networked
+         * won't-boots, which is a run an independent coin produces regularly
+         * and which reads as "this game only has one kind of ticket". A
+         * player takes tickets in sequence; what they feel is the sequence,
+         * not the histogram. So the eight shapes are laid out in an order
+         * that has no long run in it and consecutive seeds read consecutive
+         * entries -- at the rates the last round of playtesting settled on,
+         * which were never the problem. The PHASE of the cycle is hashed per
+         * block of eight so the pattern is not literally "every fourth call
+         * is the one that is up and wrong". */
+        static const int CYCLE[8] = {
+            WANT_ANY, WANT_UP, WANT_ANY, WANT_ANY,
+            WANT_STALE, WANT_ANY, WANT_ANY, WANT_ANY,
+        };
         Rng pr;
-        rng_seed(&pr, seed ^ 0x5bf03635e9a1c4d3ULL);
-        /* One draw in four is forced. Two thirds forced was the first
-         * attempt and it inverted the problem -- fifty-nine of eighty seeds
-         * came up healthy-looking and the boot chain, which is where most of
-         * the machine is, stopped being the job. A quarter forced plus what
-         * the untargeted draws produce on their own lands at about two
-         * tickets in five, which is the shape a support desk actually has. */
-        uint64_t k = rng_next(&pr) % 8;
-        want = k == 0 ? WANT_UP : (k == 1 ? WANT_STALE : WANT_ANY);
+        rng_seed(&pr, (seed / 8) ^ 0x5bf03635e9a1c4d3ULL);
+        want = CYCLE[(seed + rng_next(&pr)) % 8];
 
         /* And where in the fault table this ticket's hand starts. */
         rng_seed(&pr, (seed / (uint64_t)NSTRUCT) ^ 0x3c79ac492ba7b653ULL);

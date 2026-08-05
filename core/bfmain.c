@@ -726,7 +726,7 @@ int main(int argc, char **argv)
          * Every command costs a round trip through somebody who does not know
          * what any of it means, which is a completely different kind of hard
          * from anything else in the game. */
-        cust.airgapped = ((seed / 7) % 5) == 0;
+        cust.airgapped = machine_airgapped(seed);
 
         static Machine desk;
         machine_install(&desk, 1);          /* healthy, always */
