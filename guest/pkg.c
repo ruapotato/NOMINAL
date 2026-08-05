@@ -91,6 +91,22 @@ static unsigned parse_oct(const char *s)
  * player does is reinstall something and the whole point is reinstalling the
  * RIGHT thing. A verify that only prints paths makes you look the owner up
  * by hand, every time. */
+/* THE TWO KINDS OF FINDING, counted apart.
+ *
+ * `pkg reinstall` treats them differently -- it keeps an edited /etc file and
+ * replaces everything else -- and the closing line of `pkg verify` used to
+ * promise that reinstall "puts them back" for both. It does not, deliberately,
+ * and the previous administrator's notes celebrate that it does not. A file
+ * somebody CHANGED is a decision; a file that is missing or truncated is
+ * damage; they need different advice and the summary now gives it. */
+static int g_edited;      /* an /etc file whose contents differ: reinstall KEEPS */
+static int g_damaged;     /* missing, truncated, repointed, wrong mode: restored */
+
+static int under_etc(const char *p)
+{
+    return p[0] == '/' && p[1] == 'e' && p[2] == 't' && p[3] == 'c' && p[4] == '/';
+}
+
 static void finding(const char *pkg, const char *path, const char *what)
 {
     g_puts(pkg);
@@ -285,15 +301,15 @@ static int verify_one(const char *pkg, int *bad)
         if (g_streq(mode, "link")) {
             static char tgt[256];
             i64 tl = g_readlink(real, tgt, sizeof tgt);
-            if (tl < 0)      { finding(pkg, fp, "MISSING (symlink)"); (*bad)++; }
+            if (tl < 0)      { finding(pkg, fp, "MISSING (symlink)"); (*bad)++; g_damaged++; }
             else if (g_hash(tgt, (u64)tl) != parse_hex(hash))
-                             { finding(pkg, fp, "REPOINTED"); (*bad)++; }
+                             { finding(pkg, fp, "REPOINTED"); (*bad)++; g_damaged++; }
             continue;
         }
 
         NomStat st;
         if (g_stat(real, &st) != 0) {
-            finding(pkg, fp, "MISSING"); (*bad)++;
+            finding(pkg, fp, "MISSING"); (*bad)++; g_damaged++;
             continue;
         }
         /* A DIRECTORY the package owns. There are no contents to compare, so
@@ -302,27 +318,28 @@ static int verify_one(const char *pkg, int *bad)
          * used to be invisible -- a directory with its execute bit off hides
          * a tree of perfectly good files and no manifest line mentioned it. */
         if (g_streq(mode, "dir")) {
-            if (st.kind != NOM_KIND_DIR) { finding(pkg, fp, "NOT A DIRECTORY"); (*bad)++; }
+            if (st.kind != NOM_KIND_DIR) { finding(pkg, fp, "NOT A DIRECTORY"); (*bad)++; g_damaged++; }
             else if ((unsigned)st.mode != parse_oct(hash)) {
                 finding(pkg, fp, "MODE");
                 g_puts("                 mode is "); g_putoct((unsigned)st.mode, 4);
                 g_puts(", package shipped "); g_putoct(parse_oct(hash), 4); g_puts("\n");
-                (*bad)++;
+                (*bad)++; g_damaged++;
             }
             continue;
         }
         i64 n = g_slurp(real, filebuf, sizeof filebuf);
-        if (n < 0) { finding(pkg, fp, "UNREADABLE"); (*bad)++; continue; }
+        if (n < 0) { finding(pkg, fp, "UNREADABLE"); (*bad)++; g_damaged++; continue; }
         unsigned long h = g_hash(filebuf, (u64)n);
         if (h != parse_hex(hash)) {
             finding(pkg, fp, "CHANGED"); (*bad)++;
+            if (under_etc(fp)) g_edited++; else g_damaged++;
         } else if ((unsigned)st.mode != parse_oct(mode)) {
             static char msg[48];
             g_copy(msg, "MODE is ", sizeof msg);
             finding(pkg, fp, "");
             g_puts("                 mode is "); g_putoct((unsigned)st.mode, 4);
             g_puts(", package shipped "); g_putoct(parse_oct(mode), 4); g_puts("\n");
-            (*bad)++;
+            (*bad)++; g_damaged++;
         }
     }
     return 1;
@@ -582,14 +599,40 @@ void _start(void)
 
 
     if (g_streq(v[0], "verify")) {
-        g_bad = 0;
+        g_bad = 0; g_edited = 0; g_damaged = 0;
         if (n >= 2) {
             if (verify_one(v[1], &g_bad) < 0) g_exit(1);   /* unknown package */
         } else {
             each_package(verify_cb);
         }
         if (!g_bad) g_putln("all files match their packages");
-        else { g_puts("\n"); g_putn(g_bad); g_putln(" file(s) differ. `pkg reinstall <package>` puts them back."); }
+        else {
+            /* WHAT REINSTALL WILL ACTUALLY DO WITH EACH OF THESE.
+             *
+             * The old line said "`pkg reinstall <package>` puts them back" of
+             * every finding, and reinstall refuses to put back an edited /etc
+             * file -- on purpose, loudly, with `keeping locally modified` --
+             * so the tool's own closing advice taught the opposite of the
+             * tool's behaviour. Whichever the player believed, one of them
+             * was lying to them. */
+            g_puts("\n"); g_putn(g_bad); g_putln(" file(s) differ.");
+            if (g_damaged) {
+                g_puts("  "); g_putn(g_damaged);
+                g_putln(" missing, unreadable, repointed or the wrong mode: that is");
+                g_putln("  damage rather than somebody's decision, and");
+                g_putln("  `pkg reinstall <package>` puts those back.");
+            }
+            if (g_edited) {
+                g_puts("  "); g_putn(g_edited);
+                g_putln(" under /etc with CHANGED contents: a reinstall does NOT put");
+                g_putln("  those back. It keeps a local edit and says `keeping locally");
+                g_putln("  modified`, because the edit may be a decision somebody made");
+                g_putln("  on purpose. `pkg diff <path>` shows what changed. If the edit");
+                g_putln("  IS the fault, either edit it back, or");
+                g_putln("  `pkg reinstall --force <package>` -- which overwrites it and");
+                g_putln("  leaves the old copy beside it as <path>.pkgsave.");
+            }
+        }
         g_exit(g_bad ? 1 : 0);
     }
 

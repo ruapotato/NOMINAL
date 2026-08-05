@@ -3900,18 +3900,33 @@ void machine_install(Machine *m, uint64_t seed)
  */
 static void install_history(Machine *m)
 {
+    /* DATED, BECAUSE IT IS OLD.
+     *
+     * These lines were undated and sat directly above the banner this boot's
+     * syslogd appends, so the whole file read as live -- and a playtester on
+     * a ticket where nomde was DEAD and had never started this boot read
+     * `nomde: display server ready` off it and believed the display server
+     * was fine. It was true when it was written, which is exactly what a log
+     * is; nothing about the file said when that was.
+     *
+     * A timestamp on every line is what a real syslog looks like anyway, and
+     * it makes the boundary unmistakable: everything with a date in front of
+     * it happened on some previous day. What THIS boot did is in `dmesg`,
+     * which is the real instrument and needs no defending. */
     VNode *n = vfs_mkfile(&m->disk, "/var/log/messages",
-        "syslogd: started, logging to /var/log/messages\n"
-        "netd: eth0 configured\n"
-        "sshd: refused connect from 10.0.2.88\n"
-        "sshd: refused connect from 10.0.2.88\n"
-        "sshd: refused connect from 10.0.2.88 (this went on for a week)\n"
-        "ntpd: no reply from 10.0.2.3, will retry\n"
-        "crond: (root) CMD (/usr/sbin/logrotate /etc/logrotate.conf)\n"
-        "udevd: could not open /dev/input/event3: no such device\n"
-        "httpd: document root /srv/www ok\n"
-        "auditd: log opened\n"
-        "nomde: display server ready\n");
+        "-- rotated by logrotate: every DATED line below is from an earlier\n"
+        "-- day. What happened during THIS boot is in `dmesg`.\n"
+        "Jul 28 04:02:11 syslogd: started, logging to /var/log/messages\n"
+        "Jul 28 04:02:11 netd: eth0 configured\n"
+        "Jul 28 22:14:03 sshd: refused connect from 10.0.2.88\n"
+        "Jul 29 01:47:52 sshd: refused connect from 10.0.2.88\n"
+        "Jul 30 03:09:40 sshd: refused connect from 10.0.2.88 (this went on for a week)\n"
+        "Jul 30 06:25:00 ntpd: no reply from 10.0.2.3, will retry\n"
+        "Jul 31 04:02:01 crond: (root) CMD (/usr/sbin/logrotate /etc/logrotate.conf)\n"
+        "Jul 31 08:33:19 udevd: could not open /dev/input/event3: no such device\n"
+        "Aug  1 09:00:02 httpd: document root /srv/www ok\n"
+        "Aug  1 09:00:02 auditd: log opened\n"
+        "Aug  1 09:00:03 nomde: display server ready\n");
     if (n) n->mode = 0644;
 
     /* The rotated one. logrotate.conf says weekly, rotate 8; this is what

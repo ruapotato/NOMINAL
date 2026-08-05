@@ -418,6 +418,17 @@ static void m_sh_on(Station *st, const GDExtensionConstTypePtr *args, void *ret)
     char line[NOM_ARG_MAX];
     gdstring_to_c(args[1], line, sizeof line);
     Buf out; buf_init(&out);
+    /* A CONSOLE ON A DEAD MACHINE HAS NO SHELL -- and it has to SAY so.
+     * The desktop knew this and answered with an empty string, which is the
+     * one thing worse than a fake prompt: `stat /mnt/etc/fstab` came back
+     * blank and blank reads as "the file is fine". Same words as the socket,
+     * from the same function, so the two consoles cannot disagree. */
+    if (which && !st->m.boot.running) {
+        kernel_no_shell(&out);
+        c_to_gdstring(ret, out.p ? out.p : "");
+        buf_free(&out);
+        return;
+    }
     kernel_run(which ? &st->m : &st->desk, line, &out);
     c_to_gdstring(ret, out.p ? out.p : "");
     buf_free(&out);

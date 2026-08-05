@@ -194,8 +194,17 @@ func _verify() -> void:
 	var out: String = _sh(cmd)
 	if out.strip_edges() == "":
 		vnote = "`%s` printed nothing." % cmd
+	# EVERYTHING AFTER THE COUNT IS THE SUMMARY, not more findings. `pkg
+	# verify` now explains what a reinstall will and will not put back, over
+	# several indented lines, and those lines were being glued on to the last
+	# finding as its "detail" -- so the window attributed advice about /etc to
+	# whichever file happened to be listed last.
+	var summary := false
 	for line in out.split("\n"):
 		if line.strip_edges() == "":
+			continue
+		if summary:
+			vnote += "\n" + line.strip_edges()
 			continue
 		if line.begins_with(" ") or line.begins_with("\t"):
 			if not findings.is_empty():
@@ -205,6 +214,7 @@ func _verify() -> void:
 		if t.begins_with("pkg:") or t.begins_with("all files match") \
 				or t.find("file(s) differ") >= 0:
 			vnote = t
+			summary = t.find("file(s) differ") >= 0
 			continue
 		var f := t.split(" ", false)
 		if f.size() < 2:

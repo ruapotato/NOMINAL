@@ -27,6 +27,7 @@ int64_t kernel_run(Machine *m, const char *line, Buf *console);
  * can answer about a machine that never reached a shell -- see the comment on
  * the definition for why this one and nothing else. */
 void kernel_sp_blkid(Machine *m, Buf *out);
+void kernel_no_shell(Buf *out);
 /* One stage of a pipeline: `in` becomes the child's stdin, its stdout is
  * captured into `out`. */
 int64_t kernel_spawn_piped(Machine *m, const char *path, const char *arg,

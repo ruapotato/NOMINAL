@@ -4,6 +4,10 @@
  *   sed -i s/old/new/ file     write it back
  *   sed -i /text/d file        delete every line containing `text`
  *
+ * Both forms take any delimiter -- s|a|b|, |text|d, ,text,d -- and understand
+ * \/ \n \t, because on this machine almost every pattern worth typing is a
+ * path and a path is full of the obvious delimiter.
+ *
  * Deliberately one expression and no regex: the job here is fixing a line in
  * a config from a rescue shell, which is a substitution and nothing more.
  * Anything cleverer would be a worse tool for that job and a much bigger one.
@@ -34,16 +38,38 @@ void _start(void)
      * that could, and reinstalled the whole `filesystem` package to do it --
      * blowing away seven other files to get rid of one line. Deleting a line
      * is half of what anyone uses sed for on a broken machine. */
-    if (expr[0] == '/') {
-        char sepd = '/';
+    /* ON THIS MACHINE EVERY INTERESTING LINE IS A PATH, and the delete form
+     * could not express one. It stopped at the FIRST delimiter, so
+     * `/usr/local/lib/d` was the pattern "usr" followed by rubbish, `\/` was
+     * not understood, and `/usr.local.lib/d` matched nothing and said so as
+     * if that were a result. Only a substring with no slashes in it worked.
+     *
+     * Three things, all of which the substitution form already had:
+     *   - the closing delimiter is the one at the END, so an unescaped
+     *     delimiter inside the pattern is just text: `/usr/local/lib/d`
+     *   - any delimiter: `|text|d`, `,text,d`
+     *   - \/ \n \t are understood, as in s///
+     */
+    u64 el = g_strlen(expr);
+    char sepd = expr[0];
+    int alnum = (sepd >= 'a' && sepd <= 'z') || (sepd >= 'A' && sepd <= 'Z') ||
+                (sepd >= '0' && sepd <= '9');
+    if (!alnum && el >= 3 && expr[el - 1] == 'd' && expr[el - 2] == sepd) {
+        expr[el - 2] = 0;                  /* drop the closing <sep>d */
         char *pat = expr + 1;
-        char *pe = pat;
-        while (*pe && *pe != sepd) pe++;
-        if (*pe != sepd || pe[1] != 'd' || pe[2]) {
-            g_putln("sed: expected /text/d");
-            g_exit(1);
+        char *rp = pat, *wp = pat;
+        while (*rp) {
+            if (*rp == '\\' && rp[1]) {
+                char ch = rp[1];
+                rp += 2;
+                if      (ch == 'n') *wp++ = '\n';
+                else if (ch == 't') *wp++ = '\t';
+                else                *wp++ = ch;   /* \/ -> /, \\ -> \ */
+                continue;
+            }
+            *wp++ = *rp++;
         }
-        *pe = 0;
+        *wp = 0;
         if (!*pat) { g_putln("sed: nothing to match"); g_exit(1); }
 
         i64 dlen = g_slurp(file, buf, sizeof buf);
@@ -70,6 +96,19 @@ void _start(void)
         }
         out[o2] = 0;
         if (!inplace) { g_write(1, out, o2); g_exit(0); }
+        /* `0 line(s) deleted` READ LIKE SUCCESS. It is the report of a command
+         * that did nothing, and on a file the player is trying to repair that
+         * is the difference between "fixed" and "your pattern is wrong". It
+         * says which, names the pattern it looked for, and does not rewrite
+         * the file it did not change. */
+        if (!gone) {
+            g_puts("sed: nothing matched "); g_puts(pat);
+            g_puts(" in "); g_puts(file); g_putln(" -- no line was deleted.");
+            g_putln("  the pattern is plain text, not a regular expression:");
+            g_putln("  `.` is a full stop and matches only a full stop.");
+            g_putln("  `grep <text> <file>` shows what would have matched.");
+            g_exit(1);
+        }
         int dfd = g_open(file, O_WRONLY | O_CREAT | O_TRUNC);
         if (dfd < 0) { g_puts("sed: "); g_puts(file); g_putln(": cannot write"); g_exit(1); }
         sysc(SYS_write, dfd, (i64)out, (i64)o2);
@@ -77,6 +116,17 @@ void _start(void)
         g_puts("sed: "); g_putn(gone); g_puts(" line(s) deleted from ");
         g_putln(file);
         g_exit(0);
+    }
+
+    /* It looked like a delete and was not one. Say what the shape is, rather
+     * than falling through to the substitution error, which does not mention
+     * the form the player was reaching for. */
+    if (expr[0] == '/') {
+        g_putln("sed: expected /text/d -- the expression ends with the");
+        g_putln("  delimiter and a `d`:  /text/d");
+        g_putln("  any delimiter works: |text|d  ,text,d  -- and a `/` inside");
+        g_putln("  the pattern is just a `/`: sed -i /usr/local/lib/d f");
+        g_exit(1);
     }
 
     if (expr[0] != 's' || !expr[1]) {

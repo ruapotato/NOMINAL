@@ -39,7 +39,10 @@ void _start(void)
 
     if (g_streq(v[0], "connect")) {
         if (n < 2) { g_putln("rcon: connect needs an address"); g_exit(1); }
-        i64 rc0 = sysc(SYS_sp, SP_CONNECT, 0, 0);
+        /* The address goes with the request. Without it the service processor
+         * was asked "attach me" and not "attach me to THIS", so it said yes
+         * to anything -- including a typo, for a whole ticket, silently. */
+        i64 rc0 = sysc(SYS_sp, SP_CONNECT, 0, (i64)v[1]);
         if (rc0 == -3) {
             g_puts("rcon: no route to "); g_putln(v[1]);
             g_putln("  that machine is not on any network you can reach.");
@@ -49,8 +52,14 @@ void _start(void)
             g_exit(1);
         }
         if (rc0 != 0) {
-            g_putln("rcon: nothing answers at that address.");
-            g_putln("  the customer can read it off the sticker on the front.");
+            /* NOT the same sentence as the one above. "No route" means the
+             * machine is not on any network you can reach; this means the
+             * network is fine and there is no service processor at the
+             * address you typed. */
+            g_puts("rcon: nothing answers at "); g_putln(v[1]);
+            g_putln("  no service processor replied there. Either that is not");
+            g_putln("  their address or you have a digit wrong -- the customer");
+            g_putln("  can read it off the sticker on the front of the machine.");
             g_exit(1);
         }
         g_puts("rcon: attached to "); g_putln(v[1]);

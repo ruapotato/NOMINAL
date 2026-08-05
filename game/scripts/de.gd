@@ -1014,10 +1014,10 @@ func _run(which: int, line: String) -> String:
 	# at initrd used to hand you a working prompt, because the shell is on the
 	# disk whatever the boot did. A service processor shows you the machine's
 	# screen; if it never reached a shell, there is no shell to type at, and
-	# that IS the diagnosis.
-	if target == 1 and not machine.booted():
-		return ""
-
+	# that IS the diagnosis -- but it has to be SAID. Returning "" answered
+	# every command with silence, and silence about a file is indistinguishable
+	# from "I looked and it is fine". sh_on() refuses in words now, the same
+	# words the socket console uses, so this no longer decides anything.
 	var out: String = machine.sh_on(target, s)
 
 	if is_rcon and s.begins_with("rcon connect") and out.find("attached") >= 0:

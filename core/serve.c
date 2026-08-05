@@ -519,13 +519,12 @@ static bool client_line(Client *c)
             send_str(c->fd, prompt_for(c));
             return true;
         }
-        send_str(c->fd,
-            "\n[no shell here -- this machine did not finish booting]\n"
-            "  the console shows what it managed to say. `rcon console` to\n"
-            "  re-read it, `rcon media insert` + `rcon boot media` +\n"
-            "  `rcon power cycle` to bring it up on the rescue medium.\n"
-            "  `blkid` is the one command that still answers: the service\n"
-            "  processor reads the drives without the machine's help.\n");
+        {
+            Buf b = {0};
+            kernel_no_shell(&b);          /* the desktop says the same words */
+            send_all(c->fd, b.p, b.len);
+            buf_free(&b);
+        }
         send_str(c->fd, prompt_for(c));
         return true;
     }

@@ -1022,9 +1022,28 @@ static int64_t kernel_syscall(Cpu *c, int64_t n, int64_t a0, int64_t a1,
                  | (t->sp_media ? 4 : 0)
                  | (t->sp_bootdev ? 8 : 0)
                  | (t->on_rescue ? 32 : 0);
-        case SP_CONNECT:
+        case SP_CONNECT: {
+            /* THE ADDRESS IS PART OF THE QUESTION.
+             *
+             * This attached to whatever the technician typed, so a mistyped
+             * digit put them on the customer's console anyway and a whole
+             * ticket could be worked against an address that was never
+             * theirs. A service processor at 9.9.9.9 either exists or does
+             * not, and the one at the address on the sticker is the only one
+             * that answers.
+             *
+             * It is a different refusal from the air-gapped one above: there
+             * is NO ROUTE to a machine that is on no network, and there is
+             * nothing LISTENING at an address that is not theirs. A player
+             * who cannot tell those two apart cannot tell "I typed it wrong"
+             * from "this ticket is the hard kind". */
+            char want[64] = "";
+            if (a2 && !guest_str(c, (uint64_t)a2, want, sizeof want)) return -1;
+            if (want[0] && p->m->peer_addr[0] &&
+                strcmp(want, p->m->peer_addr) != 0) return -5;
             p->m->sp_connected = true;
             return 0;
+        }
         case SP_POWER:
             if (arg == 0) {                       /* off */
                 kernel_stop_daemons(t);
@@ -2110,6 +2129,26 @@ void kernel_sp_blkid(Machine *m, Buf *out)
     else    buf_puts(out, "/dev/sda1: the controller does not see a disk there\n");
     if (t2) buf_printf(out, "/dev/sr0:  TYPE=\"%s\"\n", t2);
     else    buf_puts(out, "/dev/sr0:  no medium (the drive is empty)\n");
+}
+
+/* THE REFUSAL ITSELF, IN ONE PLACE.
+ *
+ * Both front ends have to say this and they were saying it separately: the
+ * socket printed it, the desktop returned an empty string, and a command that
+ * answers with nothing on a machine that will not boot reads as "I looked and
+ * the file is fine". Silence is the one answer this game may never give.
+ *
+ * It lives here so that a console cannot be honest in one window and mute in
+ * another, which is the same rule as blkid above: one machine, one answer. */
+void kernel_no_shell(Buf *out)
+{
+    buf_puts(out,
+        "\n[no shell here -- this machine did not finish booting]\n"
+        "  the console shows what it managed to say. `rcon console` to\n"
+        "  re-read it, `rcon media insert` + `rcon boot media` +\n"
+        "  `rcon power cycle` to bring it up on the rescue medium.\n"
+        "  `blkid` is the one command that still answers: the service\n"
+        "  processor reads the drives without the machine's help.\n");
 }
 
 static Vfs *device_fs(Machine *m, const char *dev)
