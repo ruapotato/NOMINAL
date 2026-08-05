@@ -977,7 +977,7 @@ func _launch(kind0: String) -> void:
 			chat.ink = INK
 			chat.dim = DIM
 			chat.bg = WIN_BG
-			_win("chat", _cascade_at(620, 380), chat)
+			_win("chat", _cascade_at(780, 460), chat)
 			chat.call("reset", cust)
 			# WHAT IS ACTUALLY WRONG WITH IT. This sentence was hard coded
 			# to "my computer will not start", which is false on about one
@@ -1595,5 +1595,12 @@ func _parse_args() -> void:
 			if t:
 				(t.get_meta("content") as Control).call("feed", a.substr(7))
 		elif a.begins_with("--ask="):
+			# `--ask=<n>` picks an option by its id now, and `--ask=2 <command>`
+			# dictates. There is no free prose to pass any more: the customer is
+			# a list of things you can say plus one field that takes a command.
 			if chat:
-				chat.call("post", 0, a.substr(6))
+				var spec := a.substr(6).strip_edges()
+				var sp := spec.find(" ")
+				var id := int(spec if sp < 0 else spec.substr(0, sp))
+				var arg := "" if sp < 0 else spec.substr(sp + 1)
+				chat.call("_say", id, arg)
