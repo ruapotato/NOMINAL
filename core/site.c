@@ -678,7 +678,7 @@ static int split(char *line, char *tok[MAXTOK])
         /* '#' STARTS A COMMENT, AND '#41' IS A ROOM.
          *
          * This broke on the first token as well as the rest, so `go #12` and
-         * `install switch8 #41` parsed as an empty line -- and #41 is the
+         * `order switch8 #41` parsed as an empty line -- and #41 is the
          * spelling site_room_by_name() documents. A comment is only a
          * comment at the start of a line, where nobody means a room. */
         if (!*p) break;

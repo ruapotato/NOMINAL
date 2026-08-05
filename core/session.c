@@ -31,7 +31,7 @@ static int split(char *line, char *tok[MAXTOK])
         /* '#' STARTS A COMMENT, AND '#41' IS A ROOM.
          *
          * This broke on the first token as well as the rest, so `go #12` and
-         * `install switch8 #41` parsed as an empty line -- and #41 is the
+         * `order switch8 #41` parsed as an empty line -- and #41 is the
          * spelling site_room_by_name() documents. A comment is only a
          * comment at the start of a line, where nobody means a room. */
         if (!*p) break;
@@ -924,6 +924,18 @@ static void intro(Session *ses, Buf *out)
         }
     }
     buf_free(&d);
+    /* WHERE THE KIT WILL TURN UP, said once, on the way in. A player who
+     * orders a switch and then cannot find it has been told nothing, and
+     * this is the one sentence that stops that happening. */
+    {
+        int g = site_goods_room(&ses->s);
+        if (g >= 0) {
+            char w[48];
+            room_label(ses, g, w, sizeof w);
+            buf_printf(out, "anything you order is delivered to %s and you "
+                            "carry it from there.\n", w);
+        }
+    }
     buf_puts(out, "\n`help` says what you can do, `look` says what is here, "
                   "`desk` goes back.\n");
 }

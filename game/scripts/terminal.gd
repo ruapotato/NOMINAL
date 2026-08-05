@@ -74,7 +74,7 @@ const COMMANDS := [
 	"zbl-mkconfig", "mkinitrd", "getty", "fsck", "mountall", "sed", "wc",
 	"echo", "blkid", "svc", "kill", "syslogd", "netd", "udevd", "crond",
 	"ntpd", "httpd", "nft", "auditd", "sshd", "postfix", "ldd", "dmesg",
-	"rcon", "find", "netstat", "reboot", "open", "nomde",
+	"rcon", "find", "netstat", "ping", "reboot", "open", "nomde",
 ]
 
 # Words after which the next word is a command again, so `... && ls fo<Tab>`
