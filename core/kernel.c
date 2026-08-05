@@ -1254,6 +1254,40 @@ int64_t kernel_spawn_as(Machine *m, const char *path, const char *arg,
                         Buf *console, int depth, Proc *parent,
                         ProcInfo *as, char *err, size_t errsz);
 
+/* MAKE ROOM IN THE PROCESS TABLE, WITHOUT LOSING TRACK OF THE DAEMONS.
+ *
+ * The table is finite and a real session runs hundreds of commands; when it
+ * filled, a new process got no record at all and silently lost its chroot and
+ * its namespace, quietly working on the wrong filesystem. Exited processes go
+ * oldest-first, keeping the session (ppid -1) and anything still running.
+ *
+ * The records MOVE when that happens, and a running daemon holds a pointer
+ * straight into this array. It was only ever compacted from spawn, where the
+ * daemons had all been started during a boot that had the table nearly to
+ * itself, so nothing had gone visibly wrong yet -- but `svc start` starts
+ * services in the middle of a session now, hundreds of commands in, and a
+ * daemon whose record moved under it reports another process's cpu and marks
+ * the wrong pid dead when it exits. So the pointers are rebound by pid, which
+ * is the only identity a process record has.
+ */
+static void reap_procs(Machine *m)
+{
+    int w = 0;
+    for (int i = 0; i < m->nproc; i++) {
+        ProcInfo *q = &m->proc[i];
+        bool keep = q->alive || q->ppid == -1 || i >= m->nproc - PROC_MAX / 2;
+        if (keep) m->proc[w++] = *q;
+    }
+    m->nproc = w;
+    struct Daemon *ds = (struct Daemon *)m->daemon;
+    for (int i = 0; ds && i < m->ndaemon; i++) {
+        if (!ds[i].proc.info) continue;
+        ds[i].proc.info = NULL;
+        for (int j = 0; j < m->nproc; j++)
+            if (m->proc[j].pid == ds[i].proc.pid) { ds[i].proc.info = &m->proc[j]; break; }
+    }
+}
+
 /* Set on the next spawn, consumed by it. Threading two more parameters
  * through every caller of kernel_spawn_as would be worse than this, and the
  * whole thing is single-threaded. */
@@ -1353,20 +1387,7 @@ int64_t kernel_spawn_as(Machine *m, const char *path, const char *arg,
     p.capture_into = g_next_capture;
     p.capture      = (g_next_capture != NULL);
 
-    /* Reap. The table is finite and a real session runs hundreds of commands;
-     * when it filled, new processes got no ProcInfo at all and silently lost
-     * their chroot and namespace, quietly operating on the wrong filesystem.
-     * Exited processes are dropped oldest-first, keeping the session (ppid
-     * -1) and anything still running. */
-    if (!as && m->nproc >= PROC_MAX) {
-        int w = 0;
-        for (int i = 0; i < m->nproc; i++) {
-            ProcInfo *q = &m->proc[i];
-            bool keep = q->alive || q->ppid == -1 || i >= m->nproc - PROC_MAX / 2;
-            if (keep) m->proc[w++] = *q;
-        }
-        m->nproc = w;
-    }
+    if (!as && m->nproc >= PROC_MAX) reap_procs(m);
 
     ProcInfo *pi = as;
     if (as) {
@@ -1696,7 +1717,12 @@ static int64_t daemon_launch(Machine *m, struct Daemon *d, Buf *console)
         return spawn_fail(console, err, sizeof err, SPAWN_ENOEXEC, "%s: %s", path, lerr);
     }
 
-    /* Register it in the process table like anything else. */
+    /* Register it in the process table like anything else -- INCLUDING the
+     * part where a full table is made room in. A service started mid-session
+     * got no record, so it was invisible to /proc: `svc` called it DEAD and
+     * `netstat` dropped its port while the daemon sat there running. The
+     * repair worked and every instrument on the machine said it had not. */
+    if (m->nproc >= PROC_MAX) reap_procs(m);
     ProcInfo *pi = NULL;
     if (m->nproc < PROC_MAX) {
         pi = &m->proc[m->nproc++];
