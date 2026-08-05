@@ -41,6 +41,10 @@ bool site_kind_is_switch(int kind)
 {
     return kind == SDEV_SWITCH8 || kind == SDEV_SWITCH24;
 }
+bool site_kind_has_os(int kind)
+{
+    return kind == SDEV_PC || kind == SDEV_SERVER;
+}
 int site_kind_by_name(const char *name)
 {
     for (int i = 0; i < SDEV_KIND_COUNT; i++)
@@ -85,7 +89,10 @@ const char *site_err_text(int e)
     case SITE_EVLAN:    return "a vlan is a number from 1 to 4094";
     case SITE_ENOTSW:   return "only a switch has ports with vlans on them -- "
                                "on a router, `subif <box> <nic> <vlan> <ip>`";
-    case SITE_EOFF:     return "it is switched off";
+    case SITE_EOFF:     return "it is switched off, and a box that is not "
+                               "running is not on the network";
+    case SITE_ENOBTN:   return "it has no power button -- it comes up with the "
+                               "socket it is plugged into";
     }
     return "?";
 }
@@ -256,6 +263,9 @@ int site_install(Site *s, int kind, int room, const char *name)
     d->floor = s->b->rooms[room].floor;
     d->tenant = s->b->rooms[room].tenant;
     d->nports = site_kind_ports(kind);
+    /* A COMPUTER ARRIVES SWITCHED OFF, in a box, on a pallet. An appliance
+     * comes up with the socket. */
+    d->powered = site_kind_has_os(kind) ? 0 : 1;
     snprintf(d->name, sizeof d->name, "%s", name && *name ? name : site_kind_name(kind));
     /* Two boxes with one name is a diagnosis nobody can perform. */
     if (site_dev_by_name(s, d->name) >= 0)
@@ -393,10 +403,55 @@ PortState site_link_state(const Site *s, int link)
     return net_port_state(s->net, s->dev[l->a].node, l->aport);
 }
 
+/* ----------------------------------------------------------------- power */
+/* WHAT IS IN A MACHINE'S MEMORY GOES WHEN THE POWER DOES. Addresses, routes,
+ * the ARP cache, the filter, every open socket: none of them are on the box,
+ * and a box that has been switched off answers nothing at all. What comes
+ * back when it is switched on again comes off its disk, which is why the
+ * disk is the only place a configuration lives. */
+static void power_down(Site *s, int dev)
+{
+    int node = s->dev[dev].node;
+    net_close_all(s->net, node);
+    net_dhcpd_stop(s->net, node);
+    net_route_clear(s->net, node);
+    net_arp_flush(s->net, node);
+    net_fw_clear(s->net, node);
+    net_set_resolver(s->net, node, 0);
+    for (int i = 0; i < NET_IF_MAX; i++) {
+        if (!net_if_exists(s->net, node, i)) continue;
+        net_if_addr(s->net, node, i, 0, 0);
+        net_if_up(s->net, node, i, false);
+    }
+    net_forwarding(s->net, node, false);
+}
+
+bool site_power(Site *s, int dev, bool on)
+{
+    s->err = SITE_OK;
+    if (dev < 0 || dev >= s->ndev) { s->err = SITE_ENODEV; return false; }
+    SiteDev *d = &s->dev[dev];
+    if (!site_kind_has_os(d->kind)) { s->err = SITE_ENOBTN; return false; }
+    if (!!d->powered == on) return true;
+    d->powered = on ? 1 : 0;
+    if (!on) { power_down(s, dev); return true; }
+    for (int i = 0; i < NET_IF_MAX; i++)
+        if (net_if_exists(s->net, d->node, i)) net_if_up(s->net, d->node, i, true);
+    return true;
+}
+
 /* --------------------------------------------------------- configuration */
 static bool host_dev(const Site *s, int dev)
 {
     return dev >= 0 && dev < s->ndev && !site_kind_is_switch(s->dev[dev].kind);
+}
+/* Configuring a box that is not running is configuring nothing: there is no
+ * kernel in it to hold what you typed. */
+static bool live_dev(Site *s, int dev)
+{
+    if (!host_dev(s, dev)) { s->err = SITE_EIFACE; return false; }
+    if (!s->dev[dev].powered) { s->err = SITE_EOFF; return false; }
+    return true;
 }
 
 /* THE TWO ADDRESSES IN A SUBNET THAT ARE NOT A MACHINE'S. A /30 has four
@@ -416,7 +471,8 @@ static bool usable_host_addr(uint32_t ip, uint32_t mask)
 bool site_addr(Site *s, int dev, int ifx, uint32_t ip, uint32_t mask)
 {
     s->err = SITE_OK;
-    if (!host_dev(s, dev) || ifx < 0 || ifx >= NET_IF_MAX) { s->err = SITE_EIFACE; return false; }
+    if (!live_dev(s, dev)) return false;
+    if (ifx < 0 || ifx >= NET_IF_MAX) { s->err = SITE_EIFACE; return false; }
     /* A card it has not got, or a subinterface nobody created. `subif` is
      * what makes one; this is not. */
     if (ifx >= s->dev[dev].nports && !net_if_exists(s->net, s->dev[dev].node, ifx)) {
@@ -429,14 +485,14 @@ bool site_addr(Site *s, int dev, int ifx, uint32_t ip, uint32_t mask)
 bool site_gateway(Site *s, int dev, uint32_t gw)
 {
     s->err = SITE_OK;
-    if (!host_dev(s, dev)) { s->err = SITE_EIFACE; return false; }
+    if (!live_dev(s, dev)) return false;
     net_set_gateway(s->net, s->dev[dev].node, gw);
     return true;
 }
 bool site_forwarding(Site *s, int dev, bool on)
 {
     s->err = SITE_OK;
-    if (!host_dev(s, dev)) { s->err = SITE_EIFACE; return false; }
+    if (!live_dev(s, dev)) return false;
     net_forwarding(s->net, s->dev[dev].node, on);
     return true;
 }
@@ -447,7 +503,7 @@ bool site_forwarding(Site *s, int dev, bool on)
 bool site_subif(Site *s, int dev, int nic, int vlan, uint32_t ip, uint32_t mask)
 {
     s->err = SITE_OK;
-    if (!host_dev(s, dev)) { s->err = SITE_EIFACE; return false; }
+    if (!live_dev(s, dev)) return false;
     if (nic < 0 || nic >= s->dev[dev].nports) { s->err = SITE_ENOPORT; return false; }
     if (vlan < 1 || vlan > 4094) { s->err = SITE_EVLAN; return false; }
     if (ip && !usable_host_addr(ip, mask)) { s->err = SITE_EADDR; return false; }
@@ -487,34 +543,34 @@ bool site_dhcpd(Site *s, int dev, uint32_t first, int count, uint32_t mask,
                 uint32_t gw, uint32_t dns)
 {
     s->err = SITE_OK;
-    if (!host_dev(s, dev)) { s->err = SITE_EIFACE; return false; }
+    if (!live_dev(s, dev)) return false;
     net_dhcpd(s->net, s->dev[dev].node, first, count, mask, gw, dns);
     return true;
 }
 bool site_dhcp(Site *s, int dev)
 {
     s->err = SITE_OK;
-    if (!host_dev(s, dev)) { s->err = SITE_EIFACE; return false; }
+    if (!live_dev(s, dev)) return false;
     return net_dhcp_client(s->net, s->dev[dev].node, 0);
 }
 bool site_resolver(Site *s, int dev, uint32_t ns)
 {
     s->err = SITE_OK;
-    if (!host_dev(s, dev)) { s->err = SITE_EIFACE; return false; }
+    if (!live_dev(s, dev)) return false;
     net_set_resolver(s->net, s->dev[dev].node, ns);
     return true;
 }
 bool site_dnsd(Site *s, int dev)
 {
     s->err = SITE_OK;
-    if (!host_dev(s, dev)) { s->err = SITE_EIFACE; return false; }
+    if (!live_dev(s, dev)) return false;
     net_dnsd(s->net, s->dev[dev].node);
     return true;
 }
 bool site_httpd(Site *s, int dev, int port)
 {
     s->err = SITE_OK;
-    if (!host_dev(s, dev)) { s->err = SITE_EIFACE; return false; }
+    if (!live_dev(s, dev)) return false;
     net_httpd(s->net, s->dev[dev].node, (uint16_t)(port ? port : 80));
     return true;
 }
@@ -649,6 +705,8 @@ void site_dump(const Site *s, Buf *out)
             for (int p = 0; p < d->nports; p++)
                 if (net_port_state(s->net, d->node, p) != PORT_NOCABLE) used++;
             buf_printf(out, " %d/%d ports used", used, d->nports);
+        } else if (site_kind_has_os(d->kind) && !d->powered) {
+            buf_puts(out, " switched off");
         } else {
             uint32_t a = net_if_get_addr(s->net, d->node, 0);
             if (a) {
@@ -698,8 +756,10 @@ static void dump_dev(Site *s, int dev, Buf *out, bool empties)
     SiteDev *d = &s->dev[dev];
     char w[48];
     where(s, d, w, sizeof w);
-    buf_printf(out, "%s: %s in %s, %d socket%s\n", d->name, site_kind_name(d->kind),
-               w, d->nports, d->nports == 1 ? "" : "s");
+    buf_printf(out, "%s: %s in %s, %d socket%s%s\n", d->name, site_kind_name(d->kind),
+               w, d->nports, d->nports == 1 ? "" : "s",
+               site_kind_has_os(d->kind) && !d->powered
+               ? " -- SWITCHED OFF, and nothing of it is on the network" : "");
     if (empties) net_dump_ports(s->net, d->node, out);
     else net_dump_ports_used(s->net, d->node, out);
     if (site_kind_is_switch(d->kind)) {
@@ -825,6 +885,8 @@ bool site_cmd(Site *s, const char *line, Buf *out)
             "                               is the first socket, `addr rt:1 ...` the\n"
             "                               second -- which is how a router gets a WAN\n"
             "                               side and a LAN side\n"
+            "power <dev> on|off             a pc and a server arrive switched off.\n"
+            "                               Nothing of an off box is on the network\n"
             "gw <dev> <ip>                  default gateway\n"
             "router <dev> on|off            forward between its interfaces\n"
             "subif <dev> <nic> <vlan> <ip>/<bits>   a tagged subinterface on a card\n"
@@ -962,6 +1024,17 @@ bool site_cmd(Site *s, const char *line, Buf *out)
                        net_mask_len(mask), a, b, site_hosts_in_mask(mask),
                        site_hosts_in_mask(mask) == 1 ? "" : "s");
         }
+        return true;
+    }
+    if (strcmp(t[0], "power") == 0 && n >= 3) {
+        int d = dev_arg(s, t[1]);
+        if (d < 0) { buf_puts(out, "?\n"); return true; }
+        bool on = strcmp(t[2], "on") == 0;
+        if (!site_power(s, d, on)) {
+            buf_printf(out, "%s\n", site_err_text(s->err));
+            return true;
+        }
+        buf_printf(out, "%s is %s\n", s->dev[d].name, on ? "on" : "off");
         return true;
     }
     if (strcmp(t[0], "gw") == 0 && n >= 3) {

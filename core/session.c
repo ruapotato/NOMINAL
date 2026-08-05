@@ -19,6 +19,9 @@
  * network, not into the one core/netsite.c keeps for the break-fix game.
  * See the note on Machine.net_home. */
 void netsite_pin(Machine *m, struct Net *n, int node);
+/* And make its node agree with what the operating system on it has done --
+ * which is nothing at all when the operating system is not running. */
+void netsite_apply(Machine *m);
 
 #define MAXTOK 12
 
@@ -206,25 +209,70 @@ static void sync_disk(Session *ses, int dev)
     m->net_cfg = 0;
 }
 
-/* Install and boot the box, once, the first time anybody opens a lead on
- * it. A booted machine is 13.5 MB; a rack of boxes nobody has looked at
- * costs nothing. */
+/* POWERING ON IS WHAT PUTS A MACHINE ON THE NETWORK, and it is the only
+ * thing that does.
+ *
+ * This used to happen the first time somebody plugged a serial lead in, which
+ * made the crash cart the registrar of the network: a box nobody had ever
+ * switched on answered pings, and then booting it made it LESS reachable,
+ * because its own firewall finally started. The operating system and the
+ * network were two machines married by a lead.
+ *
+ * Now: the disk is written first, the box is joined to its node, it boots,
+ * and then netsite_apply makes the node agree with what the operating system
+ * did -- which for a machine whose boot failed is nothing at all, because a
+ * kernel that is not running has not configured a card. A booted machine is
+ * 13.5 MB; a rack of boxes nobody has switched on costs nothing. */
 static Machine *box_of(Session *ses, int dev, Buf *out)
 {
-    if (ses->mach[dev]) return ses->mach[dev];
-    Machine *m = nom_alloc(sizeof *m);
-    memset(m, 0, sizeof *m);
-    machine_install(m, ses->seed + 7000 + (uint64_t)dev);
-    ses->mach[dev] = m;
-    sync_disk(ses, dev);
-    netsite_pin(m, ses->s.net, ses->s.dev[dev].node);
+    Machine *m = ses->mach[dev];
+    bool first = m == NULL;
+    if (first) {
+        m = nom_alloc(sizeof *m);
+        memset(m, 0, sizeof *m);
+        machine_install(m, ses->seed + 7000 + (uint64_t)dev);
+        ses->mach[dev] = m;
+        sync_disk(ses, dev);
+        netsite_pin(m, ses->s.net, ses->s.dev[dev].node);
+    }
     machine_boot(m);
+    netsite_apply(m);
     if (out) {
         buf_put(out, m->boot.console.p, m->boot.console.len);
         buf_printf(out, "\n[%s at %s]\n", m->boot.running ? "UP" : "DOWN",
                    boot_stage_name(m->boot.failed_at));
     }
     return m;
+}
+
+/* The power button on the front of a box that has an operating system in it.
+ * The site takes the addresses away and the machine's own kernel is what
+ * puts them back. */
+static void do_power(Session *ses, int dev, bool on, Buf *out)
+{
+    const SiteDev *d = &ses->s.dev[dev];
+    if (!site_power(&ses->s, dev, on)) {
+        buf_printf(out, "%s: %s\n", d->name, site_err_text(ses->s.err));
+        return;
+    }
+    if (!on) {
+        if (ses->plugged == dev && ses->where == SES_SHELL) {
+            ses->where = SES_BODY;
+            ses->plugged = -1;
+            buf_puts(out, "the console goes dead and the lead comes out.\n");
+        }
+        buf_printf(out, "%s is off. Its addresses, its routes and everything it "
+                        "had open went\n  with the power -- they were in its "
+                        "memory. What comes back is what is\n  on its disk.\n",
+                   d->name);
+        return;
+    }
+    buf_printf(out, "you press the button on %s.\n", d->name);
+    Machine *m = box_of(ses, dev, out);
+    if (!m->boot.running)
+        buf_puts(out, "it did not finish booting, so nothing of it is on the "
+                      "network: no card was\n  configured, because no kernel got "
+                      "far enough to configure one.\n");
 }
 
 /* --------------------------------------------------------------- walking */
@@ -444,9 +492,17 @@ static void do_help(const Session *ses, Buf *out)
         "  uncable <n>        pull one out\n"
         "\n"
         "CONFIGURING. You must be in the room with the box.\n"
-        "  addr <box> <ip>/<bits>    gw <box> <ip>      resolver <box> <ip>\n"
-        "  router <box> on|off       vlan <box> <port> <n>\n"
-        "  subif <box> <if> <nic> <vlan> <ip>/<bits>    trunk <box> <port> <v>..\n"
+        "  power <box> on|off        a pc and a server arrive switched off, in a\n"
+        "                            box, on a pallet. Powering one on is what boots\n"
+        "                            the operating system in it and what puts it on\n"
+        "                            the network -- and nothing of an off box\n"
+        "                            answers anything\n"
+        "  addr <box>[:<nic>] <ip>/<bits>   gw <box> <ip>   resolver <box> <ip>\n"
+        "                            `addr edge:1` is the SECOND socket on the back,\n"
+        "                            which is how a router gets a LAN side as well as\n"
+        "                            a WAN side\n"
+        "  router <box> on|off       vlan <box> <port> <n>   (a switch's port)\n"
+        "  subif <box> <nic> <vlan> <ip>/<bits>    trunk <box> <port> <v>..\n"
         "  dhcpd <box> <first> <count> <bits> <gw> <dns>     dhcp <box>\n"
         "  ping <box> <ip>   trace <box> <ip>   resolve <box> <name>\n"
         "                     a real echo request, from that box, over the\n"
@@ -544,14 +600,22 @@ static void do_plug(Session *ses, const char *what, bool hdmi, Buf *out)
                             "serial lead.\n", dev->name);
         return;
     }
+    if (site_kind_has_os(dev->kind) && !dev->powered) {
+        /* A SERIAL LEAD IS NOT A POWER LEAD. It used to be: the first lead in
+         * the back of a box was what installed and booted it, so the crash
+         * cart was what put machines on the network. */
+        buf_printf(out, "%s is switched off. A serial lead reads a console; it "
+                        "does not press\n  the button. `power %s on`.\n",
+                   dev->name, dev->name);
+        return;
+    }
     ses->plugged = d;
     ses->hdmi = false;
     if (dev->kind == SDEV_PC || dev->kind == SDEV_SERVER) {
         ses->where = SES_SHELL;
-        bool first = ses->mach[d] == NULL;
+        Machine *m = ses->mach[d];
         buf_printf(out, "serial console on %s.\n", dev->name);
-        Machine *m = box_of(ses, d, first ? out : NULL);
-        if (!first)
+        if (m)
             buf_printf(out, "[%s at %s]\n", m->boot.running ? "UP" : "DOWN",
                        boot_stage_name(m->boot.failed_at));
         buf_puts(out, "you are root on it. `help` for what this line is, "
@@ -1101,6 +1165,22 @@ bool session_line(Session *ses, const char *line, Buf *out)
         return true;
     }
     if (strcmp(t[0], "open") == 0) { do_open(ses, out); return true; }
+    if (strcmp(t[0], "power") == 0) {
+        if (n < 2) {
+            buf_puts(out, "power which box on? `power <box> on` `power <box> off`\n");
+            return true;
+        }
+        int d;
+        if (!need_here(ses, t[1], &d, out)) return true;
+        if (n < 3) {
+            buf_printf(out, "%s is %s. `power %s %s`?\n", ses->s.dev[d].name,
+                       ses->s.dev[d].powered ? "on" : "off", ses->s.dev[d].name,
+                       ses->s.dev[d].powered ? "off" : "on");
+            return true;
+        }
+        do_power(ses, d, strcmp(t[2], "on") == 0, out);
+        return true;
+    }
     if (strcmp(t[0], "unplug") == 0) {
         buf_puts(out, "there is no lead in anything.\n");
         return true;

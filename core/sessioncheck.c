@@ -361,6 +361,7 @@ static void check_build(int *passed, int *total)
         "plug uplink:0", "plug edge:0",
         "plug edge:1",   "plug core:0",
         "plug core:1",   "plug files:0",
+        "power files on",
         "addr edge 198.51.100.2/30",
         "addr edge:1 10.0.1.1/24",
         "router edge on",
@@ -384,16 +385,25 @@ static void check_build(int *passed, int *total)
        site_link_state(&ses.s, 1) == PORT_UP &&
        site_link_state(&ses.s, 2) == PORT_UP);
 
-    ck("and the router answers the server it has never met",
-       has(say(&ses, "ping edge 10.0.1.10", &o), "reply"));
+    /* AND WHAT ANSWERS IS THE OPERATING SYSTEM, not the box. The server is
+     * running, it has the address the player gave it, the router can ARP it
+     * -- and the echo request is dropped by the ruleset the image ships,
+     * which is counted on the card rather than vanishing. Nobody wrote that
+     * interaction; it is a real filter meeting a real packet. */
+    say(&ses, "ping edge 10.0.1.10", &o);
+    ck("the server is on the wire and its own filter is what refuses the ping",
+       !has(o.p, "reply") &&
+       has(say(&ses, "show files", &o), "10.0.1.10/24") &&
+       has(o.p, "RX 0  TX 2  dropped 1"));
 
-    /* THE SEAM. A serial lead in a server is a shell on a real machine, and
-     * the address it configures its card with came off its own disk --
-     * written there from what the player told the network, because two
-     * places to hold one fact is a fault nobody built. */
+    /* THE SEAM. Pressing the button on a server boots a real machine, and the
+     * address it configures its card with came off its own disk -- written
+     * there from what the player told the network, because two places to hold
+     * one fact is a fault nobody built. The serial lead reads the console it
+     * already has; it is not what starts it. */
     const char *boot = say(&ses, "plug files", &o);
-    ck("a serial lead in the server boots a real operating system on it",
-       has(boot, "zbios") && has(boot, "UP at target") && ses.where == SES_SHELL);
+    ck("a serial lead in a running server is a shell on it",
+       has(boot, "serial console on files") && ses.where == SES_SHELL);
 
     ck("and it is that machine's shell, not somebody else's",
        has(say(&ses, "cat /etc/hostname", &o), "files"));

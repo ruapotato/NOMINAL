@@ -73,6 +73,9 @@ static void check_empty(const Building *b)
      * in the same building. */
     int room = a_room(b, 3);
     int pc = site_install(&s, SDEV_PC, room, "pc1");
+    /* A COMPUTER ARRIVES SWITCHED OFF. Nothing of it is on the network until
+     * somebody presses the button, which is what site_power is. */
+    site_power(&s, pc, true);
     site_addr(&s, pc, 0, net_ip(10, 0, 1, 10), net_mask_bits(24));
     site_gateway(&s, pc, net_ip(10, 0, 1, 1));
     int rtt = 0;
@@ -131,11 +134,13 @@ static void check_ports(const Building *b)
         snprintf(nm, sizeof nm, "pc%d", i);
         int pc = site_install(&s, SDEV_PC, room, nm);
         if (pc < 0) break;
+        site_power(&s, pc, true);
         if (site_cable(&s, pc, 0, sw, i, CAB_CAT6) >= 0) filled++;
     }
     ck("an eight port switch takes eight cables and no more", filled == 8);
 
     int pc = site_install(&s, SDEV_PC, room, "pc-too-many");
+    site_power(&s, pc, true);
     int l = site_cable(&s, pc, 0, sw, 8, CAB_CAT6);
     ck("the ninth is refused, by port number",
        l < 0 && s.err == SITE_ENOPORT);
@@ -176,6 +181,7 @@ static void check_addresses(const Building *b)
         char nm[NET_NAME_MAX];
         snprintf(nm, sizeof nm, "d%d", i);
         int pc = site_install(&s, SDEV_PC, room, nm);
+        site_power(&s, pc, true);
         site_cable(&s, pc, 0, sw, i + 1, CAB_CAT6);
         if (site_dhcp(&s, pc)) got++; else refused++;
     }
@@ -209,6 +215,7 @@ static void check_copper(const Building *b)
     site_new(&s, b, GATE_SEED, 100000);
     int sw = site_install(&s, SDEV_SWITCH24, mdf, "core");
     int pc = site_install(&s, SDEV_PC, far, "topfloor");
+    site_power(&s, pc, true);
     int l = site_cable(&s, pc, 0, sw, 1, CAB_CAT6);
     ck("the cable is sold, laid and paid for", l >= 0 && s.link[l].cost > 0);
     ck("and it does not come up, because it is too long",
@@ -252,6 +259,8 @@ static void check_tenants(const Building *b)
     int rt = site_install(&s, SDEV_ROUTER, mdf, "rt");
     int a  = site_install(&s, SDEV_PC, ra, "theirs");
     int c  = site_install(&s, SDEV_PC, rb, "ours");
+    site_power(&s, a, true);
+    site_power(&s, c, true);
     site_cable(&s, rt, 0, sw, 0, CAB_CAT6);
     site_cable(&s, a, 0, sw, 1, CAB_CAT6);
     site_cable(&s, c, 0, sw, 2, CAB_CAT6);
@@ -312,6 +321,7 @@ static void check_flat(const Building *b)
         char nm[NET_NAME_MAX];
         snprintf(nm, sizeof nm, "pc%d", i);
         pc[i] = site_install(&flat, SDEV_PC, room[i % 4], nm);
+        site_power(&flat, pc[i], true);
         site_cable(&flat, pc[i], 0, sw, i, CAB_CAT6);
         site_addr(&flat, pc[i], 0, net_ip(10, 0, 0, 10 + i), net_mask_bits(24));
     }
@@ -362,6 +372,7 @@ static void check_flat(const Building *b)
         char nm[NET_NAME_MAX];
         snprintf(nm, sizeof nm, "pc%d", i);
         spc[i] = site_install(&seg, SDEV_PC, room[g], nm);
+        site_power(&seg, spc[i], true);
         site_cable(&seg, spc[i], 0, gsw[g], k + 1, CAB_CAT6);
         site_port_vlan(&seg, gsw[g], k + 1, 10 + g);
         saddr[i] = net_ip(10, 0, 10 + g, 10 + k);
@@ -456,6 +467,7 @@ static void check_shell(const Building *b)
         "order router rt",
         "move rt f0.mdf",
         "order pc pc1",
+        "power pc1 on",
         "move pc1 f2.office",
         "cable rt:0 uplink:0 cat6",
         "cable rt:1 sw2:0 cat6",

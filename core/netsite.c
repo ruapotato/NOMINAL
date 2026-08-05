@@ -368,6 +368,19 @@ static int attach(Machine *m)
     return node;
 }
 
+/* MAKE THE WIRE AGREE WITH THE MACHINE, right now.
+ *
+ * Every other caller of attach() is a syscall from inside the box, which is
+ * the honest order: the machine asks, and the network answers as it is. But
+ * a machine that has just been switched on has not made a syscall yet, and
+ * something has to be the moment its card gets configured. This is that
+ * moment, and it configures nothing when netd is not running -- so a box
+ * whose boot failed is on no network at all, which is the point. */
+void netsite_apply(Machine *m)
+{
+    if (m) (void)attach(m);
+}
+
 /* ------------------------------------------------------------ the syscalls */
 /* Resolve a name by sending a query and waiting for a packet. */
 bool netsite_dns(Machine *m, const char *name, char *out, size_t cap)

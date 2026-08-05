@@ -71,6 +71,11 @@ int   site_kind_by_name(const char *name);
 int   site_kind_ports(int kind);      /* sockets on the back of it          */
 int   site_kind_price(int kind);      /* pounds                             */
 bool  site_kind_is_switch(int kind);
+/* Has an operating system in it, and therefore a power button. A switch and
+ * a router are appliances: they come up with the socket they are plugged
+ * into. A pc and a server are computers, and a computer that nobody has
+ * switched on is not on the network. */
+bool  site_kind_has_os(int kind);
 /* Cable, by the metre, which is why the route matters. */
 int   site_cable_price(CableKind k, int metres);
 const char *site_cable_name(CableKind k);
@@ -93,6 +98,7 @@ typedef enum {
     SITE_EVLAN,       /* not a vlan number                                  */
     SITE_ENOTSW,      /* only a switch has ports with vlans on them         */
     SITE_EOFF,        /* it is switched off, and an off box is not on a net */
+    SITE_ENOBTN,      /* an appliance has no power button                   */
     SITE_ERR_COUNT
 } SiteErr;
 const char *site_err_text(int e);
@@ -104,6 +110,7 @@ typedef struct {
     uint16_t room;             /* BLD_NOROOM for the handoff, which is outside */
     int      nports;
     int      node;             /* the netstack node                         */
+    uint8_t  powered;          /* an OS box arrives switched off            */
     char     name[NET_NAME_MAX];
 } SiteDev;
 
@@ -191,6 +198,21 @@ void site_uncable(Site *s, int link);
 PortState site_link_state(const Site *s, int link);
 /* The tray distance between two rooms, patch leads included, or -1. */
 int  site_metres(const Site *s, int room_a, int room_b);
+
+/* THE POWER BUTTON, and it is the join between the box and the wire.
+ *
+ * A machine that had never been switched on used to answer a ping, because
+ * the address was written onto its network node the moment the player typed
+ * it and nothing anywhere asked whether the thing was running. Then plugging
+ * a serial lead in booted it for the first time and it became LESS reachable,
+ * because its real firewall finally started. Two machines, married by the
+ * crash cart.
+ *
+ * So: powering on is what puts a box on the wire, and what it answers after
+ * that is its own operating system's business. Powering off takes the
+ * addresses, the routes, the sockets and the filter with it -- they were
+ * never on the box, they were in its memory. */
+bool site_power(Site *s, int dev, bool on);
 
 /* Configuration, one line of a real config file at a time. `ifx` is the card:
  * 0 is the first socket on the back, 1 the second, and an index above the
