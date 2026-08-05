@@ -4265,9 +4265,26 @@ static void install_local_edits(Machine *m, uint64_t seed)
      * point is that `pkg verify` output has to be READ rather than skimmed
      * for the one familiar line. Duplicates by path are skipped, so a machine
      * never gets two versions of the same file. */
+    /* DEALT ROUND, NOT ROLLED, for the same reason the faults are.
+     *
+     * Independent draws gave the right per-decoy rate and the wrong session:
+     * a blind playtester reported that `Listen 8080` in httpd.conf and the
+     * `restart: always` note in nomde.svc "appeared on nearly every machine",
+     * and stopped reading decoys at all. They were not imagining it -- with
+     * three or four drawn independently out of thirty-seven, the same file
+     * turns up on consecutive machines about as often as not, and two
+     * machines in a row is all it takes to file something under scenery. A
+     * decoy that is always there is not a decoy.
+     *
+     * So each machine takes a run of the table starting where the seed says,
+     * and the stride is coprime with its length, which spreads the run out
+     * and puts a different set in front of the player on the next call. */
     int want = 2 + (int)(rng_next(&r) % 4);
-    for (int k = 0; k < want && m->nlocal < 8; k++) {
-        int i = (int)(rng_next(&r) % (uint64_t)NEDITS);
+    Rng pr;
+    rng_seed(&pr, (seed / (uint64_t)NEDITS) ^ 0x6d2b79f5a3c1e94bULL);
+    int at = (int)((seed + rng_next(&pr)) % (uint64_t)NEDITS);
+    for (int k = 0; k < want && m->nlocal < 8; k++, at = (at + 6) % NEDITS) {
+        int i = at;
         bool dup = false;
         for (int j = 0; j < m->nlocal; j++)
             if (strcmp(m->local[j], EDITS[i].path) == 0) dup = true;
