@@ -20,12 +20,23 @@ Everything goes to the same machine until you call `new` or `end`.
 import os, socket, sys, time, signal
 
 D = os.environ.get('NOMPLAY_DIR', '/tmp/nomplay')
-FIFO, LOG, PID = D + '/in', D + '/out', D + '/pid'
-PROMPT = b'rescue# '
+# A COMMAND FILE, NOT A FIFO.
+#
+# The first version used a named pipe, and opening a pipe for writing BLOCKS
+# until something opens the read end -- so when the relay died, every later
+# invocation hung forever, ignoring its own timeout. That cost more of my time
+# than any bug in the game. Appending to a file cannot deadlock.
+CMDS, LOG, PID = D + '/cmds', D + '/out', D + '/pid'
+# The prompt says which machine you are on, so there is more than one.
+PROMPTS = (b'you@desk# ', b'root@node# ', b'rescue# ')
+
+
+def _at_prompt(buf):
+    return any(buf.endswith(p) for p in PROMPTS)
 
 
 def relay(port):
-    """Owns the socket. Reads commands from the FIFO, appends everything the
+    """Owns the socket. Reads commands from the command file, appends everything the
     server says to the log. Lives until killed or the server goes away."""
     s = socket.create_connection(('127.0.0.1', port))
     s.settimeout(0.4)
@@ -48,7 +59,7 @@ def relay(port):
                     break
                 out += c
                 quiet = 0.0
-                if out.endswith(PROMPT):
+                if _at_prompt(out):
                     break
             except socket.timeout:
                 if out:
@@ -59,21 +70,33 @@ def relay(port):
 
     with open(LOG, 'ab', buffering=0) as log:
         log.write(drain())
+        pos = 0
         while True:
-            with open(FIFO) as f:        # blocks until someone writes
-                for line in f:
-                    line = line.rstrip('\n')
-                    if line == '\x00QUIT':
-                        s.close()
-                        return
-                    s.sendall((line + '\n').encode())
-                    log.write(('\n$ ' + line + '\n').encode())
-                    log.write(drain())
+            try:
+                with open(CMDS, 'r') as f:
+                    f.seek(pos)
+                    fresh = f.read()
+                    pos = f.tell()
+            except FileNotFoundError:
+                fresh = ''
+            if not fresh:
+                time.sleep(0.15)
+                continue
+            for line in fresh.splitlines():
+                if line == '\x00QUIT':
+                    s.close()
+                    return
+                s.sendall((line + '\n').encode())
+                log.write(('\n$ ' + line + '\n').encode())
+                log.write(drain())
 
 
 def alive():
     try:
-        os.kill(int(open(PID).read()), 0)
+        pid = int(open(PID).read())
+        if pid <= 1:
+            return False            # never signal 0: that is the whole group
+        os.kill(pid, 0)
         return True
     except Exception:
         return False
@@ -82,40 +105,49 @@ def alive():
 def start(port):
     stop()
     os.makedirs(D, exist_ok=True)
-    for p in (FIFO, LOG):
+    for p in (CMDS, LOG):
         if os.path.exists(p):
             os.remove(p)
-    os.mkfifo(FIFO)
+    open(CMDS, 'w').close()
     open(LOG, 'wb').close()
-    if os.fork() == 0:
+    # fork() HANDS THE PARENT THE CHILD'S PID. Looking it up with pgrep
+    # instead could return nothing, and 0 written to the pid file made stop()
+    # call os.kill(0, SIGKILL) -- which signals the whole PROCESS GROUP, so
+    # the client killed its own caller and anything else sharing the group.
+    # That is a foot-gun I built for no reason; fork already told me.
+    pid = os.fork()
+    if pid == 0:
         os.setsid()
+        # DETACH THE STANDARD STREAMS. The relay inherited stdout, so the
+        # shell that started it waited for that pipe to close -- forever --
+        # and every invocation looked like a hang in the client when the
+        # client had already finished. A daemon closes its streams; I skipped
+        # the one step that makes it a daemon.
+        devnull = os.open(os.devnull, os.O_RDWR)
+        os.dup2(devnull, 0)
+        os.dup2(devnull, 1)
+        os.dup2(devnull, 2)
         try:
             relay(port)
         except Exception:
             pass
         os._exit(0)
-    # the child writes nothing; record its pid from the parent's view
-    time.sleep(0.2)
-    open(PID, 'w').write(str(os.getpgid(0) and _child_pid()))
+    open(PID, 'w').write(str(pid))
     time.sleep(2.5)                      # let the ticket banner arrive
-
-
-def _child_pid():
-    """The forked relay is our only child; find it."""
-    out = os.popen('pgrep -f "nomplay.py" -P %d' % os.getpid()).read().split()
-    return int(out[0]) if out else 0
 
 
 def stop():
     if os.path.exists(PID) and alive():
         try:
-            with open(FIFO, 'w') as f:
+            with open(CMDS, 'a') as f:
                 f.write('\x00QUIT\n')
-            time.sleep(0.3)
+            time.sleep(0.4)
         except Exception:
             pass
         try:
-            os.kill(int(open(PID).read()), signal.SIGKILL)
+            pid = int(open(PID).read())
+            if pid > 1:
+                os.kill(pid, signal.SIGKILL)
         except Exception:
             pass
 
@@ -125,12 +157,13 @@ def send(cmds):
         print('no session -- run: nomplay.py new')
         sys.exit(1)
     before = os.path.getsize(LOG)
-    with open(FIFO, 'w') as f:
+    with open(CMDS, 'a') as f:
         for c in cmds:
             f.write(c + '\n')
-            f.flush()
+        f.flush()
     last, still = before, 0
-    while still < 6:                     # wait for the log to go quiet
+    deadline = time.time() + 180         # a wedged relay must never hang us
+    while still < 6 and time.time() < deadline:
         time.sleep(0.6)
         now = os.path.getsize(LOG)
         if now == last:

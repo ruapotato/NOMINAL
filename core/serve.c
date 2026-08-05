@@ -76,6 +76,18 @@ typedef struct {
     size_t   len;
 } Client;
 
+/* THE PROMPT SAYS WHICH MACHINE YOU ARE ON.
+ *
+ * It said `rescue#` always -- on your own workstation, on the customer's
+ * console, and inside a chroot. Two playtesters lost track of where they were
+ * and both reported it. Now it is the one piece of state you can never be
+ * wrong about, because it is in front of every command you type. */
+static const char *prompt_for(const Client *c)
+{
+    if (c->desk.sp_connected) return "root@node# ";
+    return "you@desk# ";
+}
+
 static void send_all(sock_t fd, const char *data, size_t len)
 {
     size_t sent = 0;
@@ -393,7 +405,7 @@ int bench_serve(int port, bool verbose, uint64_t seed0)
                     c->fd = fd; c->len = 0; c->live = false;
                     send_str(fd, "NOMINAL support bench. `help` for what you can do.\n");
                     new_ticket(c, ++seq, 1);
-                    send_str(fd, "rescue# ");
+                    send_str(fd, prompt_for(c));
                 }
             }
         }
@@ -411,7 +423,7 @@ int bench_serve(int port, bool verbose, uint64_t seed0)
                     bool keep = client_line(c);
                     c->len = 0;
                     if (!keep) { client_close(c); break; }
-                    send_str(c->fd, "rescue# ");
+                    send_str(c->fd, prompt_for(c));
                 } else if (c->len < LINE_CAP - 1) {
                     c->line[c->len++] = ch;
                 }
