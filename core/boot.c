@@ -190,6 +190,36 @@ static bool initrd_has_module(const Buf *b, const char *name)
     return false;
 }
 
+/* WHAT THE INITRD DOES CARRY, in one line.
+ *
+ * "no driver for the root device" is true and useless on its own: it reads
+ * the same whether the image has no modules at all, or a full set built for
+ * somebody else's hardware. Those are different faults with different repairs
+ * -- one is `mkinitrd`, the other is a machine the image was never meant for
+ * -- and the difference is visible the moment the loader says what it has. */
+static void initrd_modules(const Buf *b, char *out, size_t outsz)
+{
+    size_t o = 0;
+    out[0] = '\0';
+    const char *p = b->p, *end = b->p + b->len;
+    while (p && p < end) {
+        const char *nl = memchr(p, '\n', (size_t)(end - p));
+        size_t len = nl ? (size_t)(nl - p) : (size_t)(end - p);
+        if (len > 7 && strncmp(p, "module ", 7) == 0) {
+            const char *v = p + 7; size_t vl = len - 7;
+            while (vl && (v[vl-1] == ' ' || v[vl-1] == '\r')) vl--;
+            if (o + vl + 3 < outsz) {
+                if (o) { out[o++] = ','; out[o++] = ' '; }
+                memcpy(out + o, v, vl);
+                o += vl;
+                out[o] = '\0';
+            }
+        }
+        p = nl ? nl + 1 : NULL;
+    }
+    if (!o) snprintf(out, outsz, "(none)");
+}
+
 /* --- the chain --------------------------------------------------------- */
 
 /* Persist what the machine said while it was booting.
@@ -440,7 +470,10 @@ void machine_boot(Machine *m)
      * it is formatted with. This is the classic one: regenerate the initrd
      * without a module and the machine cannot reach its own root. */
     if (!initrd_has_module(&f, "virtio_blk")) {
-        say(c, "initrd: no driver for the root device");
+        char mods[192];
+        initrd_modules(&f, mods, sizeof mods);
+        say(c, "initrd: modules in this image: %s", mods);
+        say(c, "initrd: no driver for the root device (virtio_blk)");
         m->boot.emergency = 1;
         fail(m, c, BOOT_INITRD,
              "initrd: waiting for %s ... timed out (30s), entering emergency shell",
@@ -448,6 +481,9 @@ void machine_boot(Machine *m)
         goto done;
     }
     if (!initrd_has_module(&f, "ext4")) {
+        char mods[192];
+        initrd_modules(&f, mods, sizeof mods);
+        say(c, "initrd: modules in this image: %s", mods);
         say(c, "initrd: no filesystem driver for ext4");
         m->boot.emergency = 1;
         fail(m, c, BOOT_INITRD,

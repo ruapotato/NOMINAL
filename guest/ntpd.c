@@ -83,6 +83,40 @@ void _start(void)
         }
     }
 
+    /* THE DRIFT FILE IS A FILE, and a time daemon that cannot keep its drift
+     * loses its calibration at every restart, so it says so rather than
+     * pretending. This is what makes /var/lib/ntp a directory worth owning:
+     * before it, deleting it cost nothing and the package manifest was
+     * describing something no program ever touched. */
+    {
+        static char df[192];
+        df[0] = 0;
+        char *q = conf;
+        while (*q && !df[0]) {
+            char *nl = q; while (*nl && *nl != '\n') nl++;
+            char save = *nl; *nl = 0;
+            char *t = g_trim(q);
+            if (t[0] == 'd' && g_contains(t, "driftfile")) {
+                char *v = t + 9;
+                while (*v == ' ' || *v == '\t' || *v == '=') v++;
+                g_copy(df, v, sizeof df);
+            }
+            *nl = save; q = *nl ? nl + 1 : nl;
+        }
+        if (df[0]) {
+            int fd = g_open(df, O_WRONLY | O_CREAT | O_TRUNC);
+            if (fd < 0) {
+                g_puts("ntpd: ");
+                g_puts(df);
+                g_putln(": cannot write the drift file -- refusing to start");
+                g_exit(1);
+            }
+            const char *z = "0.000\n";
+            sysc(SYS_write, fd, (i64)z, (i64)g_strlen(z));
+            g_close(fd);
+        }
+    }
+
     /* Publish what was actually loaded. The file on disk says what the
      * machine is SUPPOSED to do; this says what the running process is
      * actually doing, and the two drift the moment somebody edits a config

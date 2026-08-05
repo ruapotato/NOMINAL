@@ -84,6 +84,24 @@ void _start(void)
                     g_putln(real);
                     g_exit(1);
                 }
+            } else if (dev[0] == 'U' && !has_opt(opts, "nofail")) {
+                /* A UUID NAMES A DISK, AND EITHER IT IS HERE OR IT IS NOT.
+                 *
+                 * A device path that is absent fails later, at the mount, with
+                 * a message about the device. A uuid cannot even be looked up:
+                 * nothing on this machine carries it. That is a different and
+                 * commoner mistake -- a disk was replaced, or the entry was
+                 * copied from another machine's fstab -- and it deserves to be
+                 * said in those words, because the fix is to find out what
+                 * this disk's uuid really is (`blkid`) rather than to hunt for
+                 * a device node. */
+                g_puts("mountall: /etc/fstab:");
+                g_putn(lineno);
+                g_puts(": ");
+                g_puts(dev);
+                g_putln(": no device on this machine has that uuid");
+                g_puts("          `blkid` says what /dev/sda1 actually is.\n");
+                g_exit(1);
             }
         }
 
@@ -112,6 +130,7 @@ void _start(void)
             g_puts("mountall: ");
             g_puts(at);
             g_putln(": mount point does not exist");
+            if (has_opt(opts, "nofail")) continue;
             g_exit(1);
         }
         if (st.kind != NOM_KIND_DIR) {
@@ -129,6 +148,18 @@ void _start(void)
             g_puts(" on ");
             g_puts(at);
             g_putln("");
+            /* `nofail` IS THE WHOLE DIFFERENCE between an entry for a disk
+             * that is not here and a boot that stops. Every administrator who
+             * has added a second disk knows the option, and until now this
+             * program did not, so a perfectly ordinary fstab line for a drive
+             * that is out of the machine took the boot down whatever it said.
+             * With it, the same missing device is a line on the console and
+             * nothing more -- which is what makes an fstab entry for an absent
+             * disk sometimes a fault and sometimes just housekeeping. */
+            if (has_opt(opts, "nofail")) {
+                g_puts("          (nofail: carrying on without it)\n");
+                continue;
+            }
             g_puts("          the device is not there. Check the entry, or "
                    "add noauto if\n          it is not supposed to be.\n");
             g_exit(1);

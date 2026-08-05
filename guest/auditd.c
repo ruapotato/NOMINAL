@@ -84,6 +84,49 @@ void _start(void)
         }
     }
 
+    /* OPEN THE TRAIL IT IS TOLD TO KEEP.
+     *
+     * `log_file = /var/audit/trail` was, until now, a line auditd read and
+     * did nothing with -- so an administrator moving the audit log to a
+     * volume that was never created broke nothing at all, and a note in the
+     * catalogue said otherwise. An audit daemon that cannot write its trail
+     * is not auditing, and on a real machine it says so and stops. */
+    {
+        static char lf[192];
+        lf[0] = 0;
+        char *q = conf;
+        while (*q && !lf[0]) {
+            char *nl = q; while (*nl && *nl != '\n') nl++;
+            char save = *nl; *nl = 0;
+            char *t = g_trim(q);
+            if (*t != '#' && g_contains(t, "log_file")) {
+                char *v = t;
+                while (*v && *v != '=') v++;
+                if (*v == '=') { v++; while (*v == ' ' || *v == '\t') v++;
+                                 g_copy(lf, v, sizeof lf); }
+            }
+            *nl = save; q = *nl ? nl + 1 : nl;
+        }
+        if (lf[0]) {
+            int fd = g_open(lf, O_WRONLY | O_CREAT | O_APPEND);
+            if (fd < 0) {
+                g_puts("auditd: ");
+                g_puts(lf);
+                g_putln(": cannot open the audit trail -- refusing to start");
+                g_exit(1);
+            }
+            const char *line = "auditd: log opened\n";
+            i64 w = sysc(SYS_write, fd, (i64)line, (i64)g_strlen(line));
+            g_close(fd);
+            if (w < 0) {
+                g_puts("auditd: ");
+                g_puts(lf);
+                g_putln(": cannot write the audit trail -- refusing to start");
+                g_exit(1);
+            }
+        }
+    }
+
     /* Publish what was actually loaded. The file on disk says what the
      * machine is SUPPOSED to do; this says what the running process is
      * actually doing, and the two drift the moment somebody edits a config

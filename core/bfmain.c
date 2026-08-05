@@ -136,15 +136,23 @@ int main(int argc, char **argv)
             for (int k = 0; k < m.npkg; k++) {
                 for (int f = 0; f < m.pkg[k]->nfiles; f++) {
                     const char *fp = m.pkg[k]->file[f].path;
-                    const char *slash = strrchr(fp, '/');
-                    if (!slash || slash == fp) continue;
-                    char dir[NOM_PATH_MAX], cmd[NOM_PATH_MAX + 24];
-                    size_t dl = (size_t)(slash - fp);
-                    if (dl >= sizeof dir) continue;
-                    memcpy(dir, fp, dl);
-                    dir[dl] = 0;
-                    snprintf(cmd, sizeof cmd, "chmod 755 /mnt%s", dir);
-                    kernel_run(&m, cmd, &o);
+                    /* EVERY DIRECTORY ON THE WAY, not just the last one. A
+                     * mode that bars the way to /var bars the way to
+                     * everything under it, and chmodding only the immediate
+                     * parent of each file left the whole tree unreachable
+                     * with the parent looking perfect. A person reading
+                     * UNREADABLE next to a file walks UP until the listing
+                     * works; this does the same thing. */
+                    for (const char *slash = strchr(fp + 1, '/'); slash;
+                         slash = strchr(slash + 1, '/')) {
+                        char dir[NOM_PATH_MAX], cmd[NOM_PATH_MAX + 24];
+                        size_t dl = (size_t)(slash - fp);
+                        if (dl >= sizeof dir) break;
+                        memcpy(dir, fp, dl);
+                        dir[dl] = 0;
+                        snprintf(cmd, sizeof cmd, "chmod 755 /mnt%s", dir);
+                        kernel_run(&m, cmd, &o);
+                    }
                 }
             }
 
@@ -505,8 +513,24 @@ int main(int argc, char **argv)
 
         printf("%s", desk.boot.console.p ? desk.boot.console.p : "");
         printf("\n--- ticket %llu ---\n", (unsigned long long)(seed % 10000));
-        printf("  %s is on the line. Their machine is not coming up.\n",
-               customer_name(&cust));
+        /* The same blurb the socket prints, and for the same reason: "not
+         * coming up" was hard-coded and was wrong on every ticket where the
+         * machine came up. See new_ticket() in serve.c. */
+        {
+            Buf sick = {0};
+            int dead = kernel_health(&cust, &sick);
+            buf_free(&sick);
+            Buf left = {0};
+            int rest = machine_outstanding(&cust, &left) ? 1 : 0;
+            buf_free(&left);
+            const char *say;
+            if (!cust.boot.running) say = "Their machine is not coming up.";
+            else if (dead || rest)  say = "Their machine comes up, and something "
+                                          "on it is not working.";
+            else                    say = "They say it seems fine now, and they "
+                                          "want somebody to be sure.";
+            printf("  %s is on the line. %s\n", customer_name(&cust), say);
+        }
         if (cust.airgapped) {
             printf("  it is not on any network -- there is no address to give you.\n");
             printf("  you are at YOUR workstation, and your only terminal on their\n");

@@ -10,12 +10,13 @@
  *   -n   no trailing newline, so a file can be rebuilt byte-exactly
  */
 #include "gsys.h"
-static char arg[1024];
+static char arg[GARG_MAX];
 void _start(void)
 {
     g_getarg(arg, sizeof arg);
-    char *v[GARGS];
+    static char *v[GARGS];
     int n = g_argv(arg, v);          /* strips quotes and honours backslashes */
+    g_argv_warn("echo");
 
     int i = 0, nl = 1;
     if (n > 0 && g_streq(v[0], "-n")) { nl = 0; i = 1; }

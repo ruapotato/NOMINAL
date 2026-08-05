@@ -78,6 +78,19 @@ void _start(void)
         g_putln(" does not exist");
         g_exit(1);
     }
+    if (st.kind != NOM_KIND_FILE) {
+        /* A DIRECTORY IS NOT A SHELL. This matters more than it sounds: one
+         * extra colon in a passwd line shifts every field left, the home
+         * directory lands in the shell column, and the path exists and is
+         * "executable" because directories are. Without this the account
+         * looked fine and the machine was quietly unusable. */
+        g_puts("getty: ");
+        g_puts(who);
+        g_puts("'s login shell ");
+        g_puts(shell);
+        g_putln(" is not a program (check the field order in /etc/passwd)");
+        g_exit(1);
+    }
     if (!(st.mode & 0111)) {
         g_puts("getty: ");
         g_puts(who);
@@ -86,6 +99,39 @@ void _start(void)
         g_putln(" is not executable");
         g_exit(1);
     }
+    /* PASSWD AND SHADOW HAVE TO AGREE.
+     *
+     * The account exists and its shell is fine, and there is still no way in:
+     * the password lives in a second file, and an account with no line in
+     * /etc/shadow cannot be authenticated at all. It is exactly what a
+     * half-finished user migration leaves behind, and it is invisible in
+     * /etc/passwd, which is where everybody looks. */
+    {
+        static char shadow[8192], sline[256], sname[64];
+        if (g_slurp("/etc/shadow", shadow, sizeof shadow) < 0) {
+            g_putln("getty: /etc/shadow: cannot read -- no passwords, no login");
+            g_exit(1);
+        }
+        int has = 0;
+        char *s = shadow;
+        while (*s && !has) {
+            char *nl = s; while (*nl && *nl != '\n') nl++;
+            char save = *nl; *nl = 0;
+            g_copy(sline, s, sizeof sline);
+            *nl = save; s = *nl ? nl + 1 : nl;
+            char *t = g_trim(sline);
+            if (!*t || *t == '#') continue;
+            if (field(t, 0, sname, sizeof sname) && g_streq(sname, who)) has = 1;
+        }
+        if (!has) {
+            g_puts("getty: ");
+            g_puts(who);
+            g_putln(" is in /etc/passwd but has no entry in /etc/shadow");
+            g_putln("       the account cannot be authenticated -- no login");
+            g_exit(1);
+        }
+    }
+
     if (home[0] && g_stat(home, &st) != 0) {
         /* Not fatal on a real system and not fatal here, but it is the sort
          * of thing worth saying out loud. */

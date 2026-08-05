@@ -84,6 +84,45 @@ void _start(void)
         }
     }
 
+    /* AND IS THE DIRECTORY IT NAMES ACTUALLY THERE?
+     *
+     * /srv/www/README has told anyone who read it that httpd checks this
+     * before it will start, and httpd did not: the config could name a
+     * directory that had been deleted or moved and the web server came up
+     * perfectly happy serving nothing. A daemon that does not touch what its
+     * configuration points at cannot be broken by pointing it somewhere
+     * wrong, and "the config is valid and the thing it names is gone" is one
+     * of the commonest ways a service really dies. */
+    {
+        static char root[192];
+        root[0] = 0;
+        char *q = conf;
+        while (*q && !root[0]) {
+            char *nl = q; while (*nl && *nl != '\n') nl++;
+            char save = *nl; *nl = 0;
+            char *t = g_trim(q);
+            if (t[0] == 'D' && g_contains(t, "DocumentRoot")) {
+                char *v = t + 12;                  /* past the keyword */
+                while (*v == ' ' || *v == '\t' || *v == '=') v++;
+                g_copy(root, v, sizeof root);
+            }
+            *nl = save; q = *nl ? nl + 1 : nl;
+        }
+        NomStat st;
+        if (root[0] && g_stat(root, &st) != 0) {
+            g_puts("httpd: ");
+            g_puts(root);
+            g_putln(": document root does not exist -- refusing to start");
+            g_exit(1);
+        }
+        if (root[0] && st.kind != NOM_KIND_DIR) {
+            g_puts("httpd: ");
+            g_puts(root);
+            g_putln(": document root is not a directory -- refusing to start");
+            g_exit(1);
+        }
+    }
+
     /* Publish what was actually loaded. The file on disk says what the
      * machine is SUPPOSED to do; this says what the running process is
      * actually doing, and the two drift the moment somebody edits a config

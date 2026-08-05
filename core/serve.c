@@ -179,11 +179,37 @@ static void new_ticket(Client *c, uint64_t seed, int faults)
     snprintf(c->desk.peer_addr, sizeof c->desk.peer_addr,
              "10.0.2.%d", 60 + (int)(seed % 40));
 
+    /* WHAT IS ACTUALLY WRONG WITH IT, not what is usually wrong with them.
+     *
+     * This said "Their machine is not coming up" on every ticket ever
+     * issued, and it is not true of every ticket: seed 809 was sitting at a
+     * login prompt with a degraded service, and seed 9090 booted perfectly
+     * with a fault still on the disk. A player who reads "not coming up" and
+     * then watches it come up has been told the first lie of the call by the
+     * game itself, and after that they cannot use the blurb at all.
+     *
+     * The machine has already been broken and booted by now, so the answer is
+     * a fact about it rather than a guess. It stays at the customer's level of
+     * knowledge -- they can see the screen and they cannot see a service -- so
+     * naming what is wrong is still the player's job. */
+    Buf sick = {0};
+    int dead = kernel_health(&c->m, &sick);
+    buf_free(&sick);
+    Buf left = {0};
+    int rest = machine_outstanding(&c->m, &left) ? 1 : 0;
+    buf_free(&left);
+    const char *say;
+    if (!c->m.boot.running)  say = "Their machine is not coming up.";
+    else if (dead || rest)   say = "Their machine comes up, and something on it "
+                                   "is not working.";
+    else                     say = "They say it seems fine now, and they want "
+                                   "somebody to be sure.";
+
     char hdr[512];
     snprintf(hdr, sizeof hdr,
              "\n--- ticket %s ---\n"
-             "  %s is on the line. Their machine is not coming up.\n",
-             c->m.id, customer_name(&c->m));
+             "  %s is on the line. %s\n",
+             c->m.id, customer_name(&c->m), say);
     send_str(c->fd, hdr);
 
     if (c->m.airgapped) {

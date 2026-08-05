@@ -121,12 +121,35 @@ static inline void g_puthex(unsigned long v)
  * backslash escapes the next character, and the quotes are removed as the
  * shell removes them. Done here rather than in sh.c so that every program
  * gets it, since every program splits its arguments through this one
- * function. */
-#define GARGS 8
+ * function.
+ *
+ * HOW MANY. This was 8, and eight is a number a directory beats. An `echo`
+ * of every entry in /etc printed the first eight of forty-one and stopped,
+ * with no mark of any kind that it had stopped; globbing the nine .conf files
+ * returned eight of them, and the one it dropped was the file that was
+ * actually broken on that ticket. A cap that hides evidence, in a game about
+ * finding evidence, is the worst kind of bug: the player cannot tell.
+ *
+ * 256 is generous enough that no directory on this machine reaches it, and it
+ * costs one pointer array per caller -- 2 KB of stack in a program that has
+ * four megabytes of it. The cap still exists, because a fixed array is what
+ * a machine without an allocator has, so g_argv now SAYS when it hits it:
+ * g_argv_over is set, and every program that can be handed a glob checks it
+ * and tells the player how many arguments it did not see. */
+#define GARGS 256
+
+/* The longest argument string a program can be handed, matching NOM_ARG_MAX
+ * on the host. A program that may receive a glob declares its buffer this
+ * big; anything smaller truncates in the middle of a filename. */
+#define GARG_MAX 4096
+
+static int g_argv_over;   /* set by g_argv: there were more words than GARGS */
+
 static inline int g_argv(char *arg, char **v)
 {
     int n = 0;
     char *w = arg;                    /* write cursor: we rewrite in place */
+    g_argv_over = 0;
     while (*arg && n < GARGS) {
         while (*arg == ' ' || *arg == '\t') arg++;
         if (!*arg) break;
@@ -153,7 +176,22 @@ static inline int g_argv(char *arg, char **v)
         if (*arg) arg++;
         *w++ = 0;
     }
+    /* Anything left over is an argument this program will never see. Saying
+     * so is the whole difference between a limit and a lie. */
+    while (*arg == ' ' || *arg == '\t') arg++;
+    if (*arg) g_argv_over = 1;
     return n;
+}
+
+/* "and N more that did not fit". Called by anything that can be handed a
+ * glob, after g_argv. */
+static inline void g_argv_warn(const char *who)
+{
+    if (!g_argv_over) return;
+    g_puts(who);
+    g_puts(": too many arguments -- only the first ");
+    g_putn(GARGS);
+    g_putln(" were used");
 }
 
 /* A number in a fixed-width right-aligned column, then two spaces.

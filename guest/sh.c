@@ -11,7 +11,7 @@
  */
 #include "gsys.h"
 
-static char line[2048], cwd[256], tmp[512], expanded[2048];
+static char line[GARG_MAX], cwd[256], tmp[512], expanded[GARG_MAX];
 
 /* One variable, set by `for`. A full environment is not what this shell is
  * for -- loops over a device list are, because that is the shape of the work:
@@ -235,8 +235,17 @@ static int redirect_fd = -1;
  * a shell feature everybody expects would have closed in one line.
  *
  * Only * and ? and only in the last path component, which is where they
- * matter. An unmatched pattern is left alone, as sh does. */
-static char globbuf[4096];
+ * matter. An unmatched pattern is left alone, as sh does.
+ *
+ * WHAT IT USED TO DROP. The expansion itself was never capped, but everything
+ * downstream of it was: eight argv slots and a 256-byte argument string. So
+ * globbing every entry in /etc answered with the first eight of forty-one,
+ * and the nine .conf files came back as eight -- silently, and on one ticket
+ * the file it dropped was the broken one. The ceilings are much
+ * higher now (GARGS, GARG_MAX) and glob_expand says so when it still hits
+ * one, because a listing that stops early and does not admit it is worse than
+ * no listing at all. */
+static char globbuf[GARG_MAX];
 
 static int glob_match(const char *pat, const char *nm)
 {
@@ -292,19 +301,30 @@ static void glob_expand(const char *in, char *out, u64 cap)
             g_copy(pat, word + slash + 1, sizeof pat);
         }
 
-        int hits = 0;
+        int hits = 0, dropped = 0;
         static char nm[160];
-        for (int i = 0; i < 2048; i++) {
+        for (int i = 0; i < 4096; i++) {
             if (g_readdir(dir, i, nm) < 0) break;
             if (!glob_match(pat, nm)) continue;
-            if (hits && o + 1 < cap) out[o++] = ' ';
+            /* Does the WHOLE name fit? Emitting half of one and stopping
+             * would hand the next program a filename that never existed. */
+            u64 need = g_strlen(nm) + 1;
+            if (slash >= 0) need += g_strlen(dir) + 1;
+            if (o + need + 1 >= cap) { dropped++; continue; }
+            if (hits) out[o++] = ' ';
             if (slash >= 0) {
-                for (u64 k = 0; dir[k] && o + 1 < cap; k++) out[o++] = dir[k];
-                if (!(slash == 0) && o + 1 < cap) out[o++] = '/';
-                else if (slash == 0 && o + 1 < cap && out[o-1] != '/') out[o++] = '/';
+                for (u64 k = 0; dir[k]; k++) out[o++] = dir[k];
+                if (out[o-1] != '/') out[o++] = '/';
             }
-            for (u64 k = 0; nm[k] && o + 1 < cap; k++) out[o++] = nm[k];
+            for (u64 k = 0; nm[k]; k++) out[o++] = nm[k];
             hits++;
+        }
+        if (dropped) {
+            g_puts("sh: "); g_puts(word); g_puts(": matched ");
+            g_putn(hits + dropped);
+            g_puts(" names and only ");
+            g_putn(hits);
+            g_putln(" fit on one command line -- narrow the pattern");
         }
         if (!hits)      /* nothing matched: leave the pattern, as sh does */
             for (u64 i = 0; i < wl && o + 1 < cap; i++) out[o++] = word[i];
@@ -497,14 +517,15 @@ static int run_line(char *cmd0)
          * the file, and there was no way to write a line containing a space
          * without them. On a machine whose only editor is `echo >>` and
          * `sed`, that decides whether a config file can be repaired at all. */
-        static char ebuf[1024];
+        static char ebuf[GARG_MAX];
         g_copy(ebuf, rest, sizeof ebuf);
-        char *ev[GARGS];
+        static char *ev[GARGS];
         int en = g_argv(ebuf, ev);
+        g_argv_warn("echo");
         int ei = 0, enl = 1;
         if (en > 0 && g_streq(ev[0], "-n")) { enl = 0; ei = 1; }
 
-        static char outb[1024];
+        static char outb[GARG_MAX];
         u64 o = 0;
         for (; ei < en; ei++) {
             for (const char *q = ev[ei]; *q && o + 2 < sizeof outb; q++) outb[o++] = *q;

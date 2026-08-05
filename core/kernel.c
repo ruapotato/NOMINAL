@@ -45,7 +45,7 @@ struct Proc {
     Machine *m;
     Buf     *console;
     Fd       fd[FD_MAX];
-    char     arg[NOM_PATH_MAX];
+    char     arg[NOM_ARG_MAX];
     int      depth;
     int      pid;            /* index into m->proc                       */
     ProcInfo *info;          /* our own row: cwd and namespace live here */
@@ -340,6 +340,14 @@ static int64_t sys_open(Proc *p, Cpu *c, uint64_t pathp, int64_t flags)
             parent[pl] = 0;
             VNode *pd = vfs_lookup(fs, parent);
             if (!pd || pd->kind != VN_DIR) return -1;
+            /* AND THE DIRECTORY HAS TO BE WRITABLE. Creating a file is a
+             * write to the directory, not to the file, which is why a
+             * security sweep that takes the write bit off /run stops every
+             * daemon on the machine while every file in it still reads
+             * perfectly. Without this the mode on a directory meant nothing
+             * except for traversal, and "permissions on the directory rather
+             * than on the file" is one of the classic afternoons. */
+            if (!(pd->mode & 0222)) return -1;
         }
         /* AND ARE THERE ANY INODES LEFT. A filesystem with free space and no
          * free inodes refuses to create anything at all, which is the whole
@@ -671,7 +679,7 @@ static int64_t kernel_syscall(Cpu *c, int64_t n, int64_t a0, int64_t a1,
         /* One stage of a pipeline. The child reads what this process's pipe
          * currently holds and writes into a fresh buffer, which then becomes
          * the pipe -- so the next stage reads this one's output. */
-        char path[NOM_PATH_MAX], arg[NOM_PATH_MAX] = "";
+        char path[NOM_PATH_MAX], arg[NOM_ARG_MAX] = "";
         if (!guest_str(c, (uint64_t)a0, path, sizeof path)) return SPAWN_ENOENT;
         if (a1 && !guest_str(c, (uint64_t)a1, arg, sizeof arg)) return SPAWN_ENOENT;
         Buf next = {0};
@@ -1006,7 +1014,7 @@ static int64_t kernel_syscall(Cpu *c, int64_t n, int64_t a0, int64_t a1,
         return r;
     }
     case SYS_spawn: {
-        char path[NOM_PATH_MAX], arg[NOM_PATH_MAX] = "";
+        char path[NOM_PATH_MAX], arg[NOM_ARG_MAX] = "";
         if (!guest_str(c, (uint64_t)a0, path, sizeof path)) return SPAWN_ENOENT;
         if (a1 && !guest_str(c, (uint64_t)a1, arg, sizeof arg)) return SPAWN_ENOENT;
         return kernel_spawn_p(p->m, path, arg, p->console, p->depth + 1, p, NULL, 0);
@@ -1464,7 +1472,7 @@ static int64_t daemon_launch(Machine *m, struct Daemon *d, Buf *console)
         snprintf(pi->cwd, sizeof pi->cwd, "/");
     }
 
-    char savearg[NOM_PATH_MAX];
+    char savearg[NOM_ARG_MAX];
     snprintf(savearg, sizeof savearg, "%s", d->proc.arg);
     memset(&d->proc, 0, sizeof d->proc);
     d->proc.m = m;
