@@ -182,11 +182,19 @@ static void new_ticket(Client *c, uint64_t seed, int faults)
      * "on their console" before you had reached it -- which is why `rcon
      * connect` was rejecting the address the header had just printed. */
     c->desk.sp_connected = false;
-    /* The drive and the boot device belong to the machine they are in, so
-     * they are reset on the CUSTOMER'S box. Setting the workstation's was
-     * setting a field nothing reads. */
+    /* THE DRIVE IS EMPTY AT THE START OF A CALL. THE BOOT ORDER IS NOT OURS.
+     *
+     * This reset the boot device too, and it runs AFTER machine_break -- so a
+     * fault whose entire content IS the firmware boot order was wiped the
+     * instant the ticket was created. That is why a playtester could take the
+     * ticket, type `boot`, and close it having never touched the machine: by
+     * then there was nothing wrong with it.
+     *
+     * The virtual drive really is empty when a call starts, so clearing the
+     * medium is right. What the machine's firmware is set to boot from is a
+     * property of the machine, which is exactly the sort of thing that can be
+     * wrong with it. */
     c->m.sp_media = false;
-    c->m.sp_bootdev = 0;
     snprintf(c->desk.peer_addr, sizeof c->desk.peer_addr,
              "10.0.2.%d", 60 + (int)(seed % 40));
 
@@ -344,8 +352,28 @@ static bool client_line(Client *c)
         }
         /* Attached: this IS the service processor, so set what it would have
          * been set to and let the same code run the boot. */
-        c->m.sp_media   = live;
-        c->m.sp_bootdev = live ? 1 : 0;
+        /* `boot` MUST NOT SILENTLY PERFORM A REPAIR.
+         *
+         * This set the boot device to the disk unconditionally -- which is
+         * exactly what `rcon boot disk` does, and that is the whole repair for
+         * a machine whose firmware boot order names an empty optical drive. So
+         * the first command every player types fixed that fault without them
+         * noticing, and `done` then closed the ticket honestly, because the
+         * machine really was repaired. A playtester took seed 601, typed
+         * `boot`, and closed it having never touched the machine.
+         *
+         * `boot` is the power button, not a configuration change. It changes
+         * the boot device only when there is a medium to come back FROM --
+         * that is the convenience it was added for, returning from a rescue
+         * boot -- and leaves the firmware alone otherwise, so a broken boot
+         * order stays broken until somebody repairs it on purpose. */
+        if (live) {
+            c->m.sp_media   = true;
+            c->m.sp_bootdev = 1;
+        } else if (c->m.sp_media) {
+            c->m.sp_media   = false;
+            c->m.sp_bootdev = 0;
+        }
         if (live) {
             machine_boot_rescue(&c->m);
             send_all(c->fd, c->m.boot.console.p, c->m.boot.console.len);
