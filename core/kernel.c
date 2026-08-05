@@ -1835,13 +1835,42 @@ static bool link_check(Machine *m, Vfs *fs, const char *needs,
             return false;
         }
         char have[40] = "";
-        if (want[0] && lib_version(fs, path, have, sizeof have) &&
-            version_older(have, want)) {
+        bool known = lib_version(fs, path, have, sizeof have);
+        if (want[0] && known && version_older(have, want)) {
             snprintf(err, errsz,
                      "error while loading shared libraries: %s: "
                      "version %s not found (installed: %s)",
                      soname, want, have);
             return false;
+        }
+
+        /* A LIBC FROM THE RELEASE AFTER THIS ONE, which is the other way a
+         * libc can be wrong and the one the documentation has been promising.
+         *
+         * A newer library satisfies an older requirement -- that is the whole
+         * point of symbol versioning, and the linker above is right to allow
+         * it. But 12.0's libc is not merely newer, it is built against a
+         * kernel this machine is not running, and the first thing it does is
+         * check. That is the real failure mode of a glibc dragged in from the
+         * next release, down to the wording, and it is what makes the testing
+         * channel a fault at all: without it, `channel = testing` installed a
+         * perfectly working library, the machine came up healthy, and the
+         * generator threw the ticket away and drew again. The fault existed,
+         * was documented in three places, and could not be dealt -- it was
+         * measured at zero in four hundred tickets.
+         *
+         * The repair is in /etc/pkg/repos.d, not in the file: reinstall libc
+         * with the channel still wrong and the repository hands back the same
+         * version, reported as restored. */
+        if (known && strncmp(soname, "libc.so", 7) == 0 &&
+            !version_older(have, "2.40")) {
+            const char *kv = m->booted_kver[0] ? m->booted_kver : "6.4.11";
+            if (version_older(kv, "7.0")) {
+                snprintf(err, errsz,
+                         "FATAL: kernel too old -- %s %s needs kernel 7.0 or "
+                         "newer and this kernel is %s", soname, have, kv);
+                return false;
+            }
         }
     }
     return true;
@@ -2086,6 +2115,17 @@ void machine_read_channel(Machine *m)
     while (p && p < end) {
         const char *nl = memchr(p, '\n', (size_t)(end - p));
         size_t len = nl ? (size_t)(nl - p) : (size_t)(end - p);
+        /* ONLY *.repo IS A REPOSITORY. This read everything in the directory,
+         * and `pkg reinstall --force` puts the file it replaces beside it as
+         * `.pkgsave` -- so correcting the channel and reinstalling left the
+         * OLD channel in a backup file, the last one read won, and the
+         * repository went on serving the wrong version to a player who had
+         * just fixed the only line that matters. The saved copy is evidence,
+         * not configuration. */
+        if (len < 5 || memcmp(p + len - 5, ".repo", 5) != 0) {
+            p = nl ? nl + 1 : NULL;
+            continue;
+        }
         char path[NOM_PATH_MAX];
         snprintf(path, sizeof path, "/etc/pkg/repos.d/%.*s", (int)len, p);
         VNode *n = vfs_resolve(&m->disk, path, NULL);
