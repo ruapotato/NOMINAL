@@ -37,15 +37,19 @@ func refresh() -> void:
 	queue_redraw()
 
 
+# Clicking a file OPENS it. A browser that can only show you a listing is a
+# listing, not a browser -- and David asked for text files to open in an
+# editor, which is what anyone expects when they double-click a .txt.
+var on_open_text: Callable = func(_p: String) -> void: pass
+
 func _open(name: String) -> void:
 	var t := (path if path.ends_with("/") else path + "/") + name
 	var st: String = machine.sh_on(0, "stat " + t)
 	if st.find("kind  dir") >= 0:
 		path = t
 		refresh()
-	else:
-		view = machine.sh_on(0, "cat " + t)
-		queue_redraw()
+		return
+	on_open_text.call(t)
 
 
 func _gui_input(e: InputEvent) -> void:
@@ -103,6 +107,34 @@ func _draw() -> void:
 		if i == sel:
 			draw_rect(Rect2(2, y2 - 11, size.x - 4, LINE_H), Color("#dbe7f6"))
 		var col := Color("#1b4f8f") if isdir else (Color("#8a6d1f") if islink else Color("#22303f"))
-		draw_string(mono, Vector2(8, y2), line.replace("\t", "  "),
-			HORIZONTAL_ALIGNMENT_LEFT, size.x - 16, 12, col)
+		# A small icon, because a column of identical text is not a file
+		# manager. Folder, link, script, text, binary -- five shapes is
+		# enough to scan a directory by eye.
+		var ix := 8.0
+		var iy := y2 - 9
+		var nm := line.substr(line.rfind("  ") + 2).strip_edges()
+		if isdir:
+			draw_rect(Rect2(ix, iy + 2, 12, 9), Color("#e0a338"))
+			draw_rect(Rect2(ix, iy, 5, 3), Color("#e0a338"))
+		elif islink:
+			draw_rect(Rect2(ix, iy, 11, 12), Color("#f3f3f3"))
+			draw_rect(Rect2(ix, iy, 11, 12), Color("#8a6d1f"), false, 1.0)
+			draw_string(mono, Vector2(ix + 2, iy + 10), "L",
+				HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color("#8a6d1f"))
+		elif line.find("755") >= 0 or line.find("777") >= 0:
+			draw_rect(Rect2(ix, iy, 11, 12), Color("#1c1c1c"))
+			draw_string(mono, Vector2(ix + 1, iy + 10), ">",
+				HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color("#79d17a"))
+		elif nm.ends_with(".txt") or nm.ends_with(".conf") or nm.ends_with(".svc") \
+			 or nm.ends_with(".cfg") or nm.find(".") < 0:
+			draw_rect(Rect2(ix, iy, 11, 12), Color("#ffffff"))
+			draw_rect(Rect2(ix, iy, 11, 12), Color("#9aa4ae"), false, 1.0)
+			for li in range(3):
+				draw_line(Vector2(ix + 2, iy + 3 + li * 3),
+					Vector2(ix + 9, iy + 3 + li * 3), Color("#b7c4d4"))
+		else:
+			draw_rect(Rect2(ix, iy, 11, 12), Color("#e8e8e8"))
+			draw_rect(Rect2(ix, iy, 11, 12), Color("#9aa4ae"), false, 1.0)
+		draw_string(mono, Vector2(26, y2), line.replace("\t", "  "),
+			HORIZONTAL_ALIGNMENT_LEFT, size.x - 34, 12, col)
 		y2 += LINE_H

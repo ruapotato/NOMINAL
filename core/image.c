@@ -293,7 +293,39 @@ static const Package PKG_HOME = {
 
       { "/root/.plan",
         "root is not for reading mail.\n", 0644, NULL },
-    }, 6
+      /* The dust a real person leaves. Every one of these is TRUE of a fault
+       * the breaker actually produces, which is the rule for easter eggs
+       * here: funny, and load-bearing if you read it carefully. */
+      { "/home/nomowner/Desktop/read-me-first.txt",
+        "If you are reading this I have gone.\n"
+        "\n"
+        "Three things nobody told me and I had to find out:\n"
+        "  1. /boot/vmnomuz is a SYMLINK. Deleting \"the old kernel\" breaks it.\n"
+        "  2. pkg reinstall will NOT overwrite a config you edited. That is a\n"
+        "     feature. --force writes a .pkgsave first. Read it before you\n"
+        "     assume the file was rubbish.\n"
+        "  3. df says there is room. df -i is a different question.\n", 0644, NULL },
+      { "/home/nomowner/Documents/handover.txt",
+        "HANDOVER NOTES\n"
+        "\n"
+        "The web server listens on 8080, not 80. That was deliberate; the load\n"
+        "balancer terminates. Do not \"fix\" it.\n"
+        "\n"
+        "The audit trail is compressed, so auditd needs libz. If you ever see\n"
+        "httpd and audit down together and everything else up, that is the\n"
+        "same library and not a coincidence.\n"
+        "\n"
+        "Marcus in accounts will tell you his machine has never been touched.\n"
+        "Marcus's machine has been touched.\n", 0644, NULL },
+      { "/home/nomowner/Downloads/rescue-3.2.iso.txt",
+        "(this is where the rescue image lives when someone downloads it\n"
+        " instead of using the one in the drawer. It is the same image.)\n", 0644, NULL },
+      { "/home/nomowner/Documents/passwords.txt",
+        "I am not writing passwords in a file.\n"
+        "\n"
+        "-- but the root password is on a sticker under the desk, which is\n"
+        "   worse, and I am sorry.\n", 0644, NULL },
+    }, 10
 };
 
 static const Package PKG_SSH = {
@@ -1066,7 +1098,15 @@ void machine_install(Machine *m, uint64_t seed)
     static const char *DIRS[] = {
         "/bin", "/boot", "/boot/zbl", "/dev", "/etc", "/etc/nomde",
         "/etc/net", "/etc/rc.d", "/etc/services.d", "/etc/ssh", "/etc/udev",
-        "/etc/udev/rules.d", "/home", "/home/nomowner", "/home/nomowner/bin", "/lib", "/lib/modules",
+        "/etc/udev/rules.d", "/home", "/home/nomowner", "/home/nomowner/bin",
+        /* A HOME DIRECTORY LOOKS LIKE SOMEBODY LIVES IN IT. Everything was
+         * dumped straight in /home/nomowner, which is not what anyone's home
+         * looks like -- there is always a Desktop, always a Documents, always
+         * a Downloads full of things they meant to sort out. */
+        "/home/nomowner/Desktop", "/home/nomowner/Documents",
+        "/home/nomowner/Downloads", "/home/nomowner/Pictures",
+        "/root/Desktop", "/root/Documents", "/root/Downloads",
+        "/lib", "/lib/modules",
         "/lib/modules/6.4.11", "/proc", "/root", "/sbin", "/sys", "/tmp",
         "/mnt", "/media", "/usr", "/usr/bin", "/usr/lib", "/usr/lib/sysinit",
         "/usr/sbin", "/usr/share", "/usr/share/man", "/usr/share/zoneinfo",

@@ -70,9 +70,10 @@ const LAUNCHERS := [
 	["Notes",      "notes"],
 	["Log Viewer", "log"],
 	["Manual",     "manual"],
+	["2048",       "g2048"],
 ]
 const TITLES := {"term": "terminal - your", "chat": "chat", "files": "files",
-	"notes": "notes", "log": "log viewer", "manual": "manual"}
+	"notes": "notes", "log": "log viewer", "manual": "manual", "g2048": "2048"}
 
 
 func _ready() -> void:
@@ -121,6 +122,17 @@ func _draw_wall() -> void:
 		_draw_icon(wall, Vector2(24, y), spec[0], spec[1])
 		y += 62
 
+	if menu_open:
+		var r := _menu_rect()
+		wall.draw_rect(r, Color("#f6f6f6"))
+		wall.draw_rect(r, Color("#8b929b"), false, 1.0)
+		var my := r.position.y + 6
+		for spec in LAUNCHERS:
+			wall.draw_string(mono, Vector2(r.position.x + 30, my + 17), spec[0],
+				HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color("#1b1b1b"))
+			_draw_icon_small(wall, Vector2(r.position.x + 6, my + 4), spec[1])
+			my += MENU_ROW
+
 
 func _draw_icon(c: Control, at: Vector2, label: String, kind: String) -> void:
 	var r := Rect2(at.x, at.y, 34, 30)
@@ -156,6 +168,19 @@ func _draw_icon(c: Control, at: Vector2, label: String, kind: String) -> void:
 				HORIZONTAL_ALIGNMENT_LEFT, -1, 13, INK)
 	c.draw_string(mono, Vector2(at.x - 8, at.y + 44), label,
 		HORIZONTAL_ALIGNMENT_CENTER, 50, 11, Color("#ffffff"))
+
+
+# A 16px version of the launcher icon, for the menu.
+func _draw_icon_small(c: Control, at: Vector2, kind: String) -> void:
+	var r := Rect2(at.x, at.y, 16, 14)
+	match kind:
+		"term": c.draw_rect(r, Color("#1c1c1c"))
+		"chat": c.draw_rect(r, Color("#3c6eb4"))
+		"files": c.draw_rect(r, Color("#e0a338"))
+		"notes": c.draw_rect(r, Color("#fbfbf4"))
+		"log": c.draw_rect(r, Color("#1c1c1c"))
+		_: c.draw_rect(r, Color("#dcdcdc"))
+	c.draw_rect(r, Color("#8b929b"), false, 1.0)
 
 
 func _draw_panel() -> void:
@@ -218,6 +243,15 @@ func _draw_foot() -> void:
 
 func _wall_input(e: InputEvent) -> void:
 	if e is InputEventMouseButton and e.pressed and e.button_index == MOUSE_BUTTON_LEFT:
+		if menu_open:
+			var r := _menu_rect()
+			if r.has_point(e.position):
+				var idx := int((e.position.y - r.position.y - 6) / MENU_ROW)
+				if idx >= 0 and idx < LAUNCHERS.size():
+					_launch(LAUNCHERS[idx][1])
+			menu_open = false
+			wall.queue_redraw()
+			return
 		var y := PANEL_H + 14.0
 		for spec in LAUNCHERS:
 			if Rect2(14, y - 4, 70, 58).has_point(e.position):
@@ -228,6 +262,10 @@ func _wall_input(e: InputEvent) -> void:
 
 func _panel_input(e: InputEvent) -> void:
 	if e is InputEventMouseButton and e.pressed and e.button_index == MOUSE_BUTTON_LEFT:
+		if e.position.x < 96:
+			menu_open = not menu_open
+			wall.queue_redraw()
+			return
 		if e.position.x > panel.size.x - 200 and alerts > 0:
 			_launch("chat")
 			return
@@ -326,6 +364,25 @@ func _cascade_at(w: float, h: float) -> Rect2:
 	if y + h > size.y - FOOT_H - 20:
 		y = max(PANEL_H + 10.0, size.y - FOOT_H - h - 20)
 	return Rect2(x, y, w, h)
+
+
+# THE APPLICATIONS MENU. The word sat in the panel doing nothing, which is
+# worse than not having it -- a menu that does not open reads as a broken
+# desktop rather than an unfinished one.
+var menu_open := false
+const MENU_W := 190.0
+const MENU_ROW := 26.0
+
+func _menu_rect() -> Rect2:
+	return Rect2(4, PANEL_H, MENU_W, MENU_ROW * LAUNCHERS.size() + 8)
+
+
+func _draw_menu() -> void:
+	if not menu_open:
+		return
+	var r := _menu_rect()
+	panel.draw_rect(Rect2(r.position.x, r.position.y - PANEL_H + PANEL_H, r.size.x, r.size.y),
+		Color("#f4f4f4"))
 
 
 var _drag: Control = null
@@ -430,6 +487,7 @@ func _launch(kind: String) -> void:
 			var f := preload("res://scripts/files.gd").new()
 			f.mono = mono
 			f.machine = machine
+			f.on_open_text = func(p2: String) -> void: _open_editor(p2)
 			_win("files - your workstation", _cascade_at(470, 400), f)
 		"notes":
 			var n := preload("res://scripts/notes.gd").new()
@@ -451,6 +509,22 @@ func _launch(kind: String) -> void:
 			var d := preload("res://scripts/manual.gd").new()
 			d.mono = mono
 			_win("manual", _cascade_at(820, 560), d)
+		"g2048":
+			var g := preload("res://scripts/g2048.gd").new()
+			g.mono = mono
+			g.machine = machine
+			_win("2048", _cascade_at(360, 460), g)
+
+
+# A text file, in a window, editable. Clicking a .txt in the file manager
+# lands here -- and it writes through the machine's own shell, so what you
+# save is what `cat` shows.
+func _open_editor(path2: String) -> void:
+	var ed := preload("res://scripts/editor.gd").new()
+	ed.mono = mono
+	ed.machine = machine
+	ed.path = path2
+	_win("edit - " + path2, _cascade_at(560, 400), ed)
 
 
 # A terminal bound to ONE machine. which: 0 your workstation, 1 the customer's.
