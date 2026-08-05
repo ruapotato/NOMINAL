@@ -88,6 +88,7 @@ static func draw_icon(c: CanvasItem, at: Vector2, sz: float, kind: String) -> vo
 		"charmap": _charmap(c, at, sz)
 		"search": _search(c, at, sz)
 		"sand": _sand(c, at, sz)
+		"tiles": _tiles(c, at, sz)
 		"sandtris": _sandtris(c, at, sz)
 		_: _app(c, at, sz)
 
@@ -99,7 +100,7 @@ static func kinds() -> PackedStringArray:
 		"game", "calc", "sysmon", "pkg", "svc", "editor",
 		"snake", "mines", "blocks", "cards", "worms", "liquid", "flappy",
 		"music", "clock", "imgview", "archman", "duview", "charmap",
-		"search", "sand", "sandtris", "app"])
+		"search", "sand", "sandtris", "tiles", "app"])
 
 
 # =============================================================================
@@ -569,3 +570,15 @@ static func _sandtris(c: CanvasItem, at: Vector2, sz: float) -> void:
 		var x: float = 0.16 + float(i) * 0.18
 		c.draw_rect(_rc(at, sz, x, 0.56 + float(i % 2) * 0.06, 0.09, 0.07), RED)
 	c.draw_rect(_rc(at, sz, 0.12, 0.74, 0.76, 0.12), RED)
+
+
+# 2048: four tiles of different weights in a board. It shared the generic
+# gamepad with flappy and worms, so three apps drew the same picture in a
+# launcher -- which is the one thing an icon exists to prevent.
+static func _tiles(c: CanvasItem, at: Vector2, sz: float) -> void:
+	var b: Rect2 = _body(at, sz)
+	_card(c, b, Color("#bfae9e"), WOOD_D, sz)
+	_chip(c, _rc(at, sz, 0.12, 0.14, 0.36, 0.36), Color("#eee4da"))
+	_chip(c, _rc(at, sz, 0.52, 0.14, 0.36, 0.36), Color("#f2b179"))
+	_chip(c, _rc(at, sz, 0.12, 0.54, 0.36, 0.36), Color("#f59563"))
+	_chip(c, _rc(at, sz, 0.52, 0.54, 0.36, 0.36), Color("#edc22e"))

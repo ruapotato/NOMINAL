@@ -593,19 +593,19 @@ static const Package PKG_HAMDE = {
         "[Desktop Entry]\n"
         "Name=2048\n"
         "Exec=g2048\n"
-        "Icon=game\n"
+        "Icon=tiles\n"
         "Comment=Slide the tiles\n", 0644, NULL },
       { "/usr/share/applications/gflappy.desktop",
         "[Desktop Entry]\n"
         "Name=Flappy\n"
         "Exec=gflappy\n"
-        "Icon=game\n"
+        "Icon=flappy\n"
         "Comment=Do not hit the pipes\n", 0644, NULL },
       { "/usr/share/applications/gworms.desktop",
         "[Desktop Entry]\n"
         "Name=Worms\n"
         "Exec=gworms\n"
-        "Icon=game\n"
+        "Icon=worms\n"
         "Comment=Two worms, one hill\n", 0644, NULL },
       { "/usr/share/applications/gsnake.desktop",
         "[Desktop Entry]\n"
