@@ -46,9 +46,14 @@
 #include "nom.h"
 
 /* ------------------------------------------------------------------ sizes */
-#define NET_NODES_MAX    96     /* hosts and switches together              */
-#define NET_PORTS_MAX   512     /* global pool; a switch takes many         */
-#define NET_CABLES_MAX  256
+/* SIZED FOR A TENANTED TOWER, not for a lab bench. Every desk a tenancy
+ * moves in is a real card in a real broadcast domain, and thirty-six
+ * tenancies asking for three hundred and fifty drops is what the building
+ * generator really produces. The pools below are the whole world: one
+ * allocation, no growth, and net_world_bytes() prints what it cost. */
+#define NET_NODES_MAX   400     /* hosts and switches together              */
+#define NET_PORTS_MAX  1200     /* global pool; a switch takes many         */
+#define NET_CABLES_MAX  600
 #define NET_SWPORTS      24     /* the biggest switch we sell               */
 /* HOLES IN THE BACK OF THE BOX, and interfaces configured on them. They are
  * not the same number and a building is what proves it: a core router
@@ -64,12 +69,23 @@
 #define NET_ROUTE_MAX     8
 #define NET_FW_MAX       12
 #define NET_FDB_MAX      64     /* forwarding entries on one switch         */
-#define NET_SWITCH_MAX   24     /* how many nodes may be switches           */
-#define NET_SOCK_MAX     64     /* global: sockets are rare and buffers big */
+#define NET_SWITCH_MAX   48     /* how many nodes may be switches           */
+/* Sockets are no longer rare. A floor of desks pulling files at the same
+ * moment is a hundred connections, each with a client end, a server end and
+ * a listener above it, and the busy period is precisely when they all exist
+ * at once. */
+#define NET_SOCK_MAX    600
 #define NET_LEASE_MAX    32
 #define NET_ZONE_MAX     64
 #define NET_ALIAS_MAX    64     /* extra addresses, pooled across the world */
-#define NET_QUEUE_MAX   256     /* frames in flight anywhere in the world   */
+#define NET_QUEUE_MAX  4096     /* frames in flight anywhere in the world   */
+/* WHAT A PORT WILL HOLD BACK. Bytes of egress buffer on one socket: past
+ * this the port tail-drops, and the drop is counted on the port, which is
+ * where netstat -P will show it. Forty-eight kilobytes is an ordinary
+ * per-port buffer on ordinary switching silicon, and it is the number that
+ * decides whether an oversubscribed uplink merely gets slow or starts
+ * losing things. */
+#define NET_PORT_BUFFER 49152
 #define NET_FRAME_MAX  1518     /* 1500 MTU + 14 ethernet + 4 for a tag     */
 #define NET_TRACE_MAX   512
 #define NET_TRACE_LINE   96
@@ -85,6 +101,12 @@ typedef enum {
     CAB_CAT5E = 0,     /* 1 Gb, 100 m                                       */
     CAB_CAT6,          /* 1 Gb, 100 m; 10 Gb to 55 m                        */
     CAB_FIBRE,         /* 10 Gb, 2000 m                                     */
+    /* A HUNDRED MEGABIT, AND CHEAP. Cat 5 is still in a great many walls
+     * and is still the cheapest thing on the shelf, and a run of it under a
+     * floor of desks is the most ordinary bottleneck there is. It is last in
+     * this list because the numbers above it were already written down and
+     * an enum whose values move is a bug in every save file. */
+    CAB_CAT5,          /* 100 Mb, 100 m                                     */
     CAB_KIND_COUNT
 } CableKind;
 
@@ -192,6 +214,34 @@ void  net_port_set_duplex(Net *n, int node, int port, Duplex d);
 uint64_t net_port_tx(const Net *n, int node, int port);
 uint64_t net_port_rx(const Net *n, int node, int port);
 uint64_t net_port_drops(const Net *n, int node, int port);
+/* ------------------------------------------------------- what a wire costs
+ * A frame is bytes, and bytes take time to clock onto copper: 1514 of them
+ * is twelve microseconds of a gigabit and a hundred and twenty-one of a
+ * hundred megabit. Nothing above L1 knows that, and everything above L1
+ * feels it, which is the whole point.
+ *
+ * A port that is still busy with the last frame holds the next one in its
+ * egress buffer. That wait is real latency -- it lands in the round trip a
+ * ping prints -- and a buffer that is already full tail-drops, on the port,
+ * into the counter net_dump_ports already prints. There is no second load
+ * model anywhere: congestion here is the same frames, later or never. */
+/* Microseconds of frames this port has queued but not yet clocked out. 0 on
+ * an idle port; tens of thousands on one that is being asked for more than
+ * it can carry. */
+uint64_t net_port_queue_us(const Net *n, int node, int port);
+/* Microseconds this port has spent actually transmitting, ever. Divided by
+ * elapsed wire time that is utilisation, and it is measured rather than
+ * modelled. */
+uint64_t net_port_busy_us(const Net *n, int node, int port);
+/* Of net_port_drops, how many were the egress buffer being full. The rest
+ * are frames offered to a port with no link. */
+uint64_t net_port_qdrops(const Net *n, int node, int port);
+/* THE CIRCUIT, WHICH IS NOT THE CABLE. What an ISP hands over is not the
+ * speed of the fibre in the street, it is what they have sold you, and the
+ * media converter on the wall is what enforces it. Rate-limit a port to
+ * `mb` megabits; 0 puts it back to whatever the cable can carry. */
+void  net_port_rate(Net *n, int node, int port, int mb);
+int   net_port_rate_of(const Net *n, int node, int port);
 
 /* --------------------------------------------------------------- L2      */
 void  net_set_mac(Net *n, int node, int ifx, const uint8_t mac[6]);
@@ -348,6 +398,9 @@ void  net_dump_fw(const Net *n, int node, Buf *out);
  * one without us ever deciding that a loop exists. */
 uint64_t net_load(const Net *n);
 uint64_t net_queue_drops(const Net *n);
+/* What the whole world costs, in bytes. One allocation, fixed at compile
+ * time, the same whether the tower holds one switch or four hundred cards. */
+size_t net_world_bytes(void);
 int   net_node_by_name(const Net *n, const char *name);
 
 #endif /* NOM_NETSTACK_H */

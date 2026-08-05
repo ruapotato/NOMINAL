@@ -639,16 +639,16 @@ int site_selfcheck(void)
      * claim that had quietly stopped being true. See core/sessioncheck.c. */
     session_selfcheck(&passed, &total);
 
-    /* WHAT A FULLY EQUIPPED TOWER COSTS, measured rather than guessed. The
-     * building is %.1f KB and the site's own bookkeeping is %.1f KB; the
-     * network world is a fixed 3.72 MB of preallocated pools, 31.2 KB of it
-     * per host, and it is the same 3.72 MB whether the tower holds one
-     * machine or ninety-five. Nothing here boots an operating system: a
-     * booted Machine is 13.5 MB, and there are none in any of it. */
+    /* WHAT A FULLY EQUIPPED TOWER COSTS, measured rather than guessed --
+     * and printed from sizeof rather than from a sentence somebody typed
+     * once, because the pools grew when the tenants' desks became real
+     * cards and the sentence did not. Nothing here boots an operating
+     * system: a booted Machine is 13.5 MB, and there are none in any of it. */
     printf("\na fully equipped tower: %.1f KB of building, %.1f KB of site, "
-           "and one 3.7 MB network\nworld shared by every device in it "
-           "(31.2 KB a host, preallocated). No booted machines.\n",
-           sizeof(Building) / 1024.0, sizeof(Site) / 1024.0);
+           "and one %.1f MB network\nworld shared by every device in it, "
+           "preallocated. No booted machines.\n",
+           sizeof(Building) / 1024.0, sizeof(Site) / 1024.0,
+           net_world_bytes() / (1024.0 * 1024.0));
 
     bld_free(&b);
     printf("\n%d/%d site checks pass\n", passed, total);

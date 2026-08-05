@@ -237,6 +237,13 @@ typedef struct {
     int      vlan;         /* access: the vlan; trunk: the native vlan      */
     uint32_t allow;        /* trunk: bitmask of vlans 1..32 permitted       */
     uint64_t tx, rx, drops;
+    /* SERIALISATION. `busy_us` is the absolute microsecond at which the last
+     * frame this port accepted will have finished clocking out. Anything
+     * offered before then waits behind it, and that wait is latency the
+     * player can measure with ping. `qdrops` is what the buffer would not
+     * hold. `busy_total` is time on the wire, which is utilisation. */
+    uint64_t busy_us, busy_total, qdrops, qpeak_us;
+    int      rate_mb;      /* forced circuit rate; 0 = whatever the cable is */
     bool     used;
     /* Spanning tree put this port in blocking. It carries no data and it
      * still shows a link light, which is precisely why a blocked port is
@@ -291,6 +298,12 @@ typedef struct {
     /* Set when the daemon that owns this socket is the world's, not a
      * player's -- HTTP, DNS and DHCP servers are driven from net_step. */
     uint8_t  service;
+    /* BYTES STILL TO SEND. A page of a few hundred characters fits in one
+     * write; a file of two megabytes does not, and the difference is the
+     * whole reason capacity is felt at all. The daemon pushes what the send
+     * buffer will take on every poll and comes back for the rest, which is
+     * what a real server does and what makes a transfer take TIME. */
+    int      svc_left;
 } Sock;
 #define SVC_NONE  0
 #define SVC_HTTPD 1
@@ -543,6 +556,7 @@ static int cable_limit_m(CableKind k)
     case CAB_CAT5E:  return 100;
     case CAB_CAT6:   return 100;
     case CAB_FIBRE:  return 2000;
+    case CAB_CAT5:   return 100;
     default:         return 100;
     }
 }
@@ -555,6 +569,10 @@ static int cable_speed_mb(CableKind k, int metres)
      * "the link is up and the backup takes all night" is a real ticket. */
     case CAB_CAT6:   return metres <= 55 ? 10000 : 1000;
     case CAB_FIBRE:  return 10000;
+    /* Cat 5 is a hundred megabit and no amount of shortening the run makes
+     * it anything else. It is the cheapest line in the catalogue and it is
+     * the one a player regrets. */
+    case CAB_CAT5:   return 100;
     default:         return 100;
     }
 }
@@ -593,6 +611,9 @@ void net_uncable(Net *n, int cable)
         }
     n->port[c->a].cable = -1;
     n->port[c->b].cable = -1;
+    /* The wire is gone, so whatever was still being clocked onto it is gone
+     * with it. A port with no cable in it is not busy. */
+    n->port[c->a].busy_us = n->port[c->b].busy_us = 0;
     c->used = false;
     stp_recompute(n);
 }
@@ -648,6 +669,39 @@ uint64_t net_port_rx(const Net *n, int node, int port)
 { int p = pid_of(n, node, port); return p < 0 ? 0 : n->port[p].rx; }
 uint64_t net_port_drops(const Net *n, int node, int port)
 { int p = pid_of(n, node, port); return p < 0 ? 0 : n->port[p].drops; }
+uint64_t net_port_qdrops(const Net *n, int node, int port)
+{ int p = pid_of(n, node, port); return p < 0 ? 0 : n->port[p].qdrops; }
+uint64_t net_port_busy_us(const Net *n, int node, int port)
+{ int p = pid_of(n, node, port); return p < 0 ? 0 : n->port[p].busy_total; }
+uint64_t net_port_queue_us(const Net *n, int node, int port)
+{
+    int p = pid_of(n, node, port);
+    if (p < 0) return 0;
+    uint64_t now_us = n->now * 1000ull;
+    return n->port[p].busy_us > now_us ? n->port[p].busy_us - now_us : 0;
+}
+void net_port_rate(Net *n, int node, int port, int mb)
+{
+    int p = pid_of(n, node, port);
+    if (p >= 0) n->port[p].rate_mb = mb < 0 ? 0 : mb;
+}
+int net_port_rate_of(const Net *n, int node, int port)
+{
+    int p = pid_of(n, node, port);
+    return p < 0 ? 0 : n->port[p].rate_mb;
+}
+
+/* What this port really clocks bits at: the circuit if somebody sold us one,
+ * otherwise whatever the copper in it negotiated. */
+static int port_rate_mb(const Net *n, int p)
+{
+    const Port *pt = &n->port[p];
+    int cid = pt->cable;
+    int cab = (cid >= 0 && n->cable[cid].used)
+              ? cable_speed_mb(n->cable[cid].kind, n->cable[cid].metres) : 100;
+    if (pt->rate_mb > 0 && pt->rate_mb < cab) return pt->rate_mb;
+    return cab;
+}
 
 /* Put bytes on the wire. This is the only way anything leaves a node, and it
  * is where a missing cable stops being an abstraction. */
@@ -658,7 +712,27 @@ static void port_tx(Net *n, int p, const uint8_t *data, int len)
     if (port_state(n, p) != PORT_UP) { pt->drops++; return; }
     Cable *c = &n->cable[pt->cable];
     int other = (c->a == p) ? c->b : c->a;
-    pt->tx++;
+
+    /* ------------------------------------------------ what the wire costs
+     * Bits divided by megabits per second is microseconds, exactly. If the
+     * port is still clocking out the frame before this one, this frame waits
+     * behind it -- and if the wait is already deeper than the egress buffer
+     * will hold, the port drops it, here, on the port, into the counter
+     * `netstat -P` prints.
+     *
+     * This is the only place in the program where congestion exists. There
+     * is no load number kept beside the netstack and consulted: a link that
+     * is oversubscribed is a link whose busy_us has run ahead of the clock,
+     * and everything the player can see -- latency in ping, timeouts in get,
+     * retransmissions in TCP, drops on a port -- is that one fact arriving
+     * through the layers that really carry it. */
+    int mb = port_rate_mb(n, p);
+    uint64_t now_us = n->now * 1000ull;
+    uint64_t serial_us = ((uint64_t)len * 8 + (uint64_t)mb - 1) / (uint64_t)mb;
+    uint64_t start = pt->busy_us > now_us ? pt->busy_us : now_us;
+    uint64_t wait  = start - now_us;
+    uint64_t buf_us = ((uint64_t)NET_PORT_BUFFER * 8 + (uint64_t)mb - 1) / (uint64_t)mb;
+    if (wait > buf_us) { pt->drops++; pt->qdrops++; return; }
 
     /* Find a slot. A full queue is a saturated network, and a saturated
      * network drops -- which is exactly what a broadcast storm looks like
@@ -666,6 +740,11 @@ static void port_tx(Net *n, int p, const uint8_t *data, int len)
     int slot = -1;
     for (int i = 0; i < NET_QUEUE_MAX; i++) if (!n->q[i].used) { slot = i; break; }
     if (slot < 0) { n->qdrops++; pt->drops++; return; }
+
+    pt->tx++;
+    pt->busy_us = start + serial_us;
+    pt->busy_total += serial_us;
+    if (wait > pt->qpeak_us) pt->qpeak_us = wait;
 
     InFlight *f = &n->q[slot];
     f->used = true;
@@ -683,7 +762,13 @@ static void port_tx(Net *n, int p, const uint8_t *data, int len)
      * feel. Saying otherwise in this comment would be the first lie in the
      * file; when transfers get long enough for the difference to matter, the
      * byte count and the speed are both right here. */
-    uint32_t delay = 1 + (uint32_t)(c->metres / 250);
+    /* Propagation, plus the milliseconds this frame spends waiting its turn
+     * on a port that is already busy. An idle wire adds nothing and every
+     * existing check sees the number it always saw; a wire being asked for
+     * more than it carries adds tens of milliseconds, and that is what a
+     * player reads off ping. */
+    uint32_t delay = 1 + (uint32_t)(c->metres / 250)
+                       + (uint32_t)((wait + serial_us) / 1000);
     f->due = (uint32_t)(n->now + delay);
     memcpy(f->data, data, (size_t)len);
 }
@@ -1152,6 +1237,7 @@ static void net_tick(Net *n)
 
 uint64_t net_load(const Net *n) { return n->load; }
 uint64_t net_queue_drops(const Net *n) { return n->qdrops; }
+size_t   net_world_bytes(void) { return sizeof(Net); }
 
 /* ====================================================================== L3
  * IP. Addresses, masks, a routing table, ARP, and the ICMP errors that are
@@ -2901,6 +2987,22 @@ static void httpd_poll(Net *n, int sock)
     if (s->service != SVC_HTTPD || s->listener < 0) return;
     if (s->state != TCP_ESTABLISHED && s->state != TCP_CLOSE_WAIT) return;
     if (s->accepted == 0) return;            /* somebody else is handling it */
+    /* STILL SENDING THE LAST ONE. A big object leaves in as many writes as
+     * the send buffer has room for, over as many milliseconds as the wire
+     * takes -- which is exactly how a saturated uplink turns a two megabyte
+     * file into a transfer that does not finish inside the working day. */
+    if (s->svc_left > 0) {
+        static const uint8_t filler[512] = { 0 };
+        while (s->svc_left > 0) {
+            int want = s->svc_left < (int)sizeof filler ? s->svc_left : (int)sizeof filler;
+            int k = net_tcp_send(n, sock, filler, want);
+            if (k <= 0) break;
+            s->svc_left -= k;
+        }
+        if (s->svc_left == 0) s->fin_queued = true;
+        tcp_pump(n, s);
+        return;
+    }
     if (!s->rxlen) return;
 
     /* Wait for the blank line that ends a request. */
@@ -2926,6 +3028,31 @@ static void httpd_poll(Net *n, int sock)
         while (*p && *p != ' ' && *p != '\r' && *p != '\n' && k < (int)sizeof path - 1)
             path[k++] = *p++;
         path[k] = 0;
+    }
+
+    /* AN OBJECT OF A GIVEN SIZE. `/n/2048` is two thousand and forty-eight
+     * kilobytes of file, and it exists because the pages in net_sites.c are
+     * a few hundred bytes each and a network is not tested by a few hundred
+     * bytes. Every desk in a tenanted floor asks for one of these in the
+     * busy period; that is what a file server is FOR, and it is the traffic
+     * whose path through the building the player's architecture decides. */
+    if (strncmp(path, "/n/", 3) == 0) {
+        long kb = 0;
+        for (const char *dp = path + 3; *dp >= '0' && *dp <= '9'; dp++)
+            kb = kb * 10 + (*dp - '0');
+        if (kb < 0) kb = 0;
+        if (kb > 65536) kb = 65536;
+        char hdr[128];
+        int hl = snprintf(hdr, sizeof hdr,
+                          "HTTP/1.0 200 OK\r\nContent-Type: application/octet-stream\r\n"
+                          "Content-Length: %ld\r\n\r\n", kb * 1024);
+        net_tcp_send(n, sock, hdr, hl);
+        s->svc_left = (int)(kb * 1024);
+        trace(n, "%s http 200 %s (%ld KB)", n->node[s->node].name, path, kb);
+        s->service = SVC_HTTPD;
+        if (s->svc_left == 0) s->fin_queued = true;
+        tcp_pump(n, s);
+        return;
     }
 
     char selfip[20];
@@ -3207,18 +3334,40 @@ static void dump_ports(const Net *n, int node, Buf *out, bool empties)
         buf_printf(out, "port %-2d %-24s", i, w);
         if (st == PORT_UP) {
             const Cable *c = &n->cable[n->port[p].cable];
-            buf_printf(out, " %dMb %s %dm", cable_speed_mb(c->kind, c->metres),
+            int mb = port_rate_mb(n, p);
+            buf_printf(out, " %dMb %s %dm", mb,
                        n->port[p].duplex == DUPLEX_FULL ? "full" : "half", c->metres);
+            /* The circuit is not the cable, and when they disagree the
+             * player needs to know which number is which. */
+            if (n->port[p].rate_mb > 0 && n->port[p].rate_mb < cable_speed_mb(c->kind, c->metres))
+                buf_printf(out, " (%s carries %dMb; the circuit is %dMb)",
+                           c->kind == CAB_FIBRE ? "fibre" : "the cable",
+                           cable_speed_mb(c->kind, c->metres), n->port[p].rate_mb);
         }
         if (n->port[p].blocked) buf_puts(out, " STP-BLOCKING");
         if (n->node[node].kind == NODE_SWITCH) {
             if (n->port[p].mode == PORT_TRUNK) buf_printf(out, " trunk native %d", n->port[p].vlan);
             else buf_printf(out, " access vlan %d", n->port[p].vlan);
         }
-        buf_printf(out, " tx %llu rx %llu drop %llu\n",
+        buf_printf(out, " tx %llu rx %llu drop %llu",
                    (unsigned long long)n->port[p].tx,
                    (unsigned long long)n->port[p].rx,
                    (unsigned long long)n->port[p].drops);
+        /* THE EVIDENCE, not a red bar. A port that is behind prints how far
+         * behind it is; a port that has thrown frames away prints how many
+         * and says the reason in words, because "drop 4120" on its own is
+         * the fault with no explanation. */
+        uint64_t now_us = n->now * 1000ull;
+        uint64_t q = n->port[p].busy_us > now_us ? n->port[p].busy_us - now_us : 0;
+        if (q) buf_printf(out, " queue %llums", (unsigned long long)(q / 1000));
+        if (n->port[p].qdrops)
+            buf_printf(out, "\n        %llu of those drops were this port's egress "
+                            "buffer full: it was\n        offered more than %dMb "
+                            "would carry (peak queue %llums)",
+                       (unsigned long long)n->port[p].qdrops,
+                       st == PORT_UP ? port_rate_mb(n, p) : 0,
+                       (unsigned long long)(n->port[p].qpeak_us / 1000));
+        buf_putc(out, '\n');
     }
     if (quiet)
         buf_printf(out, "%d more socket%s on the back of it, with nothing in "

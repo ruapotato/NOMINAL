@@ -252,6 +252,13 @@ static void check_storm(void)
     net_ping(n, a, net_ip(10, 0, 0, 2), NULL);
     net_step(n, 400);
     uint64_t load = net_load(n), drops = net_queue_drops(n);
+    /* WHERE A STORM IS VISIBLE. On the ports carrying it: the trunk between
+     * the two switches is offered more frames than a gigabit will clock out
+     * and its egress buffer fills, so the drop is counted on the port and
+     * `netstat -P` prints it with the reason. That is the same counter an
+     * oversubscribed uplink fills, because it is the same fault. */
+    for (int p = 0; p < 8; p++) drops += net_port_qdrops(n, s1, p)
+                                       + net_port_qdrops(n, s2, p);
     ck("a loop with no spanning tree storms", load > 200);
     ck("and the storm is visible as dropped frames", drops > 0);
     ck("and it does not stop on its own", (net_step(n, 400), net_load(n)) > 200);
