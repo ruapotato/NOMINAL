@@ -37,7 +37,7 @@
  * this is generous -- and it has to be, because every LONG-LIVED daemon keeps
  * its own machine alive for the whole boot. At 16 MB a dozen daemons cost
  * 192 MB of host memory for nothing. */
-#define CPU_MEM_BYTES  (4u * 1024u * 1024u)
+#define CPU_MEM_BYTES  (1024u * 1024u)
 #define CPU_STACK_TOP  (CPU_MEM_BYTES - 64u)
 
 typedef enum {

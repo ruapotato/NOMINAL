@@ -136,7 +136,16 @@ force:
 build/.flags: force | build
 	@echo '$(CFLAGS)' | cmp -s - $@ || echo '$(CFLAGS)' > $@
 
-build/%.o: core/%.c build/.flags | build
+# HEADERS ARE PREREQUISITES, OR A REBUILD IS NOT A REBUILD.
+#
+# This listed only the .c file, so editing core/cpu.h changed nothing that
+# `make` could see: objects compiled against the old header linked happily
+# against ones compiled against the new. Measuring a change to CPU_MEM_BYTES,
+# I got a solve ladder at 6/20 and concluded the change had broken the game.
+# It had not -- build/ held a mixture of two ABIs. A clean rebuild gave 20/20,
+# and so did the change I had just blamed. I nearly reported a fabricated
+# regression and nearly abandoned a real 3x memory saving because of it.
+build/%.o: core/%.c $(wildcard core/*.h) build/.flags | build
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BIN): $(CORE_OBJ) build/main.o

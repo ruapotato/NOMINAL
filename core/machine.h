@@ -232,6 +232,15 @@ typedef struct Machine_ {
         bool deflected;       /* denied it once, as people do              */
         bool confessed;
         bool gave_password;
+        /* HAS THE CALL ACTUALLY STARTED.
+         *
+         * Set once she has answered any of the open questions -- what were you
+         * doing, when did it last work, what do you use it for. The four
+         * pointed questions (deleted anything / installed updates / anybody
+         * else / lost power) are the differential diagnosis in list form, so
+         * they are not offered until then: a technician earns the right to ask
+         * about Friday's updater by hearing her mention Friday. */
+        bool opened;
         /* The customer is also the pair of hands in the room. The technician
          * cannot press the power button; they have to ask. */
         bool at_machine;      /* are they sitting in front of it right now  */

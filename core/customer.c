@@ -812,6 +812,30 @@ static bool offered(const Machine *m, int id)
     case O_RUN:
     case O_SCREEN: case O_CYCLE: case O_WORKING:
         return true;
+    /* THE MENU WAS THE DIFFERENTIAL DIAGNOSIS, PRINTED.
+     *
+     * A playtester put it exactly: "have you deleted anything / installed
+     * updates / has anybody else been working on it / has it lost power" ARE
+     * the hypothesis list -- disk full, bad upgrade, a human edit, an unclean
+     * shutdown -- and they are the set of causes the faults are drawn from.
+     * With a free-text customer you have to THINK OF asking about updates.
+     * Read off a list, the most satisfying beat in their whole ticket
+     * (connecting "Friday's updater" to a dangling libc) was handed to them by
+     * an option sitting there before they had any reason to suspect an
+     * upgrade. The menu answered the question before they knew to ask it.
+     *
+     * So the four pointed questions are not on the list at the start. The open
+     * ones are -- what were you doing, when did it last work, what do you use
+     * it for -- and those are the questions a technician actually opens with.
+     * A pointed question appears only once she has said something that gives
+     * you a reason to ask it, which is how the conversation goes when you are
+     * doing this for real: she mentions Friday, and THEN you ask about
+     * updates.
+     *
+     * `told[O_DOING]` and friends are already set when she answers, so this is
+     * a filter on the offer, not a new piece of state. */
+    case O_DELETED: case O_UPDATES: case O_WHOELSE: case O_POWERCUT:
+        return !m->cust.told[id] && m->cust.opened;
     default:
         /* the questions: once she has answered one, she has answered it */
         return !m->cust.told[id];
@@ -1133,6 +1157,10 @@ void customer_choose(Machine *m, int idx, const char *arg, Buf *out)
     case O_POWERCUT:
     case O_NOISES: {
         m->cust.told[idx] = 1;
+        /* An open question opens the call, and only then do the pointed ones
+         * appear. Asking what she was doing is how a technician earns the
+         * right to ask about Friday's updater. */
+        if (idx == O_DOING || idx == O_NOISES) m->cust.opened = true;
         Cause c = (Cause)m->cust.cause;
         if (unlocks(c, idx)) {
             /* Whether she owns up depends on how the call has gone: a wary
@@ -1175,13 +1203,17 @@ void customer_choose(Machine *m, int idx, const char *arg, Buf *out)
 
     case O_WHEN:
         m->cust.told[idx] = 1;
+        m->cust.opened = true;
         say(out, "It was working yesterday. I shut it down normally last night "
                  "and this morning it just... did not come back.");
+        /* The timeline is what licenses the pointed questions: she says
+         * "Friday", and now asking about updates is YOUR idea. */
         say(out, lead_of((Cause)m->cust.cause));
         break;
 
     case O_USEDFOR:
         m->cust.told[idx] = 1;
+        m->cust.opened = true;
         what_it_does(m, out);
         break;
 
