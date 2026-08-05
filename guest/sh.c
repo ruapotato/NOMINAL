@@ -445,6 +445,18 @@ static int run_line(char *cmd0)
     while (*rest && *rest != ' ' && *rest != '\t') rest++;
     if (*rest) { *rest++ = 0; while (*rest == ' ') rest++; }
 
+    /* `true` and `false` ARE THE EXIT STATUS AND NOTHING ELSE.
+     *
+     * They existed on disk as /bin/false containing the four bytes "#!false",
+     * which is not an executable of any kind, so `false || echo fallback`
+     * printed "/bin/false: not an ELF image" before the fallback ran. That is
+     * an internal loader error leaking into the transcript of a command that
+     * did exactly what it was asked to do -- and it made `true && ...` fail,
+     * which is the opposite of what `true` is for. A word whose entire
+     * meaning is a status is a builtin in every shell there is. */
+    if (g_streq(cmd, "true"))  return 0;
+    if (g_streq(cmd, "false")) return 1;
+
     if (g_streq(cmd, "cd")) {
         const char *to = *rest ? rest : "/";
         if (g_chdir(to) != 0) { g_puts("cd: "); g_puts(to); g_putln(": no such directory"); return 1; }
