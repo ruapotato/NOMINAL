@@ -643,6 +643,8 @@ void machine_boot(Machine *m)
     }
     say(c, "kernel %s booting",
         clean(kver, strlen(kver), scrubv, sizeof scrubv));
+    /* The machine now knows what it is running, so `uname` can stop guessing. */
+    snprintf(m->booted_kver, sizeof m->booted_kver, "%s", kver);
 
     /* The initrd must carry the driver for the root device and the filesystem
      * it is formatted with. This is the classic one: regenerate the initrd

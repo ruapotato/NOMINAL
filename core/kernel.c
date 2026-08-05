@@ -204,6 +204,17 @@ static ProcInfo *proc_by_pid(Machine *m, int pid)
 static bool proc_read(Machine *m, Proc *self, const char *path, Buf *out)
 {
     int pid; char leaf[64];
+    /* /proc/version -- WHAT IS RUNNING, not what is installed.
+     *
+     * `uname` had the version compiled into it, so a machine booted from a
+     * valid image of the wrong version reported the right one and the fault
+     * became undiagnosable with the tool the catalogue recommended for it.
+     * The loader writes what it loaded; this is where a program reads it. */
+    if (strcmp(path, "/proc/version") == 0) {
+        buf_printf(out, "NomnixOS kernel %s rv64\n",
+                   m->booted_kver[0] ? m->booted_kver : "(unknown)");
+        return true;
+    }
     if (!proc_split(path, &pid, leaf, sizeof leaf, self)) return false;
     if (pid < 0) return false;                    /* /proc itself is a dir */
     ProcInfo *pi = proc_by_pid(m, pid);

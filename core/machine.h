@@ -124,6 +124,15 @@ typedef struct Machine_ {
      * disk cannot produce one -- which is the whole point of a live image. */
     Vfs   rescue;
     bool  on_rescue;         /* which medium did we boot                    */
+    /* WHAT VERSION ACTUALLY LOADED, as opposed to what is installed.
+     *
+     * `uname` had 6.4.11 compiled into it and never read anything, so on a
+     * machine booted from a valid image of the WRONG version the loader said
+     * "kernel 6.3.12 booting" and uname cheerfully said 6.4.11. The fault
+     * catalogue even suggested comparing uname against /lib/modules as the
+     * diagnosis -- against a tool that could not participate. A running system
+     * knows which kernel is running; this is where it knows it. */
+    char  booted_kver[32];
 
     /* THE MACHINE THIS ONE CAN REACH.
      *
