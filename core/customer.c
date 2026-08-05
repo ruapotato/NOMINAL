@@ -1401,6 +1401,11 @@ bool customer_do(Machine *m, const char *request, Buf *out)
             return true;
         }
         m->cust.disc_inserted = true;
+        /* The disc going in is the SAME event as the virtual drive being
+         * loaded over the service processor -- one drive, one piece of state
+         * -- so blkid, mount and `rcon status` all see it happen. */
+        m->sp_media = true;
+        m->sp_bootdev = 1;
         m->cust.at_machine = true;
         buf_puts(&m->boot.console, "[rescue medium inserted at the machine]\n");
         buf_puts(out, "  \"Found it in the drawer. It is in.\"\n"

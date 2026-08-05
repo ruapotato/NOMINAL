@@ -174,8 +174,11 @@ static void new_ticket(Client *c, uint64_t seed, int faults)
      * "on their console" before you had reached it -- which is why `rcon
      * connect` was rejecting the address the header had just printed. */
     c->desk.sp_connected = false;
-    c->desk.sp_media = false;
-    c->desk.sp_bootdev = 0;
+    /* The drive and the boot device belong to the machine they are in, so
+     * they are reset on the CUSTOMER'S box. Setting the workstation's was
+     * setting a field nothing reads. */
+    c->m.sp_media = false;
+    c->m.sp_bootdev = 0;
     snprintf(c->desk.peer_addr, sizeof c->desk.peer_addr,
              "10.0.2.%d", 60 + (int)(seed % 40));
 
@@ -297,8 +300,8 @@ static bool client_line(Client *c)
         }
         /* Attached: this IS the service processor, so set what it would have
          * been set to and let the same code run the boot. */
-        c->desk.sp_media   = live;
-        c->desk.sp_bootdev = live ? 1 : 0;
+        c->m.sp_media   = live;
+        c->m.sp_bootdev = live ? 1 : 0;
         if (live) {
             machine_boot_rescue(&c->m);
             send_all(c->fd, c->m.boot.console.p, c->m.boot.console.len);

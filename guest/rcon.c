@@ -85,6 +85,16 @@ void _start(void)
         g_puts("console "); g_putln((st & 2) ? "attached" : "not attached");
         g_puts("media   "); g_putln((st & 4) ? "rescue medium inserted" : "empty");
         g_puts("boot    "); g_putln((st & 8) ? "the attached medium" : "the disk");
+        /* WHAT IS RUNNING, which is a different question from what it boots
+         * next time and was the one nobody could ask. This status said "media
+         * empty / boot the disk" while the rescue image was live, and both of
+         * those lines were true about the NEXT boot. */
+        if (st & 1) {
+            g_puts("running ");
+            g_putln((st & 32) ? "the rescue medium -- the customer's disk is "
+                                "/dev/sda1, not mounted"
+                              : "the customer's own disk");
+        }
         g_exit(0);
     }
 

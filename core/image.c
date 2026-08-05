@@ -807,6 +807,16 @@ static const Package PKG_SHELL = {
       { "/bin/echo", NULL, 0755, NULL },
       { "/bin/wc", NULL, 0755, NULL },
       { "/bin/head", NULL, 0755, NULL },
+      /* Every one of these was a reflex a playtester reached for and did not
+       * get. `tail` matters most: /var/log/messages is half a megabyte, head
+       * existed and tail did not, so the only end of the log the player could
+       * read was the wrong one. `du` is what you type the instant df says
+       * 100%. `mkdir` was documented in the protocol and absent from the
+       * machine, which meant a deleted /var/log could be diagnosed and not
+       * repaired. */
+      { "/bin/tail", NULL, 0755, NULL },
+      { "/bin/du", NULL, 0755, NULL },
+      { "/bin/mkdir", NULL, 0755, NULL },
       { "/bin/uname", NULL, 0755, NULL },
       { "/bin/whoami", NULL, 0755, NULL },
       { "/bin/df", NULL, 0755, NULL },
@@ -831,7 +841,7 @@ static const Package PKG_SHELL = {
        * runs it with a runlevel, so that is what init.c does now. This is
        * only the second name for it. */
       { "/sbin/telinit", NULL, 0755, NULL },
-    }, 40
+    }, 43
 };
 
 
@@ -938,6 +948,15 @@ static const Package PKG_HTTPD = {
     "httpd", "2.4", "the web server",
     {
       { "/usr/sbin/httpd", NULL, 0755, NULL },
+      /* THE DOCUMENT ROOT IS A DIRECTORY THIS PACKAGE OWNS.
+       *
+       * httpd now checks that the directory its config names is really there,
+       * which means the directory can be deleted -- and a package cannot
+       * restore a file whose directory is gone, because O_CREAT creates a
+       * file and never a path. Owning it is what makes `pkg verify` say
+       * `/srv/www missing` and `pkg reinstall` able to do anything about it.
+       * Same bargain /run/nomde and /var/log already make. */
+      { "/srv/www", NULL, 0755, NULL, true },
       { "/etc/httpd/httpd.conf",
         "Listen 80\nDocumentRoot /srv/www\nServerName nominal.local\n", 0644, NULL },
       { "/srv/www/index.html",
@@ -967,7 +986,7 @@ static const Package PKG_HTTPD = {
         "name: httpd\nexec: /usr/sbin/httpd\n"
         "description: web server\nafter: net\n"
         "restart: on-failure\nenabled: yes\nrunlevel: 3 5\n", 0644, NULL },
-    }, 5
+    }, 6
 };
 
 static const Package PKG_FIREWALL = {
@@ -1348,6 +1367,11 @@ static const Package PKG_RESCUE_TOOLS = {
       { "/bin/echo", NULL, 0755, NULL },
       { "/bin/wc", NULL, 0755, NULL },
       { "/bin/head", NULL, 0755, NULL },
+      /* The rescue medium gets them too: reading the tail of the customer's
+       * log through /mnt is exactly the job the live medium exists for. */
+      { "/bin/tail", NULL, 0755, NULL },
+      { "/bin/du", NULL, 0755, NULL },
+      { "/bin/mkdir", NULL, 0755, NULL },
       { "/bin/uname", NULL, 0755, NULL },
       { "/bin/whoami", NULL, 0755, NULL },
       { "/bin/df", NULL, 0755, NULL },
@@ -1361,7 +1385,7 @@ static const Package PKG_RESCUE_TOOLS = {
       { "/usr/sbin/zbl-install", NULL, 0755, NULL },
       { "/usr/sbin/zbl-mkconfig", NULL, 0755, NULL },
       { "/usr/bin/mkinitrd", NULL, 0755, NULL },
-    }, 35
+    }, 38
 };
 
 static const Package *RESCUE_IMAGE[] = { &PKG_RESCUE_BASE, &PKG_RESCUE_TOOLS };
@@ -1460,6 +1484,12 @@ void image_generated(const Machine *m, const char *path, Buf *out)
         buf_put(out, (const char *)GUEST_WC, GUEST_WC_LEN);
     else if (strcmp(path, "/bin/head") == 0)
         buf_put(out, (const char *)GUEST_HEAD, GUEST_HEAD_LEN);
+    else if (strcmp(path, "/bin/tail") == 0)
+        buf_put(out, (const char *)GUEST_TAIL, GUEST_TAIL_LEN);
+    else if (strcmp(path, "/bin/du") == 0)
+        buf_put(out, (const char *)GUEST_DU, GUEST_DU_LEN);
+    else if (strcmp(path, "/bin/mkdir") == 0)
+        buf_put(out, (const char *)GUEST_MKDIR, GUEST_MKDIR_LEN);
     else if (strcmp(path, "/bin/uname") == 0)
         buf_put(out, (const char *)GUEST_UNAME, GUEST_UNAME_LEN);
     else if (strcmp(path, "/bin/whoami") == 0)
@@ -1881,10 +1911,113 @@ static void install_local_edits(Machine *m, uint64_t seed)
         "\n"
         "*** dock-2 is scheduled for migration. Do NOT reboot without\n"
         "*** telling ops first. -- J.\n" },
-      { "/etc/default/postfix",
+      /* This named /etc/default/postfix, which no package installs, so the
+       * edit silently did nothing and one decoy in seventeen was a decoy of a
+       * decoy. Postfix reads /etc/postfix/main.cf. */
+      { "/etc/postfix/main.cf",
         "myhostname = node.nomnix.org\n"
         "# relay added when we lost direct outbound, 9 Feb\n"
         "relayhost = 10.0.2.7\n" },
+
+      /* ---- and the second batch, added alongside the second generation of
+       * faults, because a fault set that doubles and a decoy set that does
+       * not turns `pkg verify` back into an oracle: the unfamiliar line is
+       * the answer again. Every one of these is a thing a real administrator
+       * really does, in a file that really matters, and every one of them
+       * leaves a machine that boots with every service running. ---- */
+
+      /* THE ONE THAT TEACHES `nofail`. An fstab entry for a disk that is not
+       * in the machine is a fault when it stops the boot and housekeeping
+       * when it does not, and the single word that decides which is right
+       * there in the options column. It prints on the console at every boot,
+       * which is the point: an alarming line that is not the fault. */
+      { "/etc/fstab",
+        "# device                        mount  type  options\n"
+        "UUID=8f41-2c07-a19d-5be3  /      ext4  defaults\n"
+        "none                            /proc  proc  defaults\n"
+        "none                            /tmp   tmpfs defaults\n"
+        "/dev/sr0                        /media iso9660 noauto\n"
+        "# the backup caddy is not always in the machine -- nofail, please\n"
+        "# leave it, I am tired of retyping it. -- nomowner\n"
+        "/dev/sdb1                       /media ext4  nofail\n" },
+
+      /* A vendor tarball, and a path APPENDED rather than prepended -- which
+       * is the difference between a working machine and the two-libraries
+       * fault, and is invisible unless the order is read. */
+      { "/etc/ld.so.conf",
+        "/lib\n"
+        "/usr/lib\n"
+        "# the vendor tools carry their own copies; ours must win, so this\n"
+        "# goes LAST. Do not tidy it to the top. -- nomowner\n"
+        "/opt/vendor/lib\n" },
+
+      /* An account somebody added. /etc/passwd is the most frightening file
+       * on the machine to find changed and this change is completely
+       * ordinary. */
+      { "/etc/passwd",
+        "root:x:0:0:root:/root:/bin/sh\n"
+        "daemon:x:1:1:daemon:/:/bin/false\n"
+        "nomowner:x:1000:1000:host owner:/home/nomowner:/bin/sh\n"
+        "# for the nightly export job, 11 Mar. No shell, on purpose.\n"
+        "backup:x:1001:1001:backup agent:/var/backups:/bin/false\n" },
+
+      /* AN EDITED BOOT SCRIPT THAT IS FINE. rc.boot is where a real fault
+       * (the vendor `need` line, the left-behind bind) lives, so a harmless
+       * edit to it is the most valuable decoy in this list. */
+      { "/etc/rc.boot",
+        "# /etc/rc.boot -- the bootstrap rc, run by pid 1.\n"
+        "# Brings the filesystems online and enters the default runlevel.\n"
+        "echo rc.boot: bootstrap rc starting\n"
+        "echo rc.boot: site policy 4 applied -- see the runbook\n"
+        "need /sbin/svcinit\n"
+        "# /etc/fstab is the single source of truth for what gets mounted.\n"
+        "exec /sbin/mountall\n"
+        "run /etc/rc.d/rc.3\n" },
+
+      { "/etc/inittab",
+        "# /etc/inittab -- the last non-comment line is run by /sbin/init.\n"
+        "#\n"
+        "# Do not add a second command here. init runs the LAST one and the\n"
+        "# other is simply ignored, which cost me an afternoon in February.\n"
+        "/bin/rc /etc/rc.boot\n" },
+
+      /* The repository file with everything changed EXCEPT the line that
+       * matters. Whoever has been burned by the testing channel once will
+       * open this file at speed; the channel still says stable. */
+      { "/etc/pkg/repos.d/main.repo",
+        "# the repository this machine is built from.\n"
+        "# switched to the regional mirror 2 May -- the main one was timing\n"
+        "# out during the nightly upgrade window.\n"
+        "name = main\n"
+        "channel = stable\n"
+        "url = https://mirror-eu.nomnix.org/11.4\n" },
+
+      { "/etc/logrotate.conf",
+        "# daily since the March outage, and keep a fortnight of them\n"
+        "daily\nrotate 14\ncompress\ninclude /etc/logrotate.d\n" },
+
+      { "/etc/nomde/panel.conf",
+        "# panel moved to the top, the users asked -- 19 Apr\n"
+        "position=top\nheight=32\n" },
+
+      { "/etc/nftables.conf",
+        "table inet filter {\n"
+        "  chain input {\n"
+        "    type filter hook input priority 0; policy drop;\n"
+        "    # 8080 opened for the new load balancer, ticket 9102\n"
+        "    tcp dport { 22, 80, 8080 } accept\n"
+        "  }\n}\n" },
+
+      { "/etc/services.d/sshd.svc",
+        "# /etc/services.d/sshd.svc\n"
+        "name: sshd\n"
+        "exec: /usr/sbin/sshd\n"
+        "description: remote login\n"
+        "after: net\n"
+        "# always, not on-failure: ops want it back even after a clean stop\n"
+        "restart: always\n"
+        "enabled: yes\n"
+        "runlevel: 3\n" },
     };
     const int NEDITS = (int)(sizeof EDITS / sizeof EDITS[0]);
 

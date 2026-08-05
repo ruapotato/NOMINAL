@@ -140,8 +140,22 @@ typedef struct Machine_ {
     bool  powered;
     bool  airgapped;
     bool  sp_connected;      /* has the technician attached to the console  */
-    bool  sp_media;          /* is the rescue medium in the virtual drive   */
-    int   sp_bootdev;        /* 0 disk, 1 the attached medium               */
+    /* THE DRIVE AND THE FIRMWARE BELONG TO THE MACHINE THEY ARE IN.
+     *
+     * These two lived on the WORKSTATION -- the machine doing the reaching --
+     * so the customer's box had no idea whether there was a disc in its own
+     * drive. `rcon media eject` printed "virtual drive emptied" and then
+     * `blkid` on that machine still reported /dev/sr0 TYPE="iso9660", because
+     * the device table answered from a constant and the status bit answered
+     * from the workstation. Two pieces of state for one fact, and they could
+     * disagree; a playtester found them disagreeing.
+     *
+     * They are now the target's own, so there is one answer: what is in the
+     * drive is what blkid sees, what mount can mount, and what the firmware
+     * boots. sp_connected stays on the workstation, because attachment really
+     * is a property of the technician's end. */
+    bool  sp_media;          /* is the rescue medium in THIS machine's drive */
+    int   sp_bootdev;        /* 0 disk, 1 the medium: what IT boots next     */
     /* An unclean shutdown leaves the filesystem marked dirty. Nothing will
      * mount it until fsck has been run, which is the point: the repair has to
      * happen BEFORE you can even look at the disk. */

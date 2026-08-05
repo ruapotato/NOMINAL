@@ -90,7 +90,7 @@ struct Daemon {
  * Step 4 is what makes `mount /dev/sda1 /mnt` real: below /mnt, lookups stop
  * happening on the rescue medium and start happening on the customer's disk.
  */
-static const char *device_type(const char *dev);
+static const char *device_type(const Machine *m, const char *dev);
 
 static Vfs *resolve_fs(Proc *p, const char *in, char *out, size_t outsz)
 {
@@ -640,6 +640,46 @@ static int64_t kernel_syscall(Cpu *c, int64_t n, int64_t a0, int64_t a1,
         buf_free(&b);
         return r;
     }
+    case SYS_mkdir: {
+        /* mkdir, and mkdir -p when a1 is set.
+         *
+         * vfs's own walk has -p semantics because the installer needs them,
+         * so plain mkdir has to check the parent HERE -- otherwise
+         * `mkdir /var/lgo/journal` would cheerfully invent /var/lgo too and
+         * a typo would leave the player with a directory tree that looks
+         * right and is not. */
+        char raw[NOM_PATH_MAX], path[NOM_PATH_MAX];
+        if (!guest_str(c, (uint64_t)a0, raw, sizeof raw)) return -1;
+        Vfs *fs = resolve_fs(p, raw, path, sizeof path);
+        if (!path[0] || strcmp(path, "/") == 0) return -1;
+        if (strncmp(path, "/proc", 5) == 0) return -1;   /* generated, not a disk */
+        VNode *there = vfs_lookup(fs, path);
+        /* -p is the flag that means "make sure this exists", so an existing
+         * directory is a success and not an error. Without -p it is an
+         * error, which is what makes mkdir usable as a lock. */
+        if (there) return (a1 && there->kind == VN_DIR) ? 0 : -1;
+        if (!p->m->on_rescue && p->m->root_ro && fs == &p->m->disk) return -1;
+
+        const char *slash = strrchr(path, '/');
+        if (slash && slash != path) {
+            char parent[NOM_PATH_MAX];
+            size_t pl = (size_t)(slash - path);
+            if (pl >= sizeof parent) return -1;
+            memcpy(parent, path, pl);
+            parent[pl] = 0;
+            VNode *pd = vfs_lookup(fs, parent);
+            if (!pd && !a1) return -1;                   /* no -p: no invention */
+            if (pd && pd->kind != VN_DIR) return -1;
+            /* Creating a directory is a write to the one above it. */
+            if (pd && !(pd->mode & 0222)) return -1;
+        }
+        /* A directory is an inode like any other, and a filesystem out of
+         * inodes cannot make one however much space df reports. */
+        if (fs == &p->m->disk && p->m->fs_inodes_max &&
+            machine_inodes_used(p->m) >= p->m->fs_inodes_max)
+            return -1;
+        return vfs_mkdir(fs, path) ? 0 : -1;
+    }
     case SYS_dfused:
         /* 0 bytes used, 1 bytes total, 2 inodes used, 3 inodes total */
         switch ((int)a0) {
@@ -875,11 +915,18 @@ static int64_t kernel_syscall(Cpu *c, int64_t n, int64_t a0, int64_t a1,
         case SP_STATUS:
             /* Bit 0 is POWER, bit 4 is "it got all the way up". They are
              * different facts and the console must not merge them. */
+            /* Bit 5 is WHAT IS RUNNING RIGHT NOW, which is not the same fact
+             * as bit 3 (what it boots NEXT time) and is the one that was
+             * missing. `rcon status` could say "media empty / boot the disk"
+             * with the rescue image live, and be reporting both of its own
+             * bits honestly. The medium and the boot device are the target's
+             * own state now, so all four come from one machine. */
             return (t->powered ? 1 : 0)
                  | (t->boot.running ? 16 : 0)
                  | (p->m->sp_connected ? 2 : 0)
-                 | (p->m->sp_media ? 4 : 0)
-                 | (p->m->sp_bootdev ? 8 : 0);
+                 | (t->sp_media ? 4 : 0)
+                 | (t->sp_bootdev ? 8 : 0)
+                 | (t->on_rescue ? 32 : 0);
         case SP_CONNECT:
             p->m->sp_connected = true;
             return 0;
@@ -899,15 +946,19 @@ static int64_t kernel_syscall(Cpu *c, int64_t n, int64_t a0, int64_t a1,
                 return -4;
             }
             /* on, or cycle: boot whatever the boot device says */
-            if (p->m->sp_bootdev == 1 && p->m->sp_media) machine_boot_rescue(t);
-            else                                          machine_boot(t);
+            if (t->sp_bootdev == 1 && t->sp_media) machine_boot_rescue(t);
+            else                                   machine_boot(t);
             return 0;
         case SP_MEDIA:
-            p->m->sp_media = (arg != 0);
+            t->sp_media = (arg != 0);
+            /* Emptying the drive cannot leave the firmware pointed at it.
+             * It could, and then `rcon boot disk` looked like the step that
+             * had not worked when the step that had not worked was earlier. */
+            if (!t->sp_media) t->sp_bootdev = 0;
             return 0;
         case SP_BOOTDEV:
-            if (arg == 1 && !p->m->sp_media) return -2;   /* nothing in the drive */
-            p->m->sp_bootdev = arg;
+            if (arg == 1 && !t->sp_media) return -2;   /* nothing in the drive */
+            t->sp_bootdev = arg;
             return 0;
         case SP_CONSOLE: {
             size_t n = t->boot.console.len;
@@ -971,7 +1022,7 @@ static int64_t kernel_syscall(Cpu *c, int64_t n, int64_t a0, int64_t a1,
     case SYS_fstype: {
         char dev[64];
         if (!guest_str(c, (uint64_t)a0, dev, sizeof dev)) return -1;
-        const char *t = device_type(dev);
+        const char *t = device_type(p->m, dev);
         /* fstab names the root by UUID, not by device, so a probe that only
          * understood /dev/... could never check the one line that matters. */
         if (!t && strncmp(dev, "UUID=", 5) == 0)
@@ -1737,11 +1788,16 @@ uint64_t machine_inodes_used(const Machine *m)
 /* What a device really is, as opposed to what fstab claims it is. mount(8)
  * probes rather than trusting the file, which is why "wrong fs type" is a
  * distinct and very recognisable error rather than a mysterious failure. */
-static const char *device_type(const char *dev)
+/* AN EMPTY DRIVE IS EMPTY. /dev/sr0 answered "iso9660" from a constant, so
+ * `rcon media eject` said "virtual drive emptied" and `blkid` on that machine
+ * went on reporting a medium in it -- the tool whose entire job is to probe
+ * the device rather than believe a config file was the one believing a
+ * constant. The removable device is present exactly when something is in it. */
+static const char *device_type(const Machine *m, const char *dev)
 {
     if (strcmp(dev, "/dev/sda1") == 0 || strcmp(dev, "/dev/sda") == 0)
         return "ext4";
-    if (strcmp(dev, "/dev/sr0") == 0) return "iso9660";
+    if (strcmp(dev, "/dev/sr0") == 0) return m->sp_media ? "iso9660" : NULL;
     return NULL;
 }
 
@@ -1750,7 +1806,7 @@ static Vfs *device_fs(Machine *m, const char *dev)
     if (strcmp(dev, "/dev/sda1") == 0 || strcmp(dev, "/dev/sda") == 0)
         return &m->disk;
     if (strcmp(dev, "/dev/sr0") == 0)
-        return &m->rescue;
+        return m->sp_media ? &m->rescue : NULL;
     return NULL;
 }
 

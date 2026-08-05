@@ -56,6 +56,13 @@ typedef unsigned long      uint64_t;
 #define SYS_chroot   1038   /* (path) -> 0 or -1                            */
 #define SYS_mounts   1039   /* (buf, len) -> bytes: the mount table         */
 #define SYS_dfused   1052   /* (which) -> bytes used (0) or capacity (1)    */
+#define SYS_mkdir    1053   /* (path, parents) -> 0 or -1. `parents` is the
+                             * -p of mkdir: make what is missing above it.
+                             * Creating a directory is a WRITE to its parent
+                             * and costs an inode, and this refuses for both
+                             * of those reasons, exactly as open(O_CREAT)
+                             * does -- otherwise mkdir would be the one way
+                             * to create something on a full filesystem. */
 #define SYS_kill     1050   /* (pid, sig) -> 0 or -1. Signals are DELIVERED by
                              * being left pending; a cooperative daemon polls
                              * for them, which is all this machine can offer

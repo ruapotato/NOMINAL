@@ -843,10 +843,22 @@ func _run(which: int, line: String) -> String:
 			var c2: Control = con.get_meta("content")
 			c2.call("clear")
 			c2.call("write", machine.sh_on(0, "rcon console"))
+			# SAY WHICH SYSTEM CAME UP, NOT JUST THAT ONE DID.
+			#
+			# This printed "this machine is UP" over a rescue image, which is
+			# the same lie the ticket-closure bug told, in a smaller font. The
+			# rescue medium is a complete working system that was never
+			# broken; of course it boots. What the player needs to know is
+			# whose system is under the prompt.
 			if machine.booted():
-				c2.call("write",
-					"\n*** this machine is UP. it reached a login prompt. ***\n"
-					+ "*** you have a shell here now. ***\n")
+				if machine.on_rescue():
+					c2.call("write",
+						"\n*** the RESCUE MEDIUM is up. this is not their system. ***\n"
+						+ "*** their disk is /dev/sda1 and is not mounted yet. ***\n")
+				else:
+					c2.call("write",
+						"\n*** this machine is UP, from its OWN disk. ***\n"
+						+ "*** you have a shell here now. ***\n")
 
 	for w in windows:
 		if not is_instance_valid(w):

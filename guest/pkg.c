@@ -27,6 +27,29 @@ static void rooted(const char *p2)
     g_cat(path, p2, sizeof path);
 }
 
+/* IS THERE A PACKAGE DATABASE UNDER THAT ROOT AT ALL.
+ *
+ * `pkg --root /mnt owns /boot/initrd-6.4.11` answered "no package owns that
+ * path -- nothing installed this file ... removing it is usually safe. `rm
+ * <path>` if you are sure" on a /mnt with nothing mounted on it. The true
+ * answer, once the disk is actually mounted, is kernel-default. So the tool
+ * told the player, in its own confident voice, to delete the kernel's initrd
+ * -- and it is the exact advice that solves a DIFFERENT ticket, an orphan
+ * file no package owns, so a player who has seen that ticket will trust it.
+ *
+ * Every verb here reads the manifests under <root>/var/lib/pkg, and with no
+ * such directory every one of them finds nothing and reports nothing found.
+ * "I looked and there was none" and "I could not look" are opposite answers.
+ * Asked about a root it cannot read, pkg says so and stops. */
+static int root_readable(void)
+{
+    if (!root[0]) return 1;
+    rooted("/var/lib/pkg");
+    NomStat st;
+    if (g_stat(path, &st) != 0 || st.kind != NOM_KIND_DIR) return 0;
+    return 1;
+}
+
 static int read_manifest(const char *pkg)
 {
     rooted("/var/lib/pkg/");
@@ -351,6 +374,21 @@ void _start(void)
         g_exit(1);
     }
 
+    if (!root_readable()) {
+        g_puts("pkg: "); g_puts(root);
+        g_putln(" has no package database -- there is no");
+        g_puts("     "); g_puts(root); g_putln("/var/lib/pkg to read.");
+        g_putln("");
+        g_putln("Either nothing is mounted there, or what is mounted is not a");
+        g_putln("NomnixOS root. Every answer this tool gives comes out of that");
+        g_putln("directory, so without it there is nothing to say -- and a");
+        g_putln("confident answer about a filesystem that is not there is worse");
+        g_putln("than no answer.");
+        g_puts("     mount /dev/sda1 "); g_putln(root);
+        g_puts("     ls "); g_putln(root);
+        g_exit(2);
+    }
+
     if (g_streq(v[0], "list")) { each_package(list_cb); g_exit(0); }
 
     if (g_streq(v[0], "owns") || g_streq(v[0], "owner")) {
@@ -380,7 +418,14 @@ void _start(void)
         u64 qlen = g_strlen(v[1]);
         int found = 0;
         for (int i = 0; i < 128; i++) {
-            if (g_readdir("/var/lib/pkg", i, name) < 0) break;
+            /* THROUGH --root, like the loop above it. This one read the
+             * WORKSTATION'S database while claiming to answer about the
+             * mounted disk, so `pkg --root /mnt owns /etc` listed packages
+             * off the rescue medium. */
+            rooted("/var/lib/pkg");
+            static char pkgdir2[160];
+            g_copy(pkgdir2, path, sizeof pkgdir2);
+            if (g_readdir(pkgdir2, i, name) < 0) break;
             if (!read_manifest(name)) continue;
             char *p = manifest;
             int hit = 0;

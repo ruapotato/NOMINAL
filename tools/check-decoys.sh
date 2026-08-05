@@ -7,7 +7,11 @@
 # where httpd wants `Listen`/`DocumentRoot` -- and survived a 20-machine health
 # run, because 17 decoys drawn 2-5 at a time do not cover themselves in twenty
 # tries. This covers them on purpose, one at a time.
-N=${1:-17}
+# The count is the length of the EDITS table in image.c. It went from 17 to 27
+# when the structural fault set roughly doubled: a decoy set that does not grow
+# with the fault set turns `pkg verify` back into an oracle, because the one
+# unfamiliar line in the output is the answer again.
+N=${1:-27}
 fail=0
 i=0
 while [ "$i" -lt "$N" ]; do

@@ -595,6 +595,11 @@ void machine_boot_rescue(Machine *m)
      * that machine's shell. Same class of bug as on_rescue: two halves of the
      * service processor disagreeing because one of them was never told. */
     m->powered = true;
+    /* IT CANNOT BOOT A MEDIUM THAT IS NOT IN THE DRIVE. Booting one is
+     * therefore a statement that it is, and the device table, blkid and the
+     * service processor all read the same field. */
+    m->sp_media = true;
+    m->sp_bootdev = 1;
     m->nmount = 0;                 /* a fresh boot has nothing mounted */
     m->boot.running = false;
     m->boot.reason[0] = '\0';

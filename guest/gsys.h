@@ -70,6 +70,7 @@ static inline i64  g_readlink(const char *p, char *b, u64 n) { return sysc(SYS_r
 static inline int  g_getpid(void) { return (int)sysc(SYS_getpid, 0, 0, 0); }
 static inline int  g_bind(const char *target, const char *at) { return (int)sysc(SYS_bind, (i64)target, (i64)at, 0); }
 static inline int  g_unbind(const char *at) { return (int)sysc(SYS_unbind, (i64)at, 0, 0); }
+static inline int  g_mkdir(const char *p, int parents) { return (int)sysc(SYS_mkdir, (i64)p, parents, 0); }
 static inline int  g_chdir(const char *p) { return (int)sysc(SYS_chdir, (i64)p, 0, 0); }
 static inline i64  g_getcwd(char *b, u64 n) { return sysc(SYS_getcwd, (i64)b, (i64)n, 0); }
 static inline i64  g_repo(const char *pkg, const char *path, char *buf)
@@ -86,6 +87,21 @@ static inline void g_putn(i64 v)
     if (neg) o[j++] = '-';
     while (i) o[j++] = t[--i];
     g_write(1, o, (u64)j);
+}
+
+/* Decimal the other way. Returns 0 if `s` is not entirely digits, so a tool
+ * can tell `head -n 20` from `head -n twenty` and say which it got rather
+ * than quietly treating a typo as zero. */
+static inline int g_num(const char *s, i64 *out)
+{
+    i64 v = 0;
+    if (!*s) return 0;
+    for (; *s; s++) {
+        if (*s < '0' || *s > '9') return 0;
+        v = v * 10 + (*s - '0');
+    }
+    *out = v;
+    return 1;
 }
 
 static inline void g_putoct(unsigned v, int digits)

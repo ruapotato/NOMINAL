@@ -17,11 +17,11 @@
 #define NOM_PATH_MAX      256
 #define NOM_NAME_MAX      64
 /* How long ONE program's argument string may be. It is not NOM_PATH_MAX,
- * because an argument is not a path: `rm /tmp/*` expands to every name in the
- * directory, and a 256-byte ceiling silently threw away everything past the
- * eighth match -- which on one ticket dropped the faulty file from
- * `echo /etc/*.conf` and left the player looking at a complete-looking answer
- * that was missing the evidence. Must match GARG_MAX in guest/gsys.h. */
+ * because an argument is not a path: a glob over /tmp expands to every name
+ * in the directory, and a 256-byte ceiling silently threw away everything
+ * past the eighth match -- which on one ticket dropped the faulty file out of
+ * a glob of the .conf files in /etc, and left the player looking at a
+ * complete-looking answer that was missing the evidence. Must match GARG_MAX in guest/gsys.h. */
 #define NOM_ARG_MAX       4096
 #define NOM_STACK_MAX     256
 #define NOM_FRAMES_MAX    32

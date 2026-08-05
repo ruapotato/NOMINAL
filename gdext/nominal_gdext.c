@@ -429,13 +429,28 @@ static void m_healthy(Station *st, const GDExtensionConstTypePtr *args, void *re
 {
     (void)args;
     bool ok = false;
-    if (st->installed && st->m.boot.running) {
+    /* A RESCUE MEDIUM THAT BOOTS IS NOT A REPAIRED MACHINE.
+     *
+     * This asked two questions -- is it running, and is everything healthy --
+     * and the rescue image answers yes to both, because the rescue image is a
+     * complete working system that was never broken. So the instant a
+     * playtester ran `rcon media insert; rcon boot media; rcon power cycle`,
+     * the ticket closed itself and the customer said "it is working again,
+     * everything is where it was" -- with the disk still corrupt and not even
+     * mounted. Thirty seconds, any seed, no diagnosis. It made the optimal
+     * play "skip the game".
+     *
+     * The job is not "get a login prompt in front of the customer". It is
+     * "get THEIR system, on THEIR disk, running again". So the third question
+     * is which medium is under it, and it is the one that was missing. */
+    if (st->installed && st->m.boot.running && !st->m.on_rescue) {
         Buf sick; buf_init(&sick);
         ok = kernel_health(&st->m, &sick) == 0;
         buf_free(&sick);
     }
     *(GDExtensionBool *)ret = ok;
 }
+
 
 /* de_requests() -> String
  *
@@ -608,6 +623,7 @@ static const MethodDef METHODS[] = {
     { "sh_on",       m_sh_on,       2, { GDEXTENSION_VARIANT_TYPE_INT, GDEXTENSION_VARIANT_TYPE_STRING }, GDEXTENSION_VARIANT_TYPE_STRING },
     { "peer_addr",   m_peer_addr,   0, { 0 },                              GDEXTENSION_VARIANT_TYPE_STRING },
     { "healthy",     m_healthy,     0, { 0 },                              GDEXTENSION_VARIANT_TYPE_BOOL },
+    { "on_rescue",   m_on_rescue,   0, { 0 },                              GDEXTENSION_VARIANT_TYPE_BOOL },
     { "de_requests", m_de_requests, 0, { 0 },                              GDEXTENSION_VARIANT_TYPE_STRING },
     { "de_apps",     m_de_apps,     0, { 0 },                              GDEXTENSION_VARIANT_TYPE_STRING },
     { "colleague",   m_colleague,   2, { GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_STRING }, GDEXTENSION_VARIANT_TYPE_STRING },
