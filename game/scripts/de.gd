@@ -103,7 +103,13 @@ const TITLES := {"term": "terminal - your", "chat": "chat", "files": "files",
 func _ready() -> void:
 	set_anchors_preset(Control.PRESET_FULL_RECT)
 	mono = preload("res://scripts/uifont.gd").mono()
-	if ClassDB.class_exists("NominalStation"):
+	# A CALLER MAY HAND US THE MACHINE. The crash cart puts this desktop on a
+	# screen in the 3D building, and the machine on the end of its HDMI lead
+	# has to be the same object its serial lead talks to -- two front ends onto
+	# one Station, which is the rule this whole binding exists to keep.
+	if machine != null:
+		pass
+	elif ClassDB.class_exists("NominalStation"):
 		machine = ClassDB.instantiate("NominalStation")
 	else:
 		push_error("NominalStation is not registered - the GDExtension did not load")

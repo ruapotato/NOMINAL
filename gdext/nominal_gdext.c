@@ -24,6 +24,7 @@
 #include "cpu.h"
 #include "machine.h"
 #include "kernel.h"
+#include "building.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -90,6 +91,13 @@ typedef struct {
     bool    installed;
     bool    desk_up;
     Buf     scratch;
+    /* THE TOWER. Generated on demand and read out as text, exactly like every
+     * other method here: the extension owns the geometry and the scene is a
+     * view of it. Nothing in Godot may compute a room, a wall or a distance
+     * for itself, because then there would be two buildings and only one of
+     * them would be the one the game charges for. */
+    Building bld;
+    bool     bld_ok;
 } Station;
 
 static SN sn_class, sn_parent;
@@ -114,6 +122,7 @@ static void station_free(void *userdata, GDExtensionClassInstancePtr instance)
     Station *st = (Station *)instance;
     if (!st) return;
     if (st->installed) machine_free(&st->m);
+    if (st->bld_ok) bld_free(&st->bld);
     buf_free(&st->scratch);
     nom_free(st);
 }
@@ -579,6 +588,184 @@ static void m_chmod(Station *st, const GDExtensionConstTypePtr *args, void *ret)
     *(GDExtensionBool *)ret = n ? 1 : 0;
 }
 
+/* ------------------------------------------------------------- the tower
+ *
+ * The building is space, in metres, and the renderer is not allowed to invent
+ * any of it. Everything below is a read: generate once, then ask for the
+ * floors, the rooms, the doors, the cells and the two distances. The text
+ * shapes are the same line-per-record shape list_dir() and packages() use, so
+ * there is one parsing idiom in the front end and no binary layout to drift.
+ *
+ * The two distances stay separate here for the same reason they are separate
+ * in building.h: a person cannot walk up a riser and a cable does not go down
+ * the stairs, and the price of a run depends on which of the two you meant. */
+
+static bool bld_ready(Station *st)
+{
+    if (st->bld_ok) return true;
+    /* A view that asks before generating gets an empty answer, not a walk
+     * through a zeroed Building -- the same mistake that took Godot down with
+     * a native backtrace twice already. */
+    return false;
+}
+
+/* bld_generate(int seed) -> String — the tower's dimensions, key per line.
+ * Regenerating is cheap and idempotent, so the scene may call it on load. */
+static void m_bld_generate(Station *st, const GDExtensionConstTypePtr *args, void *ret)
+{
+    uint64_t seed = (uint64_t)(*(const int64_t *)args[0]);
+    if (st->bld_ok) { bld_free(&st->bld); st->bld_ok = false; }
+    if (!bld_generate(&st->bld, seed)) { c_to_gdstring(ret, ""); return; }
+    st->bld_ok = true;
+    const Building *b = &st->bld;
+    Buf o; buf_init(&o);
+    buf_printf(&o, "seed %llu\n", (unsigned long long)b->seed);
+    buf_printf(&o, "floors %d\n", b->floors);
+    buf_printf(&o, "plate %d %d\n", b->w, b->h);
+    buf_printf(&o, "floor_height %.4f\n", b->floor_height);
+    buf_printf(&o, "tenants %d\n", b->ntenants);
+    buf_printf(&o, "rooms %d\n", b->nrooms);
+    buf_printf(&o, "doors %d\n", b->ndoors);
+    buf_printf(&o, "core %d %d %d %d\n", b->core_x0, b->core_y0, b->core_x1, b->core_y1);
+    buf_printf(&o, "ring %d %d %d %d\n", b->ring_x0, b->ring_y0, b->ring_x1, b->ring_y1);
+    c_to_gdstring(ret, o.p ? o.p : "");
+    buf_free(&o);
+}
+
+/* bld_floors() -> String — "floor kind fx0 fy0 fx1 fy1 kindname" per line. */
+static void m_bld_floors(Station *st, const GDExtensionConstTypePtr *args, void *ret)
+{
+    (void)args;
+    if (!bld_ready(st)) { c_to_gdstring(ret, ""); return; }
+    const Building *b = &st->bld;
+    Buf o; buf_init(&o);
+    for (int f = 0; f < b->floors; f++)
+        buf_printf(&o, "%d %d %d %d %d %d %s\n", f, b->fkind[f],
+                   b->fx0[f], b->fy0[f], b->fx1[f], b->fy1[f],
+                   bld_floor_kind_name(b->fkind[f]));
+    c_to_gdstring(ret, o.p ? o.p : "");
+    buf_free(&o);
+}
+
+/* bld_rooms() -> String — "i floor kind tenant x0 y0 x1 y1 kindname" per line.
+ * The index is the room id every other call speaks in. */
+static void m_bld_rooms(Station *st, const GDExtensionConstTypePtr *args, void *ret)
+{
+    (void)args;
+    if (!bld_ready(st)) { c_to_gdstring(ret, ""); return; }
+    const Building *b = &st->bld;
+    Buf o; buf_init(&o);
+    for (int i = 0; i < b->nrooms; i++) {
+        const Room *r = &b->rooms[i];
+        buf_printf(&o, "%d %d %d %d %d %d %d %d %s\n", i, r->floor, r->kind,
+                   r->tenant, r->x0, r->y0, r->x1, r->y1,
+                   bld_kind_name(r->kind));
+    }
+    c_to_gdstring(ret, o.p ? o.p : "");
+    buf_free(&o);
+}
+
+/* bld_doors() -> String — "a b floor x y dir" per line. A door is an EDGE:
+ * dir 0 is the wall between (x,y) and (x+1,y), dir 1 between (x,y) and
+ * (x,y+1). The renderer leaves a gap there instead of building a wall, which
+ * is why a door cannot end up opening into brickwork. */
+static void m_bld_doors(Station *st, const GDExtensionConstTypePtr *args, void *ret)
+{
+    (void)args;
+    if (!bld_ready(st)) { c_to_gdstring(ret, ""); return; }
+    const Building *b = &st->bld;
+    Buf o; buf_init(&o);
+    for (int i = 0; i < b->ndoors; i++) {
+        const Door *d = &b->doors[i];
+        buf_printf(&o, "%d %d %d %d %d %d\n", d->a, d->b, d->floor, d->x, d->y, d->dir);
+    }
+    c_to_gdstring(ret, o.p ? o.p : "");
+    buf_free(&o);
+}
+
+/* bld_cells(int floor) -> String — h lines of w room indices, 65535 outside
+ * the plate. The renderer walks these to find every wall, so a wall exists
+ * exactly where two neighbouring square metres belong to different rooms. */
+static void m_bld_cells(Station *st, const GDExtensionConstTypePtr *args, void *ret)
+{
+    int f = (int)(*(const int64_t *)args[0]);
+    if (!bld_ready(st) || f < 0 || f >= st->bld.floors) { c_to_gdstring(ret, ""); return; }
+    const Building *b = &st->bld;
+    Buf o; buf_init(&o);
+    for (int y = 0; y < b->h; y++) {
+        for (int x = 0; x < b->w; x++)
+            buf_printf(&o, x ? " %u" : "%u",
+                       (unsigned)b->cell[(size_t)f * b->h * b->w + (size_t)y * b->w + x]);
+        buf_printf(&o, "\n");
+    }
+    c_to_gdstring(ret, o.p ? o.p : "");
+    buf_free(&o);
+}
+
+/* bld_find(int floor, int kind) -> int — the first room of a kind on a floor,
+ * -1 when there is none. Where the player spawns, and where the test looks
+ * for a comms cupboard to walk to. */
+static void m_bld_find(Station *st, const GDExtensionConstTypePtr *args, void *ret)
+{
+    int f = (int)(*(const int64_t *)args[0]);
+    int k = (int)(*(const int64_t *)args[1]);
+    *(int64_t *)ret = bld_ready(st) ? bld_find(&st->bld, f, k) : -1;
+}
+
+/* bld_room_at(int floor, int x*1000+y) is unusable as two ints, so this takes
+ * the metre coordinate packed the way the caller has it: bld_room_at_xy is
+ * spelled with two ints because that is what the method table allows. */
+static void m_bld_room_at(Station *st, const GDExtensionConstTypePtr *args, void *ret)
+{
+    /* x and y packed into one int: x * 4096 + y. The method table carries two
+     * arguments, and the floor needs one of them. */
+    int f  = (int)(*(const int64_t *)args[0]);
+    int64_t xy = *(const int64_t *)args[1];
+    *(int64_t *)ret = bld_ready(st)
+        ? bld_room_at(&st->bld, f, (int)(xy / 4096), (int)(xy % 4096)) : -1;
+}
+
+static void bld_dist_out(Station *st, int src, bool cable, void *ret)
+{
+    if (!bld_ready(st) || src < 0 || src >= st->bld.nrooms) { c_to_gdstring(ret, ""); return; }
+    double *d = nom_alloc(sizeof(double) * (size_t)st->bld.nrooms);
+    bool ok = cable ? bld_cable_all(&st->bld, src, d) : bld_walk_all(&st->bld, src, d);
+    Buf o; buf_init(&o);
+    if (ok)
+        for (int i = 0; i < st->bld.nrooms; i++)
+            /* -1 for unreachable: a route that does not exist has no price,
+             * and a huge number would be quietly spent. */
+            buf_printf(&o, i ? " %.3f" : "%.3f", d[i] >= BLD_INF / 2 ? -1.0 : d[i]);
+    nom_free(d);
+    c_to_gdstring(ret, o.p ? o.p : "");
+    buf_free(&o);
+}
+
+/* bld_walk(int room) -> String  — metres a PERSON walks to every room. */
+static void m_bld_walk(Station *st, const GDExtensionConstTypePtr *args, void *ret)
+{
+    bld_dist_out(st, (int)(*(const int64_t *)args[0]), false, ret);
+}
+
+/* bld_cable(int room) -> String — metres of CABLE to every room. Not the
+ * same number, deliberately: the tray and the riser are not the stairs. */
+static void m_bld_cable(Station *st, const GDExtensionConstTypePtr *args, void *ret)
+{
+    bld_dist_out(st, (int)(*(const int64_t *)args[0]), true, ret);
+}
+
+/* bld_floorplan(int floor) -> String — the ASCII plan, so a blind test and a
+ * bug report can both see the floor the renderer was handed. */
+static void m_bld_floorplan(Station *st, const GDExtensionConstTypePtr *args, void *ret)
+{
+    int f = (int)(*(const int64_t *)args[0]);
+    if (!bld_ready(st) || f < 0 || f >= st->bld.floors) { c_to_gdstring(ret, ""); return; }
+    Buf o; buf_init(&o);
+    bld_floorplan(&st->bld, f, &o);
+    c_to_gdstring(ret, o.p ? o.p : "");
+    buf_free(&o);
+}
+
 /* ------------------------------------------------------- method plumbing */
 typedef struct {
     const char *name;
@@ -617,6 +804,16 @@ static const MethodDef METHODS[] = {
     { "de_apps",     m_de_apps,     0, { 0 },                              GDEXTENSION_VARIANT_TYPE_STRING },
     { "customer_name", m_customer_name, 0, { 0 },            GDEXTENSION_VARIANT_TYPE_STRING },
     { "complaint",   m_complaint,   0, { 0 },                              GDEXTENSION_VARIANT_TYPE_STRING },
+    { "bld_generate",  m_bld_generate,  1, { GDEXTENSION_VARIANT_TYPE_INT }, GDEXTENSION_VARIANT_TYPE_STRING },
+    { "bld_floors",    m_bld_floors,    0, { 0 },                            GDEXTENSION_VARIANT_TYPE_STRING },
+    { "bld_rooms",     m_bld_rooms,     0, { 0 },                            GDEXTENSION_VARIANT_TYPE_STRING },
+    { "bld_doors",     m_bld_doors,     0, { 0 },                            GDEXTENSION_VARIANT_TYPE_STRING },
+    { "bld_cells",     m_bld_cells,     1, { GDEXTENSION_VARIANT_TYPE_INT }, GDEXTENSION_VARIANT_TYPE_STRING },
+    { "bld_find",      m_bld_find,      2, { GDEXTENSION_VARIANT_TYPE_INT, GDEXTENSION_VARIANT_TYPE_INT }, GDEXTENSION_VARIANT_TYPE_INT },
+    { "bld_room_at",   m_bld_room_at,   2, { GDEXTENSION_VARIANT_TYPE_INT, GDEXTENSION_VARIANT_TYPE_INT }, GDEXTENSION_VARIANT_TYPE_INT },
+    { "bld_walk",      m_bld_walk,      1, { GDEXTENSION_VARIANT_TYPE_INT }, GDEXTENSION_VARIANT_TYPE_STRING },
+    { "bld_cable",     m_bld_cable,     1, { GDEXTENSION_VARIANT_TYPE_INT }, GDEXTENSION_VARIANT_TYPE_STRING },
+    { "bld_floorplan", m_bld_floorplan, 1, { GDEXTENSION_VARIANT_TYPE_INT }, GDEXTENSION_VARIANT_TYPE_STRING },
 };
 #define NMETHODS ((int)(sizeof METHODS / sizeof METHODS[0]))
 
