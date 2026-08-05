@@ -1821,7 +1821,7 @@ static const Package PKG_HAMDE = {
         "Name=Chat\n"
         "Exec=chat\n"
         "Icon=chat\n"
-        "Comment=The customer, and two colleagues\n", 0644, NULL },
+        "Comment=The person in front of the machine\n", 0644, NULL },
       { "/usr/share/applications/files.desktop",
         "[Desktop Entry]\n"
         "Name=Files\n"
@@ -4683,6 +4683,9 @@ void machine_free(Machine *m)
     vfs_free(&m->disk);
     vfs_free(&m->rescue);
     buf_free(&m->boot.console);
+    /* What the customer is looking at is a copy of what the machine printed,
+     * and it is hers until the call ends. */
+    buf_free(&m->cust.screen);
 }
 
 /* --- the package database -------------------------------------------- */

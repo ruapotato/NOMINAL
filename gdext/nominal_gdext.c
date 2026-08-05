@@ -77,75 +77,6 @@ static void c_to_gdstring(void *dest, const char *s)
 }
 
 /* ------------------------------------------------------------- the class */
-/* THE MODEL, LOADED ONCE FOR THE WHOLE GAME.
- *
- * The weights ship as game data. Loading is best-effort and silent: if the
- * file is missing, or the build has no llama in it, llm_available() stays
- * false and customer.c falls back to the scripted persona -- which is the
- * D20 contract, "the player never sees a hang".
- *
- * The path is relative to where Godot was started, which for a played build
- * is the project directory. NOM_MODEL overrides it. */
-#ifdef NOM_LLM
-#include <dlfcn.h>
-bool llm_load(const char *path);
-const char *llm_why(void);
-
-/* FIND THE WEIGHTS RELATIVE TO THIS LIBRARY, not to the working directory.
- *
- * cwd-relative paths worked from a terminal and not from the editor, because
- * Godot's idea of the current directory depends on how it was started -- so
- * the model silently failed to load in the one case that matters, and the
- * customer answered every question with the scripted "I'm not sure what
- * you're asking me". A shipped game finds its data next to itself. */
-static void nominal_load_model(void)
-{
-    static bool tried = false;
-    if (tried) return;
-    tried = true;
-
-    const char *env = getenv("NOM_MODEL");
-    if (env && *env) { llm_load(env); return; }
-
-    static const char *NAMES[] = {
-        "Qwen2.5-3B-Instruct-Q4_K_M.gguf",
-        "Qwen2.5-1.5B-Instruct-Q4_K_M.gguf",
-        "Qwen2.5-0.5B-Instruct-Q4_K_M.gguf",
-        NULL
-    };
-
-    /* Where is this .so? game/bin/libnominal... -> game/models/... */
-    char base[1024] = "";
-    Dl_info info;
-    if (dladdr((void *)(uintptr_t)&nominal_load_model, &info) && info.dli_fname) {
-        snprintf(base, sizeof base, "%s", info.dli_fname);
-        char *slash = strrchr(base, '/');
-        if (slash) *slash = '\0';            /* .../game/bin */
-        slash = strrchr(base, '/');
-        if (slash) *slash = '\0';            /* .../game     */
-    }
-
-    char path[1200];
-    for (int i = 0; NAMES[i]; i++) {
-        if (base[0]) {
-            snprintf(path, sizeof path, "%s/models/%s", base, NAMES[i]);
-            if (llm_load(path)) {
-                fprintf(stderr, "nominal: model %s\n", path);
-                return;
-            }
-        }
-        snprintf(path, sizeof path, "models/%s", NAMES[i]);
-        if (llm_load(path)) { fprintf(stderr, "nominal: model %s\n", path); return; }
-        snprintf(path, sizeof path, "game/models/%s", NAMES[i]);
-        if (llm_load(path)) { fprintf(stderr, "nominal: model %s\n", path); return; }
-    }
-    fprintf(stderr, "nominal: NO MODEL (%s) -- scripted persona will answer\n",
-            llm_why ? llm_why() : "?");
-}
-
-#else
-static void nominal_load_model(void) { }
-#endif
 
 /* One Godot object == one customer machine: a disk, a package database and a
  * boot chain that really runs the programs on that disk. */
@@ -562,47 +493,40 @@ static void m_sh(Station *st, const GDExtensionConstTypePtr *args, void *ret)
     buf_free(&out);
 }
 
-/* ask(String question) -> String
+/* customer_options() -> String
+ * customer_choose(int idx, String arg) -> String
  *
- * The customer, on the phone. This was reachable from the TCP bench and not
- * from the desktop at all, so the entire language-model side of the game --
- * the persona, the memory of the call, the fact that they can tell you what
- * is on their screen -- was invisible to anyone playing through the front
- * end. A view that cannot see half the game is not a view of the game. */
-static void m_ask(Station *st, const GDExtensionConstTypePtr *args, void *ret)
+ * THE PERSON IN FRONT OF THE MACHINE, as a menu.
+ *
+ * She used to be a language model and answered free text; the desktop chat
+ * called `ask` with whatever was typed and waited a minute or more for a
+ * reply. She is deterministic now, so what she can be asked is a list that
+ * depends on the state of the call, and saying one of them is instant. The
+ * numbers in the list are stable ids -- pass the id, not the position.
+ *
+ * `arg` carries the command for the dictate option and is ignored by every
+ * other one. */
+static void m_customer_options(Station *st, const GDExtensionConstTypePtr *args, void *ret)
 {
-    /* LAZILY, AND NOT ON THE WAY IN.
-     *
-     * Loading 1.8 GB of weights at construction blocked the whole desktop
-     * before it drew a single frame -- over three minutes on a busy machine,
-     * for a screen with nothing on it. Nobody needs the customer until they
-     * open the chat, and the chat already calls this from a worker thread, so
-     * loading here costs the first message and nothing else. */
-    nominal_load_model();
-    char q[1024];
-    gdstring_to_c(args[0], q, sizeof q);
+    (void)args;
     Buf out; buf_init(&out);
-    customer_ask(&st->m, q, &out);
+    customer_options(&st->m, &out);
     c_to_gdstring(ret, out.p ? out.p : "");
     buf_free(&out);
 }
 
-/* colleague(String who, String question) -> String
- * customer_name() -> String
- *
- * The other two people in the chat window, and the name of the first. */
-static void m_colleague(Station *st, const GDExtensionConstTypePtr *args, void *ret)
+static void m_customer_choose(Station *st, const GDExtensionConstTypePtr *args, void *ret)
 {
-    nominal_load_model();
-    char who[32], q[1024];
-    gdstring_to_c(args[0], who, sizeof who);
-    gdstring_to_c(args[1], q, sizeof q);
+    int64_t idx = *(const int64_t *)args[0];
+    char arg[NOM_ARG_MAX];
+    gdstring_to_c(args[1], arg, sizeof arg);
     Buf out; buf_init(&out);
-    colleague_ask(&st->m, who, q, &out);
+    customer_choose(&st->m, (int)idx, arg, &out);
     c_to_gdstring(ret, out.p ? out.p : "");
     buf_free(&out);
 }
 
+/* customer_name() -> String — the name of the person on the phone. */
 static void m_customer_name(Station *st, const GDExtensionConstTypePtr *args, void *ret)
 {
     (void)args;
@@ -683,14 +607,14 @@ static const MethodDef METHODS[] = {
     { "boot_rescue", m_boot_rescue, 0, { 0 },                              GDEXTENSION_VARIANT_TYPE_STRING },
     { "on_rescue",   m_on_rescue,   0, { 0 },                              GDEXTENSION_VARIANT_TYPE_BOOL },
     { "sh",          m_sh,          1, { GDEXTENSION_VARIANT_TYPE_STRING }, GDEXTENSION_VARIANT_TYPE_STRING },
-    { "ask",         m_ask,         1, { GDEXTENSION_VARIANT_TYPE_STRING }, GDEXTENSION_VARIANT_TYPE_STRING },
+    { "customer_options", m_customer_options, 0, { 0 },          GDEXTENSION_VARIANT_TYPE_STRING },
+    { "customer_choose",  m_customer_choose,  2, { GDEXTENSION_VARIANT_TYPE_INT, GDEXTENSION_VARIANT_TYPE_STRING }, GDEXTENSION_VARIANT_TYPE_STRING },
     { "sh_on",       m_sh_on,       2, { GDEXTENSION_VARIANT_TYPE_INT, GDEXTENSION_VARIANT_TYPE_STRING }, GDEXTENSION_VARIANT_TYPE_STRING },
     { "peer_addr",   m_peer_addr,   0, { 0 },                              GDEXTENSION_VARIANT_TYPE_STRING },
     { "handback",    m_handback,    0, { 0 },                              GDEXTENSION_VARIANT_TYPE_STRING },
     { "healthy",     m_healthy,     0, { 0 },                              GDEXTENSION_VARIANT_TYPE_BOOL },
     { "de_requests", m_de_requests, 0, { 0 },                              GDEXTENSION_VARIANT_TYPE_STRING },
     { "de_apps",     m_de_apps,     0, { 0 },                              GDEXTENSION_VARIANT_TYPE_STRING },
-    { "colleague",   m_colleague,   2, { GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_STRING }, GDEXTENSION_VARIANT_TYPE_STRING },
     { "customer_name", m_customer_name, 0, { 0 },            GDEXTENSION_VARIANT_TYPE_STRING },
     { "complaint",   m_complaint,   0, { 0 },                              GDEXTENSION_VARIANT_TYPE_STRING },
 };

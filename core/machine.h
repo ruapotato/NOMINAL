@@ -101,11 +101,6 @@ typedef struct {
 
 #define MOUNT_MAX 12
 
-/* How much of the call the customer remembers. Eight exchanges is far more
- * than a support call needs and still fits a small model's context beside
- * the brief. */
-#define CUST_TURNS 8
-
 /* A mounted filesystem. `dev` is what you named when you mounted it, so
  * `mount` can print the table the way mount(8) does. */
 typedef struct {
@@ -233,7 +228,7 @@ typedef struct Machine_ {
         int  cause;           /* their version of it                       */
         int  mood;
         int  asked;
-        char told[16];        /* topics already covered                    */
+        char told[32];        /* questions already answered, by option id  */
         bool deflected;       /* denied it once, as people do              */
         bool confessed;
         bool gave_password;
@@ -247,23 +242,21 @@ typedef struct Machine_ {
          * same fault twice is not the same phone call twice. */
         int  persona;
 
-        /* THE CALL SO FAR. The model was asked each question cold, with no
-         * memory, so it could contradict itself between one sentence and the
-         * next and could not be led anywhere. The transcript is kept and
-         * replayed; the SYSTEM prompt is rebuilt from scratch every turn, so
-         * what the machine is doing right now always wins over what was true
-         * when the call started. */
-        char hq[CUST_TURNS][200];   /* what the technician asked */
-        char ha[CUST_TURNS][240];   /* what the customer said    */
-        int  nturns;
-        /* The other two people you can talk to. Separate transcripts,
-         * because they are separate conversations with separate knowledge. */
-        char cq[CUST_TURNS][200], ca[CUST_TURNS][280];   /* the coworker */
-        int  ncow;
-        /* The manager answers at the length of a runbook entry, so what is
-         * replayed to her as "what you said last time" has to hold one. */
-        char mq[CUST_TURNS][200], ma[CUST_TURNS][800];   /* the manager  */
-        int  nmgr;
+        /* WHAT IS IN FRONT OF HER, and how far up it she has read.
+         *
+         * A terminal is a fixed number of lines high and she can only see the
+         * bottom of it. This is the copy she is reading from: the last thing
+         * the machine printed, held so that "it has scrolled off -- do you
+         * want me to do it again?" can be answered yes. `scroll` is the index
+         * of the topmost line she has read back so far, so each further
+         * request pages UP through material that really was printed. */
+        Buf  screen;
+        int  nlines;
+        int  scroll;
+        /* Unprompted observations she has already made. True things about her
+         * machine, offered for free, and rationed: a person who volunteers
+         * something every single time is a hint system. */
+        int  remarks;
     } cust;
 
     /* Daemons. A service that starts does not run to completion: it runs
@@ -296,13 +289,20 @@ void machine_boot_rescue(Machine *m);
  * it did -- that string is the ground truth the persona is working from, and
  * is exactly the brief an LLM backend would receive. */
 void customer_brief(Machine *m, const char *what);
-void customer_ask(Machine *m, const char *question, Buf *out);
 /* The customer's name. Bound to the persona, so a name is a person. */
 const char *customer_name(const Machine *m);
-/* The colleague and the boss. `who` is "coworker" or "manager". */
-void colleague_ask(Machine *m, const char *who, const char *question, Buf *out);
-/* What the model decided a request was asking for. For measurement. */
-void customer_tool_probe(const char *request, char *out, size_t outsz);
+
+/* WHAT YOU CAN SAY TO HER RIGHT NOW, as a numbered list.
+ *
+ * The numbers are stable ids, not positions: what she can do changes every
+ * time the machine does, and a list that renumbers under the player's fingers
+ * produces the one mistake a menu exists to prevent. The list is filtered, so
+ * it never offers something that cannot work, and it always leaves a way
+ * forward. */
+void customer_options(Machine *m, Buf *out);
+/* Say option `idx`. `arg` carries the command for the dictate option and is
+ * NULL otherwise. Writes what she does and what she says. */
+void customer_choose(Machine *m, int idx, const char *arg, Buf *out);
 void customer_intro(Machine *m, Buf *out);
 /* Which local configuration decisions no longer survive. Returns how many. */
 int machine_collateral(Machine *m, Buf *out);
@@ -319,9 +319,6 @@ int machine_outstanding(Machine *m, Buf *out);
  * job is finished; that is the same rule that keeps the desktop a view of the
  * machine rather than a second opinion about it. */
 bool machine_handback(Machine *m, Buf *out);
-/* Ask the customer to DO something. Returns false if the request was not
- * understood as an action, in which case it was a question. */
-bool customer_do(Machine *m, const char *request, Buf *out);
 
 bool machine_mount(Machine *m, const char *dev, const char *at, int flags);
 /* Check and repair the filesystem. Clears the dirty flag; reports what it
