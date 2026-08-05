@@ -488,6 +488,28 @@ static int run_line(char *cmd0)
         char *v[GARGS];
         if (g_argv(rest, v) < 1) { g_putln("usage: chroot <dir>"); return 1; }
         i64 crc = sysc(SYS_chroot, (i64)v[0], 0, 0);
+        if (crc == -3) {
+            /* Nothing is mounted there. This used to print the libc story
+             * below -- a confident, plausible, completely fabricated
+             * diagnosis pointing at a real fault class -- for a player whose
+             * only mistake was skipping `mount`. */
+            g_puts("chroot: "); g_puts(v[0]);
+            g_putln(": nothing is mounted there, so there is nothing to");
+            g_puts("  chroot into. "); g_puts(v[0]);
+            g_putln(" is an empty directory on the rescue");
+            g_putln("  medium itself. Mount the customer's disk on it first:");
+            g_puts("      mount /dev/sda1 "); g_putln(v[0]);
+            g_putln("  `mount` with no arguments prints what is mounted where.");
+            return 1;
+        }
+        if (crc == -4) {
+            g_puts("chroot: "); g_puts(v[0]);
+            g_putln(": something is mounted there, but there is no /bin/sh");
+            g_putln("  in it -- so there would be no shell to run and no way back");
+            g_puts("  out. Check what you mounted: `ls "); g_puts(v[0]);
+            g_putln("` and `mount`.");
+            return 1;
+        }
         if (crc == -2) {
             /* The shell in there cannot run. Refusing is the whole point:
              * entering anyway leaves you unable to run even `exit`. */

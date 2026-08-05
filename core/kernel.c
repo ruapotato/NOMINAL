@@ -797,11 +797,33 @@ static int64_t kernel_syscall(Cpu *c, int64_t n, int64_t a0, int64_t a1,
              * the rescue medium's own tree, it exists in the disk mounted at
              * /mnt, so the check refused every chroot on every machine and
              * quietly cost three of sixty solves. */
+            /* THREE DIFFERENT ANSWERS, AND THEY WERE ALL ONE ERROR CODE.
+             *
+             * "no shell present" and "the shell will not link" both returned
+             * -2, and the shell prints the libc story for -2 -- so `chroot
+             * /mnt` with NOTHING mounted and /mnt empty said "there is a
+             * /bin/sh in there, and it cannot run -- its libraries are
+             * missing or the wrong version". There was no /bin/sh in there.
+             *
+             * A broken linker is a real fault class in this game, so that
+             * sentence sends the player hunting a library problem that does
+             * not exist, from a machine state that has no evidence in it at
+             * all. The refusal was right and the reason was invented. */
             char shraw[NOM_PATH_MAX * 2], shpath[NOM_PATH_MAX * 2];
             snprintf(shraw, sizeof shraw, "%s/bin/sh", raw);
             Vfs *sfs = resolve_fs(p, shraw, shpath, sizeof shpath);
             VNode *sh = vfs_resolve(sfs, shpath, NULL);
-            if (!sh || sh->kind != VN_FILE) return -2;
+            if (!sh || sh->kind != VN_FILE) {
+                /* Is anything mounted at the target? That is the difference
+                 * between "you forgot to mount the disk" -- overwhelmingly the
+                 * common case, and the one the player can fix in one command
+                 * -- and "you mounted something that is not a root
+                 * filesystem". */
+                for (int i = 0; i < p->m->nmount; i++)
+                    if (p->m->mount[i].used &&
+                        strcmp(p->m->mount[i].at, abs) == 0) return -4;
+                return -3;
+            }
             char lerr[NOM_ERR_MAX] = "", shneeds[512] = "";
             if (cpu_elf_needs((const uint8_t *)sh->data.p, sh->data.len,
                               shneeds, sizeof shneeds) &&
