@@ -25,16 +25,24 @@ system to stop looking at.
 
   firmware    zbios finds something to boot. If the boot sector is gone
               there is nothing here to fix from inside the system.
-  bootloader  zbl reads /boot/zbl/zbl.cfg. That file names a kernel, an
-              initrd and a root filesystem by UUID. `zbl-mkconfig` rewrites
-              it; `zbl-install /dev/sda` puts the loader back.
-  kernel      /boot/vmnomuz is loaded. It is a SYMLINK to a versioned image
-              (/boot/vmnomuz-6.4.11). A dangling symlink here is common and
-              `ls -l /boot` shows it as DANGLING.
-  initrd      /boot/initrd is unpacked. It must contain a driver for the
-              root filesystem, and it looks for the root BY UUID -- so a
-              zbl.cfg naming a UUID this disk does not have waits forever.
-              `blkid` tells you the UUID the disk really has.
+  bootloader  zbl reads /boot/zbl/zbl.cfg, and that file has ENTRIES. It
+              boots the one `default N` names, counted from ZERO, and says
+              which: `zbl: booting entry 0 of 2`. `zbl-mkconfig` rewrites
+              the file from this machine; `zbl-install /dev/sda` writes the
+              boot sector and the firmware's boot entry together.
+  kernel      the chosen entry's `kernel` is loaded. /boot/vmnomuz is a
+              SYMLINK to a versioned image (/boot/vmnomuz-6.4.11), and the
+              loader prints the version it read out of the IMAGE rather
+              than out of the filename: `zbl: loading /boot/vmnomuz
+              (6.4.11)`. A dangling symlink here is common and `ls -l
+              /boot` shows it as DANGLING.
+  initrd      the chosen entry's `initrd` is unpacked. It carries driver
+              modules and NOTHING ELSE -- there is no shell in it, so a
+              boot that stops here has no prompt on it and the way in is
+              the rescue medium. It waits for whatever the `root` line
+              says, a UUID or a device node, so a zbl.cfg naming a UUID
+              this disk does not have waits forever. `blkid` tells you the
+              UUID the disk really has.
   init        /sbin/init, pid 1. It runs /bin/rc /etc/rc.boot.
   rc.boot     brings the filesystems up: /sbin/mountall reads /etc/fstab and
               mounts everything in it, then the default runlevel is entered
@@ -45,7 +53,36 @@ system to stop looking at.
               exists in /etc/passwd and that its shell exists and can be
               executed -- so a machine can boot perfectly and still be
               impossible to log in to.
-  target      everything that should be running is running.",
+  target      everything that should be running is running.
+
+ZBL.CFG, IN ONE SCREEN
+
+  default 0      which entry, COUNTED FROM ZERO. Absent means 0.
+  timeout 5      read, kept and never waited on -- nothing here can press
+                 a key. Everything above the first `entry` is global.
+  entry \"...\"     opens a block, which runs to the next `entry` or to the
+                 end of the file. The label is decoration.
+    kernel PATH  all three REQUIRED, and read from the CHOSEN ENTRY ONLY:
+    initrd PATH  a `kernel` line up in the global section is read by
+    root SPEC    nothing, and the loader says there is no kernel line.
+
+Any other word stops the boot and names the line it was on -- `zbl.cfg:5:
+unrecognised directive: timout`. The whole file is checked before any of it
+is used, so a typo on the last line kills a boot the rest of the file would
+have got right.
+
+THREE THINGS HAVE TO AGREE
+
+The kernel image, /lib/modules/<the version that image says it is>, and the
+initrd. Most upgrade tickets are one of those three disagreeing, and the
+console names which one, because the repairs are opposite.
+
+  kernel: /lib/modules/6.4.11: no modules for this kernel
+                 the modules are the odd one out --
+                 `pkg reinstall kernel-default`
+  initrd: /boot/initrd was built for 6.3.12, and this kernel is 6.4.11
+                 the initrd is the odd one out -- `mkinitrd`, which
+                 rebuilds it from /lib/modules and nothing else",
 
 "READING THE BOOT LOG
 
