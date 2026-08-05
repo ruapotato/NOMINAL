@@ -11,7 +11,7 @@
  */
 #include "gsys.h"
 
-static char line[GARG_MAX], cwd[256], tmp[512], expanded[GARG_MAX];
+static char line[GARG_MAX], cwd[256], tmp[512];
 
 /* The `for` loop's variable. It shadows a real one for the length of the
  * loop, as it does in sh:
@@ -483,7 +483,15 @@ static int run_line(char *cmd0)
 {
     /* $(...) first, because its result is text that everything after this
      * should treat as if the person had typed it -- including the glob. */
-    static char subst[GARG_MAX];
+    /* ON THE STACK, not in static storage. run_line calls itself -- a `for`
+     * body goes back through run_list and straight back in here -- and a
+     * static line buffer means the child overwrites the text its parent is
+     * still walking through. This project has had that bug once already, in
+     * `find`, where a directory came back out with one entry in it. Two
+     * buffers of GARG_MAX is 8 KB of stack per frame, and the nesting here
+     * is only ever a few deep. */
+    char subst[GARG_MAX], expanded[GARG_MAX];
+
     g_copy(subst, cmd0, sizeof subst);
     if (g_contains(subst, "$(") || g_contains(subst, "`")) {
         if (substitute(subst, sizeof subst)) return 1;
