@@ -215,10 +215,70 @@ static bool client_line(Client *c)
      * the documented flow. Hanging up on it stranded the player. */
     if (strcmp(cmd, "quit") == 0) return false;
 
-    if (strcmp(cmd, "boot") == 0) {
-        c->m.on_rescue = false;
-        c->m.nmount = 0;
-        send_boot(c);
+    /* `boot` AND `rescue` ARE THE POWER BUTTON, AND YOU ARE NOT IN THE ROOM.
+     *
+     * They used to reach straight into the customer's Machine and run the
+     * boot chain, from your own workstation, with nothing attached. On a
+     * networked ticket, `rescue` typed before `rcon connect` printed a
+     * byte-identical rescue boot -- zbios, "the customer disk is /dev/sda1
+     * and is NOT mounted", the whole transcript -- and then left you at
+     * `you@desk#`, on YOUR machine, where `cat /etc/hostname` says node-1.
+     * Nothing had booted. A blind playtester believed they were on the rescue
+     * medium for several minutes. The prompt was the only tell and a full
+     * boot log above it drowns it out.
+     *
+     * On an AIR-GAPPED ticket it was worse, because the ticket says out loud
+     * "it is not on any network -- there is no address to give you" and then
+     * these two drove the machine anyway. A premise the game states and does
+     * not enforce is not a premise.
+     *
+     * So they go through the service processor, like everything else that
+     * touches that machine, and they leave it in the state they claim: after
+     * `rescue`, `rcon status` says the medium is in and the boot device is
+     * the medium, because it is. When there is no route, they refuse and name
+     * the instrument that does exist. */
+    if (strcmp(cmd, "boot") == 0 || strcmp(cmd, "rescue") == 0) {
+        bool live = cmd[0] == 'r';
+        if (c->m.airgapped) {
+            send_str(c->fd, live ?
+                "rescue: that machine has no service processor and no route --\n"
+                "  it is not on any network, so nothing you type here reaches\n"
+                "  it. The only hands in the room are the customer's:\n"
+                "    ask put the rescue disc in\n"
+                "    ask turn it off and on again\n"
+                "    ask type <command>      they read the screen back to you\n"
+                :
+                "boot: that machine has no service processor and no route --\n"
+                "  it is not on any network, so nothing you type here reaches\n"
+                "  it. The only hands in the room are the customer's:\n"
+                "    ask turn it off and on again\n"
+                "    ask what does the screen say\n");
+            return true;
+        }
+        if (!c->desk.sp_connected) {
+            char msg[512];
+            snprintf(msg, sizeof msg,
+                "%s: nothing here boots the customer's machine. You are at YOUR\n"
+                "  OWN workstation -- this would have restarted the box you are\n"
+                "  sitting at. Reach theirs first:\n"
+                "    rcon connect %s\n"
+                "  then `%s` again, or drive it by hand with `rcon media\n"
+                "  insert`, `rcon boot %s`, `rcon power cycle`.\n",
+                live ? "rescue" : "boot", c->desk.peer_addr,
+                live ? "rescue" : "boot", live ? "media" : "disk");
+            send_str(c->fd, msg);
+            return true;
+        }
+        /* Attached: this IS the service processor, so set what it would have
+         * been set to and let the same code run the boot. */
+        c->desk.sp_media   = live;
+        c->desk.sp_bootdev = live ? 1 : 0;
+        if (live) {
+            machine_boot_rescue(&c->m);
+            send_all(c->fd, c->m.boot.console.p, c->m.boot.console.len);
+        } else {
+            send_boot(c);
+        }
         return true;
     }
 
@@ -227,12 +287,6 @@ static bool client_line(Client *c)
         customer_ask(&c->m, cmd[3] ? cmd + 4 : "", &a);
         send_all(c->fd, a.p, a.len);
         buf_free(&a);
-        return true;
-    }
-
-    if (strcmp(cmd, "rescue") == 0) {
-        machine_boot_rescue(&c->m);
-        send_all(c->fd, c->m.boot.console.p, c->m.boot.console.len);
         return true;
     }
 
