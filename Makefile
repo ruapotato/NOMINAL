@@ -112,6 +112,17 @@ build/bf: $(BF_OBJ) $(LLM_OBJ) | build
 	@# ones behind and produced a segfault that looked like a bug in llama.
 	$(LINKER) -o $@ $(BF_OBJ) $(LLM_OBJ) $(LLM_LINK)
 
+# THE DRAW HISTOGRAM. `make faults` answers "does a player ever MEET this
+# fault", which is a different question from "does this fault work" and the
+# one nobody could answer before.
+.PHONY: faults
+faults: build/faulthist
+	@./build/faulthist 400 1 1 | tail -70
+
+build/faulthist: $(BF_SRC_LIB) tools/faulthist.c core/machine.h core/nom.h \
+                 core/kernel.h core/guestbin.h | build
+	$(CC) $(CFLAGS) -o $@ $(BF_SRC_LIB) tools/faulthist.c
+
 build/bf_asan: $(BF_SRC) core/machine.h core/nom.h core/abi.h core/cpu.h \
                core/kernel.h core/guestbin.h | build
 	$(CC) $(CSTD) $(WARN) $(FPFLAGS) -O1 -g -fsanitize=address,undefined \

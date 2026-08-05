@@ -2210,33 +2210,83 @@ static void fault_docroot_file(Machine *m, Rng *r, char *d, size_t ds)
                     "was unpacked one level too high");
 }
 
+/* THE TABLE IS NAMED NOW, AND THAT IS A MEASUREMENT TOOL, NOT DECORATION.
+ *
+ * A blind playtester sampled fifty-five ticket openings and met about a fifth
+ * of the fault classes the in-game documentation promises. Nobody could argue
+ * with that because nobody could count: the generator drew a function pointer
+ * out of an anonymous array and threw away which one it was, so "is this
+ * fault reachable?" had no answer short of reading the diff of every ticket.
+ * The names are what `make faults` counts, and NOM_FORCE_FAULT takes one
+ * instead of an index nobody can read. */
 typedef void (*StructuralFault)(Machine *, Rng *, char *, size_t);
-static const StructuralFault STRUCTURAL[] = {
-    fault_bootsector, fault_stray_unit, fault_wrong_uuid, fault_missing_module,
-    fault_bad_libc, fault_wrong_arch, fault_ldsoconf,
-    fault_bad_shell, fault_no_root, fault_unclean_shutdown,
-    fault_wrong_channel, fault_fstab, fault_daemon_config,
-    fault_daemon_directive, fault_disk_full, fault_bad_bind,
-    fault_dir_mode, fault_root_ro, fault_bad_libz, fault_fstype,
-    fault_missing_dir, fault_wellmeant, fault_dep_disabled,
-    fault_inodes, fault_iface_rename, fault_half_upgrade,
+static const struct { const char *name; StructuralFault fn; } STRUCTURAL[] = {
+    { "bootsector", fault_bootsector }, { "stray_unit", fault_stray_unit },
+    { "wrong_uuid", fault_wrong_uuid }, { "missing_module", fault_missing_module },
+    { "bad_libc", fault_bad_libc }, { "wrong_arch", fault_wrong_arch },
+    { "ldsoconf", fault_ldsoconf },
+    { "bad_shell", fault_bad_shell }, { "no_root", fault_no_root },
+    { "unclean_shutdown", fault_unclean_shutdown },
+    { "wrong_channel", fault_wrong_channel }, { "fstab", fault_fstab },
+    { "daemon_config", fault_daemon_config },
+    { "daemon_directive", fault_daemon_directive },
+    { "disk_full", fault_disk_full }, { "bad_bind", fault_bad_bind },
+    { "dir_mode", fault_dir_mode }, { "root_ro", fault_root_ro },
+    { "bad_libz", fault_bad_libz }, { "fstype", fault_fstype },
+    { "missing_dir", fault_missing_dir }, { "wellmeant", fault_wellmeant },
+    { "dep_disabled", fault_dep_disabled },
+    { "inodes", fault_inodes }, { "iface_rename", fault_iface_rename },
+    { "half_upgrade", fault_half_upgrade },
     /* the second generation */
-    fault_mount_shadow, fault_dangling_lib,
-    fault_lib_shadow, fault_wrong_runlevel, fault_dep_cycle,
-    fault_after_ghost, fault_hardening_sweep, fault_wrong_binary,
-    fault_stale_kernel_entry, fault_foreign_initrd, fault_no_shadow,
-    fault_passwd_fields, fault_docroot, fault_exec_path,
-    fault_inittab_target, fault_rcboot_need, fault_ro_dir,
-    fault_cache_full,
+    { "mount_shadow", fault_mount_shadow }, { "dangling_lib", fault_dangling_lib },
+    { "lib_shadow", fault_lib_shadow }, { "wrong_runlevel", fault_wrong_runlevel },
+    { "dep_cycle", fault_dep_cycle },
+    { "after_ghost", fault_after_ghost },
+    { "hardening_sweep", fault_hardening_sweep },
+    { "wrong_binary", fault_wrong_binary },
+    { "stale_kernel_entry", fault_stale_kernel_entry },
+    { "foreign_initrd", fault_foreign_initrd }, { "no_shadow", fault_no_shadow },
+    { "passwd_fields", fault_passwd_fields }, { "docroot", fault_docroot },
+    { "exec_path", fault_exec_path },
+    { "inittab_target", fault_inittab_target },
+    { "rcboot_need", fault_rcboot_need }, { "ro_dir", fault_ro_dir },
+    { "cache_full", fault_cache_full },
     /* the third generation, weighted at the stages the survey said were thin */
-    fault_boot_order, fault_zbl_default, fault_zbl_dup_entry,
-    fault_zbl_rootdev, fault_module_mismatch, fault_kernel_version,
-    fault_boot_symlink_swap, fault_initrd_version, fault_inittab_second,
-    fault_shells, fault_getty_user, fault_unit_no_name,
-    fault_ns_bind_unit, fault_ro_spool, fault_shadow_mode,
-    fault_conf_truncated, fault_docroot_file,
+    { "boot_order", fault_boot_order }, { "zbl_default", fault_zbl_default },
+    { "zbl_dup_entry", fault_zbl_dup_entry },
+    { "zbl_rootdev", fault_zbl_rootdev },
+    { "module_mismatch", fault_module_mismatch },
+    { "kernel_version", fault_kernel_version },
+    { "boot_symlink_swap", fault_boot_symlink_swap },
+    { "initrd_version", fault_initrd_version },
+    { "inittab_second", fault_inittab_second },
+    { "shells", fault_shells }, { "getty_user", fault_getty_user },
+    { "unit_no_name", fault_unit_no_name },
+    { "ns_bind_unit", fault_ns_bind_unit }, { "ro_spool", fault_ro_spool },
+    { "shadow_mode", fault_shadow_mode },
+    { "conf_truncated", fault_conf_truncated },
+    { "docroot_file", fault_docroot_file },
 };
 #define NSTRUCT ((int)(sizeof STRUCTURAL / sizeof STRUCTURAL[0]))
+
+int breaker_fault_count(void) { return NSTRUCT; }
+const char *breaker_fault_name(int i)
+{
+    return (i >= 0 && i < NSTRUCT) ? STRUCTURAL[i].name : "?";
+}
+
+/* WHAT THE TICKET IS MADE OF, recorded as it is applied.
+ *
+ * Only the accepted attempt survives: every retry resets it, so what is left
+ * at the end is what the player was actually handed. */
+static char g_dealt[512];
+static void dealt_add(const char *tag)
+{
+    size_t l = strlen(g_dealt);
+    if (l && l + 1 < sizeof g_dealt) g_dealt[l++] = ' ';
+    snprintf(g_dealt + l, sizeof g_dealt - l, "%s", tag);
+}
+const char *breaker_dealt(void) { return g_dealt; }
 
 typedef void (*Mutation)(Vfs *, const char *, Rng *, char *, size_t);
 static const Mutation MUTATION[] = {
@@ -2245,6 +2295,10 @@ static const Mutation MUTATION[] = {
                                        * weight it: config damage should be
                                        * more likely than a bad block */
     mut_mode, mut_relink,
+};
+static const char *const MUTNAME[] = {
+    "-delete", "-truncate", "-flip", "-zero",
+    "-line", "-line", "-line", "-mode", "-relink",
 };
 #define NMUT ((int)(sizeof MUTATION / sizeof MUTATION[0]))
 
@@ -2357,6 +2411,15 @@ static bool fault_stale_config(Machine *m, Rng *r)
                     STALE_EDITS[i].to);
 }
 
+/* How many draws in a hundred come from the designed table rather than from
+ * random damage. Set once per ticket; see machine_break. */
+static int g_struct_share = 25;
+
+/* Where in the rotation this ticket starts, and how far it has walked. See
+ * the long note in machine_corrupt: the fault is dealt, not rolled. */
+static uint64_t g_pick_base = 0;
+static int      g_pick_n = 0;
+
 /* Damage one random file one random way. Returns false if the mutation was a
  * no-op (wrong kind of file for it, empty file), which the caller retries. */
 bool machine_corrupt(Machine *m, Rng *r, char *what, size_t whatsz)
@@ -2376,15 +2439,41 @@ bool machine_corrupt(Machine *m, Rng *r, char *what, size_t whatsz)
     const char *forced = getenv("NOM_FORCE_FAULT");
     if (forced) {
         char d[200] = "";
-        int fi = atoi(forced) % NSTRUCT;
-        STRUCTURAL[fi](m, r, d, sizeof d);
-        if (d[0]) { snprintf(what, whatsz, "%s", d); return true; }
+        int fi = -1;
+        if (forced[0] >= '0' && forced[0] <= '9') fi = atoi(forced) % NSTRUCT;
+        else for (int i = 0; i < NSTRUCT; i++)
+            if (strcmp(STRUCTURAL[i].name, forced) == 0) fi = i;
+        if (fi < 0) return false;
+        STRUCTURAL[fi].fn(m, r, d, sizeof d);
+        if (d[0]) { dealt_add(STRUCTURAL[fi].name);
+                    snprintf(what, whatsz, "%s", d); return true; }
         return false;
     }
-    if (rng_next(r) % 100 < 25) {
+    if (rng_next(r) % 100 < g_struct_share) {
+        /* NOT A COIN. A HAND OF CARDS, DEALT WITHOUT REPLACEMENT.
+         *
+         * Drawing the fault uniformly at random is not the same thing as a
+         * player meeting the faults, and the difference is the whole of the
+         * complaint. Sixty-one faults drawn independently means each one
+         * comes up in about one ticket in eighty-two, so a dozen-ticket
+         * session meets a dozen of them AT BEST and meets several of them
+         * twice -- and a measured survey of four hundred tickets showed
+         * exactly that: a flat histogram where every single fault sat near
+         * one percent, which reads to a player as "the same handful over and
+         * over" because the ones they draw twice are the ones they notice.
+         *
+         * So the table is a rotation instead. Both strides are coprime with
+         * its length, so a run of NSTRUCT consecutive seeds deals every fault
+         * in it exactly once, adjacent tickets are never handed the same
+         * fault, and every fault is reachable inside a session rather than
+         * eventually. `g_pick_n` advances only when a structural
+         * fault is actually drawn, so a fault that cannot break THIS machine
+         * hands its place to the next one instead of costing a slot. */
+        int fi = (int)((g_pick_base + (uint64_t)g_pick_n++ * 7) % NSTRUCT);
         char d[200] = "";
-        STRUCTURAL[rng_next(r) % (uint64_t)NSTRUCT](m, r, d, sizeof d);
-        if (d[0]) { snprintf(what, whatsz, "%s", d); return true; }
+        STRUCTURAL[fi].fn(m, r, d, sizeof d);
+        if (d[0]) { dealt_add(STRUCTURAL[fi].name);
+                    snprintf(what, whatsz, "%s", d); return true; }
         return false;
     }
 
@@ -2392,10 +2481,11 @@ bool machine_corrupt(Machine *m, Rng *r, char *what, size_t whatsz)
     collect(m->disk.root, "", &ps);
     if (ps.n == 0) return false;
     const char *path = ps.path[rng_next(r) % (uint64_t)ps.n];
-    Mutation mut = MUTATION[rng_next(r) % (uint64_t)NMUT];
+    int mi = (int)(rng_next(r) % (uint64_t)NMUT);
     char d[200] = "";
-    mut(&m->disk, path, r, d, sizeof d);
+    MUTATION[mi](&m->disk, path, r, d, sizeof d);
     if (!d[0]) return false;
+    dealt_add(MUTNAME[mi]);
     snprintf(what, whatsz, "%s", d);
     return true;
 }
@@ -2448,6 +2538,11 @@ bool machine_break(Machine *m, uint64_t seed, int nfaults, char *what, size_t wh
          * tickets in five, which is the shape a support desk actually has. */
         uint64_t k = rng_next(&pr) % 8;
         want = k == 0 ? WANT_UP : (k == 1 ? WANT_STALE : WANT_ANY);
+
+        /* And where in the fault table this ticket's hand starts. */
+        rng_seed(&pr, (seed / (uint64_t)NSTRUCT) ^ 0x3c79ac492ba7b653ULL);
+        g_pick_base = (seed * 23 + rng_next(&pr)) % (uint64_t)NSTRUCT;
+        g_pick_n = 0;
     }
     {
         const char *f = getenv("NOM_FORCE_STALE");
@@ -2463,6 +2558,7 @@ bool machine_break(Machine *m, uint64_t seed, int nfaults, char *what, size_t wh
     for (int attempt = 0; attempt < 400; attempt++) {
         machine_free(m);
         machine_install(m, seed);
+        g_dealt[0] = '\0';
         Rng r;
         rng_seed(&r, (seed ^ 0x9e3779b97f4a7c15ULL) + (uint64_t)attempt * 0x2545f491ULL);
 
@@ -2513,6 +2609,7 @@ bool machine_break(Machine *m, uint64_t seed, int nfaults, char *what, size_t wh
                 int d2 = kernel_health(m, &sick2);
                 buf_free(&sick2);
                 if (d2 > 0) {
+                    dealt_add("stale-corrected");
                     machine_rebaseline_local(m);
                     if (what) snprintf(what, whatsz,
                         "a config was corrected and the daemon was never "
@@ -2528,6 +2625,7 @@ bool machine_break(Machine *m, uint64_t seed, int nfaults, char *what, size_t wh
                 int d2 = kernel_health(m, &sick2);
                 buf_free(&sick2);
                 if (d2 > 0) {
+                    dealt_add("stale-edited");
                     if (what) snprintf(what, whatsz,
                         "a config was edited after boot and never reloaded");
                     customer_brief(m, "changed a setting and did not restart it");
