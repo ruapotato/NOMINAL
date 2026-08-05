@@ -42,9 +42,15 @@ bool llm_ask_long(const char *system_brief, const char **hist, int nhist,
                   const char *question, char *out, size_t outsz);
 /* A CLASSIFIER, not a conversationalist. Near-zero temperature, because
  * "which of these seven things did the technician ask for" has one right
- * answer and sampling variety is nothing but a source of wrong ones. */
+ * answer and sampling variety is nothing but a source of wrong ones.
+ *
+ * `cut` is set when the answer was still coming when the budget ran out. It
+ * exists because the classifier's answer is not prose: it carries a command
+ * that is about to be RUN, and half a command is not a worse answer, it is a
+ * different one. The caller must be able to tell "they asked for this" from
+ * "they asked for at least this". */
 bool llm_classify(const char *system_brief, const char *question,
-                  char *out, size_t outsz);
+                  char *out, size_t outsz, bool *cut);
 }
 
 namespace {
@@ -57,6 +63,13 @@ bool           g_tried = false;
  * costs memory on a machine that is also running a game. */
 constexpr int CTX_TOKENS  = 4096;   /* the brief plus eight exchanges */
 constexpr int MAX_REPLY   = 64;
+/* The runbook author is allowed a paragraph and must be allowed to FINISH
+ * one: at 220 she ran out of budget mid-word often enough that a playtester
+ * read it as a broken game rather than a busy colleague. */
+constexpr int MAX_LONG    = 320;
+/* A dictated command line, in tokens. A UUID tokenises into a dozen pieces
+ * of hex, so this is not as generous as it looks. */
+constexpr int MAX_CLASSIFY = 220;
 
 std::vector<llama_token> tokenize(const std::string &text, bool add_special)
 {
@@ -83,7 +96,8 @@ std::string piece(llama_token tok)
 
 static bool llm_ask_n(const char *system_brief, const char **hist, int nhist,
                       const char *question, char *out, size_t outsz,
-                      int maxtok, int maxstops, float temp);
+                      int maxtok, int maxstops, float temp,
+                      bool oneline, bool *cut);
 
 bool llm_available(void) { return g_model != nullptr && g_ctx != nullptr; }
 
@@ -141,26 +155,38 @@ bool llm_ask_hist(const char *system_brief, const char **hist, int nhist,
                   const char *question, char *out, size_t outsz)
 {
     return llm_ask_n(system_brief, hist, nhist, question, out, outsz,
-                     MAX_REPLY, 2, 0.7f);
+                     MAX_REPLY, 2, 0.7f, false, nullptr);
 }
 
 bool llm_ask_long(const char *system_brief, const char **hist, int nhist,
                   const char *question, char *out, size_t outsz)
 {
     return llm_ask_n(system_brief, hist, nhist, question, out, outsz,
-                     220, 6, 0.7f);
+                     MAX_LONG, 6, 0.7f, false, nullptr);
 }
 
+/* ONE LINE, AND AS LONG A LINE AS A COMMAND CAN BE.
+ *
+ * This used to run to forty tokens and stop at the first full stop after the
+ * fortieth character, which are two sentence-shaped limits on something that
+ * is not a sentence. `RUN sed -i s/c603-2d03-bafe-e442/8f41-2c07-a19d-5be3/
+ * /mnt/boot/zbl/zbl.cfg` is sixty tokens of hex, and `RUN cat /etc/zbl.cfg`
+ * has a full stop in the middle of the filename. So: no sentence rule at all,
+ * a budget that fits a real command line, and the answer ends where the line
+ * ends -- which is what "output one line and nothing else" meant. */
 bool llm_classify(const char *system_brief, const char *question,
-                  char *out, size_t outsz)
+                  char *out, size_t outsz, bool *cut)
 {
-    return llm_ask_n(system_brief, nullptr, 0, question, out, outsz, 40, 1, 0.05f);
+    return llm_ask_n(system_brief, nullptr, 0, question, out, outsz,
+                     MAX_CLASSIFY, 0, 0.05f, true, cut);
 }
 
 static bool llm_ask_n(const char *system_brief, const char **hist, int nhist,
                       const char *question, char *out, size_t outsz,
-                      int maxtok, int maxstops, float temp)
+                      int maxtok, int maxstops, float temp,
+                      bool oneline, bool *cut)
 {
+    if (cut) *cut = false;
     const char *forbidden = "";
     if (!llm_available() || !out || outsz < 2) return false;
     out[0] = '\0';
@@ -208,21 +234,48 @@ static bool llm_ask_n(const char *system_brief, const char **hist, int nhist,
 
     const llama_vocab *vocab = llama_model_get_vocab(g_model);
     std::string reply;
+    /* Did it stop because it had finished, or because we stopped it? The
+     * difference is the whole of `cut`, and it is also what decides whether
+     * the tail below is a sentence or the wreckage of one. */
+    bool ranout = true;
     for (int i = 0; i < maxtok; i++) {
         llama_token tok = llama_sampler_sample(chain, g_ctx, -1);
-        if (llama_vocab_is_eog(vocab, tok)) break;
+        if (llama_vocab_is_eog(vocab, tok)) { ranout = false; break; }
         reply += piece(tok);
-        /* Two sentences is the brief. Stop at the second full stop rather
-         * than trusting a small model to stop on its own. */
-        if (reply.size() > 40) {
+        /* One line means one line: the answer is complete at the newline and
+         * everything after it is the model carrying on unasked. */
+        if (oneline) {
+            size_t nl = reply.find('\n');
+            if (nl != std::string::npos &&
+                reply.find_first_not_of(" \t\r\n") < nl) {
+                reply = reply.substr(0, nl);
+                ranout = false;
+                break;
+            }
+        } else if (maxstops > 0 && reply.size() > 40) {
+            /* Two sentences is the brief. Stop at the second full stop rather
+             * than trusting a small model to stop on its own. */
             size_t stops = 0;
             for (char ch : reply) if (ch == '.' || ch == '!' || ch == '?') stops++;
-            if (stops >= (size_t)maxstops) break;
+            if (stops >= (size_t)maxstops) { ranout = false; break; }
         }
         llama_batch nb = llama_batch_get_one(&tok, 1);
         if (llama_decode(g_ctx, nb) != 0) break;
     }
     llama_sampler_free(chain);
+
+    /* A REPLY THAT RAN OUT OF BUDGET ENDS AT THE LAST SENTENCE IT FINISHED.
+     *
+     * Json was cut mid-token -- "you can view the contents of `/etc/ld.so" --
+     * and a colleague who stops mid-word reads as a crash, not as somebody
+     * busy. Prose can simply lose its unfinished sentence; a classification
+     * cannot, because dropping half of a command still leaves a runnable
+     * command, so that case is reported through `cut` instead. */
+    if (ranout && !oneline) {
+        size_t last = reply.find_last_of(".!?");
+        if (last != std::string::npos && last + 1 > reply.size() / 2)
+            reply = reply.substr(0, last + 1);
+    }
 
     /* Trim, and refuse anything that came back empty or that leaked the
      * instruction block — a small model does that and it ruins the illusion
@@ -253,6 +306,21 @@ static bool llm_ask_n(const char *system_brief, const char **hist, int nhist,
         }
     }
 
+    /* THE BUFFER IS THE OTHER PLACE A REPLY GETS CUT, and it was cutting
+     * mid-word too: 320 tokens of runbook is more than six hundred bytes.
+     * Prose loses its last unfinished sentence rather than its last syllable;
+     * an answer that will not fit is reported as cut, never quietly halved. */
+    if (reply.size() >= outsz) {
+        if (cut) *cut = true;
+        if (!oneline) {
+            std::string fit = reply.substr(0, outsz - 1);
+            size_t last = fit.find_last_of(".!?");
+            if (last != std::string::npos && last + 1 > fit.size() / 2)
+                fit = fit.substr(0, last + 1);
+            reply = fit;
+        }
+    }
+    if (cut && ranout) *cut = true;
     snprintf(out, outsz, "%s", reply.c_str());
     return true;
 }

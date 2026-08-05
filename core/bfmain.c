@@ -455,6 +455,7 @@ int main(int argc, char **argv)
             "head","wc","echo","ps","ns","kill","chroot","man","links",
             "mkinitrd","zbl-mkconfig","zbl-install","rcon","sh","init","rc",
             "svcinit","login","getty","mountall","whoami","uname","for",
+            "tail","du","mkdir","find","netstat","seq","rev","rot13",
             NULL
         };
         /* WITHOUT A MODEL THIS GATE PASSES, WHICH IS WORSE THAN FAILING.
@@ -471,21 +472,54 @@ int main(int argc, char **argv)
         return 2;
 #endif
         /* Things a model reaches for that are not here. */
+        /* THIS LIST GOES STALE, AND A STALE ONE FAILS THE HONEST ANSWER.
+         * `tail` and `du` were on it, and both have been real commands since
+         * the shell grew them -- so Ben naming `du -sh /var`, which is the
+         * correct answer to "what is using up the disk", was scored as an
+         * invention. Anything added to the userland has to come off here. */
         static const char *FAKE[] = {
-            "systemctl","journalctl","less","more","tail","vi","vim",
+            "systemctl","journalctl","less","more","vi","vim",
             "nano","apt","apt-get","yum","dnf","rpm","dpkg","service",
-            "ss","ifconfig","ip","du","top","htop","lsof","awk",
+            "ss","ifconfig","ip","top","htop","lsof","awk",
             "curl","wget","tar","gzip","which","whereis","locate","tree",
+            NULL
+        };
+        /* AND BEN, WHO IS HELD TO THE SAME RULE.
+         *
+         * He was briefed to know nothing at all, so he could not name a tool
+         * and never did -- three sessions of him restating the question back
+         * to the player. He knows the vocabulary now, which means he can name
+         * a command, which means he can invent one. The enforcement in
+         * colleague_ask has always covered both of them; what was missing was
+         * the measurement, so these are asked in the same run and scored the
+         * same way. His answers are questions, so they are also the place an
+         * invented tool would do the most damage: a wrong steer phrased as
+         * "have you checked X" is one a player will go and check. */
+        static const char *BQ[] = {
+            "the machine boots but httpd is not answering",
+            "I think the initrd is corrupt",
+            "the boot stops with an emergency shell and a uuid on the screen",
+            "one service will not start and I do not know why",
+            "how do I see what is using up the disk",
+            "the library is the wrong version, what would you do",
             NULL
         };
         Machine m;
         machine_install(&m, 1);
         machine_boot(&m);
-        int asked = 0, clean = 0;
-        for (int i = 0; Q[i]; i++) {
+        int basked = 0, bclean = 0;
+        int asked = 0, clean = 0, refused = 0;
+        /* Same selector as --toolcheck, for the same reason: a full run is
+         * ten minutes of model, and a question you are working on is one. */
+        const char *only = argc > 2 ? argv[2] : NULL;
+        for (int round = 0; round < 2; round++) {
+        const char *who = round ? "manager" : "coworker";
+        const char **QS = round ? Q : BQ;
+        for (int i = 0; QS[i]; i++) {
+            if (only && !strstr(QS[i], only)) continue;
             Buf o = {0};
-            colleague_ask(&m, "manager", Q[i], &o);
-            asked++;
+            colleague_ask(&m, who, QS[i], &o);
+            if (round) asked++; else basked++;
             const char *txt = o.p ? o.p : "";
             int bad = 0;
             char first[64] = "";
@@ -517,16 +551,40 @@ int main(int argc, char **argv)
                 }
                 q = strchr(e + 1, '`');
             }
-            if (!bad) clean++;
-            printf("%-3s %-56.56s%s%s\n", bad ? "NO" : "ok", Q[i],
+            if (!bad) { if (round) clean++; else bclean++; }
+            /* A REFUSAL SCORES CLEAN, AND THAT IS A HOLE IN THIS GATE.
+             *
+             * When a reply names something invented, colleague_ask throws it
+             * away, retries once, and falls back to "I would have to look at
+             * that one" -- which names no invented command and therefore
+             * counts as a pass. Twelve refusals would print 12/12. The gate
+             * is still right that nothing was fabricated, but a character who
+             * refuses every question is not a working character, so the
+             * refusals are counted out loud where the score cannot hide them. */
+            bool gaveup = strstr(txt, "I would have to look at that one") != NULL;
+            if (gaveup) refused++;
+            printf("%-3s %-5s %-50.50s%s%s\n",
+                   bad ? "NO" : gaveup ? "--" : "ok",
+                   round ? "json" : "ben", QS[i],
                    bad ? "  invented: " : "", bad ? first : "");
             buf_free(&o);
         }
+        if (!round)
+            printf("\n%d/%d of Ben's answers named only commands this machine "
+                   "has\n\n", bclean, basked);
+        }
         (void)REAL;
+        if (only)
+            printf("\n  (a SELECTION, not the gate)\n");
+        if (refused)
+            printf("\n%d of the %d answers, Ben's and Json's together, were "
+                   "refusals: the reply\n  named something invented twice and "
+                   "was thrown away. Marked --, and they\n  are not evidence "
+                   "that anybody answered well.\n", refused, asked + basked);
         printf("\n%d/%d answers named only commands this machine has\n",
                clean, asked);
         machine_free(&m);
-        return clean == asked ? 0 : 1;
+        return (clean == asked && bclean == basked) ? 0 : 1;
     }
 
     /* --toolcheck: can the model actually decide what was asked for?
@@ -537,7 +595,10 @@ int main(int argc, char **argv)
      * the model chose against what a person would choose, and a score.
      */
     if (argc > 1 && strcmp(argv[1], "--toolcheck") == 0) {
-        static const struct { const char *say, *want; } T[] = {
+        /* `alt` is a SECOND answer that is also right, for the one case where
+         * two answers are. It is not a way to make a failure pass: adding one
+         * means writing down why both are correct behaviour at the machine. */
+        static const struct { const char *say, *want, *alt; } T[] = {
           { "Can I have you enter: 'ls /' and read back what you see.", "RUN ls /" },
           { "could you type ls /boot for me",                    "RUN ls /boot" },
           { "type df -h",                                        "RUN df -h" },
@@ -547,8 +608,17 @@ int main(int argc, char **argv)
           { "go ahead and enter mount /dev/sda1 /mnt",            "RUN mount /dev/sda1 /mnt" },
           /* The model answers `dmesg | tail` here, which is BETTER than what I
            * expected -- it read "the last few lines" and used a pipe. Pipes
-           * work on this machine, so it is correct. The test was wrong. */
-          { "punch in dmesg and read me the last few lines",      "RUN dmesg | tail" },
+           * work on this machine, so it is correct. The test was wrong.
+           *
+           * Since the customer learned to do two things in one breath it
+           * answers "RUN dmesg THEN SCREEN" instead, which is the same
+           * instruction split in two -- and the tool call refuses to join a
+           * RUN to anything, because reading the answer back is what RUN IS.
+           * What reaches the machine is `dmesg`, and the customer then reads
+           * back the last six lines of it, which is what was asked for. Both
+           * are right; neither is the truncation this gate is here to catch. */
+          { "punch in dmesg and read me the last few lines",      "RUN dmesg | tail",
+                                                                  "RUN dmesg" },
           { "I need you to key in blkid",                         "RUN blkid" },
           { "reboot the computer",                                "POWER" },
           { "turn it off and on again please",                    "POWER" },
@@ -556,12 +626,39 @@ int main(int argc, char **argv)
           { "give it a restart",                                  "POWER" },
           { "pop the recovery disc in the drive",                 "DISC" },
           { "put the rescue cd in",                               "DISC" },
+          /* THE WAY BACK OUT. The disc action was insert-only, so a
+           * playtester who had repaired an air-gapped machine could not get
+           * it off the live medium: every phrasing of "take it out" came back
+           * "it is already in there", and the ticket could be solved and
+           * never finished. These are their words, verbatim. */
+          { "take the disc out of the drive",                     "EJECT" },
+          { "eject the rescue disc",                              "EJECT" },
+          { "please remove the rescue disc and put it back in the drawer",
+                                                                  "EJECT" },
+          /* One sentence, two jobs. This did the power cycle, silently
+           * dropped the eject, and the machine came up on the medium again
+           * with nothing said about the half that was not done. */
+          { "take the rescue disc out and turn it off and on again",
+                                                                  "EJECT THEN POWER" },
+          /* A dictated line longer than the classifier could return came back
+           * cut -- and was RUN. `sed -i s/old/new/ /` is not a shorter
+           * version of what was said, it is a different command, and it ran
+           * against a different path. The canonical air-gapped repair is
+           * exactly this long, so the only right answer is the whole of it. */
+          { "type sed -i s/c603-2d03-bafe-e442/8f41-2c07-a19d-5be3/ /mnt/boot/zbl/zbl.cfg",
+            "RUN sed -i s/c603-2d03-bafe-e442/8f41-2c07-a19d-5be3/ /mnt/boot/zbl/zbl.cfg" },
           { "is it plugged in at the wall?",                      "CABLE" },
           { "what does the screen say",                           "SCREEN" },
           { "read out what is on the monitor",                    "SCREEN" },
           { "when did it last work properly?",                    "NONE" },
           { "have you deleted anything recently",                 "NONE" },
           { "was there a power cut on Tuesday",                   "NONE" },
+          /* THE LAST QUESTION OF EVERY REPAIR, and it was being answered by
+           * reading one line of console out -- the same three lines, on every
+           * question that was not about the screen. Whether they have their
+           * computer back is a question only the person can answer. */
+          { "is your machine working again",                      "NONE" },
+          { "can you log in now",                                 "NONE" },
           { "did anyone reboot it before you rang?",              "NONE" },
           /* The model answers SCREEN here and I have stopped calling that
            * wrong. Asked whether they can see the screen, a real customer
@@ -588,18 +685,30 @@ int main(int argc, char **argv)
                "bad.\n");
         return 2;
 #endif
+        /* A whole run is a few minutes of model, which is a slow loop to
+         * develop against. An optional substring selects the cases you are
+         * working on -- `--toolcheck disc` -- and the score then says how
+         * many OF THOSE passed, so a partial run can never be mistaken for
+         * the gate. */
+        const char *only = argc > 2 ? argv[2] : NULL;
         Machine m;
         machine_install(&m, 1);
         machine_boot(&m);
+        int ran = 0;
         for (int i = 0; i < n; i++) {
-            char got[256];
+            if (only && !strstr(T[i].say, only)) continue;
+            char got[600];       /* a whole dictated command line, and then some */
             customer_tool_probe(T[i].say, got, sizeof got);
-            bool hit = strcmp(got, T[i].want) == 0;
+            bool hit = strcmp(got, T[i].want) == 0 ||
+                       (T[i].alt && strcmp(got, T[i].alt) == 0);
+            ran++;
             if (hit) ok++;
             printf("%-3s %-52.52s -> %-26s (want %s)\n",
                    hit ? "ok" : "NO", T[i].say, got, T[i].want);
         }
-        printf("\n%d/%d  tool calls correct\n", ok, n);
+        n = ran;
+        printf("\n%d/%d  tool calls correct%s\n", ok, n,
+               only ? "  (a SELECTION, not the gate)" : "");
         machine_free(&m);
         return ok == n ? 0 : 1;
     }

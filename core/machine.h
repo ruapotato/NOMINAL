@@ -260,7 +260,9 @@ typedef struct Machine_ {
          * because they are separate conversations with separate knowledge. */
         char cq[CUST_TURNS][200], ca[CUST_TURNS][280];   /* the coworker */
         int  ncow;
-        char mq[CUST_TURNS][200], ma[CUST_TURNS][320];   /* the manager  */
+        /* The manager answers at the length of a runbook entry, so what is
+         * replayed to her as "what you said last time" has to hold one. */
+        char mq[CUST_TURNS][200], ma[CUST_TURNS][800];   /* the manager  */
         int  nmgr;
     } cust;
 
@@ -379,5 +381,15 @@ bool machine_corrupt(Machine *m, Rng *r, char *what, size_t whatsz);
  * nothing in the boot chain is told. Returns false if no break was found in
  * the attempt budget, which should not happen. */
 bool machine_break(Machine *m, uint64_t seed, int nfaults, char *what, size_t whatsz);
+
+/* WHICH FAULTS THE LAST TICKET IS ACTUALLY MADE OF -- names, space separated:
+ * a structural fault by its table name, a random mutation as "-line" and so
+ * on, "stale-edited"/"stale-corrected" for the two out-of-step-daemon shapes.
+ * This exists so the draw rate can be COUNTED. `NOM_FORCE_FAULT` proves a
+ * fault works and says nothing about whether a player ever meets it. */
+bool machine_airgapped(uint64_t seed);
+const char *breaker_dealt(void);
+int         breaker_fault_count(void);
+const char *breaker_fault_name(int i);
 
 #endif /* NOM_MACHINE_H */

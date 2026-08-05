@@ -20,6 +20,7 @@
  */
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include "nom.h"
 #include "machine.h"
 #include "kernel.h"
@@ -480,8 +481,11 @@ bool llm_ask_hist(const char *system_brief, const char **hist, int nhist,
                   const char *question, char *out, size_t outsz);
 bool llm_ask_long(const char *system_brief, const char **hist, int nhist,
                   const char *question, char *out, size_t outsz);
+/* `cut` comes back true when the model was still talking when its budget ran
+ * out. For dialogue that is a stylistic problem; for a dictated command it is
+ * a correctness one, so the classifier reports it and the caller refuses. */
 bool llm_classify(const char *system_brief, const char *question,
-                  char *out, size_t outsz);
+                  char *out, size_t outsz, bool *cut);
 #else
 static bool llm_available(void) { return false; }
 static bool llm_ask(const char *a, const char *b, const char *c,
@@ -493,8 +497,9 @@ static bool llm_ask_hist(const char *a, const char **b, int c,
 static bool llm_ask_long(const char *a, const char **b, int c,
                          const char *d, char *e, size_t f)
 { (void)a; (void)b; (void)c; (void)d; (void)e; (void)f; return false; }
-static bool llm_classify(const char *a, const char *b, char *c, size_t d)
-{ (void)a; (void)b; (void)c; (void)d; return false; }
+static bool llm_classify(const char *a, const char *b, char *c, size_t d,
+                         bool *e)
+{ (void)a; (void)b; (void)c; (void)d; if (e) *e = false; return false; }
 #endif
 
 /* WHAT THE CUSTOMER KNOWS.
@@ -544,6 +549,16 @@ static const char *saw_of(Machine *m)
         return "It starts to come up, there is some white writing on a black "
                "background, and then it stops. It never asks me to log in.";
     }
+    /* THE MEDIUM UNDERNEATH IS PART OF WHAT THEY CAN SEE, and it decides the
+     * answer to the last question of every air-gapped call. "Is it working
+     * now?" asked over a rescue shell was being answered from the disk's
+     * health, which is a true statement about a system that is not the one in
+     * front of them. They cannot name it, but nobody misses that their login
+     * box has turned into a hash. */
+    if (m->on_rescue)
+        return "It did come back on, but it does not look like my computer. "
+               "There is no login box -- just a lot of writing and a little "
+               "square that blinks after a hash.";
     Buf sick = {0};
     int dead = kernel_health(m, &sick);
     buf_free(&sick);
@@ -676,21 +691,89 @@ const char *customer_name(const Machine *m)
  * design. Give them the fault and the game is over; give them the shape of
  * the system and they are a senior colleague worth asking.
  */
+/* THE VOCABULARY IS THE SAME BUILDING FOR BOTH OF THEM.
+ *
+ * It lived only in Json's brief, and that was the whole of Ben's problem: a
+ * technician who has not been told which commands exist cannot name one, so
+ * everything he said had to be a paraphrase of the question. Two people who
+ * work on the same machines know the same tools; only what they know about
+ * THIS machine differs. */
+#define NOM_VOCAB \
+"THE COMPLETE COMMAND VOCABULARY. There is nothing else. If a command you\n" \
+"are about to name is not on this list, it does not exist:\n" \
+"  dmesg [-1] [-f text] [-r root]   svc | svc status|enable|disable <name>\n" \
+"  pkg list|owns|verify|diff|reinstall [--force] [--root DIR]\n" \
+"  ldd [-r root] <prog>   df [-i]   blkid   mount   umount   fsck <dev>\n" \
+"  ls [-l] [-a] [-d]  cat  stat  chmod  cp  mv  rm [-r]  touch  mkdir [-p]\n" \
+"  grep [-i] [-c] [-n] [-v]   sed   head [-n N]   tail [-n N]   wc [-l|-w|-c]\n" \
+"  du [-s] [-h]   echo [-n]\n" \
+"  find <dir> [-name pat] [-type f|d]     netstat\n" \
+"  ps  ns  kill  chroot  man  links  mkinitrd  zbl-mkconfig  zbl-install\n" \
+"  rcon connect|status|console|power|media|boot\n" \
+"The shell has pipes, quoting, && || and `for i in a b; do ... done`,\n" \
+"globbing with * and ?, redirection with > and >> on ANY command, variables\n" \
+"(NAME=value, $NAME, $?) and command substitution with $(...).\n" \
+"There is no separate stderr, so `2>/dev/null` does not work and is refused.\n" \
+"\n" \
+"THINGS THIS MACHINE DOES NOT HAVE, which you must never suggest:\n" \
+"  no locate, no which -- `find <dir> -name <pattern>` is there though\n" \
+"  no editor at all: no vi, no nano, no ed. Files are changed with\n" \
+"     `sed -i s/old/new/ <file>`, `sed -i /text/d <file>` and `echo x >> f`\n" \
+"  no ss, ifconfig or ip -- but `netstat` is there, and the network is\n" \
+"     /etc/net/interfaces and `svc status net`\n" \
+"  no systemctl or journalctl -- services are `svc`, logs are `dmesg`\n" \
+"  no apt, dpkg, rpm or yum -- packages are `pkg`\n" \
+"  no less, more, top, lsof, awk, curl or tar -- but `tail` and `du` are\n" \
+"     there now, and `du -s` agrees with `df`\n" \
+"Only ever write a flag that appears in the list above. If you are not sure a\n" \
+"flag exists, name the command without it -- an invented flag sends them into\n" \
+"an error message with your name on it.\n"
+
+/* BEN, WHO WAS AN EMPTY CHAIR.
+ *
+ * Three sessions of transcripts and he had never once said anything the
+ * player did not already know: "It seems like the init process is having
+ * trouble finding the library", "So the /boot/vmnomuz is corrupt, and
+ * reinstallation didn't fix it." A colleague who restates your sentence back
+ * to you is worse than nobody -- a previous tester asked for him to be cut.
+ *
+ * The diagnosis is that he was briefed to reason and forbidden to know. He
+ * was told nothing about the system, so the only material he had was the
+ * player's own words, and a small model handed nothing but the question
+ * returns the question. He is not supposed to be a second Json: Json knows
+ * the architecture and answers, Ben knows the same tools and ASKS -- the
+ * obvious question you skipped, and the one command that would settle it.
+ * That is what the colleague at the next desk is actually for. */
 static const char *COWORKER_BRIEF =
-"You are Ben, a support technician at the next desk. You are competent, "
-"friendly, and slightly overworked.\n"
+"You are Ben, a support technician at the next desk. Same team, same "
+"machines, same tools. You are competent, friendly and slightly overworked.\n"
 "\n"
-"CRITICAL: you have NOT seen this machine. You have no access to it, no logs "
-"from it, and no idea what the fault is. You know ONLY what your colleague "
-"has just told you in this conversation.\n"
+"CRITICAL: you have NOT seen THIS machine. No access to it, no logs from it, "
+"no idea what its fault is. You know only what your colleague has told you in "
+"this conversation. You do know the system itself perfectly well.\n"
 "\n"
-"So: reason out loud about what they describe, ask the obvious question they "
-"might have skipped, suggest what you would check next. If they have not told "
-"you enough, say so and ask for the specific thing you would need -- what the "
-"boot log said, what `pkg verify` printed, which service is down.\n"
+NOM_VOCAB
 "\n"
-"Never invent a detail about their machine. If you catch yourself about to "
-"say what the fault is, stop and ask them for evidence instead.\n"
+"HOW THE MACHINE STARTS, so you know which questions are worth asking: "
+"zbios -> zbl (config /boot/zbl/zbl.cfg) -> kernel /boot/vmnomuz -> initrd "
+"finds the root by UUID -> /sbin/init -> /bin/rc /etc/rc.boot -> mountall "
+"reads /etc/fstab -> svcinit starts /etc/services.d -> getty and login. The "
+"boot log is /var/log/boot.log, read with `dmesg`.\n"
+"\n"
+"YOUR JOB IS THE QUESTION THEY SKIPPED. Do not restate what they just told "
+"you and do not guess at the fault. Every reply does two things:\n"
+"1. Ask the one question that would narrow it -- what the evidence actually "
+"says, not what they think it says. \"Have you read the boot log or are you "
+"going on the screen?\", \"Which layer does it stop at?\", \"Did `pkg verify` "
+"come back clean, or did you not run it?\", \"Is that file readable at all?\"\n"
+"2. Name the ONE command that would answer it, in backticks.\n"
+"\n"
+"Be willing to push back. If they have jumped to a conclusion, say what would "
+"have to be true for it and how to check that instead. If they have told you "
+"too little to be useful, say so and ask for the specific output.\n"
+"\n"
+"Never invent a detail about their machine, and never invent a command. If "
+"you do not know, say so and name what would settle it.\n"
 "\n"
 "Two or three sentences. Talk like a colleague, not a manual.\n";
 
@@ -728,38 +811,13 @@ static const char *MANAGER_BRIEF =
 "- The rescue medium is /dev/sr0 and is never damaged. `rescue`, then "
 "`mount /dev/sda1 /mnt`.\n"
 "\n"
-"THE COMPLETE COMMAND VOCABULARY. There is nothing else. If a command you\n"
-"are about to name is not on this list, it does not exist:\n"
-"  dmesg [-1] [-f text] [-r root]   svc | svc status|enable|disable <name>\n"
-"  pkg list|owns|verify|diff|reinstall [--force] [--root DIR]\n"
-"  ldd [-r root] <prog>   df [-i]   blkid   mount   umount   fsck <dev>\n"
-"  ls [-l] [-a] [-d]  cat  stat  chmod  cp  mv  rm [-r]  touch  mkdir [-p]\n"
-"  grep [-i] [-c] [-n] [-v]   sed   head [-n N]   tail [-n N]   wc [-l|-w|-c]\n"
-"  du [-s] [-h]   echo [-n]\n"
-"  find <dir> [-name pat] [-type f|d]     netstat\n"
-"  ps  ns  kill  chroot  man  links  mkinitrd  zbl-mkconfig  zbl-install\n"
-"  rcon connect|status|console|power|media|boot\n"
-"The shell has pipes, quoting, && || and `for i in a b; do ... done`,\n"
-"globbing with * and ?, redirection with > and >> on ANY command, variables\n"
-"(NAME=value, $NAME, $?) and command substitution with $(...).\n"
-"There is no separate stderr, so `2>/dev/null` does not work and is refused.\n"
+NOM_VOCAB
 "\n"
 "WHAT A BROKEN UNIT FILE MEANS. A .svc file with no `exec` line is not\n"
 "disabled -- it is INVALID, and svcinit stops the boot on it. `enabled: no`\n"
 "is what disabled means. A unit whose file is corrupt behaves as though its\n"
 "fields are missing, so the first thing to check is whether it is readable\n"
 "text at all.\n"
-"\n"
-"THINGS THIS MACHINE DOES NOT HAVE, which you must never suggest:\n"
-"  no locate, no which -- `find <dir> -name <pattern>` is there though\n"
-"  no editor at all: no vi, no nano, no ed. Files are changed with\n"
-"     `sed -i s/old/new/ <file>`, `sed -i /text/d <file>` and `echo x >> f`\n"
-"  no ss, ifconfig or ip -- but `netstat` is there, and the network is\n"
-"     /etc/net/interfaces and `svc status net`\n"
-"  no systemctl or journalctl -- services are `svc`, logs are `dmesg`\n"
-"  no apt, dpkg, rpm or yum -- packages are `pkg`\n"
-"  no less, more, top, lsof, awk, curl or tar -- but `tail` and `du` are\n"
-"     there now, and `du -s` agrees with `df`\n"
 "\n"
 "NEVER INVENT ANYTHING. Do not name a command that is not on the list above.\n"
 "Do not describe behaviour you are unsure of. You wrote the runbook, so being\n"
@@ -786,6 +844,73 @@ static const char *MANAGER_BRIEF =
  *
  * Only backticked words are checked. "the service is down" is English; the
  * model writes commands as `cmd`. */
+/* AND DOES IT NAME A FLAG THAT EXISTS?
+ *
+ * `ldd --print --verbose /path/to/executable`. Right command, right idea,
+ * and two flags this ldd has never heard of -- so the player types it, gets
+ * "not a flag this ldd has", and learns that the runbook author is not to be
+ * trusted. The command check above could not see it: the command was real.
+ *
+ * These lists are the flags the guest programs actually parse, taken from
+ * their argument loops rather than from the man pages, because the programs
+ * REFUSE an unknown flag by name instead of ignoring it. A single-dash word
+ * is a cluster of short flags, which is how `ls -la` is one word and two
+ * flags. A command not listed here takes no flags at all. */
+static bool real_flags(const char *prog, const char *span, const char *end)
+{
+    static const struct { const char *prog, *shorts; const char *longs[4]; } F[] = {
+      { "ls",    "lad",  { 0 } },
+      { "rm",    "rf",   { 0 } },
+      { "grep",  "icnv", { 0 } },
+      { "sed",   "i",    { 0 } },
+      { "head",  "n",    { 0 } },
+      { "tail",  "nf",   { 0 } },
+      { "wc",    "lwcm", { 0 } },
+      { "du",    "sh",   { 0 } },
+      { "echo",  "n",    { 0 } },
+      { "df",    "i",    { 0 } },
+      { "mkdir", "p",    { 0 } },
+      { "ldd",   "r",    { "--root", 0 } },
+      { "dmesg", "1fr",  { "--prev", 0 } },
+      { "pkg",   "f",    { "--force", "--root", 0 } },
+      { "find",  "",     { "-name", "-type", 0 } },
+      { "links", "",     { "--raw", 0 } },
+    };
+    for (const char *w = span; w < end; ) {
+        while (w < end && *w == ' ') w++;
+        const char *we = w;
+        while (we < end && *we != ' ') we++;
+        if (we > w && *w == '-' && we - w > 1) {
+            char flag[32];
+            size_t n = (size_t)(we - w);
+            if (n >= sizeof flag) return false;
+            memcpy(flag, w, n);
+            flag[n] = 0;
+            /* A negative number is an argument, not a flag: `head -20`. */
+            if (flag[1] >= '0' && flag[1] <= '9') { w = we; continue; }
+            const char *shorts = NULL;
+            const char *const *longs = NULL;
+            for (size_t i = 0; i < sizeof F / sizeof F[0]; i++)
+                if (strcmp(prog, F[i].prog) == 0) {
+                    shorts = F[i].shorts;
+                    longs  = F[i].longs;
+                }
+            if (!shorts) return false;        /* this command takes no flags */
+            bool ok = false;
+            for (int i = 0; longs && longs[i] && !ok; i++)
+                if (strcmp(flag, longs[i]) == 0) ok = true;
+            if (!ok && flag[1] != '-') {
+                ok = true;
+                for (const char *c = flag + 1; *c && ok; c++)
+                    if (!strchr(shorts, *c)) ok = false;
+            }
+            if (!ok) return false;
+        }
+        w = we;
+    }
+    return true;
+}
+
 static bool names_only_real_commands(const char *txt)
 {
     static const char *REAL[] = {
@@ -796,6 +921,17 @@ static bool names_only_real_commands(const char *txt)
         "zbl-mkconfig","zbl-install","rcon","sh","for","boot","rescue","ask",
         "find","netstat",
         "ben","json","exit","cd","pwd","bind","unbind","help","true","false",
+        "seq","rev","rot13",
+        /* NOT COMMANDS: the words this system's own files are made of. A unit
+         * file's fields, a bootloader entry's keys, the shell's keywords. The
+         * model quotes them the same way it quotes a command -- "a .svc file
+         * with no `exec` line is invalid" is Json saying exactly the right
+         * thing -- and the whitelist threw the whole reply away for it, twice,
+         * and made her refuse to answer her own runbook. Every refusal was
+         * invisible until the gate started counting them. */
+        "exec","enabled","runlevel","after","critical","restart","name",
+        "desc","timeout","entry","kernel","initrd","default","need",
+        "do","done","then","fi","in",
         NULL
     };
     for (const char *q = strchr(txt, '`'); q; ) {
@@ -806,11 +942,23 @@ static bool names_only_real_commands(const char *txt)
         for (const char *w = q + 1; w < e && *w != ' ' && k < sizeof prog - 1; w++)
             prog[k++] = *w;
         prog[k] = 0;
-        if (prog[0] && prog[0] != '/' && prog[0] != '.' && prog[0] != '-') {
+        /* A COMMAND NAME IS A LOWERCASE WORD, and quite a lot of what gets
+         * backticked is not one: `UUID=8f41-2c07-a19d-5be3`, `Listen 80`,
+         * `2>/dev/null`, `NAME=value`. Judging those as invented commands is
+         * the same false alarm in a different costume, and the cost is the
+         * same -- a correct answer thrown away and a colleague who will not
+         * talk about the contents of a config file. */
+        bool wordy = true;
+        for (size_t i = 0; prog[i]; i++)
+            if (!((prog[i] >= 'a' && prog[i] <= 'z') ||
+                  (prog[i] >= '0' && prog[i] <= '9') || prog[i] == '-'))
+                wordy = false;
+        if (wordy && prog[0] && prog[0] != '/' && prog[0] != '.' && prog[0] != '-') {
             bool found = false;
             for (int i = 0; REAL[i] && !found; i++)
                 if (strcmp(prog, REAL[i]) == 0) found = true;
             if (!found) return false;
+            if (!real_flags(prog, q + 1, e)) return false;
         }
         q = strchr(e + 1, '`');
     }
@@ -824,7 +972,13 @@ void colleague_ask(Machine *m, const char *who, const char *question, Buf *out)
     const char *name = boss ? "Json" : "Ben";
 
     if (llm_available()) {
-        char reply[600];
+        /* Room for the paragraph Json is allowed. At 600 bytes the buffer
+         * itself was cutting her off -- mid-word, after a perfectly good
+         * answer -- which looked exactly like the model failing and was not.
+         * Both cuts are fixed: this is wide enough for the token budget, and
+         * a reply that still does not fit loses its last unfinished sentence
+         * rather than its last syllable. */
+        char reply[1600];
         int n = boss ? m->cust.nmgr : m->cust.ncow;
         const char *hist[CUST_TURNS * 2];
         int nh = n < CUST_TURNS ? n : CUST_TURNS;
@@ -838,12 +992,20 @@ void colleague_ask(Machine *m, const char *who, const char *question, Buf *out)
             : llm_ask_hist(COWORKER_BRIEF, hist, nh, question, reply, sizeof reply);
         /* One retry, then honesty. A senior engineer who says "I would have
          * to look" is useful; one who invents a command is worse than
-         * silence, because it is wrong in an authoritative voice. */
+         * silence, because it is wrong in an authoritative voice.
+         *
+         * NOM_SHOWBAD=1 prints what was thrown away. A discarded reply used
+         * to leave no trace at all, so a rule that was rejecting correct
+         * answers -- a backticked `exec`, a real command the check had not
+         * been told about -- looked exactly like a model that could not
+         * answer. Two of those had been running for weeks. */
         if (got && reply[0] && !names_only_real_commands(reply)) {
+            if (getenv("NOM_SHOWBAD")) fprintf(stderr, "[REJECT1] %s\n", reply);
             got = boss
                 ? llm_ask_long(MANAGER_BRIEF, hist, nh, question, reply, sizeof reply)
                 : llm_ask_hist(COWORKER_BRIEF, hist, nh, question, reply, sizeof reply);
             if (got && reply[0] && !names_only_real_commands(reply)) {
+                if (getenv("NOM_SHOWBAD")) fprintf(stderr, "[REJECT2] %s\n", reply);
                 buf_printf(out,
                     "  %s: \"I would have to look at that one -- I do not want "
                     "to send you after a command this box has not got. Start "
@@ -1075,9 +1237,17 @@ void customer_ask(Machine *m, const char *question, Buf *out)
  * The model supplies the words, the table supplies the effect.
  */
 typedef enum {
-    A_NONE = 0, A_POWER, A_SCREEN, A_DISC, A_CABLE, A_TYPEPW, A_SITDOWN,
-    A_RUN
+    A_NONE = 0, A_POWER, A_SCREEN, A_DISC, A_EJECT, A_CABLE, A_TYPEPW,
+    A_SITDOWN, A_RUN
 } Action;
+
+/* HOW LONG A COMMAND ONE PERSON CAN DICTATE TO ANOTHER.
+ *
+ * Long enough for the canonical air-gapped repair, which is a sed with two
+ * UUIDs and a path in it and comes to about eighty characters. The number
+ * matters far less than what happens at it: past this the customer SAYS it is
+ * too long, and never types a shortened version of what was dictated. */
+#define DICTATE_MAX 512
 
 
 
@@ -1103,10 +1273,17 @@ typedef enum {
  *   RUN <command>   type this at the keyboard and read back what appears
  *   POWER           turn it off and on again
  *   DISC            put the rescue medium in
+ *   EJECT           take the disc back out
  *   CABLE           check it is plugged in
  *   PASSWORD        type the root password
  *   SCREEN          read out what is on the screen
  *   NONE            it was a question, not an instruction
+ *
+ * TWO OF THEM, WHERE THE TECHNICIAN ASKED FOR TWO. "Take the disc out and
+ * turn it off and on again" is one sentence and two jobs, and answering it
+ * with one of them -- silently, having heard both -- is the customer doing
+ * something other than what was asked. The line may carry a second action
+ * after THEN, and both are performed in the order they were said.
  *
  * The keyword table remains ONLY as the fallback when there is no model at
  * all, because a build without llama must still play.
@@ -1118,14 +1295,30 @@ static const char *TOOL_BRIEF =
 "Answer with exactly one of:\n"
 "  RUN <command>   they want you to type something at the keyboard\n"
 "  POWER           they want the machine turned off and on again\n"
-"  DISC            they want the rescue/recovery disc put in the drive\n"
+"  DISC            they want the rescue/recovery disc PUT IN the drive\n"
+"  EJECT           they want the disc TAKEN OUT of the drive\n"
 "  CABLE           they want you to check a cable or plug\n"
 "  PASSWORD        they want the password typed in\n"
 "  SCREEN          they want to know what is on the screen right now\n"
 "  NONE            they are asking a question, not asking you to do anything\n"
 "\n"
 "For RUN, give the command EXACTLY as they said it, with no quotes, no\n"
-"backticks and no explanation.\n"
+"backticks and no explanation. Never shorten it. Reading the answer back is\n"
+"already part of RUN, so a RUN is never joined to anything.\n"
+"\n"
+"IN OR OUT. Putting it in, inserting it, loading it, popping it in: DISC.\n"
+"Taking it out, removing it, ejecting it, popping it out, putting it back in\n"
+"its drawer, case or sleeve: EJECT. If the sentence says out, it is EJECT,\n"
+"whatever else it says about drawers. A drawer, case or sleeve is not the\n"
+"drive, so putting the disc back in one is part of taking it out and is never\n"
+"a second action.\n"
+"\n"
+"If they ask for TWO PHYSICAL things in one sentence -- the disc, the power\n"
+"button, the cable -- answer with both, in the order they said them, joined\n"
+"by THEN, for example `EJECT THEN POWER`. THEN is only ever for those. A\n"
+"command to type is always one RUN, however many things they say about\n"
+"reading it back: `RUN dmesg | tail` is right, `RUN dmesg THEN SCREEN` is\n"
+"not.\n"
 "\n"
 "Examples:\n"
 "Q: could you type ls /boot for me\n"
@@ -1134,6 +1327,11 @@ static const char *TOOL_BRIEF =
 "A: RUN ls /\n"
 "Q: at the prompt, put in df -h and tell me the numbers\n"
 "A: RUN df -h\n"
+/* Typing something and reading it back is ONE action, and it has to be shown
+ * as well as stated: told only in a rule, the model answered "RUN dmesg THEN
+ * SCREEN" -- two actions where a person heard one instruction. */
+"Q: type ls /boot and then tell me what comes up on the screen\n"
+"A: RUN ls /boot\n"
 "Q: reboot the computer\n"
 "A: POWER\n"
 "Q: turn it off and on again please\n"
@@ -1142,6 +1340,14 @@ static const char *TOOL_BRIEF =
 "A: POWER\n"
 "Q: pop the recovery disc in the drive\n"
 "A: DISC\n"
+"Q: take the disc out of the drive\n"
+"A: EJECT\n"
+"Q: can you eject the rescue disc and put it back in the drawer\n"
+"A: EJECT\n"
+"Q: take the rescue disc out and turn it off and on again\n"
+"A: EJECT THEN POWER\n"
+"Q: put the disc in and restart it\n"
+"A: DISC THEN POWER\n"
 "Q: is it plugged in at the wall?\n"
 "A: CABLE\n"
 "Q: what does the screen say\n"
@@ -1160,19 +1366,54 @@ static const char *TOOL_BRIEF =
 "A: NONE\n"
 "Q: is the screen broken?\n"
 "A: NONE\n"
+/* THE LAST QUESTION OF EVERY REPAIR, and it was being answered by reading
+ * the screen out. "Is it working now" is not a request to look at one line
+ * of console: it is asking the person whether they have their computer
+ * back, and only they can answer it. */
+"Q: is your machine working again\n"
+"A: NONE\n"
+"Q: can you log in now\n"
+"A: NONE\n"
+"Q: is everything back to normal for you\n"
+"A: NONE\n"
 "\n"
 "If they are asking ABOUT something rather than asking you to DO it, the\n"
 "answer is NONE, however many action words the sentence contains.\n";
 
-/* Ask the model what was being asked for. Returns the action, and copies the
- * command into `cmd` for RUN. */
-static Action tool_call(const char *request, char *cmd, size_t cmdsz)
+/* One word of the model's answer to one action. */
+static Action word_action(const char *r)
+{
+    if (strncmp(r, "POWER", 5) == 0)    return A_POWER;
+    if (strncmp(r, "DISC", 4) == 0)     return A_DISC;
+    if (strncmp(r, "EJECT", 5) == 0)    return A_EJECT;
+    if (strncmp(r, "CABLE", 5) == 0)    return A_CABLE;
+    if (strncmp(r, "PASSWORD", 8) == 0) return A_TYPEPW;
+    if (strncmp(r, "SCREEN", 6) == 0)   return A_SCREEN;
+    return A_NONE;
+}
+
+/* Ask the model what was being asked for. Returns the first action, copies
+ * the command into `cmd` for RUN, and reports a second action through
+ * `second` when the technician asked for two things in one breath.
+ *
+ * `toolong` is the case that must never be answered by doing something: the
+ * dictated command did not arrive whole. A person who mishears half a command
+ * asks you to say it again; they do not type the half they caught. */
+static Action tool_call(const char *request, char *cmd, size_t cmdsz,
+                        Action *second, bool *toolong)
 {
     cmd[0] = 0;
+    if (second)  *second  = A_NONE;
+    if (toolong) *toolong = false;
     if (!llm_available()) return A_NONE;
 
-    char reply[256];
-    if (!llm_classify(TOOL_BRIEF, request, reply, sizeof reply))
+    /* Room for a whole dictated line and then some: the classifier is now
+     * allowed to answer at the length of a command rather than the length of
+     * a sentence, and a buffer shorter than that would put the truncation
+     * back one layer down. */
+    char reply[DICTATE_MAX * 2];
+    bool cut = false;
+    if (!llm_classify(TOOL_BRIEF, request, reply, sizeof reply, &cut))
         return A_NONE;
 
     /* The model sometimes wraps the line in quotes or prefixes "A:". Strip
@@ -1185,52 +1426,85 @@ static Action tool_call(const char *request, char *cmd, size_t cmdsz)
         const char *q = r + 4;
         while (*q == ' ' || *q == '"' || *q == '`' || *q == ':') q++;
         size_t k = 0;
-        while (*q && *q != '\n' && k < cmdsz - 1) {
+        while (*q && *q != '\n') {
             if (*q == '"' || *q == '`') { q++; continue; }
+            if (k >= cmdsz - 1) { cut = true; break; }
             cmd[k++] = *q++;
         }
         while (k && (cmd[k-1] == ' ' || cmd[k-1] == '.')) k--;
         cmd[k] = 0;
+        /* "RUN dmesg THEN SCREEN". Reading the output back is what RUN IS, so
+         * the tail is the model saying so twice -- and a THEN left in the
+         * string would be typed at the shell as part of the command. */
+        char *th = strstr(cmd, " THEN ");
+        if (th) *th = 0;
+        if (cut) {
+            /* Whatever is in cmd is a fragment of what was said. It is not
+             * an instruction and it is not going to be run. */
+            cmd[0] = 0;
+            if (toolong) *toolong = true;
+            return A_RUN;
+        }
         return cmd[0] ? A_RUN : A_NONE;
     }
-    if (strncmp(r, "POWER", 5) == 0)    return A_POWER;
-    if (strncmp(r, "DISC", 4) == 0)     return A_DISC;
-    if (strncmp(r, "CABLE", 5) == 0)    return A_CABLE;
-    if (strncmp(r, "PASSWORD", 8) == 0) return A_TYPEPW;
-    if (strncmp(r, "SCREEN", 6) == 0)   return A_SCREEN;
-    return A_NONE;
+
+    Action a = word_action(r);
+    /* A second action after THEN. Only the words: a RUN never appears here,
+     * because dictating a command and asking for something else in the same
+     * sentence is not a thing anybody does on a support call. */
+    if (a != A_NONE && second) {
+        const char *t = strstr(r, "THEN");
+        if (t) {
+            const char *w = t + 4;
+            while (*w == ' ' || *w == ':') w++;
+            Action b = word_action(w);
+            /* "Take it out and put it back in the drawer" came back EJECT
+             * THEN DISC: the model heard the second half as loading the drive
+             * again. Nobody asks for a thing and its undoing in one sentence,
+             * so an action that reverses the one before it is the model
+             * having misread, and doing it would leave the room in the state
+             * the technician asked to get OUT of. */
+            if (!((b == A_DISC && a == A_EJECT) || (b == A_EJECT && a == A_DISC)))
+                *second = b;
+        }
+    }
+    return a;
+}
+
+static const char *action_word(Action a)
+{
+    switch (a) {
+    case A_POWER:  return "POWER";
+    case A_DISC:   return "DISC";
+    case A_EJECT:  return "EJECT";
+    case A_CABLE:  return "CABLE";
+    case A_TYPEPW: return "PASSWORD";
+    case A_SCREEN: return "SCREEN";
+    default:       return "NONE";
+    }
 }
 
 /* For the measurement harness: what did the model decide, as a string. */
 void customer_tool_probe(const char *request, char *out, size_t outsz)
 {
-    char cmd[256];
-    Action a = tool_call(request, cmd, sizeof cmd);
-    switch (a) {
-    case A_RUN:    snprintf(out, outsz, "RUN %s", cmd); break;
-    case A_POWER:  snprintf(out, outsz, "POWER");    break;
-    case A_DISC:   snprintf(out, outsz, "DISC");     break;
-    case A_CABLE:  snprintf(out, outsz, "CABLE");    break;
-    case A_TYPEPW: snprintf(out, outsz, "PASSWORD"); break;
-    case A_SCREEN: snprintf(out, outsz, "SCREEN");   break;
-    default:       snprintf(out, outsz, "NONE");     break;
+    char cmd[DICTATE_MAX];
+    Action second = A_NONE;
+    bool toolong = false;
+    Action a = tool_call(request, cmd, sizeof cmd, &second, &toolong);
+    if (a == A_RUN) {
+        if (toolong) snprintf(out, outsz, "TOOLONG");
+        else         snprintf(out, outsz, "RUN %s", cmd);
+        return;
     }
+    if (second != A_NONE)
+        snprintf(out, outsz, "%s THEN %s", action_word(a), action_word(second));
+    else
+        snprintf(out, outsz, "%s", action_word(a));
 }
 
-bool customer_do(Machine *m, const char *request, Buf *out)
+static bool do_action(Machine *m, Action a, const char *toolcmd, bool toolong,
+                      Buf *out)
 {
-    /* THE MODEL, AND ONLY THE MODEL.
-     *
-     * A keyword table sat behind this as a fallback and David wanted it gone:
-     * "No lookup table, not model, not chat at all." He is right that keeping
-     * it invited the failure it was meant to prevent -- two code paths that
-     * disagree about what a sentence means, with the worse one silently
-     * winning whenever the better one hesitated. One mechanism, measured at
-     * 22/22, or none. */
-    static char toolcmd[256];
-    Action a = tool_call(request, toolcmd, sizeof toolcmd);
-    if (a == A_NONE) return false;
-
     switch (a) {
     case A_SITDOWN:
         m->cust.at_machine = true;
@@ -1268,6 +1542,17 @@ bool customer_do(Machine *m, const char *request, Buf *out)
             buf_puts(out, "  \"Right, holding the button... it is coming back "
                           "up.\"\n  \"It looks different this time -- lots of "
                           "writing, and it has stopped with a hash.\"\n");
+        /* THE BOOT THAT WORKED, DESCRIBED AS ONE. The reply was chosen by how
+         * many times they had pressed the button, so the reboot that ended a
+         * repair -- the machine coming up on its own disk, at last -- was
+         * answered "I have done that twice now and it does the same thing
+         * every time." The customer contradicting the machine is the one
+         * thing this file is not allowed to do, and it did it at the single
+         * most important moment of the call. */
+        else if (m->boot.running)
+            buf_puts(out, "  \"Holding the button... hang on.\"\n"
+                          "  \"Oh! That is different -- it has gone all the "
+                          "way through and it is asking me to log in.\"\n");
         else if (m->cust.power_cycles == 1)
             buf_puts(out, "  \"Okay, holding the button... and back on.\"\n"
                           "  \"Same as before. It gets partway and stops.\"\n");
@@ -1284,23 +1569,96 @@ bool customer_do(Machine *m, const char *request, Buf *out)
          * evidence obtained socially rather than technically -- and it is
          * how you find out anything at all before the disc goes in. */
         m->cust.at_machine = true;
+        /* THE LAST LINE THAT IS ON THE SCREEN, which is not the same as the
+         * last line in this buffer. The console also carries notes about the
+         * room -- "[power button pressed at the machine]", "[rescue medium
+         * inserted at the machine]" -- which are there for the technician
+         * watching over the service processor and are not output from the
+         * machine at all. The customer read one of those out, word for word,
+         * as though it were on their screen: a person reporting a line the
+         * screen never printed is exactly the false evidence this whole
+         * function exists to avoid. */
         const char *last = NULL;
+        static char linebuf[200];
         if (m->boot.console.len) {
             size_t e = m->boot.console.len;
-            while (e && (m->boot.console.p[e-1] == '\n')) e--;
-            size_t b = e;
-            while (b && m->boot.console.p[b-1] != '\n') b--;
-            static char linebuf[200];
-            size_t len = e - b;
-            if (len >= sizeof linebuf) len = sizeof linebuf - 1;
-            memcpy(linebuf, m->boot.console.p + b, len);
-            linebuf[len] = 0;
-            last = linebuf;
+            for (int tries = 0; tries < 40 && e; tries++) {
+                while (e && m->boot.console.p[e-1] == '\n') e--;
+                if (!e) break;
+                size_t b = e;
+                while (b && m->boot.console.p[b-1] != '\n') b--;
+                size_t len = e - b;
+                if (len >= sizeof linebuf) len = sizeof linebuf - 1;
+                memcpy(linebuf, m->boot.console.p + b, len);
+                linebuf[len] = 0;
+                size_t s = 0;
+                while (linebuf[s] == ' ') s++;
+                if (linebuf[s] && linebuf[s] != '[') { last = linebuf + s; break; }
+                e = b;                    /* a note about the room: look above it */
+            }
         }
         if (last && *last) {
-            buf_puts(out, "  \"It says... hang on, let me get my glasses.\"\n");
+            /* THE SAME THREE LINES EVERY TIME, ON EVERY CUSTOMER.
+             *
+             * "hang on, let me get my glasses" was flagged by two playtesters
+             * independently, one of whom heard it from three different people
+             * on three seeds. A hundred and three personas with bound names,
+             * all reaching for the same pair of glasses, is worse than no
+             * characterisation at all -- it tells the player the names are
+             * decoration. Bound to the persona, so a given customer always
+             * squints the same way and different customers do not. */
+            static const char *LEANS[] = {
+              "It says... hang on, let me get my glasses.",
+              "Right, hold on, I will read it to you.",
+              "Let me lean in, the writing is tiny.",
+              "Give me a second, I am squinting at it.",
+              "There is a load of it. The bottom line says:",
+              "Okay. The last thing on it is:",
+              "It is all white writing on black. The bit at the bottom says:",
+              "Hang on, I will move the lamp... right.",
+              "I will read it exactly as it is written, shall I?",
+              "It has stopped with this on it:",
+              "Let me put my coffee down. It says:",
+              "I am looking at it now.",
+              "Bear with me, I am not good at reading these.",
+              "It has been sitting like this all morning. It says:",
+              "Hold on, I will read you the last bit.",
+              "Right. Word for word, the end of it says:",
+              "I have been staring at this since eight o'clock. It says:",
+              "There is white writing all down it. The last line is:",
+              "Let me get closer, the desk is a bit far back.",
+              "Do you want all of it, or the bottom? The bottom says:",
+              "One second... okay, here we go.",
+              "I will spell it out if you need. It reads:",
+              "It has not moved since I rang. The bottom of it says:",
+              "Give me a moment, I had the brightness down.",
+            };
+            static const char *AFTERS[] = {
+              "Does that mean anything to you?",
+              "Is that bad?",
+              "I have no idea what any of that means.",
+              "That is all there is, I am afraid.",
+              "Should there be more than that?",
+              "I did write it down earlier, if it helps.",
+              "It has not changed since I rang you.",
+              "Does that help at all?",
+              "Is that the sort of thing you wanted?",
+              "I can take a photograph of it if that is easier.",
+              "That is word for word, that is.",
+              "I have written it down as well, just in case.",
+              "None of that was there yesterday, I do not think.",
+            };
+            int p = m ? m->cust.persona : 0;
+            /* Two indexes off the same persona, stepping differently, so two
+             * people who happen to open the same way rarely also close the
+             * same way. Bound to the persona and not to the turn: the same
+             * customer squints the same way every time you ask, which is what
+             * makes them a person rather than a random line generator. */
+            buf_printf(out, "  \"%s\"\n",
+                       LEANS[p % (int)(sizeof LEANS / sizeof LEANS[0])]);
             buf_printf(out, "  \"%s\"\n", last);
-            buf_puts(out, "  \"Does that mean anything to you?\"\n");
+            buf_printf(out, "  \"%s\"\n",
+                       AFTERS[(p * 5 + 1) % (int)(sizeof AFTERS / sizeof AFTERS[0])]);
         } else {
             buf_puts(out, "  \"It is just black. Nothing at all.\"\n");
         }
@@ -1318,7 +1676,20 @@ bool customer_do(Machine *m, const char *request, Buf *out)
          * It stays FAIR because the output is real. Every character they read
          * back is a character the machine printed. They are a slow, narrow
          * pipe, not an unreliable one. */
-        const char *cmd = toolcmd[0] ? toolcmd : NULL;
+        /* A COMMAND THAT DID NOT ARRIVE WHOLE IS NOT TYPED.
+         *
+         * The dictated line used to be cut to whatever fitted and then RUN --
+         * so `sed -i s/old-uuid/new-uuid/ /mnt/boot/zbl/zbl.cfg` became
+         * `sed -i s/old-uuid/new-uuid/ /`, which is a different command, and
+         * the customer reported having typed it. A simulation may make the
+         * person on the phone slow, deaf or confused; it may not have them
+         * silently do something nobody asked for. */
+        if (toolong) {
+            buf_puts(out, "  \"Sorry -- that is more than I can type in one "
+                          "go. Can you break it up for me?\"\n");
+            return true;
+        }
+        const char *cmd = toolcmd && toolcmd[0] ? toolcmd : NULL;
         if (!cmd || !*cmd) {
             buf_puts(out, "  \"Type what, sorry? Tell me exactly what to put "
                           "in and I will read out whatever it says.\"\n");
@@ -1327,7 +1698,7 @@ bool customer_do(Machine *m, const char *request, Buf *out)
 
         /* Strip the quotes and backticks a technician naturally puts round a
          * command when dictating it. */
-        char clean[256];
+        char clean[DICTATE_MAX];
         size_t k = 0;
         for (const char *q = cmd; *q && k < sizeof clean - 1; q++) {
             if (*q == '`' || *q == '"' || *q == '\'') continue;
@@ -1418,6 +1789,35 @@ bool customer_do(Machine *m, const char *request, Buf *out)
                       "  \"Do you want me to turn it off and on again?\"\n");
         return true;
 
+    case A_EJECT:
+        /* THE WAY BACK OUT, which did not exist.
+         *
+         * A playtester diagnosed an air-gapped machine, repaired it through
+         * the customer, and then could not hand it back: every phrasing of
+         * "take the disc out" was answered "It is already in there", because
+         * the only thing this action could do was put one IN. So the ticket
+         * could be solved and not finished -- the machine came up on the
+         * rescue medium forever, which `done` correctly refuses. An action
+         * with one direction is not an action, it is a switch that only
+         * closes. */
+        if (!m->cust.disc_inserted) {
+            buf_puts(out, "  \"There is nothing in the drive. The tray is "
+                          "empty.\"\n");
+            return true;
+        }
+        m->cust.disc_inserted = false;
+        /* One drive, one piece of state: the same fields the service
+         * processor would clear when the virtual medium is removed, so
+         * `rcon status`, blkid and the next boot all agree with the room. */
+        m->sp_media = false;
+        m->sp_bootdev = 0;
+        m->cust.at_machine = true;
+        buf_puts(&m->boot.console, "[rescue medium removed at the machine]\n");
+        buf_puts(out, "  \"Right -- it has popped out. Disc is back in the "
+                      "drawer.\"\n"
+                      "  \"Do you want me to turn it off and on again?\"\n");
+        return true;
+
     case A_TYPEPW:
         if (!m->cust.at_machine) {
             buf_puts(out, "  \"I am not at the machine, give me a minute.\"\n");
@@ -1432,6 +1832,32 @@ bool customer_do(Machine *m, const char *request, Buf *out)
     default:
         return false;
     }
+}
+
+bool customer_do(Machine *m, const char *request, Buf *out)
+{
+    /* THE MODEL, AND ONLY THE MODEL.
+     *
+     * A keyword table sat behind this as a fallback and David wanted it gone:
+     * "No lookup table, not model, not chat at all." He is right that keeping
+     * it invited the failure it was meant to prevent -- two code paths that
+     * disagree about what a sentence means, with the worse one silently
+     * winning whenever the better one hesitated. One mechanism, measured at
+     * 22/22, or none. */
+    static char toolcmd[DICTATE_MAX];
+    Action second = A_NONE;
+    bool toolong = false;
+    Action a = tool_call(request, toolcmd, sizeof toolcmd, &second, &toolong);
+    if (a == A_NONE) return false;
+
+    if (!do_action(m, a, toolcmd, toolong, out)) return false;
+    /* AND THEN THE SECOND THING THEY ASKED FOR. "Take the rescue disc out and
+     * turn it off and on again" did the power cycle and not the eject, and
+     * said nothing about the half it dropped -- so the player watched it come
+     * up on the medium again and had no way to know why. */
+    if (second != A_NONE && second != a)
+        do_action(m, second, "", false, out);
+    return true;
 }
 
 void customer_intro(Machine *m, Buf *out)
