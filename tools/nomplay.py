@@ -40,6 +40,15 @@ def relay(port):
     server says to the log. Lives until killed or the server goes away."""
     s = socket.create_connection(('127.0.0.1', port))
     s.settimeout(0.4)
+    # THE RELAY MUST NOT OUTLIVE THE SERVER.
+    #
+    # It is a daemon that polls a command file, and it happily polled forever
+    # after the bench went away -- seven of them accumulated over an
+    # afternoon, oldest two hours, and David found them in the process table
+    # rather than me. It exits when the socket closes and it exits after an
+    # hour regardless, because nobody plays one ticket for an hour.
+    born = time.time()
+    dead = [False]
 
     def drain():
         """Read until the prompt comes back.
@@ -56,6 +65,7 @@ def relay(port):
             try:
                 c = s.recv(65536)
                 if not c:
+                    dead[0] = True       # the server hung up
                     break
                 out += c
                 quiet = 0.0
@@ -79,7 +89,27 @@ def relay(port):
                     pos = f.tell()
             except FileNotFoundError:
                 fresh = ''
+            if dead[0] or time.time() - born > 3600:
+                try:
+                    s.close()
+                except Exception:
+                    pass
+                return
             if not fresh:
+                # Is the far end still there? A half-second probe costs
+                # nothing and stops this becoming a stray process.
+                try:
+                    s.settimeout(0.05)
+                    if s.recv(1, socket.MSG_PEEK) == b'':
+                        return
+                except BlockingIOError:
+                    pass
+                except socket.timeout:
+                    pass
+                except OSError:
+                    return
+                finally:
+                    s.settimeout(0.4)
                 time.sleep(0.15)
                 continue
             for line in fresh.splitlines():

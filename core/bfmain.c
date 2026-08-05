@@ -296,6 +296,103 @@ int main(int argc, char **argv)
      * the service processor first, because there is no such thing on a real
      * support desk either.
      */
+    /* --jsoncheck: does the runbook author invent things?
+     *
+     * A playtester: "the runbook author hallucinating commands is the single
+     * worst thing here -- it is the one character whose job is to be
+     * authoritative." He told them to run `svc list`, which does not exist,
+     * and `rm /tmp/*.tmp` when the shell had no globbing.
+     *
+     * So this asks him twelve questions, several of them invitations to make
+     * something up, and fails him for naming any command the machine does not
+     * have. It cannot check whether an ANSWER is true -- that needs a person
+     * -- but a fabricated command is mechanically detectable and is the
+     * failure that destroys trust fastest.
+     */
+    if (argc > 1 && strcmp(argv[1], "--jsoncheck") == 0) {
+        static const char *Q[] = {
+            "a .svc file has no exec line, what does that mean",
+            "how do I list every service on the machine",
+            "how do I delete four hundred files in /tmp",
+            "how do I see which package owns a file",
+            "how do I check the filesystem for errors",
+            "what do I do about a machine that boots but has no network",
+            "how do I roll back a package upgrade",
+            "how do I see the previous boot's log",
+            "how do I find out why one service will not start",
+            "how can I list the open network connections",
+            "how do I search the whole disk for a file by name",
+            "how do I edit a file on the customer's disk from the rescue medium",
+            NULL
+        };
+        /* Every program this machine actually has. */
+        static const char *REAL[] = {
+            "dmesg","svc","pkg","ldd","df","blkid","mount","umount","fsck",
+            "ls","cat","stat","chmod","cp","mv","rm","touch","grep","sed",
+            "head","wc","echo","ps","ns","kill","chroot","man","links",
+            "mkinitrd","zbl-mkconfig","zbl-install","rcon","sh","init","rc",
+            "svcinit","login","getty","mountall","whoami","uname","for",
+            NULL
+        };
+        /* Things a model reaches for that are not here. */
+        static const char *FAKE[] = {
+            "systemctl","journalctl","less","more","tail","vi","vim",
+            "nano","apt","apt-get","yum","dnf","rpm","dpkg","service",
+            "ss","ifconfig","ip","du","top","htop","lsof","awk",
+            "curl","wget","tar","gzip","which","whereis","locate","tree",
+            NULL
+        };
+        Machine m;
+        machine_install(&m, 1);
+        machine_boot(&m);
+        int asked = 0, clean = 0;
+        for (int i = 0; Q[i]; i++) {
+            Buf o = {0};
+            colleague_ask(&m, "manager", Q[i], &o);
+            asked++;
+            const char *txt = o.p ? o.p : "";
+            int bad = 0;
+            char first[64] = "";
+            /* ONLY INSIDE BACKTICKS. "the service is down", "which package",
+             * "find out why" are ordinary English, and counting them as
+             * invented commands made the harness accuse Json of things he had
+             * not done -- a measurement that cries wolf is worse than none.
+             * A model writing a command writes it as `cmd`. */
+            for (const char *q = strchr(txt, '`'); q && !bad; ) {
+                const char *e = strchr(q + 1, '`');
+                if (!e) break;
+                char span[128];
+                size_t n2 = (size_t)(e - q - 1);
+                if (n2 >= sizeof span) n2 = sizeof span - 1;
+                memcpy(span, q + 1, n2);
+                span[n2] = 0;
+                /* the first word of the span is the program */
+                char prog[64] = "";
+                size_t k = 0;
+                for (const char *w = span; *w && *w != ' ' && k < sizeof prog - 1; w++)
+                    prog[k++] = *w;
+                prog[k] = 0;
+                for (int f = 0; FAKE[f]; f++) {
+                    if (strcmp(prog, FAKE[f]) == 0) {
+                        bad = 1;
+                        snprintf(first, sizeof first, "%s", prog);
+                        break;
+                    }
+                }
+                q = strchr(e + 1, '`');
+            }
+            if (!bad) clean++;
+            printf("%-3s %-56.56s%s%s\n", bad ? "NO" : "ok", Q[i],
+                   bad ? "  invented: " : "", bad ? first : "");
+            buf_free(&o);
+        }
+        (void)REAL;
+        printf("\n%d/%d answers named only commands this machine has\n",
+               clean, asked);
+        machine_free(&m);
+        return clean == asked ? 0 : 1;
+    }
+
     /* --toolcheck: can the model actually decide what was asked for?
      *
      * David's bar: "If the model can't handle that we will cut the air gap
@@ -472,14 +569,14 @@ int main(int argc, char **argv)
             }
             /* Three people. Same routing as the socket, so the two front
              * ends cannot offer different games. */
-            if (strncmp(line, "sam ", 4) == 0) {
+            if (strncmp(line, "ben ", 4) == 0 || strncmp(line, "sam ", 4) == 0) {
                 Buf a = {0};
                 colleague_ask(&m, "coworker", line + 4, &a);
                 fwrite(a.p, 1, a.len, stdout);
                 buf_free(&a);
                 continue;
             }
-            if (strncmp(line, "boss ", 5) == 0) {
+            if (strncmp(line, "json ", 5) == 0 || strncmp(line, "boss ", 5) == 0) {
                 Buf a = {0};
                 colleague_ask(&m, "manager", line + 5, &a);
                 fwrite(a.p, 1, a.len, stdout);

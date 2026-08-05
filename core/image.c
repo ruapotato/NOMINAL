@@ -377,7 +377,12 @@ static const Package PKG_SHELL = {
        * because every one of them might be the machine you are calling from
        * when the next ticket comes in. */
       { "/usr/bin/rcon", NULL, 0755, NULL },
-    }, 34
+      /* Both of these exist because the model kept reaching for them and a
+       * playtester kept wanting them. When the thing everyone expects is
+       * missing, the answer is to build it, not to explain its absence. */
+      { "/usr/bin/find", NULL, 0755, NULL },
+      { "/bin/netstat",  NULL, 0755, NULL },
+    }, 36
 };
 
 
@@ -895,6 +900,10 @@ void image_generated(const Machine *m, const char *path, Buf *out)
         buf_put(out, (const char *)GUEST_DMESG, GUEST_DMESG_LEN);
     else if (strcmp(path, "/usr/bin/rcon") == 0)
         buf_put(out, (const char *)GUEST_RCON, GUEST_RCON_LEN);
+    else if (strcmp(path, "/usr/bin/find") == 0)
+        buf_put(out, (const char *)GUEST_FIND, GUEST_FIND_LEN);
+    else if (strcmp(path, "/bin/netstat") == 0)
+        buf_put(out, (const char *)GUEST_NETSTAT, GUEST_NETSTAT_LEN);
     else if (strcmp(path, "/usr/sbin/zbl-install") == 0)
         buf_put(out, (const char *)GUEST_ZBL_INSTALL, GUEST_ZBL_INSTALL_LEN);
     else if (strcmp(path, "/usr/sbin/zbl-mkconfig") == 0)

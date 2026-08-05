@@ -728,9 +728,88 @@ static const char *MANAGER_BRIEF =
 "- The rescue medium is /dev/sr0 and is never damaged. `rescue`, then "
 "`mount /dev/sda1 /mnt`.\n"
 "\n"
+"THE COMPLETE COMMAND VOCABULARY. There is nothing else. If a command you\n"
+"are about to name is not on this list, it does not exist:\n"
+"  dmesg [-1] [-f text] [-r root]   svc | svc status|enable|disable <name>\n"
+"  pkg list|owns|verify|diff|reinstall [--force] [--root DIR]\n"
+"  ldd [-r root] <prog>   df [-i]   blkid   mount   umount   fsck <dev>\n"
+"  ls  cat  stat  chmod  cp  mv  rm [-r]  touch  grep  sed  head  wc  echo\n"
+"  find <dir> [-name pat] [-type f|d]     netstat\n"
+"  ps  ns  kill  chroot  man  links  mkinitrd  zbl-mkconfig  zbl-install\n"
+"  rcon connect|status|console|power|media|boot\n"
+"The shell has pipes, quoting, && || and `for i in a b; do ... done`, and\n"
+"globbing with * and ?.\n"
+"\n"
+"WHAT A BROKEN UNIT FILE MEANS. A .svc file with no `exec` line is not\n"
+"disabled -- it is INVALID, and svcinit stops the boot on it. `enabled: no`\n"
+"is what disabled means. A unit whose file is corrupt behaves as though its\n"
+"fields are missing, so the first thing to check is whether it is readable\n"
+"text at all.\n"
+"\n"
+"THINGS THIS MACHINE DOES NOT HAVE, which you must never suggest:\n"
+"  no locate, no which -- `find <dir> -name <pattern>` is there though\n"
+"  no editor at all: no vi, no nano, no ed. Files are changed with\n"
+"     `sed -i s/old/new/ <file>`, `sed -i /text/d <file>` and `echo x >> f`\n"
+"  no ss, ifconfig or ip -- but `netstat` is there, and the network is\n"
+"     /etc/net/interfaces and `svc status net`\n"
+"  no systemctl or journalctl -- services are `svc`, logs are `dmesg`\n"
+"  no apt, dpkg, rpm or yum -- packages are `pkg`\n"
+"  no tail, less, more, du, top, lsof, awk, curl or tar\n"
+"\n"
+"NEVER INVENT ANYTHING. Do not name a command that is not on the list above.\n"
+"Do not describe behaviour you are unsure of. You wrote the runbook, so being\n"
+"wrong is worse for them than being unhelpful: if you do not know, say you do\n"
+"not know and tell them which file or which command would settle it. A guess\n"
+"in your voice sounds like documentation.\n"
+"\n"
 "Answer the question they actually asked, concretely, naming the command you "
 "would run. Three or four sentences at most. If they have not said enough for "
 "you to be useful, tell them what to go and look at.\n";
+
+/* DOES THIS REPLY NAME A COMMAND THAT EXISTS?
+ *
+ * A playtester: "the runbook author hallucinating commands is the single
+ * worst thing here -- it is the one character whose job is to be
+ * authoritative." Told to check open connections he reached for netstat;
+ * told to search the disk, find; told to edit a file, vi. None of them exist.
+ *
+ * The brief tells him so, and prompting alone got 5/12 to 10/12 -- better,
+ * and still not something to rely on, because netstat and find are burned
+ * into a model far more deeply than any brief. So the rule is enforced in
+ * code, the same way D21 stopped relying on the model to keep a secret: a
+ * reply that names a command this machine does not have is thrown away.
+ *
+ * Only backticked words are checked. "the service is down" is English; the
+ * model writes commands as `cmd`. */
+static bool names_only_real_commands(const char *txt)
+{
+    static const char *REAL[] = {
+        "dmesg","svc","pkg","ldd","df","blkid","mount","umount","fsck","ls",
+        "cat","stat","chmod","cp","mv","rm","touch","grep","sed","head","wc",
+        "echo","ps","ns","kill","chroot","man","links","mkinitrd",
+        "zbl-mkconfig","zbl-install","rcon","sh","for","boot","rescue","ask",
+        "find","netstat",
+        "ben","json","exit","cd","pwd","bind","unbind","help","true","false",
+        NULL
+    };
+    for (const char *q = strchr(txt, '`'); q; ) {
+        const char *e = strchr(q + 1, '`');
+        if (!e) break;
+        char prog[64];
+        size_t k = 0;
+        for (const char *w = q + 1; w < e && *w != ' ' && k < sizeof prog - 1; w++)
+            prog[k++] = *w;
+        prog[k] = 0;
+        if (prog[0] && prog[0] != '/' && prog[0] != '.' && prog[0] != '-') {
+            bool found = false;
+            for (int i = 0; REAL[i] && !found; i++)
+                if (strcmp(prog, REAL[i]) == 0) found = true;
+            if (!found) return false;
+        }
+        q = strchr(e + 1, '`');
+    }
+    return true;
+}
 
 /* Ask somebody who is not the customer. `who` is "coworker" or "manager". */
 void colleague_ask(Machine *m, const char *who, const char *question, Buf *out)
@@ -751,6 +830,22 @@ void colleague_ask(Machine *m, const char *who, const char *question, Buf *out)
         bool got = boss
             ? llm_ask_long(MANAGER_BRIEF, hist, nh, question, reply, sizeof reply)
             : llm_ask_hist(COWORKER_BRIEF, hist, nh, question, reply, sizeof reply);
+        /* One retry, then honesty. A senior engineer who says "I would have
+         * to look" is useful; one who invents a command is worse than
+         * silence, because it is wrong in an authoritative voice. */
+        if (got && reply[0] && !names_only_real_commands(reply)) {
+            got = boss
+                ? llm_ask_long(MANAGER_BRIEF, hist, nh, question, reply, sizeof reply)
+                : llm_ask_hist(COWORKER_BRIEF, hist, nh, question, reply, sizeof reply);
+            if (got && reply[0] && !names_only_real_commands(reply)) {
+                buf_printf(out,
+                    "  %s: \"I would have to look at that one -- I do not want "
+                    "to send you after a command this box has not got. Start "
+                    "with `dmesg` and tell me which layer it stops at.\"\n",
+                    name);
+                return;
+            }
+        }
         if (got && reply[0]) {
             if (n >= CUST_TURNS) {
                 for (int i = 1; i < CUST_TURNS; i++) {
