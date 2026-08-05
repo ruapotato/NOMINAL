@@ -623,7 +623,6 @@ static const MethodDef METHODS[] = {
     { "sh_on",       m_sh_on,       2, { GDEXTENSION_VARIANT_TYPE_INT, GDEXTENSION_VARIANT_TYPE_STRING }, GDEXTENSION_VARIANT_TYPE_STRING },
     { "peer_addr",   m_peer_addr,   0, { 0 },                              GDEXTENSION_VARIANT_TYPE_STRING },
     { "healthy",     m_healthy,     0, { 0 },                              GDEXTENSION_VARIANT_TYPE_BOOL },
-    { "on_rescue",   m_on_rescue,   0, { 0 },                              GDEXTENSION_VARIANT_TYPE_BOOL },
     { "de_requests", m_de_requests, 0, { 0 },                              GDEXTENSION_VARIANT_TYPE_STRING },
     { "de_apps",     m_de_apps,     0, { 0 },                              GDEXTENSION_VARIANT_TYPE_STRING },
     { "colleague",   m_colleague,   2, { GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_STRING }, GDEXTENSION_VARIANT_TYPE_STRING },
