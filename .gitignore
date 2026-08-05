@@ -1,8 +1,9 @@
-# Vendored third-party source and build output. llama.cpp is fetched by
-# tools/fetch-llm.sh at a pinned revision; it is not our source to carry.
+# There is nothing vendored any more -- llama.cpp was the only entry and it
+# went with the language model (docs/decisions-d20.md). The rule stays because
+# if a third-party tree ever lands here again it is still not ours to carry.
 vendor/
-# Model weights are game DATA, distributed with the build rather than tracked
-# in git. See docs/decisions-d20.md for which model and why.
+# Likewise the model weights. Kept so that a stray .gguf cannot be committed
+# by accident; game/models/README.md says what was there and why it is not.
 game/models/*.gguf
 !game/models/README.md
 build/

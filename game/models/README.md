@@ -1,33 +1,40 @@
-# Models
+# Models — there are none, and that is the finished state
 
-**Ships with the game: `Qwen2.5-3B-Instruct-Q4_K_M.gguf`** (1.8 GB, Apache-2.0).
+This directory used to hold `Qwen2.5-3B-Instruct-Q4_K_M.gguf` (1.84 GB) and
+five losing candidates, 4.8 GB in all. **They are gone, along with the language
+model machinery that loaded them.** Nothing in the game reads this directory;
+it survives only to carry this note.
 
-Locked in after `make persona-eval` scored every candidate on the only four
-things the customer has to do — stay in character, own up when asked directly,
-stay non-technical, stay short. It was the only one to score 100, and the only
-one that sounds like a person rather than a form:
+## Why
 
-    Q: What is the UUID of your root filesystem?
-    A: I don't know what that is or how to find it.
+The customer was played by a 3B model for two design revisions (D20, D21).
+Four blind playtests measured it, and it lost on every axis that was actually
+checkable:
 
-5.2 s a reply on CPU. That reads as someone thinking, not as a machine being
-slow, which is the right feeling for a phone call.
+- **60–120 seconds a reply, once nine minutes.** The most-cited fun-killer in
+  every report. The bench number that justified the 3B — 5.2 s a reply — was
+  taken on an idle machine. In the game the model answers while an emulated
+  RV64 CPU boots a kernel on the same box, and the delay scaled with context,
+  so it was worst on exactly the long tickets this character exists for.
+- **1.84 GB shipped**, plus 488 MB of vendored llama.cpp, against a game whose
+  entire source is a few megabytes of C.
+- **Two test gates existed only to police it** — `--toolcheck` and
+  `--jsoncheck` — because it kept inventing commands that do not exist, after
+  two rounds of prompt work aimed at that exact failure.
 
-The other files here are the losing candidates, kept so the comparison can be
-re-run when something new comes out. They are **not** shipped. `*.gguf` is
-gitignored: weights are game data, distributed with the build.
+## What replaced it
 
-| model | score | per reply | verdict |
-|---|---|---|---|
-| Qwen2.5-3B-Instruct | 100 | 5.2 s | **ships** |
-| Qwen2.5-1.5B-Instruct | 85 | 2.6 s | fallback if size matters |
-| SmolLM2-1.7B-Instruct | 85 | 3.4 s | |
-| Qwen2.5-0.5B-Instruct | 73 | 1.3 s | |
-| SmolLM2-360M-Instruct | 55 | 1.3 s | plays the technician, not the customer |
-| Qwen3-0.6B | 0 | — | emits its thinking into the dialogue |
+`core/customer.c`: a deterministic character with a menu of things you can say
+to her, generated from the state of the machine. She answers instantly, she
+can only see the bottom of the screen, she misreads characters, she will only
+type so much off a phone call, and she never says a word she was not read.
 
-Licence bar: permissive and sellable. Apache-2.0 is GPLv3-compatible but
-**not** GPLv2-compatible — settle the game's own licence before shipping.
+What playtesters quoted back was never a generated sentence. It was *"There is
+more above that but it has scrolled off. Do you want me to do it again?"* —
+a rule, not prose. Rules are always true, cost microseconds, and cannot invent
+a command. `bf --askcheck` proves all of them in milliseconds; the two gates it
+replaced took minutes of model time to prove less.
 
-To re-run the comparison: `make persona-eval` (all models) or
-`make persona-eval MODEL=game/models/x.gguf` (one).
+The full reasoning, with the numbers, is in the amendments to
+`docs/decisions-d20.md` and `docs/decisions-d21.md`, and at the top of
+`core/customer.c`.

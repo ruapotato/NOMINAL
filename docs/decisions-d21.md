@@ -111,3 +111,40 @@ up" as a failure to own up, because the list of admission phrases required the
 word "deleted" — which is precisely the word a real customer avoids. Four
 scoring bugs across two sessions now, all of them in the direction of
 mismeasuring the thing that matters. Test the instrument.
+
+---
+
+## AMENDMENT: the model is gone; the correction outlived it
+
+**Qwen2.5-3B never reached a player who enjoyed it.** Four blind playtests
+after this was written, the model was removed — see the amendment on D20 for
+the measurements. `make persona-eval`, the score table above, and the model
+files it scored no longer exist.
+
+Two things in this document were about the *model* and died with it: the size
+argument, and "latency is not the constraint it was assumed to be". That
+second claim was wrong, and it was wrong for a measurable reason worth
+recording. Five seconds a reply was timed with nothing else running. In the
+actual game the customer answers while an emulated RV64 CPU is booting a
+kernel on the same box, and the same model took 60–120 seconds, once nine
+minutes. **A latency measured on an idle machine is not a latency.**
+
+Two things here were about the *design* and are now load-bearing:
+
+1. **The customer knows only what a person would know.** This is the section
+   that removes the whole leak problem, and it removed it permanently. The
+   deterministic customer is built on the same rule: she is briefed with the
+   human story, never the breaker's ground truth, so there is no secret for
+   her to leak and no filter policing her. Had the menu been built on ground
+   truth we would have rebuilt the leak filter for it.
+2. **The customer can DO things.** All six actions listed above shipped and
+   all six survive as menu options, including refusing to read the root
+   password out loud. `--askcheck` now proves the stronger property this
+   section was reaching for: every action offered is one she can actually
+   perform in the machine's current state, and every dictated command runs
+   whole or not at all.
+
+The closing lesson — *test the instrument* — cost four scoring bugs to learn,
+and applies to the decision to remove as much as it did to the decision to
+ship. What finally settled it was timing the replies in the game rather than
+on the bench.

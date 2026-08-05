@@ -174,3 +174,56 @@ talks to the same customer as someone at the desktop.
 3. prompt engineering against real tickets until the persona holds up
 4. mingw build, and a Windows check under wine
 5. ship the weights as game data and wire the Godot side
+
+---
+
+## AMENDMENT: this was built, shipped, measured, and removed
+
+Everything above happened. All five sequencing steps were completed: llama.cpp
+was vendored and built static for Linux, PIC for the GDExtension and
+cross-compiled for Windows; `llm_ask()` existed with the scripted persona
+behind it; the prompt was tuned across two rounds (D21); the weights shipped as
+game data. The customer in the Godot build really was played by a 3B model.
+
+**Then four blind playtests measured it, and it is gone.** The replacement is a
+deterministic menu-driven character in `customer.c`, and the reasoning is
+written at the top of that file. The numbers that decided it:
+
+- **60–120 seconds a reply, and once nine minutes.** This was the single
+  most-cited fun-killer across all four reports. Worse: the delay scaled with
+  context, so it was longest on exactly the long-running tickets this
+  character exists for. D21's "five seconds reads as natural" was measured on
+  an idle machine running nothing else; in the game, next to an emulated CPU
+  booting a kernel, it was not five seconds.
+- **1.84 GB of weights plus 488 MB of vendored llama.cpp**, against a game
+  whose entire source is a few megabytes of C.
+- **Two gates existed only to police it.** `--toolcheck` and `--jsoncheck`
+  both existed to catch the model inventing commands, which it still did after
+  two rounds of prompt work. They took minutes of model time to answer
+  questions that only arise *because* there is a model. Both are gone,
+  replaced by `--askcheck`, which asks better questions and answers them in
+  milliseconds.
+
+**What was wrong with the premise.** "A scripted persona can only ever answer
+the questions its author thought of" is true and turned out not to be the
+thing that mattered. What playtesters quoted back was never a generated
+sentence. It was *"There is more above that but it has scrolled off. Do you
+want me to do it again?"*, and being forced to break a long `sed` into four
+short ones. Both of those are **rules** — a terminal is a fixed number of
+lines high, and there is a limit to how much anyone will type off a phone
+call. Rules are always true, cost microseconds, and cannot invent a command.
+The improvisation was the only part that could lie, and it is the part we
+paid 2.3 GB and two minutes a reply for.
+
+**What survives.** The asymmetry D20 opens with — the machine knows what is
+wrong, only the customer knows what changed — is the whole design and it is
+intact. So is D21's correction, which is arguably more important now than it
+was then: the customer is told only what a person would have noticed, so
+nothing she can say is the answer to the puzzle. A menu built on ground truth
+would have needed a leak filter too.
+
+**What was deleted:** `core/llm.cpp`, `tools/persona_eval.c`, the `NOM_LLM`
+build path and the three separate llama builds (Linux static, PIC for the
+GDExtension, mingw for Windows), `vendor/llama.cpp`, and the weights. The
+GDExtension is plain C again and links no C++ runtime, no OpenMP and no
+`libdl`. Nothing in `core/` is conditional on a model any more.
