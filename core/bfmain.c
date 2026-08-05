@@ -12,6 +12,10 @@
 #include "nom.h"
 #include "machine.h"
 #include "kernel.h"
+#include "netstack.h"
+
+/* The network's own gate. See core/netcheck.c. */
+int net_selfcheck(void);
 
 /* Free the space and the inodes that are scratch BY DEFINITION.
  *
@@ -211,6 +215,14 @@ static bool ac_no_jargon(const char *p, size_t len, const char **words)
 
 int main(int argc, char **argv)
 {
+    /* THE NETWORK GATE. Frames on a wire, and every layer above them, checked
+     * by building a topology and doing something ordinary to it. The
+     * assertions live in netcheck.c because they are long and this file is
+     * already long; what matters is that they are here, scored like every
+     * other gate, and that they run in milliseconds. */
+    if (argc > 1 && strcmp(argv[1], "--netcheck") == 0)
+        return net_selfcheck();
+
     if (argc > 1 && strcmp(argv[1], "--health") == 0) {
         /* A PRISTINE machine must be healthy: it boots, and every service it
          * started is still running. Without this, a service could sit in a
