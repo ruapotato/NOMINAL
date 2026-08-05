@@ -22,6 +22,43 @@
 static char conf[2048];
 static char nm[160];
 
+/* WHAT THIS PROCESS ACTUALLY LOADED. Two lines, the shape every daemon here
+ * uses: which file was read, and what its first real line said. The kernel
+ * compares the second against the file named by the first, which is how
+ * "running with a stale configuration" becomes something the machine can
+ * notice -- and, once it has been reloaded, stop noticing.
+ *
+ * THIS USED TO BE WRITTEN ONCE, AT STARTUP, AND THE HUP HANDLER ONLY RE-READ
+ * THE FILE INTO MEMORY. So the one repair the previous administrator's notes,
+ * a wiki page and a blog post all name -- `kill -HUP` the pid -- did nothing
+ * anybody could see on this daemon: the process had genuinely reloaded and
+ * the machine went on reporting it as stale, for ever. Every other daemon on
+ * the disk republishes; this one is the display server, which is exactly the
+ * one a player is most likely to be pointed at. */
+static int publish(void)
+{
+    int sfd = g_open("/run/nomde.state", O_WRONLY | O_CREAT | O_TRUNC);
+    if (sfd < 0) return -1;
+    sysc(SYS_write, sfd, (i64)"/etc/nomde/nomde.conf\n", 22);
+    {
+        char *q = conf;
+        while (*q) {
+            char *nl = q; while (*nl && *nl != '\n') nl++;
+            char save = *nl; *nl = 0;
+            char *t = g_trim(q);
+            if (*t && *t != '#') {
+                sysc(SYS_write, sfd, (i64)t, (i64)g_strlen(t));
+                *nl = save;
+                break;
+            }
+            *nl = save; q = *nl ? nl + 1 : nl;
+        }
+    }
+    sysc(SYS_write, sfd, (i64)"\n", 1);
+    g_close(sfd);
+    return 0;
+}
+
 void _start(void)
 {
     if (g_slurp("/etc/nomde/nomde.conf", conf, sizeof conf) < 0) {
@@ -53,32 +90,10 @@ void _start(void)
     }
     g_close(fd);
 
-    int sfd = g_open("/run/nomde.state", O_WRONLY | O_CREAT | O_TRUNC);
-    if (sfd < 0) {
+    if (publish() < 0) {
         g_putln("nomde: /run/nomde.state: cannot write state -- refusing to start");
         g_exit(1);
     }
-    /* Two lines, the shape every daemon here uses: which file was loaded,
-     * and what its first real line said. The kernel compares the second
-     * against the file named by the first, which is how "running with a
-     * stale configuration" becomes something the machine can notice. */
-    sysc(SYS_write, sfd, (i64)"/etc/nomde/nomde.conf\n", 22);
-    {
-        char *q = conf;
-        while (*q) {
-            char *nl = q; while (*nl && *nl != '\n') nl++;
-            char save = *nl; *nl = 0;
-            char *t = g_trim(q);
-            if (*t && *t != '#') {
-                sysc(SYS_write, sfd, (i64)t, (i64)g_strlen(t));
-                *nl = save;
-                break;
-            }
-            *nl = save; q = *nl ? nl + 1 : nl;
-        }
-    }
-    sysc(SYS_write, sfd, (i64)"\n", 1);
-    g_close(sfd);
 
     g_puts("nomde: display server up, ");
     g_putn(apps);
@@ -86,8 +101,10 @@ void _start(void)
 
     for (;;) {
         if (g_sigpend() == SIG_HUP) {
-            /* re-read on HUP, like anything else that keeps config in RAM */
-            g_slurp("/etc/nomde/nomde.conf", conf, sizeof conf);
+            /* re-read on HUP, like anything else that keeps config in RAM,
+             * and SAY SO: a reload nobody can observe is not a repair. */
+            if (g_slurp("/etc/nomde/nomde.conf", conf, sizeof conf) >= 0)
+                publish();
         }
     }
 }
