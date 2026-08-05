@@ -136,7 +136,7 @@ static bool need_here(Session *ses, const char *a, int *dev, Buf *out)
         char w[48];
         room_label(ses, ses->s.dev[d].room, w, sizeof w);
         buf_printf(out, "%s is in %s and you are not. `go %s` first -- you cannot\n"
-                        "  configure a box you are not standing in front of.\n",
+                        "  reach a box you are not standing in front of.\n",
                    ses->s.dev[d].name, w, ses->s.dev[d].name);
         return false;
     }
@@ -444,11 +444,14 @@ static void do_lift(Session *ses, int f, Buf *out)
                         "  `open` puts the next floor into service.\n", f);
         return;
     }
+    /* Ask for the floor you are on and you get told, not walked to the lift
+     * and then told -- the walk is a cost and charging it for nothing is
+     * the game taking metres off a player for a typo. */
+    if (f == here_floor(ses)) { buf_puts(out, "you are on that floor already.\n"); return; }
     int from = lift_lobby(ses, here_floor(ses));
     int to = lift_lobby(ses, f);
     if (from < 0 || to < 0) { buf_puts(out, "there is no lift in this building.\n"); return; }
     if (from != ses->room && !walk_to(ses, from, out, false)) return;
-    if (f == here_floor(ses)) { buf_puts(out, "you are on that floor already.\n"); return; }
     ses->room = to;
     buf_printf(out, "floor %d.\n", f);
     do_look(ses, out);
