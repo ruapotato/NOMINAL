@@ -282,6 +282,23 @@ void machine_boot(Machine *m)
      * implicated the filesystem package, because nothing was wrong with it.
      * A playtester called that a fairness bug and was completely right. */
     m->nmount = 0;
+    /* THIS FUNCTION IS THE DISK BOOT. It is the one place that knows so, and
+     * it is therefore the one place allowed to say which medium is running.
+     *
+     * It did not say. Every caller was expected to clear on_rescue itself,
+     * and the caller that matters most -- the service processor's power
+     * button -- did not: `rcon media eject`, `rcon boot disk`, `rcon power
+     * cycle` printed the whole disk boot, zbios through kernel, and then
+     * handed /sbin/init the RESCUE filesystem, because on_rescue was still
+     * set from the last live boot. `cat /etc/hostname` said "rescue" while
+     * `rcon status` said the drive was empty and the boot device was the
+     * disk. Both halves were reporting honestly; one of them was reporting a
+     * variable nobody had updated.
+     *
+     * So there was no way out of rescue through the service processor at all,
+     * which is the only instrument the ticket gives you. A player with a
+     * correct fix already on the disk could not get the machine to boot it. */
+    m->on_rescue = false;
 
     buf_clear(&m->boot.console);
     m->powered        = true;    /* something is running the boot chain */
@@ -536,6 +553,12 @@ void machine_boot_rescue(Machine *m)
     m->next_pid = 1;
     buf_clear(&m->boot.console);
     m->on_rescue = true;
+    /* IT IS RUNNING, SO IT HAS POWER IN IT. machine_boot said so and this did
+     * not, so after booting the live medium `rcon status` reported "power OFF
+     * -- nothing is running in it" while the player was typing commands at
+     * that machine's shell. Same class of bug as on_rescue: two halves of the
+     * service processor disagreeing because one of them was never told. */
+    m->powered = true;
     m->nmount = 0;                 /* a fresh boot has nothing mounted */
     m->boot.running = false;
     m->boot.reason[0] = '\0';
