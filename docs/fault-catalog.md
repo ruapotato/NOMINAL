@@ -33,9 +33,14 @@ Legend: **[done]** built · **[next]** in progress or immediately next ·
   Fix: `zbl-mkconfig`, which regenerates from the machine in front of you —
   reinstalling the package does not, because the package ships the config for
   the machine it was built for.
-- **[todo]** config points at a kernel that was removed by a cleanup or by an
-  autoremove after an upgrade. The classic: `/boot` filled, the upgrade half
-  finished, and the entry now names a kernel that is gone.
+- **[done]** **config points at a kernel that was removed by a cleanup or by an
+  autoremove after an upgrade.** `fault_stale_kernel_entry`. The classic:
+  `/boot` filled, the upgrade half finished, and the entry now names a kernel
+  that is gone. `zbl: /boot/vmnomuz-6.4.9: not found`, and `ls /boot` shows
+  what is really there. The symlink is not involved and `stat /boot/vmnomuz`
+  is perfectly happy, which is what separates it from the deleted-image
+  fault -- the file the LOADER wants is not the file the system installs.
+  Fix: `zbl-mkconfig`, which writes a config for the machine in front of you.
 - **[todo]** `/boot` is a separate filesystem and is not mounted, so the
   loader's world and the running system's `/boot` are different directories.
   Deeply confusing and very real.
@@ -52,8 +57,23 @@ Legend: **[done]** built · **[next]** in progress or immediately next ·
 - **[todo]** **kernel and modules out of step.** `/lib/modules/<version>` does
   not match the running kernel, so drivers refuse to load. The commonest real
   upgrade failure there is.
-- **[todo]** initrd built on a machine with different hardware — has the wrong
-  storage driver, not none.
+- **[done]** **initrd built on a machine with different hardware** — it has the
+  wrong storage driver, not none. `fault_foreign_initrd`. A complete, valid
+  image full of drivers, none of which drive this machine's disk, which is
+  what a clone from a box with different storage produces.
+
+  It needed the loader to say what the image DOES carry, because "no driver
+  for the root device" is the same sentence for an empty initrd and a foreign
+  one and they are not the same problem:
+
+  ```
+  initrd: modules in this image: ahci, nvme, ext4, dm_mod
+  initrd: no driver for the root device (virtio_blk)
+  ```
+
+  Every module is present in `/lib/modules`, so this is `mkinitrd` and
+  nothing else -- a different repair from a module that was deleted, which is
+  reinstall-then-rebuild.
 - **[todo]** `/boot` full, so the new initrd was written truncated. The write
   "succeeded" and the file is half a file.
 
@@ -131,9 +151,32 @@ Legend: **[done]** built · **[next]** in progress or immediately next ·
   by hand. Virtual filesystems (`none`, `proc`, `tmpfs`) are understood by the
   kernel, recorded in the mount table so `mount` and `df` show them, and
   nothing is layered over the path.
-- **[todo]** `/var` or `/usr` on a separate filesystem that does not mount, so
-  the system comes up with a *hollow* directory where a populated one belongs.
-  Everything that reads from it fails oddly and nothing is corrupt.
+- **[done]** **something mounted OVER a directory that already had things in
+  it.** `fault_mount_shadow`. The other half of the hollow-directory idea and
+  the better half: nothing is deleted, nothing is corrupt, every hash matches,
+  and the contents of `/var` are not the contents of `/var`, because a
+  filesystem is sitting on top of them. The line was written on purpose, for a
+  disk that never arrived, and it mounts the root device a second time in a
+  second place.
+
+  `mount` and `df` show it plainly; `ls /var` is a bewildering few seconds.
+  The file `pkg verify` flags is `/etc/fstab`, which is correct in every
+  particular except intent -- which is why this one is not a reinstall
+  reflex.
+- **[done]** **an entry naming a uuid no disk here carries.**
+  `fault_fstab_uuid`. The bootloader found the root and handed it over, so the
+  machine is running, and then fstab describes a disk that is not in it.
+  `blkid` answers it in one command. Deliberately a different fault from
+  zbl.cfg's wrong uuid: that one stops in the initrd before userland exists,
+  this one stops in `mountall` with the machine half up, and the file to fix
+  is the other one.
+- **[done]** **`nofail`, which is the difference between a fault and
+  housekeeping.** An fstab entry for a disk that is not in the machine stops
+  the boot; the same entry with `nofail` prints a line and carries on.
+  `mountall` honoured `noauto` and had never heard of `nofail`, so a perfectly
+  ordinary line for a drive in a caddy was fatal. It is now both a real fault
+  (without the word) and one of the decoys (with it) -- an alarming line on
+  the console of a completely healthy machine.
 
 ## 6. Libraries and ABI — the biggest missing layer
 
@@ -164,8 +207,32 @@ Legend: **[done]** built · **[next]** in progress or immediately next ·
   the copy you need when the disk's own libc is too broken to run anything.
 - **[done]** `/etc/ld.so.conf` missing a path, so a library that is installed
   is not found.
-- **[todo]** a dangling symlink in the library path: `libc.so.6 -> libc-2.38.so`
-  where the target was removed by a failed upgrade.
+- **[done]** **a dangling symlink in the library path.** `fault_dangling_lib`.
+  `libc.so.6 -> libc-2.38.so` where the target was removed by a failed
+  upgrade. `ls /lib` shows the library, in the right place, with the right
+  name; `stat` says there is nothing there. The loader says `cannot open
+  shared object file`, which is a different sentence from `version not found`
+  and means a different thing. libz makes it partial, libc makes it total and
+  the rescue medium is the only way back.
+- **[done]** **two versions of the same library, and the loader picks the wrong
+  one.** `fault_lib_shadow`, and the best of this batch. NOTHING IS MISSING
+  AND NOTHING IS CORRUPT: the correct library is exactly where it belongs and
+  is exactly right. There is an older one in `/usr/lib`, and a search path
+  reordered to look there first -- which is what happens every time a vendor
+  tarball is unpacked and somebody makes it work.
+
+  `ldd` is the whole diagnosis, and this is why it prints the path it
+  resolved to rather than just a verdict:
+
+  ```
+  rescue# ldd /usr/sbin/httpd
+      libc.so.6 => /lib/libc.so.6 (2.38)
+      libz.so.1 => /usr/lib/libz.so.1 (1.2)  -- TOO OLD, this program needs 1.3
+  ```
+
+  `pkg verify` flags `/etc/ld.so.conf`, which reads exactly like a deliberate
+  local edit because it is one, and `pkg owns` the stray copy and nothing
+  does. The repair is the ORDER, not the file.
 
 ## 7. Packaging and repositories
 
@@ -209,8 +276,38 @@ Legend: **[done]** built · **[next]** in progress or immediately next ·
   `/etc/passwd`, and the login shell has to exist and be executable. `login`
   is now its own boot stage, because a machine that is *running* and cannot be
   logged into is a different problem from one that would not start.
-- **[todo]** a service enabled in the wrong runlevel, so it is missing without
-  anything reporting an error.
+- **[done]** **a service in the wrong runlevel, so it is missing without
+  anything reporting an error.** `fault_wrong_runlevel`. Nothing failed and
+  nothing was tried: the unit is present, correct, enabled and healthy, and it
+  belongs to runlevel 5 on a machine that boots to 3. The trap is that
+  `enabled: yes` is right there in the file, which is the line everybody
+  reads; the word "runlevel" appears only on the console. The other half of
+  the fault is the same mistake from the other end -- `rc.3` entering runlevel
+  5, where half the service set does not belong.
+- **[done]** **a unit pointing at a path the program has never been at.**
+  `fault_exec_path`. The binary is present, correct, executable and exactly
+  where its package put it; the unit names the directory the program lives in
+  on the distribution the unit was copied from. `pkg verify` flags the unit
+  and not the binary, which is the clue: what is wrong is the pointer.
+- **[done]** **two services ordered after each other.** `fault_dep_cycle`.
+  Neither is broken, neither will ever start, and each unit on its own is
+  completely reasonable. Reading one file tells you nothing; reading two tells
+  you everything.
+- **[done]** **ordered after something that is not installed at all.**
+  `fault_after_ghost`. Not disabled and not in another runlevel -- there is no
+  such service on this machine, either because the unit came from a box that
+  had one or because the unit it waited for was deleted. svcinit says which:
+  "waiting for network" and "waiting for network -- and no unit by that name
+  is installed" are twenty minutes apart.
+- **[done]** **svcinit says WHICH KIND of failure it was.** "failed to start"
+  was the same five words for a unit pointing at a path that does not exist, a
+  binary a hardening script had disarmed, a library at the wrong version and a
+  daemon that read its config and gave up -- four different afternoons behind
+  one sentence, and it is the last line the console prints, which is the line
+  a player reads first. The kernel already distinguished them and handed back
+  the reason; nothing looked at it. Now: `not found`, `present, and not
+  executable`, `will not load -- check ldd on it`, `started and would not stay
+  up`.
 - **[done]** **a unit ordered after something that is disabled**, so it waits
   forever for a thing that is never coming. `fault_dep_disabled`. Nothing is
   corrupt: one file changed `enabled: yes` to `enabled: no`, which reads
@@ -223,13 +320,58 @@ Legend: **[done]** built · **[next]** in progress or immediately next ·
   is the most confusing line an init system can print.
 - **[todo]** `/etc/inittab` respawning something that exits immediately —
   the "respawning too fast" loop.
+- **[done]** **pid 1 told to run the wrong script.** `fault_inittab_target`.
+  Somebody was testing single-user mode, or the runlevel scripts were being
+  reorganised. `/etc/inittab` is two lines long and one of them is now a path
+  that does not exist, so the machine stops before any of userland has run and
+  the console has almost nothing on it -- which is itself the diagnosis: a
+  boot that dies this early died in init, and init reads one file.
+- **[done]** **an installer patched the boot script.** `fault_rcboot_need`. A
+  vendor package dropped a `need` line into `/etc/rc.boot` for an agent that
+  was never installed, or that somebody tidied away afterwards. rc stops at
+  the first failure, on purpose, so the machine dies at a line that has
+  nothing to do with booting, and the fix is to take the line out rather than
+  to install anything.
+- **[done]** **the wrong file copied over a program.** `fault_wrong_binary`. A
+  deployment that pushed the wrong artefact. The binary is a real, valid,
+  runnable program -- it is simply a different one, so the service starts,
+  does that program's job in half a millisecond, and exits, over and over,
+  until the machine gives up on it. The console fills with the output of
+  whatever it actually is in the middle of the boot, which is the loudest and
+  strangest evidence in the game and points straight at the file.
 
 ## 9. Accounts and permissions
 
 - **[done]** wrong shell in `/etc/passwd` — a shell that used to exist, one
   that never did, a rename meant to be temporary, or the field left empty.
 - **[done]** the root account missing from `/etc/passwd` entirely.
-- **[todo]** `/etc/passwd` and `/etc/shadow` out of step.
+- **[done]** **`/etc/passwd` and `/etc/shadow` out of step.** `fault_no_shadow`.
+  The machine boots perfectly, every service is up, and there is no way in:
+  the password lives in the other file and root has no line in it, which is
+  what half a user migration leaves behind. Invisible in `/etc/passwd`, where
+  everybody looks first, because `/etc/passwd` is perfect.
+- **[done]** **one extra colon in a passwd line.** `fault_passwd_fields`. The
+  line still parses, with the right name, the right uid and the right home.
+  Every field after the typo has shifted one to the left, so the login shell
+  is now the home directory, and the machine says -- quite correctly -- that
+  root's login shell `/root` is not a program. A sentence that makes no sense
+  until you count the colons. getty had to learn that a directory is not a
+  shell; before that the account looked fine and the machine was quietly
+  unusable.
+- **[done]** **the hardening sweep.** `fault_hardening_sweep`. A script from
+  somebody's laptop walks a directory and takes the execute bit off anything
+  it does not recognise. The bytes are perfect, so `pkg verify` says `mode`
+  and NOT `changed` on a scatter of files across several packages -- a verify
+  signature unlike anything else here, where one word in the output IS the
+  diagnosis and the repair is `chmod`, not a reinstall. Ticket 8841 in the
+  previous administrator's notes is exactly this and says so.
+- **[done]** **permissions on a DIRECTORY rather than a file, for writing.**
+  `fault_ro_dir`. `/run` is not deleted and not unreadable -- everything in it
+  lists and reads perfectly. It cannot be written to, so every daemon that
+  publishes what it loaded fails at the same moment for the same reason and
+  the console reads as though the whole service set has gone mad at once.
+  Creating a file is a write to the DIRECTORY, which the kernel now enforces;
+  before that a directory's mode meant nothing except traversal.
 - **[done]** a directory whose mode stops traversal, so everything under a
   perfectly healthy tree is unreachable. `fault_dir_mode`. This is the answer
   to a playtester's complaint that the game is recipe-following: no manifest
@@ -325,6 +467,22 @@ boot, so a repair that leaves a service dead is not a repair.
 - **[done]** a non-critical daemon in a respawn loop. "It boots, the firewall
   is just not running." The console scrolls past it and nothing complains
   afterwards — except the bench, at the end.
+- **[done]** **the document root is not there.** `fault_docroot`. The config is
+  valid, the daemon is fine, the machine boots to a login prompt, and the web
+  server is dead because the directory its configuration names has been moved
+  or deleted. `/srv/www/README` has been telling anyone who read it to check
+  exactly this -- and it was a lie for several sessions, because httpd read
+  `DocumentRoot` and never looked at it. **Daemons now touch what their
+  configuration points at:** httpd stats its document root, auditd opens its
+  trail, ntpd writes its drift file. A daemon that does not touch what its
+  config names cannot be broken by pointing it somewhere wrong, and two
+  entries in this catalogue were describing faults that did nothing at all.
+- **[done]** **the disk filled with something that is not a log.**
+  `fault_cache_full`. The same 100% and a completely different search: a log
+  that ate the disk is one enormous file and `wc` finds it in a second; a
+  package cache that ate the disk is four hundred ordinary files, none of them
+  remarkable, and the only way to see it is to look at the directory rather
+  than at the files. `find /var -type f` is the tool.
 - **[todo]** a service that starts and then dies an hour later, so the boot
   console is clean and `ps` is the only evidence.
 - **[todo]** two services that both start, where one silently depends on the
@@ -418,6 +576,35 @@ The notes are therefore a checklist for this catalogue in reverse — if a note
 describes something the breaker cannot do, either the fault is missing or the
 note is a lie. Note 9 (a directory bound over `/etc`) was a lie for several
 sessions and a playtester followed it into a dead end. It is a real fault now.
+
+## 15. The decoys, which are half the game
+
+There are now **27** of them (`install_local_edits` in `image.c`,
+`./tools/check-decoys.sh` walks every one against a 20-machine health run),
+and the count is not decoration: a fault set that doubles while the decoy set
+stands still turns `pkg verify` straight back into an oracle, because the one
+unfamiliar line in the output is the answer again.
+
+The second batch was chosen so that the FRIGHTENING files are represented,
+since those are the ones a player reinstalls on sight:
+
+- `/etc/fstab` with a `nofail` entry for the backup caddy — it prints an
+  alarming line on the console of a completely healthy machine, and the single
+  word that makes it harmless is in the options column.
+- `/etc/rc.boot` with an extra `echo`. rc.boot is where two real faults live,
+  which is exactly why a harmless edit to it is worth having.
+- `/etc/passwd` with a service account somebody added.
+- `/etc/inittab` with a comment explaining a mistake its author made once.
+- `/etc/ld.so.conf` with a vendor path **appended** — the difference between
+  this and `fault_lib_shadow` is the ORDER of two lines and nothing else.
+- `/etc/pkg/repos.d/main.repo` with everything changed except the channel.
+- `/etc/nftables.conf`, `/etc/logrotate.conf`, `/etc/nomde/panel.conf`,
+  `/etc/services.d/sshd.svc` — ordinary tuning, in files that matter.
+
+One of the original seventeen wrote `/etc/default/postfix`, which no package
+installs, so the edit silently did nothing: a decoy of a decoy. A fault that
+cannot fire is worth checking for as carefully as a repair that cannot fail;
+the same bug had one entry of `fault_wellmeant` doing nothing for months.
 
 ## What makes a fault good
 
