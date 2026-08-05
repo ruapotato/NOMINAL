@@ -701,7 +701,8 @@ const char *customer_name(const Machine *m)
 #define NOM_VOCAB \
 "THE COMPLETE COMMAND VOCABULARY. There is nothing else. If a command you\n" \
 "are about to name is not on this list, it does not exist:\n" \
-"  dmesg [-1] [-f text] [-r root]   svc | svc status|enable|disable <name>\n" \
+"  dmesg [-1] [-f text] [-r root]\n" \
+"  svc | svc status|start|stop|restart|reload|enable|disable <name>\n" \
 "  pkg list|owns|verify|diff|reinstall [--force] [--root DIR]\n" \
 "  ldd [-r root] <prog>   df [-i]   blkid   mount   umount   fsck <dev>\n" \
 "  ls [-l] [-a] [-d]  cat  stat  chmod  cp  mv  rm [-r]  touch  mkdir [-p]\n" \
@@ -793,8 +794,13 @@ static const char *MANAGER_BRIEF =
 "/etc/rc.d/rc.3 -> /sbin/svcinit starts the units in /etc/services.d -> "
 "/sbin/getty and login.\n"
 "- Services are .svc unit files: name, exec, enabled, runlevel, after, "
-"critical, restart. `svc` lists them, `svc status <name>` says why one is "
-"unhappy, `svc disable <name>` turns one off.\n"
+"critical, restart. `svc` lists them and `svc status <name>` says why one is "
+"unhappy. `svc start|stop|restart|reload <name>` act on the process running "
+"NOW; `svc enable|disable <name>` decide only what happens at the next boot, "
+"and a repair is usually one of each. `svc reload` is kill -HUP by name -- "
+"the fix for a daemon holding a config nobody reloaded, and the one that "
+"does not destroy the evidence the way a reboot does. A daemon that does not "
+"read signals says so, and then `svc restart` is the answer.\n"
 "- Everything is packaged. `pkg verify` compares files to what the package "
 "shipped, `pkg owns <path>` says who owns a file, `pkg diff <path>` shows "
 "what changed, `pkg reinstall` restores but LEAVES edited config alone unless "

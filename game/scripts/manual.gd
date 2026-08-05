@@ -151,7 +151,26 @@ critical, restart.
   svc                  every unit and its state
   svc status <name>    why THIS one is unhappy: restarts, exit status, what
                        it said as it died, whether the kernel gave up
+
+NOW, on the running machine:
+
+  svc start <name>     start it. A service that gave up stays given up
+                       until somebody tells it otherwise
+  svc stop <name>      stop it
+  svc restart <name>   stop, then start -- re-reading the unit file AND
+                       the config from disk
+  svc reload <name>    tell it to re-read its config WITHOUT going down.
+                       kill -HUP by another name, and the only repair for
+                       a stale config that leaves the evidence intact. A
+                       daemon that does not take signals says so.
+
+AT THE NEXT BOOT, and not before:
+
   svc enable <name>    /  svc disable <name>
+
+Most repairs are one from each half. `svc start` alone leaves a machine
+that is right until somebody reboots it; `svc enable` alone leaves it
+wrong until somebody does.
 
 DEAD means enabled and not running. `not at rl3` means it belongs to another
 runlevel and was never meant to start. `disabled` means somebody turned it
