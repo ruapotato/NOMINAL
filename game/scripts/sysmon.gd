@@ -152,10 +152,11 @@ func _read_procs(out: String) -> void:
 		})
 
 
-# `svc` pads the name to 17 columns and the state to 11, and one of the states
-# it prints is "not at rl3" -- WITH SPACES IN IT. Splitting this table on
-# whitespace turns that unit into a three-column row with a service called
-# "not" in it, so the columns are read by position, which is what they are.
+# `svc` pads the name to 17 columns and the state to 15, and several of the
+# states it prints have SPACES IN THEM -- "not at rl3", "disabled, up".
+# Splitting this table on whitespace turns those into three-column rows with a
+# service called "not" in them, so the columns are read by position, which is
+# what they are.
 func _read_svcs(out: String) -> void:
 	svcs = []
 	var started := false
@@ -172,8 +173,8 @@ func _read_svcs(out: String) -> void:
 		if line.length() < 18:
 			continue
 		var nm := line.substr(0, 17).strip_edges()
-		var st := line.substr(17, 11).strip_edges()
-		var ex := line.substr(28).strip_edges() if line.length() > 28 else ""
+		var st := line.substr(17, 15).strip_edges()
+		var ex := line.substr(32).strip_edges() if line.length() > 32 else ""
 		if nm == "":
 			continue
 		svcs.append({"name": nm, "state": st, "exec": ex, "rank": _rank(st)})
@@ -186,6 +187,10 @@ func _read_svcs(out: String) -> void:
 func _rank(state: String) -> int:
 	if state == "DEAD":
 		return 0
+	# Running now and not coming back at the next boot: worth looking at, for
+	# the same reason a disabled unit is.
+	if state.ends_with(", up"):
+		return 1
 	if state == "disabled":
 		return 1
 	if state.begins_with("not at"):
@@ -564,6 +569,8 @@ func _draw_table() -> void:
 func _svc_colour(state: String) -> Color:
 	if state == "DEAD":
 		return RED
+	if state.ends_with(", up"):
+		return AMBER
 	if state == "disabled":
 		return AMBER
 	if state == "running":

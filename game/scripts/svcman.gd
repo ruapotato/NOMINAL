@@ -62,7 +62,7 @@ var err := ""
 const TOP := 20.0
 const ROW_H := 15.0
 const BTN_H := 22.0
-const BOT_H := 46.0
+const BOT_H := 72.0   # a message line and TWO rows of buttons
 
 const CHROME := Color("#d6d3ce")
 const WHITE := Color("#ffffff")
@@ -123,9 +123,9 @@ func refresh() -> void:
 	queue_redraw()
 
 
-# `svc` pads the name to 17 columns and the state to 11. One of the states is
-# "not at rl3", WITH SPACES IN IT, so this table is read by column position --
-# splitting on whitespace invents a service called "not".
+# `svc` pads the name to 17 columns and the state to 15. Several of the states
+# have SPACES IN THEM -- "not at rl3", "disabled, up" -- so this table is read
+# by column position; splitting on whitespace invents a service called "not".
 func _read_table(out: String) -> void:
 	svcs = []
 	var started := false
@@ -142,8 +142,8 @@ func _read_table(out: String) -> void:
 		if line.length() < 18:
 			continue
 		var nm := line.substr(0, 17).strip_edges()
-		var st := line.substr(17, 11).strip_edges()
-		var ex := line.substr(28).strip_edges() if line.length() > 28 else ""
+		var st := line.substr(17, 15).strip_edges()
+		var ex := line.substr(32).strip_edges() if line.length() > 32 else ""
 		if nm == "":
 			continue
 		svcs.append({"name": nm, "state": st, "exec": ex, "rank": _rank(st)})
@@ -158,6 +158,12 @@ func _read_table(out: String) -> void:
 func _rank(state: String) -> int:
 	if state == "DEAD":
 		return 0
+	# A unit that would not come back at the next boot and is running anyway
+	# is not healthy, whatever the process table says: it is a machine that is
+	# right until somebody reboots it, which is the half of a repair people
+	# forget. It sorts with the other things worth looking at.
+	if state.ends_with(", up"):
+		return 1
 	if state == "disabled":
 		return 1
 	if state.begins_with("not at"):
@@ -193,7 +199,14 @@ func _run(cmd: String) -> void:
 		return
 	var out := _sh(cmd).strip_edges()
 	status = out.replace("\n", "  ") if out != "" else cmd + ": (no output)"
-	status_bad = out.begins_with("svc:") and out.find("no such") >= 0
+	# RED MEANS IT DID NOT HAPPEN. Every verb reports what it actually did,
+	# including refusing, and a refusal drawn in green is the same lie as a
+	# service manager showing a stale "running".
+	status_bad = out.begins_with("svc:")
+	for good in [" started", " stopped", " reloaded", " restarted",
+			" enabled -- ", " disabled -- ", "already running"]:
+		if out.find(good) >= 0:
+			status_bad = false
 	refresh()
 
 
@@ -216,12 +229,25 @@ func _clamp() -> void:
 	scroll = clampi(scroll, 0, maxi(0, svcs.size() - vis))
 
 
+# TWO ROWS, BECAUSE THEY ARE TWO DIFFERENT QUESTIONS.
+#
+# The top row acts on the process that is running right now; the bottom row
+# only decides what happens at the next boot. This window offered the bottom
+# row alone, so the only way to make a repair take effect from here was to
+# reboot the machine -- which is the one act that destroys the evidence for
+# the whole class of fault where a daemon is out of step with its file.
 func _buttons() -> Array:
-	var y := size.y - BTN_H - 4.0
-	var w: float = minf(120.0, (size.x - 12.0) / 2.0)
+	var y2 := size.y - BTN_H - 4.0
+	var y1 := y2 - BTN_H - 2.0
+	var w1: float = minf(90.0, (size.x - 20.0) / 4.0)
+	var w2: float = minf(120.0, (size.x - 12.0) / 2.0)
 	return [
-		{"t": "enable", "k": "enable", "r": Rect2(4, y, w, BTN_H)},
-		{"t": "disable", "k": "disable", "r": Rect2(8 + w, y, w, BTN_H)},
+		{"t": "start", "k": "start", "r": Rect2(4, y1, w1, BTN_H)},
+		{"t": "stop", "k": "stop", "r": Rect2(8 + w1, y1, w1, BTN_H)},
+		{"t": "restart", "k": "restart", "r": Rect2(12 + w1 * 2, y1, w1, BTN_H)},
+		{"t": "reload", "k": "reload", "r": Rect2(16 + w1 * 3, y1, w1, BTN_H)},
+		{"t": "enable", "k": "enable", "r": Rect2(4, y2, w2, BTN_H)},
+		{"t": "disable", "k": "disable", "r": Rect2(8 + w2, y2, w2, BTN_H)},
 	]
 
 
@@ -280,6 +306,18 @@ func _gui_input(e: InputEvent) -> void:
 		KEY_D:
 			if sel >= 0 and sel < svcs.size():
 				_run("svc disable " + str(svcs[sel]["name"]))
+		KEY_S:
+			if sel >= 0 and sel < svcs.size():
+				_run("svc start " + str(svcs[sel]["name"]))
+		KEY_X:
+			if sel >= 0 and sel < svcs.size():
+				_run("svc stop " + str(svcs[sel]["name"]))
+		KEY_T:
+			if sel >= 0 and sel < svcs.size():
+				_run("svc restart " + str(svcs[sel]["name"]))
+		KEY_L:
+			if sel >= 0 and sel < svcs.size():
+				_run("svc reload " + str(svcs[sel]["name"]))
 		_:
 			return
 	accept_event()
@@ -320,6 +358,10 @@ func _raised(r: Rect2, face: Color) -> void:
 func _colour(state: String) -> Color:
 	if state == "DEAD":
 		return RED
+	# Running now, gone at the next boot. Amber, like `disabled`, and for the
+	# same reason: not a fault by itself, not innocent either.
+	if state.ends_with(", up"):
+		return AMBER
 	if state == "disabled":
 		return AMBER
 	if state == "running":
@@ -481,7 +523,7 @@ func _draw_foot() -> void:
 		# Said before you press it, not after. enable/disable edit a file that
 		# a package owns, and finding that out from `pkg verify` an hour later
 		# is how a repair turns into a second fault.
-		msg = "enable/disable rewrite the unit file -- `pkg verify` will call it CHANGED, correctly"
+		msg = "top row acts now; enable/disable rewrite the unit file for the NEXT boot"
 		col = DIM
 	draw_string(mono, Vector2(6, y + 12), _fit(msg, size.x - 12.0, 9),
 		HORIZONTAL_ALIGNMENT_LEFT, -1, 9, col)
