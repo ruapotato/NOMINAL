@@ -20,6 +20,35 @@
 # out from under you halfway up a shaft. A lift that drops you is worse than no
 # lift, and this has to be assertable from a headless test, so the car moves
 # the body it is carrying by the same delta it moved itself.
+#
+# ------------------------------------------------------------------------
+# AND WHY THE FLOOR IS CHOSEN AT THE LANDING AS WELL AS IN THE CAR. The owner
+# played his own game and got this far and no further: *"You can call a lift,
+# but it doesn't let you select which floor."*
+#
+# He was right, and the parts were all here. `go_to()` worked, the buttons were
+# lit for the floors in service, and tower.gd routed a number key -- but ONLY
+# while `lift_in()` said the body was standing in the car. From the lobby, where
+# a person is when they press a lift button, every digit fell through to
+# nothing: no car, no refusal, no line on the screen. And the one thing that did
+# answer -- [E] on the call plate -- calls the car to the floor you are already
+# standing on, so on the ground floor, where the car already is, pressing it
+# does nothing observable at all. Call the lift, watch nothing happen, try to
+# pick a floor, watch nothing happen.
+#
+# Two things were needed and both of them live here:
+#
+#   THE LANDING TAKES A FLOOR. Press a number in the lobby and the car comes to
+#   you and then takes you there -- destination dispatch, which is what the
+#   panel in a modern lobby does. It is held until you are actually inside
+#   (_want below): a car that left while you were still walking at it would be
+#   a worse bug than the one being fixed.
+#
+#   IT SAYS SO, IN THE BUILDING. Every one of those refusals was a `print()`
+#   into a log file no player has open. A lift that will not take you to floor
+#   5 has to say why on the wall you are standing at, so there is a sign beside
+#   every call plate and one inside the car, and both of them are this file's
+#   own geometry rather than a line borrowed from the HUD.
 
 extends Node3D
 
@@ -54,6 +83,20 @@ var _inside_panel: Node3D = null
 var _readout: Label3D = null
 var _fh := 3.0
 
+# A floor asked for from the LANDING, and the landing it was asked from. The
+# car goes to the landing first and only takes the second half of the journey
+# once the body that asked is really standing in it -- see _physics_process.
+var _want := -1
+var _want_from := -1
+
+# What the signs say, and for how long. A refusal is a thing you read once and
+# then it gets out of the way of the standing instruction.
+const SAY_FOR := 5.0
+var _msg := ""
+var _msg_t := 0.0
+var _signs: Array = []          # per floor: a Label3D beside the call plate
+var _car_sign: Label3D = null
+
 
 # rooms: the K_LIFT room ids that share this footprint, any order.
 func setup(t: Node3D, room_ids: Array) -> bool:
@@ -74,6 +117,8 @@ func setup(t: Node3D, room_ids: Array) -> bool:
 	_build_landing_doors()
 	_build_readout()
 	rebuild_panels()
+	_build_signs()
+	_say("")
 	return true
 
 
@@ -152,6 +197,19 @@ func _build_car() -> void:
 	_car = g.node("Car")
 	_car.position = Vector3(0, car_y, 0)
 	add_child(_car)
+
+
+# Everything that rides in the car goes to the same height in one place: the
+# shell, the button panel and the sign over it. Three copies of `position.y =`
+# is three chances for the sign to stay behind on the ground floor.
+func _car_to(y: float) -> void:
+	if _car:
+		_car.position = Vector3(0, y, 0)
+	if _inside_panel:
+		_inside_panel.position = Vector3(0, y, 0)
+	if _car_sign and is_instance_valid(_car_sign):
+		var b: Vector3 = _car_sign.position
+		_car_sign.position = Vector3(b.x, y + 1.80, b.z)
 
 
 func car_centre() -> Vector3:
@@ -261,6 +319,10 @@ func rebuild_panels() -> void:
 	_inside_panel = g.node("InsidePanel")
 	_inside_panel.position = Vector3(0, car_y, 0)
 	add_child(_inside_panel)
+	# A floor that has just opened is a button that has just lit, and the sign
+	# beside the plate lists exactly the lit ones.
+	if not _signs.is_empty() and _msg == "":
+		_say("")
 	# --- the call plates, one per landing, on the lobby side of the wall
 	if not has_node("CallPlates"):
 		var cg = preload("res://scripts/vgeo.gd").new()
@@ -289,6 +351,78 @@ func call_plate_pos(f: int) -> Vector3:
 	if _is_x():
 		return Vector3(wall + out * 0.4, float(f) * _fh + 1.1, door_c + 0.80)
 	return Vector3(door_c + 0.80, float(f) * _fh + 1.1, wall + out * 0.4)
+
+
+# ------------------------------------------------------------------ the signs
+#
+# A line of text beside every call plate and one inside the car. It exists
+# because everything this lift had to say -- "floor 5 is not in service", "the
+# car is coming to floor 0" -- was said with `print()`, which in a released
+# window goes to a log file nobody has open. A refusal a player cannot read is
+# the same as no refusal, and "nothing happens when I press a button" is
+# exactly what the owner reported.
+
+func _label(sz: int, px: float) -> Label3D:
+	var l := Label3D.new()
+	l.font = preload("res://scripts/uifont.gd").mono()
+	l.font_size = sz
+	l.pixel_size = px
+	l.modulate = Color("#ffd27a")
+	l.outline_size = 0
+	l.billboard = BaseMaterial3D.BILLBOARD_DISABLED
+	l.double_sided = true
+	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	add_child(l)
+	return l
+
+
+func _build_signs() -> void:
+	var out := _outward()
+	for f in floors:
+		var l := _label(40, 0.0011)
+		var p := call_plate_pos(f)
+		l.position = Vector3(p.x, float(f) * _fh + 1.62, p.z)
+		if _is_x():
+			l.rotation = Vector3(0, PI * 0.5 * out, 0)
+		else:
+			l.rotation = Vector3(0, 0 if out > 0 else PI, 0)
+		_signs.append(l)
+	# and one on the wall of the car, over the buttons, facing whoever is in it
+	_car_sign = _label(40, 0.0011)
+	_car_sign.modulate = Color("#cbd4dd")
+	var wall := _wall_pos()
+	var side := door_c + 0.75
+	if side > (rect.end.y if _is_x() else rect.end.x) - 0.25:
+		side = door_c - 0.75
+	if _is_x():
+		_car_sign.position = Vector3(wall - out * 0.10, 1.80, side)
+		_car_sign.rotation = Vector3(0, PI * 0.5 * -out, 0)
+	else:
+		_car_sign.position = Vector3(side, 1.80, wall - out * 0.10)
+		_car_sign.rotation = Vector3(0, PI if out > 0 else 0, 0)
+	_car_to(car_y)
+
+
+# The standing instruction, which is the two things a person at a lift needs to
+# know: that a number key is the button, and which numbers are buttons at all.
+func _standing_text() -> String:
+	var s := ""
+	for f in serviced():
+		s += ("" if s == "" else " ") + str(f)
+	if s == "":
+		return "no floor is in service"
+	return "[E] call   or press a floor:  " + s
+
+
+func _say(m: String) -> void:
+	_msg = m
+	_msg_t = SAY_FOR if m != "" else 0.0
+	var t := m if m != "" else _standing_text()
+	for l in _signs:
+		if is_instance_valid(l):
+			l.text = t
+	if _car_sign and is_instance_valid(_car_sign):
+		_car_sign.text = m if m != "" else ("press a floor:  " + _standing_text().split(":  ")[-1])
 
 
 func _build_readout() -> void:
@@ -339,18 +473,147 @@ func serviced() -> Array:
 # of a floor not being in service.
 func go_to(f: int) -> String:
 	if not floors.has(f):
-		return "this lift does not pass floor %d." % f
+		return _said("this lift does not pass floor %d." % f)
 	if not tower.in_service(f):
-		return "floor %d is not in service. The button is not lit." % f
+		return _said("floor %d is not in service. The button is not lit." % f)
 	target = f
-	return "floor %d." % f
+	_want = -1
+	return _said("floor %d." % f)
 
 
 func call_to(f: int) -> String:
-	return go_to(f)
+	var s := go_to(f)
+	if target == f and at != f:
+		return _said("the lift is coming to floor %d." % f)
+	if target == f:
+		return _said("the lift is here. Step in and press a floor.")
+	return s
+
+
+# Everything go_to() says out loud, said on the sign as well as returned. The
+# refusals were the whole of finding 1: they were true, they were well written,
+# and they went to a log file.
+func _said(s: String) -> String:
+	_say(s)
+	return s
+
+
+# ------------------------------------------------------- choosing at the landing
+#
+# A digit pressed in the lobby. tower.gd routes digits to go_to() only while the
+# body is standing IN the car, which is the half of the lift a player reaches
+# second; this is the half they reach first. The car comes to the landing and
+# the floor asked for is held until somebody is actually in it.
+
+func _near_landing(f: int, r: float) -> bool:
+	if tower == null or tower.player == null or not floors.has(f):
+		return false
+	if int(tower.player_floor()) != f:
+		return false
+	return tower.player.global_position.distance_to(call_plate_pos(f)) <= r
+
+
+func _at_landing() -> int:
+	if tower == null or tower.player == null:
+		return -1
+	var f: int = int(tower.player_floor())
+	if not floors.has(f):
+		return -1
+	var d: float = tower.player.global_position.distance_to(call_plate_pos(f))
+	if d > 2.0:
+		return -1
+	# Two shafts share this lobby, and a body standing between the plates is at
+	# ONE lift. The nearer plate is the one whose button you pressed.
+	for l in tower.lifts:
+		if l == self or not l.floors.has(f):
+			continue
+		if tower.player.global_position.distance_to(l.call_plate_pos(f)) < d:
+			return -1
+	return f
+
+
+func landing_press(f: int) -> String:
+	var from := _at_landing()
+	if from < 0:
+		return ""
+	if not floors.has(f):
+		return _said("this lift does not pass floor %d." % f)
+	if not tower.in_service(f):
+		return _said("floor %d is not in service. The button is not lit." % f)
+	target = from
+	if f == from:
+		_want = -1
+		_want_from = -1
+		if at == from:
+			return _said("floor %d: you are on it. The doors are open." % f)
+		return _said("the lift is coming to floor %d." % f)
+	_want = f
+	_want_from = from
+	if at == from:
+		return _said("floor %d: step in." % f)
+	return _said("floor %d: the lift is coming to floor %d first." % [f, from])
+
+
+# A DIGIT IS A BUTTON, and this is the one place a landing button exists. It is
+# _unhandled_key_input rather than a poll for the same reason tower.gd gives:
+# a poll samples once a frame and drops the tap between two of them.
+func _unhandled_key_input(event: InputEvent) -> void:
+	if tower == null or tower.player == null:
+		return
+	if not (event is InputEventKey) or not event.pressed or event.is_echo():
+		return
+	var k: int = (event as InputEventKey).keycode
+	if k < KEY_0 or k > KEY_9:
+		return
+	# The same doors tower.gd's own keys are behind: a digit typed at a shell,
+	# in the bag or on the handset is a digit, not a lift button.
+	if tower.desk_open() or tower.seat_open():
+		return
+	if tower.bag and tower.bag.visible:
+		return
+	if tower.phone and tower.phone.focused:
+		return
+	if tower.lift_in() != null:
+		return              # in a car: tower.gd routes the digit to go_to()
+	if _at_landing() < 0:
+		return
+	var said := landing_press(k - KEY_0)
+	if said != "":
+		print(said)
+	get_viewport().set_input_as_handled()
+
+
+# The second half of a journey asked for from the landing. It waits for the
+# body to really be inside: a car that set off the moment the button was
+# pressed would leave the player standing in the lobby watching the doors
+# shut, which is a worse lift than the one that would not take him anywhere.
+func _dispatch() -> void:
+	if _want < 0 or tower == null or tower.player == null:
+		return
+	var here: bool = inside(tower.player.global_position)
+	if here and not moving and at == _want_from and open > 0.99:
+		var f := _want
+		_want = -1
+		_want_from = -1
+		target = f
+		_say("floor %d." % f)
+		return
+	# Walked off without getting in: the button un-presses. A destination held
+	# for ever is a car that sets off on its own the next time anybody rides.
+	# The radius to KEEP a request is wider than the one to make it, because a
+	# person waiting for a lift shifts about and does not expect to lose it.
+	if not here and not _near_landing(_want_from, 4.5):
+		_want = -1
+		_want_from = -1
+		_say("")
 
 
 func _physics_process(dt: float) -> void:
+	if _msg_t > 0.0:
+		_msg_t -= dt
+		if _msg_t <= 0.0:
+			_say("")
+	_dispatch()
 	var want_open := (target == at)
 	if want_open:
 		if open < 1.0:
@@ -368,18 +631,14 @@ func _physics_process(dt: float) -> void:
 	var dy := clampf(goal - car_y, -SPEED * dt, SPEED * dt)
 	var carrying := tower.player != null and inside(tower.player.global_position)
 	car_y += dy
-	_car.position = Vector3(0, car_y, 0)
-	if _inside_panel:
-		_inside_panel.position = Vector3(0, car_y, 0)
+	_car_to(car_y)
 	if carrying:
 		# The body goes exactly where the floor under it went.
 		tower.player.global_position += Vector3(0, dy, 0)
 		tower.player.velocity.y = 0.0
 	if absf(goal - car_y) < 0.001:
 		car_y = goal
-		_car.position = Vector3(0, car_y, 0)
-		if _inside_panel:
-			_inside_panel.position = Vector3(0, car_y, 0)
+		_car_to(car_y)
 		at = target
 		moving = false
 		_place_readout()

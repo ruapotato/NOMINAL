@@ -382,7 +382,18 @@ func _draw_lead() -> void:
 	var here: Vector3 = global_transform * Vector3(0.0, -CASE_H * 0.5 - 0.030, 0.0)
 	var g = preload("res://scripts/vgeo.gd").new()
 	var mid := (port + face * 0.08 + here) * 0.5
-	mid.y = min(port.y, here.y) - port.distance_to(here) * 0.22
+	# THE SAG IS A SAG, NOT A DIVE. It was `distance * 0.22`, which is fine at
+	# the arm's length a lead is normally at and is a metre and a half below the
+	# slab once you have walked six metres off with the handset still in your
+	# hand -- the owner: *"when you connect a debugger to something and then
+	# walk away, you can see that the cable clips below the floor."* A hanging
+	# cable does not sag further the longer the room is; it goes taut. So the
+	# belly is capped, and then floored at the slab both ends are standing on,
+	# because copper lies ON a floor and does not go through it.
+	var low: float = min(port.y, here.y)
+	mid.y = low - min(port.distance_to(here) * 0.22, 0.30)
+	var fh: float = float(tower.fheight) if tower.fheight > 0.0 else 3.0
+	mid.y = max(mid.y, floor(low / fh) * fh + 0.02)
 	tower._run_cable(g, [port, port + face * 0.05, mid, here], _lead_col, 2)
 	if g.empty():
 		return
@@ -442,7 +453,7 @@ func plug(dev: int, which_lead: String) -> String:
 	if lit and lead == "serial":
 		take_keyboard()
 	else:
-		let_go()
+		_lower()
 	return s
 
 
@@ -469,9 +480,36 @@ func take_keyboard() -> void:
 	_relabel()
 
 
+# PUTTING IT DOWN IS TAKING THE LEAD OUT. The owner, three times over one
+# session: *"When you press esc, while connected to a server, the debugger
+# cable should disconnect"*, *"the debugger stays attached until you hit right
+# click"*, and -- looking at the copper still hanging off a box he had walked
+# away from -- *"when you hit escape on a debugger, it should disconnect."*
+#
+# It lowered the handset and left the lead in, which is a state with no way out
+# on the keyboard at all: the world had the keys back, the HUD still said
+# "serial console on core", and [U] is not a key anybody guesses. Escape is the
+# key this project uses for "I am done with this thing" everywhere else, and a
+# lead in your hand is a thing you are done with.
+#
+# AND IT GOES THROUGH THE SESSION. `plugged <dev> <hdmi>` in ses_state() is
+# what tower.gd's _reconcile_phone() makes the prop agree with, so a handset
+# that unplugged itself while core still believed a lead was in would be the
+# exact disagreement reconcile was built to end. `unplug` is core's own verb
+# for this and it is the one that runs.
 func let_go() -> String:
 	if not focused:
 		return ""
+	_lower()
+	return detach()
+
+
+# The pose half on its own: the handset comes down, the world gets the keys
+# back. Used when a display lead goes in (there is nothing to type at, so the
+# keyboard goes back, and the lead stays in) and by unplug() itself.
+func _lower() -> void:
+	if not focused:
+		return
 	focused = false
 	if tower and tower.player:
 		tower.player.set_physics_process(true)
@@ -481,7 +519,28 @@ func let_go() -> String:
 	if tower and tower.reticle:
 		tower.reticle.visible = true
 	_relabel()
-	return "you lower the handset. The lead is still in %s." % _where()
+
+
+# Take the lead out, saying so to core FIRST. If the session has a lead in
+# something, `unplug` is what ends it -- the same word a blind playtester types
+# down the wire -- and the prop follows. If the session has nothing plugged
+# (the lead went in with [F], which is a key this window has and the session
+# does not know about) there is nothing to tell it and only the prop to clear.
+func detach() -> String:
+	var was := _where()
+	if plugged < 0:
+		return ""
+	if tower and tower.has_method("site") and tower.has_method("ses_state"):
+		var pl: Variant = tower.ses_state().get("plugged", -1)
+		var sdev := -1
+		if pl is Array and (pl as Array).size() >= 1:
+			sdev = int((pl as Array)[0])
+		else:
+			sdev = int(pl)
+		if sdev >= 0:
+			tower.site("unplug")
+	unplug()
+	return "you take the lead out of %s." % was
 
 
 func _where() -> String:
@@ -499,10 +558,10 @@ func _relabel() -> void:
 		_hint.text = "no lead in anything"
 		return
 	if focused:
-		_hint.text = "connected to %s over %s   [Esc] put the handset down   [Tab] completes" \
+		_hint.text = "connected to %s over %s   [Esc] take the lead out   [Tab] completes" \
 			% [_where(), "the serial lead" if lead == "serial" else "the display lead"]
 	else:
-		_hint.text = "lead in %s   [F] pick the handset back up   [U] unplug" % _where()
+		_hint.text = "lead in %s   [F] pick the handset back up   [Esc] take the lead out" % _where()
 
 
 func _drop_lead() -> void:
@@ -572,13 +631,19 @@ func _prompt_for(d: Dictionary) -> String:
 
 func unplug() -> void:
 	if focused:
-		let_go()
+		_lower()
 	plugged = -1
 	lead = ""
 	status = "unplugged"
 	lit = false
 	if _vp:
 		_vp.render_target_update_mode = SubViewport.UPDATE_DISABLED
+		# AND A FEW FRAMES ON THE WAY DOWN, the same three plug() takes when it
+		# goes dark. Without them the viewport stops updating on the frame the
+		# lead comes out and the glass keeps the console that was on it: after
+		# [Esc] the handset hung at your side still showing core's port table,
+		# which says a lead is in when there is not one.
+		_repaint = 3
 	_drop_lead()
 	_relight()
 	_show_serial()
@@ -586,6 +651,24 @@ func unplug() -> void:
 		_term.clear()
 	_say("[no lead plugged in]")
 	_relabel()
+	# AND THE RECONCILER IS TOLD THE LEAD IS OUT.
+	#
+	# tower.gd's _reconcile_phone() remembers the device and lead it last made
+	# the prop agree with, and returns early when the session still names the
+	# same pair -- which is right, because plugging the same box in twice is
+	# not an event. Its `dev < 0` branch calls this function and does NOT clear
+	# that memory, so after ANY unplug the pair it remembers is a lead that is
+	# no longer in anything: `plug core` / `unplug` / `plug core` down the
+	# socket leaves the handset dark while core believes a lead is in. That is
+	# the exact disagreement reconcile exists to prevent, and it is reachable
+	# without this file -- but Escape now takes that path every single time, so
+	# it is cleared from here rather than left for the next player to find.
+	#
+	# THE REAL FIX IS TWO LINES IN tower.gd's `if dev < 0:` branch and it is
+	# reported; this comes out when it lands.
+	if tower != null and "_phone_dev" in tower:
+		tower._phone_dev = -1
+		tower._phone_lead = ""
 
 
 # Does this device actually paint a picture right now? The workstation is up
@@ -723,11 +806,27 @@ func _show_desktop(_d: Dictionary) -> void:
 # world sees none of them: you are typing at a shell, and `w` is a letter.
 # Escape is the exception and tower.gd takes it first -- see its _input().
 func _unhandled_input(event: InputEvent) -> void:
-	if not focused or _vp == null:
-		return
 	if not (event is InputEventKey):
 		return
-	if (event as InputEventKey).keycode == KEY_ESCAPE:
+	var k: int = (event as InputEventKey).keycode
+	# ESCAPE WITH THE HANDSET ALREADY DOWN. tower.gd's _input() takes Escape
+	# while the handset has the keyboard and calls let_go(); with the keyboard
+	# already back in the world it falls through to here, and it has to mean
+	# the same thing in both places. A display lead never takes the keyboard at
+	# all, so this is the ONLY way Escape reaches a display lead -- and a lead
+	# left in was the state the owner could not get out of: *"the debugger
+	# stays attached until you hit right click."*
+	if k == KEY_ESCAPE:
+		if focused:
+			return                  # tower.gd's _input has already had it
+		if not event.pressed or event.is_echo() or plugged < 0:
+			return
+		var said := detach()
+		if said != "":
+			print(said)
+		get_viewport().set_input_as_handled()
+		return
+	if not focused or _vp == null:
 		return
 	_vp.push_input(event, true)
 	get_viewport().set_input_as_handled()

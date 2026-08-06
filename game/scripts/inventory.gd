@@ -1,10 +1,29 @@
-# inventory.gd — [I], and what is in your hands.
+# inventory.gd — [Tab] or [I], and what is in your hands.
 #
 # "I want tab to go to your inventory, Minecraft style, with whatever you have.
-# ... [and later] tab may be overload for terminal."  Tab went back to the
-# shell, where it completes paths; the bag is on [I].
+# ... [and later] tab may be overload for terminal."
 # You can drag in your inventory items into left and right click so that you
 # can equip, for example, the spool."
+#
+# TAB OPENS IT, AND SO DOES I. The owner played his own game and reported
+# *"Tab to get to the inventory isn't working"*, and it was not: Tab was bound
+# to nothing anywhere in the 3D shell. It had been moved to [I] on the reading
+# of "tab may be overload for terminal" -- but that sentence is about the
+# TERMINAL, and the collision it names is real only where a shell has the
+# keyboard. Standing in a corridor there is no shell, no completion, and
+# nothing else Tab could mean; the crosshair in tower.gd has gone on saying
+# "[Tab] spool in hand to cable it" the whole time, pointing at a key that did
+# nothing. One key doing two things silently was the bug under the bug, and the
+# two things were never in the same place.
+#
+# So Tab is handled HERE, and it steps aside for every front end that types:
+# a desk, somebody else's machine, and the handset all keep it for completion.
+# [I] stays because it is in the HUD and in a day's worth of muscle memory.
+#
+# It is _unhandled_key_input rather than _input for the same reason: _input
+# runs before the focused Control gets a look, and a bag that opened on top of
+# a half-typed path would be Tab stealing from the shell rather than the other
+# way round.
 #
 # THIS INVENTS NO STATE. Everything it shows is already true somewhere else and
 # is read back out every time it draws:
@@ -208,7 +227,7 @@ func _draw() -> void:
 	draw_string(_font, p.position + Vector2(26, 40), "INVENTORY",
 		HORIZONTAL_ALIGNMENT_LEFT, -1, 22, Color("#e8eef4"))
 	draw_string(_font, p.position + Vector2(26, 68),
-		"drag a thing into a hand.  [Esc] closes.", HORIZONTAL_ALIGNMENT_LEFT, -1, 14,
+		"drag a thing into a hand.  [Tab] or [Esc] closes.", HORIZONTAL_ALIGNMENT_LEFT, -1, 14,
 		Color("#8d97a1"))
 
 	var box := carrying_box()
@@ -253,6 +272,25 @@ func _draw() -> void:
 		var d := Rect2(_at - Vector2(TILE, TILE) * 0.5, Vector2(TILE, TILE))
 		draw_rect(d, Color(0, 0, 0, 0.4))
 		_icon(d, _drag)
+
+
+func _unhandled_key_input(e: InputEvent) -> void:
+	if not (e is InputEventKey) or not e.pressed or e.is_echo():
+		return
+	if (e as InputEventKey).keycode != KEY_TAB:
+		return
+	# WHOEVER IS TYPING KEEPS IT. terminal.gd completes paths against the
+	# machine's own `ls`, and that is a better use of the key than this is
+	# while there is a prompt on the screen.
+	if not visible and tower != null:
+		if tower.has_method("desk_open") and tower.desk_open():
+			return
+		if tower.has_method("seat_open") and tower.seat_open():
+			return
+		if tower.phone != null and bool(tower.phone.focused):
+			return
+	toggle()
+	get_viewport().set_input_as_handled()
 
 
 func _input(e: InputEvent) -> void:
