@@ -2917,6 +2917,54 @@ static const Package PKG_MAN = {
        * with `svc` and could only find the verbs by typing a wrong one and
        * reading the usage line. Half of them did not exist yet, which is the
        * other half of the same bug. */
+      /* THE PAGE FOR THE TOOL THE INITRD TELLS YOU TO RUN. A playtester
+       * repaired a mains-damaged filesystem here and said afterwards that
+       * they only knew to type `fsck` because the boot had named it -- and
+       * `man fsck` answered "no manual entry", which is the machine telling
+       * you to use a tool it will not explain. Every line below is what
+       * machine_fsck() in core/kernel.c actually does. */
+      { "/usr/share/man/fsck",
+        "fsck(8)\n\n"
+        "  fsck <device>                check and repair a filesystem\n"
+        "  fsck                         the same, on /dev/sda1\n"
+        "\n"
+        "IT MUST NOT BE MOUNTED. The root filesystem is mounted while the\n"
+        "machine is running, so the way you get here is the rescue medium:\n"
+        "the boot stops, you plug in the service processor, and the disk is\n"
+        "/dev/sda1 and unmounted. /dev/sda1 and /dev/sda are the only two\n"
+        "devices this understands; anything else is refused by name.\n"
+        "\n"
+        "A CLEAN FILESYSTEM SAYS SO and does nothing:\n"
+        "  /dev/sda1: clean\n"
+        "so running it on a healthy machine costs you nothing but a line.\n"
+        "\n"
+        "A DIRTY ONE was interrupted mid-write -- the mains went, or a box\n"
+        "was switched off while it was running. It recovers the journal and\n"
+        "walks the passes, and clears the dirty flag at the end:\n"
+        "  /dev/sda1: recovering journal\n"
+        "  Pass 1: checking inodes, blocks, and sizes\n"
+        "  Pass 2: checking directory structure\n"
+        "  Pass 5: checking group summary information\n"
+        "  /dev/sda1: FILE SYSTEM WAS MODIFIED\n"
+        "\n"
+        "IT IS HALF THE REPAIR, AND IT SAYS WHICH HALF. fsck rebuilds\n"
+        "METADATA. It cannot rebuild the CONTENTS of a file that was being\n"
+        "written when the power went, so those inodes are cleared and\n"
+        "reported:\n"
+        "  Pass 4: 3 inode(s) with bad content, cleared\n"
+        "and then it tells you plainly to go and look:\n"
+        "  fsck repaired the filesystem. It could not repair the\n"
+        "  CONTENTS of what was being written -- check the packages.\n"
+        "\n"
+        "THAT SECOND HALF IS `pkg verify`. The files fsck cleared are the\n"
+        "ones it will report, and `pkg diff <path>` tells damage from an\n"
+        "edit somebody made on purpose before you reinstall over it.\n"
+        "\n"
+        "So the whole procedure after a power cut is: boot the rescue\n"
+        "medium, `fsck /dev/sda1`, boot the disk, `pkg verify`, then repair\n"
+        "what it names. See also pkg(1), rescue(7), boot(7).\n",
+        0644, NULL },
+
       { "/usr/share/man/svc",
         "svc(1)\n\n"
         "  svc                          every unit and its state\n"
@@ -3331,7 +3379,7 @@ static const Package PKG_MAN = {
         "\n"
         "If that is not `cat /etc/hostname` then the pipe is what is wrong.\n",
         0644, NULL },
-    }, 20
+    }, 21
 };
 
 /* THE JOKE PACKAGE, built exactly like the serious ones.
@@ -4190,6 +4238,20 @@ void machine_install(Machine *m, uint64_t seed)
             fprintf(stderr, "image: package %s declares %d files but entry %d "
                             "is empty -- fix its count\n",
                     IMAGE[i]->name, IMAGE[i]->nfiles, j);
+            abort();
+        }
+        /* AND THE OTHER DIRECTION, which this check did not cover and which
+         * cost an hour: a list LONGER than its count drops the tail
+         * silently. Adding a man page to man-db without touching the 20
+         * below it deleted rev(1) from the machine, and the new page went in
+         * unreadable -- `man` listed it and `man fsck` said no such entry.
+         * Nothing anywhere said a file had gone. */
+        if (IMAGE[i]->nfiles < PKGFILE_MAX && IMAGE[i]->file[IMAGE[i]->nfiles].path) {
+            fprintf(stderr, "image: package %s declares %d files but entry %d "
+                            "(%s) is still there -- the tail of the list is "
+                            "being dropped; fix its count\n",
+                    IMAGE[i]->name, IMAGE[i]->nfiles, IMAGE[i]->nfiles,
+                    IMAGE[i]->file[IMAGE[i]->nfiles].path);
             abort();
         }
         m->pkg[m->npkg++] = IMAGE[i];

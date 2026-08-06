@@ -805,10 +805,20 @@ static int run_line(char *cmd0)
         g_putln("system:    ps ns mount umount chroot df uname whoami pkg");
         g_putln("network:   ip addr | link | route | neigh    what the stack holds");
         g_putln("           ping  traceroute  arp  ss  netstat  tcpdump");
+        g_putln("           netstat -F               the firewall, and its drops");
         g_putln("           links <host>[/path]      try links wiki.nomnix.org");
+        /* THE FOUR TOOLS A REPAIR ACTUALLY NEEDS, which this list left out.
+         * A playtester fixed a mains-damaged filesystem here and said they
+         * only knew to type `fsck` because the initrd had told them to --
+         * every other route to it was reading the source. */
+        g_putln("repair:    fsck <device>            a filesystem the power cut");
+        g_putln("           pkg verify               what differs from what shipped");
+        g_putln("           pkg diff <file>          shipped against what is there");
+        g_putln("           pkg reinstall <package>  put it back, keeping a .pkgsave");
+        g_putln("           blkid  ldd  svc  dmesg   disks, libraries, services, log");
         g_putln("");
         g_putln("the machine's own state is under /proc: try `cat /proc/self/ns`");
-        g_putln("what differs from what was shipped: `pkg verify`");
+        g_putln("`man` on its own lists every manual this machine ships");
         return 0;
     }
 

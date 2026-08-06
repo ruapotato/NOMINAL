@@ -147,8 +147,34 @@ static void install(void)
 }
 
 static const char *KEY = "table";
+/* Somebody typed `nft list ruleset`, because that is what you type on Linux.
+ * On this machine nft is the DAEMON and nothing else: svcinit starts it with
+ * no arguments, it loads the file and then sits in the poll loop below. Run
+ * from a shell it did exactly that -- sat there -- until the cpu budget ran
+ * out and the kernel killed it with "still running after 40000000
+ * instructions", which explains nothing to somebody who was asking a
+ * question. Any argument at all is that person, so answer them. */
+static char argbuf[256];
+
+static void say_what_it_is(void)
+{
+    g_putln("nft is the daemon that loads /etc/nftables.conf. It takes no");
+    g_putln("arguments -- svcinit starts it, and it stays running.");
+    g_putln("  netstat -F              the ruleset it is ACTUALLY running,");
+    g_putln("                          with what each rule has dropped");
+    g_putln("  cat /etc/nftables.conf  what it is supposed to be running");
+    g_putln("  svc reload nftables     re-read the file after editing it");
+    g_putln("  man nft                 what this parser understands");
+}
+
 void _start(void)
 {
+    argbuf[0] = 0;
+    g_getarg(argbuf, sizeof argbuf);
+    {
+        char *v[GARGS];
+        if (g_argv(argbuf, v) > 0) { say_what_it_is(); g_exit(0); }
+    }
     for (int i = 0; CONF[i]; i++) {
         if (g_slurp(CONF[i], conf, sizeof conf) < 0) {
             g_puts("nft: ");
