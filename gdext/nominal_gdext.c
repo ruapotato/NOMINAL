@@ -26,6 +26,7 @@
 #include "kernel.h"
 #include "building.h"
 #include "site.h"
+#include "session.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -105,7 +106,30 @@ typedef struct {
      * truth, and the two would disagree the first time a cable was refused. */
     Site     site;
     bool     site_ok;
+    /* THE SESSION: the same struct core/session.c runs for a socket client.
+     *
+     * The owner, on how an agent should play this: *"Perhaps the commands
+     * it's using should tie to 3D space... Claude playing a video game in 3D
+     * space by taking screenshots of the actual user interface is not a
+     * fantastic way for it to iterate. It should operate with commands over
+     * the port. A 3D interface should keep up with what's happening. So if
+     * you cable from one place to another place, a physical cord gets
+     * rendered out as if the player had cabled that."*
+     *
+     * So the window does not own a building and a site of its own any more.
+     * When a session is up it IS the building and the site -- BLD() and SITE()
+     * below hand out the session's -- and every verb the 3D performs goes
+     * through session_line(), which is the same function, the same refusals
+     * and the same charges the socket gets. The view is a view. */
+    Session  ses;
+    bool     ses_ok;
 } Station;
+
+/* Where the geometry and the inventory actually live. One or the other: the
+ * session's when there is one, and the standalone pair for `--desk` and for
+ * the gates that generate a building without playing in it. */
+static Building *BLD(Station *st) { return st->ses_ok ? &st->ses.b : &st->bld; }
+static Site     *SITE(Station *st) { return st->ses_ok ? &st->ses.s : &st->site; }
 
 static SN sn_class, sn_parent;
 
@@ -129,6 +153,7 @@ static void station_free(void *userdata, GDExtensionClassInstancePtr instance)
     Station *st = (Station *)instance;
     if (!st) return;
     if (st->installed) machine_free(&st->m);
+    if (st->ses_ok) session_end(&st->ses);
     if (st->site_ok) site_free(&st->site);
     if (st->bld_ok) bld_free(&st->bld);
     buf_free(&st->scratch);
@@ -610,7 +635,7 @@ static void m_chmod(Station *st, const GDExtensionConstTypePtr *args, void *ret)
 
 static bool bld_ready(Station *st)
 {
-    if (st->bld_ok) return true;
+    if (st->ses_ok || st->bld_ok) return true;
     /* A view that asks before generating gets an empty answer, not a walk
      * through a zeroed Building -- the same mistake that took Godot down with
      * a native backtrace twice already. */
@@ -625,10 +650,16 @@ static void m_bld_generate(Station *st, const GDExtensionConstTypePtr *args, voi
     /* The site BORROWS the building. Regenerating under a live site would
      * leave every device pointing into freed rooms, so the site goes first. */
     if (st->site_ok) { site_free(&st->site); st->site_ok = false; }
-    if (st->bld_ok) { bld_free(&st->bld); st->bld_ok = false; }
-    if (!bld_generate(&st->bld, seed)) { c_to_gdstring(ret, ""); return; }
-    st->bld_ok = true;
-    const Building *b = &st->bld;
+    /* A SESSION ALREADY HAS ONE. Generating a second building from the same
+     * seed would give the same rooms and a different object, and then half the
+     * view would be reading one and half the other. */
+    if (st->ses_ok && BLD(st)->seed == seed) { /* nothing to do */ }
+    else if (st->bld_ok) { bld_free(&st->bld); st->bld_ok = false; }
+    if (!(st->ses_ok && BLD(st)->seed == seed)) {
+        if (!bld_generate(&st->bld, seed)) { c_to_gdstring(ret, ""); return; }
+        st->bld_ok = true;
+    }
+    const Building *b = BLD(st);
     Buf o; buf_init(&o);
     buf_printf(&o, "seed %llu\n", (unsigned long long)b->seed);
     buf_printf(&o, "floors %d\n", b->floors);
@@ -648,7 +679,7 @@ static void m_bld_floors(Station *st, const GDExtensionConstTypePtr *args, void 
 {
     (void)args;
     if (!bld_ready(st)) { c_to_gdstring(ret, ""); return; }
-    const Building *b = &st->bld;
+    const Building *b = BLD(st);
     Buf o; buf_init(&o);
     for (int f = 0; f < b->floors; f++)
         buf_printf(&o, "%d %d %d %d %d %d %s\n", f, b->fkind[f],
@@ -664,7 +695,7 @@ static void m_bld_rooms(Station *st, const GDExtensionConstTypePtr *args, void *
 {
     (void)args;
     if (!bld_ready(st)) { c_to_gdstring(ret, ""); return; }
-    const Building *b = &st->bld;
+    const Building *b = BLD(st);
     Buf o; buf_init(&o);
     for (int i = 0; i < b->nrooms; i++) {
         const Room *r = &b->rooms[i];
@@ -684,7 +715,7 @@ static void m_bld_doors(Station *st, const GDExtensionConstTypePtr *args, void *
 {
     (void)args;
     if (!bld_ready(st)) { c_to_gdstring(ret, ""); return; }
-    const Building *b = &st->bld;
+    const Building *b = BLD(st);
     Buf o; buf_init(&o);
     for (int i = 0; i < b->ndoors; i++) {
         const Door *d = &b->doors[i];
@@ -700,8 +731,8 @@ static void m_bld_doors(Station *st, const GDExtensionConstTypePtr *args, void *
 static void m_bld_cells(Station *st, const GDExtensionConstTypePtr *args, void *ret)
 {
     int f = (int)(*(const int64_t *)args[0]);
-    if (!bld_ready(st) || f < 0 || f >= st->bld.floors) { c_to_gdstring(ret, ""); return; }
-    const Building *b = &st->bld;
+    if (!bld_ready(st) || f < 0 || f >= BLD(st)->floors) { c_to_gdstring(ret, ""); return; }
+    const Building *b = BLD(st);
     Buf o; buf_init(&o);
     for (int y = 0; y < b->h; y++) {
         for (int x = 0; x < b->w; x++)
@@ -720,7 +751,7 @@ static void m_bld_find(Station *st, const GDExtensionConstTypePtr *args, void *r
 {
     int f = (int)(*(const int64_t *)args[0]);
     int k = (int)(*(const int64_t *)args[1]);
-    *(int64_t *)ret = bld_ready(st) ? bld_find(&st->bld, f, k) : -1;
+    *(int64_t *)ret = bld_ready(st) ? bld_find(BLD(st), f, k) : -1;
 }
 
 /* bld_room_at(int floor, int x*1000+y) is unusable as two ints, so this takes
@@ -733,17 +764,17 @@ static void m_bld_room_at(Station *st, const GDExtensionConstTypePtr *args, void
     int f  = (int)(*(const int64_t *)args[0]);
     int64_t xy = *(const int64_t *)args[1];
     *(int64_t *)ret = bld_ready(st)
-        ? bld_room_at(&st->bld, f, (int)(xy / 4096), (int)(xy % 4096)) : -1;
+        ? bld_room_at(BLD(st), f, (int)(xy / 4096), (int)(xy % 4096)) : -1;
 }
 
 static void bld_dist_out(Station *st, int src, bool cable, void *ret)
 {
-    if (!bld_ready(st) || src < 0 || src >= st->bld.nrooms) { c_to_gdstring(ret, ""); return; }
-    double *d = nom_alloc(sizeof(double) * (size_t)st->bld.nrooms);
-    bool ok = cable ? bld_cable_all(&st->bld, src, d) : bld_walk_all(&st->bld, src, d);
+    if (!bld_ready(st) || src < 0 || src >= BLD(st)->nrooms) { c_to_gdstring(ret, ""); return; }
+    double *d = nom_alloc(sizeof(double) * (size_t)BLD(st)->nrooms);
+    bool ok = cable ? bld_cable_all(BLD(st), src, d) : bld_walk_all(BLD(st), src, d);
     Buf o; buf_init(&o);
     if (ok)
-        for (int i = 0; i < st->bld.nrooms; i++)
+        for (int i = 0; i < BLD(st)->nrooms; i++)
             /* -1 for unreachable: a route that does not exist has no price,
              * and a huge number would be quietly spent. */
             buf_printf(&o, i ? " %.3f" : "%.3f", d[i] >= BLD_INF / 2 ? -1.0 : d[i]);
@@ -770,9 +801,9 @@ static void m_bld_cable(Station *st, const GDExtensionConstTypePtr *args, void *
 static void m_bld_floorplan(Station *st, const GDExtensionConstTypePtr *args, void *ret)
 {
     int f = (int)(*(const int64_t *)args[0]);
-    if (!bld_ready(st) || f < 0 || f >= st->bld.floors) { c_to_gdstring(ret, ""); return; }
+    if (!bld_ready(st) || f < 0 || f >= BLD(st)->floors) { c_to_gdstring(ret, ""); return; }
     Buf o; buf_init(&o);
-    bld_floorplan(&st->bld, f, &o);
+    bld_floorplan(BLD(st), f, &o);
     c_to_gdstring(ret, o.p ? o.p : "");
     buf_free(&o);
 }
@@ -791,7 +822,7 @@ static void m_bld_floorplan(Station *st, const GDExtensionConstTypePtr *args, vo
 
 static bool site_ready(Station *st)
 {
-    return st->site_ok && st->bld_ok;
+    return st->ses_ok || (st->site_ok && st->bld_ok);
 }
 
 /* site_start(int budget) -> String — day one on the current building: the
@@ -801,14 +832,21 @@ static void m_site_start(Station *st, const GDExtensionConstTypePtr *args, void 
 {
     long budget = (long)(*(const int64_t *)args[0]);
     if (!bld_ready(st)) { c_to_gdstring(ret, ""); return; }
+    if (st->ses_ok) {          /* a session already owns one; do not make a second */
+        Buf o; buf_init(&o);
+        site_dump(SITE(st), &o);
+        c_to_gdstring(ret, o.p ? o.p : "");
+        buf_free(&o);
+        return;
+    }
     if (st->site_ok) { site_free(&st->site); st->site_ok = false; }
-    if (!site_new(&st->site, &st->bld, st->bld.seed, budget)) {
+    if (!site_new(&st->site, BLD(st), BLD(st)->seed, budget)) {
         c_to_gdstring(ret, "");
         return;
     }
     st->site_ok = true;
     Buf o; buf_init(&o);
-    site_dump(&st->site, &o);
+    site_dump(SITE(st), &o);
     c_to_gdstring(ret, o.p ? o.p : "");
     buf_free(&o);
 }
@@ -821,7 +859,7 @@ static void m_site_cmd(Station *st, const GDExtensionConstTypePtr *args, void *r
     gdstring_to_c(args[0], line, sizeof line);
     if (!site_ready(st)) { c_to_gdstring(ret, "there is no site yet\n"); return; }
     Buf o; buf_init(&o);
-    site_cmd(&st->site, line, &o);
+    site_cmd(SITE(st), line, &o);
     c_to_gdstring(ret, o.p ? o.p : "");
     buf_free(&o);
 }
@@ -832,7 +870,7 @@ static void m_site_devs(Station *st, const GDExtensionConstTypePtr *args, void *
 {
     (void)args;
     if (!site_ready(st)) { c_to_gdstring(ret, ""); return; }
-    const Site *s = &st->site;
+    const Site *s = SITE(st);
     Buf o; buf_init(&o);
     for (int i = 0; i < s->ndev; i++) {
         const SiteDev *d = &s->dev[i];
@@ -851,7 +889,7 @@ static void m_site_links(Station *st, const GDExtensionConstTypePtr *args, void 
 {
     (void)args;
     if (!site_ready(st)) { c_to_gdstring(ret, ""); return; }
-    const Site *s = &st->site;
+    const Site *s = SITE(st);
     Buf o; buf_init(&o);
     for (int i = 0; i < s->nlink; i++) {
         const SiteLink *l = &s->link[i];
@@ -869,8 +907,8 @@ static void m_site_links(Station *st, const GDExtensionConstTypePtr *args, void 
 static void m_site_room_of(Station *st, const GDExtensionConstTypePtr *args, void *ret)
 {
     int d = (int)(*(const int64_t *)args[0]);
-    if (!site_ready(st) || d < 0 || d >= st->site.ndev) { *(int64_t *)ret = -1; return; }
-    *(int64_t *)ret = (int64_t)st->site.dev[d].room;
+    if (!site_ready(st) || d < 0 || d >= SITE(st)->ndev) { *(int64_t *)ret = -1; return; }
+    *(int64_t *)ret = (int64_t)SITE(st)->dev[d].room;
 }
 
 /* ------------------------------------------------------- method plumbing */
@@ -881,6 +919,101 @@ typedef struct {
     GDExtensionVariantType argtype[2];
     GDExtensionVariantType rettype;   /* GDEXTENSION_VARIANT_TYPE_NIL == void */
 } MethodDef;
+
+
+/* ======================================================= THE SESSION
+ *
+ * ONE PLAYER, ONE BUILDING, ONE SET OF VERBS. Everything the 3D shell does --
+ * walking, carrying, taking a drum of cable off the shelf, putting an end in a
+ * port, plugging a lead into a console -- goes through session_line() here,
+ * which is byte for byte the function `./build/bf --serve` runs for a socket
+ * client. There is no second implementation for the window to drift away from,
+ * and a refusal a player reads in the 3D is the refusal core wrote.
+ *
+ * It also runs the other way: a command typed over the socket changes the
+ * session, and the view reconciles itself off ses_state() and site_links().
+ * That is what makes an agent able to PLAY this in 3D with text -- which is the
+ * only thing that has ever moved this project's quality. */
+
+/* ses_start(int seed, int budget) -> String — the tower, the site, and you
+ * standing in the MDF of it. Replaces bld_generate + site_start in one call,
+ * because a Session owns both and two of either would be two games. */
+static void m_ses_start(Station *st, const GDExtensionConstTypePtr *args, void *ret)
+{
+    uint64_t seed = (uint64_t)(*(const int64_t *)args[0]);
+    long budget = (long)(*(const int64_t *)args[1]);
+    if (st->ses_ok) { session_end(&st->ses); st->ses_ok = false; }
+    if (!session_start(&st->ses, seed, budget)) { c_to_gdstring(ret, ""); return; }
+    st->ses_ok = true;
+    Buf o; buf_init(&o);
+    site_dump(&st->ses.s, &o);
+    c_to_gdstring(ret, o.p ? o.p : "");
+    buf_free(&o);
+}
+
+/* ses_cmd(String) -> String — one line, one thing, and the answer the socket
+ * would have got. An unrecognised line says so rather than silently doing
+ * nothing, because a silence is indistinguishable from a bug. */
+static void m_ses_cmd(Station *st, const GDExtensionConstTypePtr *args, void *ret)
+{
+    char line[512];
+    gdstring_to_c(args[0], line, sizeof line);
+    if (!st->ses_ok) { c_to_gdstring(ret, "there is no session yet\n"); return; }
+    Buf o; buf_init(&o);
+    if (!session_line(&st->ses, line, &o))
+        buf_printf(&o, "I do not know how to `%s`. `help` lists what there is.\n", line);
+    c_to_gdstring(ret, o.p ? o.p : "");
+    buf_free(&o);
+}
+
+/* ses_state() -> String — everything the view needs to draw the player: where
+ * they are, what is in their hands, what a lead is in. Key per line, in the
+ * same shape as every other dump here. The view reads this; it never keeps its
+ * own copy of any of it. */
+static void m_ses_state(Station *st, const GDExtensionConstTypePtr *args, void *ret)
+{
+    (void)args;
+    if (!st->ses_ok) { c_to_gdstring(ret, ""); return; }
+    const Session *e = &st->ses;
+    Buf o; buf_init(&o);
+    buf_printf(&o, "where %d\nroom %d\nfloors %d\nwalked %ld\n",
+               e->where, e->room, e->floors, e->walked);
+    buf_printf(&o, "carrying %d\nspool %d %d\ncab %d %d\nplugged %d %d\n",
+               e->carrying, e->spool_kind, e->spool_left,
+               e->cab_dev, e->cab_port, e->plugged, e->hdmi ? 1 : 0);
+    buf_printf(&o, "money %ld\nday %d\n", e->s.money, e->s.day);
+    c_to_gdstring(ret, o.p ? o.p : "");
+    buf_free(&o);
+}
+
+/* ses_here(int room) -> String — the body moved, in the 3D, on its own legs.
+ *
+ * The session's `go` verb walks you somewhere and charges the metres. A person
+ * at the keyboard walks with W, and those metres are just as real, so the
+ * session is told where the body now is and the walk is added to the count.
+ * This is the ONE place the view tells the model something rather than reading
+ * it, and it is the one thing the view genuinely knows first: where the legs
+ * went. */
+static void m_ses_here(Station *st, const GDExtensionConstTypePtr *args, void *ret)
+{
+    int room = (int)(*(const int64_t *)args[0]);
+    if (!st->ses_ok) { c_to_gdstring(ret, ""); return; }
+    Session *e = &st->ses;
+    if (room < 0 || room >= e->b.nrooms || room == e->room) { c_to_gdstring(ret, ""); return; }
+    double *d = nom_alloc(sizeof(double) * (size_t)e->b.nrooms);
+    if (bld_walk_all(&e->b, e->room, d) && d[room] < BLD_INF)
+        e->walked += (long)(d[room] + 0.5);
+    nom_free(d);
+    e->room = room;
+    /* A BOX IN YOUR ARMS IS IN THE ROOM YOU ARE IN, at every step of the walk
+     * -- not when you put it down. site_move is what says so, and it is the
+     * one that refuses to move a box with a cable in it. */
+    if (e->carrying >= 0) site_move(&e->s, e->carrying, room);
+    Buf o; buf_init(&o);
+    buf_printf(&o, "%s\n", bld_kind_name(e->b.rooms[room].kind));
+    c_to_gdstring(ret, o.p ? o.p : "");
+    buf_free(&o);
+}
 
 static const MethodDef METHODS[] = {
     { "install",     m_install,     1, { GDEXTENSION_VARIANT_TYPE_INT },       GDEXTENSION_VARIANT_TYPE_STRING },
@@ -926,6 +1059,10 @@ static const MethodDef METHODS[] = {
     { "site_devs",     m_site_devs,     0, { 0 },                            GDEXTENSION_VARIANT_TYPE_STRING },
     { "site_links",    m_site_links,    0, { 0 },                            GDEXTENSION_VARIANT_TYPE_STRING },
     { "site_room_of",  m_site_room_of,  1, { GDEXTENSION_VARIANT_TYPE_INT }, GDEXTENSION_VARIANT_TYPE_INT },
+    { "ses_start",     m_ses_start,     2, { GDEXTENSION_VARIANT_TYPE_INT, GDEXTENSION_VARIANT_TYPE_INT }, GDEXTENSION_VARIANT_TYPE_STRING },
+    { "ses_cmd",       m_ses_cmd,       1, { GDEXTENSION_VARIANT_TYPE_STRING }, GDEXTENSION_VARIANT_TYPE_STRING },
+    { "ses_state",     m_ses_state,     0, { 0 },                            GDEXTENSION_VARIANT_TYPE_STRING },
+    { "ses_here",      m_ses_here,      1, { GDEXTENSION_VARIANT_TYPE_INT }, GDEXTENSION_VARIANT_TYPE_STRING },
 };
 #define NMETHODS ((int)(sizeof METHODS / sizeof METHODS[0]))
 

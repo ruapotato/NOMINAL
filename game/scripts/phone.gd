@@ -160,7 +160,10 @@ func _make_viewport() -> void:
 	# screen pixel once it is up at your face, which is the whole reason the 2D
 	# on it is legible rather than a postage stamp across a room.
 	_vp.size = Vector2i(900, 562)
-	_vp.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	# ONLY WHILE THERE IS SOMETHING ON IT. A viewport set to UPDATE_ALWAYS
+	# re-renders 900 x 562 every frame whether or not anybody can see it, and a
+	# handset hanging dark at your side is a handset nobody can see.
+	_vp.render_target_update_mode = SubViewport.UPDATE_DISABLED
 	_vp.transparent_bg = false
 	_vp.disable_3d = true
 	# The keyboard goes THROUGH here: the terminal below is a real Control with
@@ -273,6 +276,9 @@ func plug(dev: int, which_lead: String) -> String:
 	# is in your hand whenever it is the equipped item -- see inventory.gd --
 	# so what this switches is the picture and the lead hanging off it.
 	lit = plugged >= 0
+	if _vp:
+		_vp.render_target_update_mode = SubViewport.UPDATE_ALWAYS if lit \
+			else SubViewport.UPDATE_DISABLED
 	if not lit:
 		_drop_lead()
 	_relight()
@@ -417,6 +423,8 @@ func unplug() -> void:
 	lead = ""
 	status = "unplugged"
 	lit = false
+	if _vp:
+		_vp.render_target_update_mode = SubViewport.UPDATE_DISABLED
 	_drop_lead()
 	_relight()
 	_show_serial()

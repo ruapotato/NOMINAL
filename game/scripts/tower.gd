@@ -143,6 +143,11 @@ func _ready() -> void:
 
 func build(s: int) -> bool:
 	seed_no = s
+	# THE SESSION FIRST. It owns the building and the site -- the same Session
+	# core/session.c runs for a socket client -- so it has to exist before
+	# anything reads a room out of the extension, or the view would be looking
+	# at one building and the game would be charging for another.
+	_ses_start()
 	var head: String = str(machine.bld_generate(s))
 	if head.strip_edges() == "":
 		push_error("tower: the generator refused seed %d" % s)
@@ -472,6 +477,28 @@ func _walls(f: int) -> void:
 				if a == b:
 					continue
 				if a == NOROOM and b == NOROOM:
+					continue
+				# A CORRIDOR RUNS INTO A CORRIDOR. The generator cuts the ring
+				# into rectangles -- four of them on this plate -- and it does
+				# NOT hang doors between them, because as far as the building is
+				# concerned they are one space: core/building.c\'s step_ok()
+				# says so in a line of its own, "corridor to corridor, no door
+				# needed", and every walking distance in the game is measured
+				# through those openings.
+				#
+				# This pass did not know that rule, so it bricked the ring into
+				# four dead ends. From the MDF you could reach the corridor
+				# outside it and nothing else: not the lifts, not goods in, not
+				# the stairwell. The owner reported the symptom exactly -- "there
+				# were multiple floors, but there\'s no staircase, at least not
+				# one that\'s accessible" -- and he was right; the flights were
+				# fine and the way to them was a wall.
+				#
+				# bld_walk() and the 3D now agree about what a wall is, which is
+				# the only way a metre charged for a walk can mean anything.
+				if a != NOROOM and b != NOROOM \
+						and int(rooms[a].kind) == K_CORRIDOR \
+						and int(rooms[b].kind) == K_CORRIDOR:
 					continue
 				var outer := (a == NOROOM or b == NOROOM)
 				var col: Color = OUTER_COL if outer else WALL_COL
@@ -1036,18 +1063,26 @@ func open_next_floor() -> String:
 	if floors_in_service >= nfloors:
 		return "every floor in this tower is already in service."
 	var f := floors_in_service
-	floors_in_service += 1
+	if not site_up:
+		floors_in_service += 1
+		for l in lifts:
+			l.rebuild_panels()
+		_signage()
+		return "floor %d is in service." % f
+	# `open` IS THE SESSION'S VERB, and so are its refusals. It costs the
+	# landlord's fit-out and it wants somebody standing on the floor to sign it
+	# off -- the lift will not take you to a floor that is not in service, so
+	# that is the stairs. None of those rules is written here, and the words
+	# below are core's words, not a second set that could drift from them.
+	var said: String = site("open").strip_edges()
+	var now := int(ses_state().get("floors", floors_in_service))
+	if now == floors_in_service:
+		return said                      # refused: it says why, in its own words
+	floors_in_service = now
 	for l in lifts:
 		l.rebuild_panels()
 	_signage()
-	var who := ""
-	if site_up:
-		var n := 0
-		for r in rooms:
-			if r.floor == f and r.tenant != 0:
-				n += 1
-		who = "  %d let spaces on it" % n
-	return "floor %d is in service.%s" % [f, who]
+	return said
 
 
 func lift_for(f: int) -> Object:
@@ -1124,6 +1159,71 @@ func _signage() -> void:
 			# in the brickwork, and half a sign reads as a rendering fault.
 			p += toward * (WALL_T * 0.5 + 0.05)
 			_sign(p, what, atan2(toward.x, toward.z), 22, Color("#d8e2ea"))
+	_wayfinding()
+
+
+# ---------------------------------------------------------------- wayfinding
+#
+# "I would also suggest that there were multiple floors, but there's no
+# staircase, at least not one that's accessible."
+#
+# The staircase is there and a walking body climbs every flight of it. What was
+# not there was any reason to walk towards it: on seed 200 the stairwell is
+# diagonally across the plate from the MDF, past the lifts and the toilets, and
+# nothing anywhere said so. A building nobody can navigate has no stairs,
+# whatever the geometry says.
+#
+# So every corridor and lift lobby gets a sign over the door you should go
+# through, and WHICH DOOR THAT IS is not this file's opinion: bld_walk() gives
+# the real walking distance from the destination to every room, and the door
+# hung with the sign is the one into the neighbour that is nearer. It is the
+# building's own metric, so a sign cannot point at a route that is not there.
+const WAY_KINDS := [K_CORRIDOR, K_LIFTLOBBY, K_LOBBY]
+const WAY_TO := [[K_STAIR, "STAIRS"], [K_GOODS, "GOODS IN"], [K_MDF, "MDF"]]
+
+
+func _wayfinding() -> void:
+	for f in range(nfloors):
+		for spec in WAY_TO:
+			var dest := find_room(f, int(spec[0]))
+			if dest < 0:
+				continue
+			var d := walk_from(dest)
+			if d.size() < rooms.size():
+				continue
+			for r in rooms:
+				if r.floor != f or not WAY_KINDS.has(int(r.kind)):
+					continue
+				if d[r.i] < 0.0 or d[r.i] < 0.5:
+					continue                  # you are in it
+				var best := -1
+				var bestd: float = d[r.i]
+				var through: Dictionary = {}
+				for door in doors:
+					if door.floor != f or (door.a != r.i and door.b != r.i):
+						continue
+					var other: int = door.b if door.a == r.i else door.a
+					if other >= rooms.size() or d[other] < 0.0:
+						continue
+					if d[other] < bestd - 0.5:
+						bestd = d[other]
+						best = other
+						through = door
+				if best < 0 or best == dest:
+					continue        # the door itself is already signed as that room
+				var p := Vector3(through.x + (1.0 if through.dir == 0 else 0.5),
+					f * fheight + DOOR_H + 0.40,
+					through.y + (0.5 if through.dir == 0 else 1.0))
+				var toward := room_centre(r.i) - room_centre(best)
+				toward.y = 0
+				if toward.length() < 0.01:
+					continue
+				toward = toward.normalized()
+				p += toward * (WALL_T * 0.5 + 0.05)
+				# "TO STAIRS" rather than "STAIRS": the door under a plain
+				# STAIRS sign is the stairwell, and this one is the way to it.
+				_sign(p, "TO " + str(spec[1]), atan2(toward.x, toward.z), 18,
+					Color("#c9d8a8"))
 
 
 func _sign(p: Vector3, text: String, yaw: float, size: int, col: Color) -> void:
@@ -1156,22 +1256,74 @@ func _sign(p: Vector3, text: String, yaw: float, size: int, col: Color) -> void:
 # list and becomes wallpaper. `order` is the only way kit enters the tower.
 
 func _site_start() -> void:
+	pass                              # the session does this now: _ses_start()
+
+
+# EVERY VERB THE 3D PERFORMS IS THE SOCKET'S VERB.
+#
+# The owner: "Perhaps the commands it's using should tie to 3D space... Claude
+# playing a video game in 3D space by taking screenshots of the actual user
+# interface is not a fantastic way for it to iterate. It should operate with
+# commands over the port. A 3D interface should keep up with what's happening.
+# So if you cable from one place to another place, a physical cord gets
+# rendered out as if the player had cabled that."
+#
+# So this file no longer calls site_cable(), site_move() or site_power(). It
+# says `plug core:6`, `carry core`, `drop` -- through session_line(), which is
+# byte for byte what a socket client runs. One implementation, one set of
+# refusals, one place the metres are charged. And it runs the other way too:
+# command() below is the whole 3D driven by text, which is what lets a blind
+# agent play this and a human watch it play.
+func _ses_start() -> void:
 	site_up = false
-	if machine == null or not machine.has_method("site_start"):
+	if machine == null or not machine.has_method("ses_start"):
 		return
-	if str(machine.site_start(60000)).strip_edges() == "":
+	if str(machine.ses_start(seed_no, 60000)).strip_edges() == "":
 		return
 	site_up = true
-	for line in ["order router edge",
-			"order switch24 core",
-			"order server files"]:
-		machine.site_cmd(line)
+	for line in ["order router edge", "order switch24 core", "order server files"]:
+		machine.ses_cmd(line)
 
 
+# What the session says about the player: where they are, what is in their
+# hands, what a lead is in. The view reads this; it does not keep a copy.
+var _st_cache := {}
+var _st_frame := -1
+
+func ses_state() -> Dictionary:
+	# CACHED FOR THE FRAME. Every read of it parses a dump out of the
+	# extension, and `carrying` is read several times a frame by the HUD and
+	# the crosshair; a text protocol is the right shape and re-parsing it
+	# sixty times a second is not.
+	var fr := Engine.get_process_frames()
+	if fr == _st_frame:
+		return _st_cache
+	var out := {}
+	if not site_up:
+		_st_cache = out
+		_st_frame = fr
+		return out
+	for line in str(machine.ses_state()).split("\n", false):
+		var f: PackedStringArray = line.split(" ", false)
+		if f.size() < 2:
+			continue
+		var vals: Array = []
+		for i in range(1, f.size()):
+			vals.append(int(f[i]))
+		out[f[0]] = vals[0] if vals.size() == 1 else vals
+	_st_cache = out
+	_st_frame = fr
+	return out
+
+
+# One line, one thing, and the answer the socket would have got.
 func site(line: String) -> String:
 	if not site_up:
 		return "there is no site yet\n"
-	return str(machine.site_cmd(line))
+	_st_frame = -1
+	var out := str(machine.ses_cmd(line))
+	_st_frame = -1
+	return out
 
 
 func site_devs() -> Array:
@@ -1401,7 +1553,13 @@ func _tray_route(fa: int, from: Vector2, fb: int, to: Vector2) -> Array:
 # Is there a way through between two neighbouring cells: same room, or a door
 # on the edge between them. The same doorset the walls were built from.
 func _open_edge(f: int, x0: int, y0: int, x1: int, y1: int) -> bool:
-	if room_of(f, x0, y0) == room_of(f, x1, y1):
+	var ra := room_of(f, x0, y0)
+	var rb := room_of(f, x1, y1)
+	if ra == rb:
+		return true
+	# the same corridor-to-corridor rule the walls keep and step_ok() states
+	if ra != NOROOM and rb != NOROOM and int(rooms[ra].kind) == K_CORRIDOR \
+			and int(rooms[rb].kind) == K_CORRIDOR:
 		return true
 	if x1 > x0: return doorset.has("%d,%d,%d,%d" % [f, x0, y0, 0])
 	if x1 < x0: return doorset.has("%d,%d,%d,%d" % [f, x1, y1, 0])
@@ -2211,6 +2369,13 @@ func aim_text(a: Dictionary) -> Array:
 		var p: int = int(a.port)
 		var st := port_state(s, p)
 		var what := "%s port %d" % [d.name, p]
+		# A PANEL THE SITE MODEL HAS NEVER HEARD OF. The patch panels and the
+		# customer\'s rack server are drawn by the view and are not devices in
+		# core/site.c, so there is nothing to run a cable TO. Saying "[LMB] plug
+		# in" over a hole that will refuse is the kind of small lie this project
+		# does not tell.
+		if s < 0:
+			return [what, "no line to it: the site does not own this panel"]
 		if spool_in_hand():
 			if _cable_from >= 0:
 				return [what, "[LMB] plug this end in"]
@@ -2230,6 +2395,24 @@ func aim_text(a: Dictionary) -> Array:
 	if not bool(d.serial) and not bool(d.hdmi):
 		hint = "passive: copper and a label"
 	return [str(d.name), hint]
+
+
+# LOOK AT SOMETHING. A person turns their head; this is that, and it is here
+# rather than in the test because it is also what a session command needs when
+# it says `plug core:6` and the view has to put the crosshair on that hole --
+# the owner: "if you give a command to cable a particular port, the mouse
+# automatically aligns to that port."
+func aim_at(p: Vector3) -> void:
+	if player == null or player.cam == null:
+		return
+	var eye: Vector3 = player.global_position + Vector3(0, player.EYE, 0)
+	var to := p - eye
+	if to.length() < 0.01:
+		return
+	player.look_at_yaw(atan2(-to.x, -to.z))
+	var flat := Vector2(to.x, to.z).length()
+	player.pitch = clampf(atan2(to.y, flat), -1.45, 1.45)
+	player.cam.rotation.x = player.pitch
 
 
 func spool_in_hand() -> bool:
@@ -2498,8 +2681,12 @@ func where_am_i() -> String:
 # One box, because both hands are on it. That is the same rule session.c
 # keeps, and it is the reason there is no inventory here.
 
-var carrying := -1                     # site index in your hands, or -1
-var _carry_room := -1
+# WHAT THE SESSION SAYS IS IN YOUR HANDS. Read back out of ses_state() rather
+# than kept here, because a socket client can pick a box up too.
+var carrying: int:
+	get:
+		return int(ses_state().get("carrying", -1))
+var _here_room := -1
 var _on_floor := {}
 
 
@@ -2525,19 +2712,31 @@ func carry_here(dev: int) -> String:
 	var room := player_room()
 	if room == NOROOM:
 		return "you are not standing in a room."
-	# site_move is the one that decides. A box with a cable in it does not
-	# move, and it says so in the words core/site.c uses.
-	var out: String = site("move %d #%d" % [s, room]).strip_edges()
-	if out.find("refused") >= 0:
+	_be_here(room)
+	# `carry <box>` -- the session's own verb, so the refusals are the ones a
+	# socket client reads: a box with a cable in it does not move, the ISP's
+	# handoff is screwed to somebody's wall, and both hands are on whatever you
+	# already have. None of those rules is written in this file.
+	var out: String = site("carry %s" % _cable_name(s)).strip_edges()
+	if int(ses_state().get("carrying", -1)) != s:
 		return out
-	carrying = s
-	_carry_room = room
 	var n: Node = devices[dev].node
 	if n: n.queue_free()
 	devices.remove_at(dev)
-	if _cable_from == s:
-		_cable_from = -1
-	return "you pick it up. It goes where you go until you put it down."
+	_sync_cable()
+	return out
+
+
+# WHERE THE LEGS WENT. The session's `go` verb walks you somewhere and charges
+# the metres; a person at the keyboard walks with W, and those metres are just
+# as real, so the session is told and the walk is added to its count. This is
+# the one thing the view knows first.
+func _be_here(room: int) -> void:
+	if not site_up or room == NOROOM or room == _here_room:
+		return
+	_here_room = room
+	machine.ses_here(room)
+	_st_frame = -1
 
 
 func drop_here() -> String:
@@ -2546,10 +2745,11 @@ func drop_here() -> String:
 	var room := player_room()
 	if room == NOROOM:
 		return "you are not standing in a room: nowhere to put it down."
-	var out: String = site("move %d #%d" % [carrying, room]).strip_edges()
+	_be_here(room)
 	var s := carrying
-	carrying = -1
-	_carry_room = -1
+	var out: String = site("drop").strip_edges()
+	if carrying >= 0:
+		return out                     # it refused: the box is still in your arms
 	_place_one(s)
 	return out
 
@@ -2615,27 +2815,39 @@ func cable_at(dev: int, port: int) -> String:
 		return "you are carrying %s. A drum of cable takes both hands too: put it down first  [G]." % what
 	var s: int = int(devices[dev].get("site", -1))
 	if s < 0:
-		return "%s is passive. There is nothing to plug into." % devices[dev].name
+		return "%s is not a device the site model owns: there is no line to run a cable to." \
+			% devices[dev].name
 	var p: int = port if port >= 0 else _free_port(s)
-	if _cable_from < 0:
-		_cable_from = s
-		_cable_port = p
-		_cable_dev = dev
-		return "one end into %s port %d. Walk to the other end and plug it in." \
-			% [devices[dev].name, p]
-	if _cable_from == s and _cable_port == p:
-		_cable_from = -1
-		_cable_dev = -1
-		_drop_trail()
-		return "spool put back."
-	var a := _cable_from
-	var ap := _cable_port
-	_cable_from = -1
-	_cable_dev = -1
-	_drop_trail()
-	var out := site("cable %d:%d %d:%d cat6" % [a, ap, s, p])
+	var room := player_room()
+	if room != NOROOM:
+		_be_here(room)
+	var st := ses_state()
+	# A DRUM OFF THE SHELF, then an end in a socket, then the walk, then the
+	# other end. Four things a person does, and four verbs core/session.c
+	# already has: it is the same sequence a blind playtester types, and it is
+	# priced by the metre off the building's own cable graph on the second
+	# `plug`. Nothing here works out a length or a cost.
+	var said := ""
+	if int(st.get("spool", [-1])[0]) < 0:
+		said = site("spool cat6").strip_edges() + "\n"
+	var out: String = site("plug %s:%d" % [_cable_name(s), p]).strip_edges()
+	_sync_cable()
 	_draw_cables()
-	return out.strip_edges()
+	return (said + out).strip_edges()
+
+
+# What the session says is in your hands, mirrored into the view so the trail
+# of cable is drawn from the port the session says an end is in.
+func _sync_cable() -> void:
+	var st := ses_state()
+	var cab: Array = st.get("cab", [-1, -1])
+	if typeof(cab) != TYPE_ARRAY:
+		cab = [-1, -1]
+	var was := _cable_from
+	_cable_from = int(cab[0])
+	_cable_port = int(cab[1]) if cab.size() > 1 else 0
+	if _cable_from < 0 and was >= 0:
+		_drop_trail()
 
 
 # ---------------------------------------------------- the cable in your hands
@@ -2845,17 +3057,24 @@ func _process(_dt: float) -> void:
 			s += "\nin the lift: press a floor number.  in service: %s" % str(car.serviced())
 		if bag:
 			s += "\nhands: %s / %s   [I] inventory" % [_hand_name(0), _hand_name(1)]
-		s += "\n%d of %d floors in service   [O] open the next one" % [floors_in_service, nfloors]
+		# A KEY THAT REFUSES IS WORSE THAN A KEY THAT IS NOT OFFERED. Signing
+		# a floor off means standing on it, and the lift will not take you to a
+		# floor that is not in service, so it is the stairs -- which is
+		# core/session.c's rule and its words, not a second copy of either.
+		s += "\n%d of %d floors in service" % [floors_in_service, nfloors]
+		if floors_in_service < nfloors:
+			if player_floor() == floors_in_service:
+				s += "   [O] sign floor %d off and put it into service" % floors_in_service
+			else:
+				s += "   floor %d needs somebody standing on it: the lift button is not lit, so it is the stairs" % floors_in_service
 		hud.text = s
 	# WHAT YOU ARE CARRYING IS IN THE ROOM YOU ARE IN, at every step of the
 	# walk -- not in an inventory that resolves when you put it down. The
 	# site is told the moment you cross the threshold, so `show` from a
 	# terminal in the middle of a carry says where the box really is.
-	if carrying >= 0:
-		var r := player_room()
-		if r != NOROOM and r != _carry_room:
-			_carry_room = r
-			site("move %d #%d" % [carrying, r])
+	var r := player_room()
+	if r != NOROOM and r != _here_room:
+		_be_here(r)
 
 
 func _cable_name(s: int) -> String:

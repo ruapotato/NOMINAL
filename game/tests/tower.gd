@@ -215,25 +215,74 @@ func _init() -> void:
 		else:
 			ok("and back down to the ground floor")
 
-		# ---- OPENING A FLOOR MAKES IT REACHABLE. Before, the button is dead.
-		var before: int = t.floors_in_service
-		if before < t.nfloors:
-			var opened: String = t.open_next_floor()
-			if t.floors_in_service != before + 1:
-				fail("open_next_floor did not open one: " + opened)
-			elif t.lift_go(before).find("not in service") >= 0:
-				fail("floor %d opened and the lift still refuses it" % before)
+	# ---- YOU CAN GET TO THE STAIRS FROM WHERE THE DAY STARTS.
+	#
+	# The owner: "I would also suggest that there were multiple floors, but
+	# there's no staircase, at least not one that's accessible." Every check
+	# below this one teleports to the foot of a flight and then climbs, so we
+	# had proved the flights carry a body and never once proved a player can
+	# reach one -- which is exactly the mistake that made the racks look fine.
+	# So this walks it: out of the MDF, along the corridor, to the bottom step.
+	var stair0: int = t.find_room(0, t.K_STAIR)
+	if stair0 < 0:
+		fail("the ground floor has no stairwell at all")
+	else:
+		var foot := Vector2.ZERO
+		for s in t.stairs:
+			if int(s.floor) == 0:
+				var fp: Vector3 = _foot_of(t, s)
+				foot = Vector2(fp.x, fp.z)
+		t.teleport(sp + Vector3(0, 0.3, 0))
+		for i in range(20):
+			await process_frame
+		# through the MDF door, along the corridor ring, into the stairwell.
+		# The waypoints are the rooms the building itself says are on the way,
+		# not a hand-drawn path: each one is the centre of the next room along
+		# the shortest route bld_walk() knows about.
+		var legs: Array = _route_rooms(t, mdf, stair0)
+		var got_there := true
+		var legn := 0
+		for w in legs:
+			legn += 1
+			if not await _walk_to(self, t, w, 1400):
+				got_there = false
+				print("    stuck on leg %d of %d, heading for (%.1f, %.1f)"
+					% [legn, legs.size(), w.x, w.y])
+				break
+		var ended: int = t.player_room()
+		if not got_there or ended != stair0:
+			fail("walked from the spawn towards the stairs and ended in %s at (%.1f, %.1f)"
+				% ["nowhere" if ended == t.NOROOM else str(t.rooms[ended].name),
+					t.player.global_position.x, t.player.global_position.z])
+		else:
+			ok("walked from the MDF to the foot of the stairs, %d rooms" % legs.size())
+			# and the signage says which way, computed off the building's own
+			# walking distances -- a stairwell nobody can find has no stairs
+			var signs := 0
+			for n in t._signs.get_children():
+				if str(n.text).begins_with("TO STAIRS"):
+					signs += 1
+			if signs == 0:
+				fail("nothing anywhere in the building points at the stairs")
 			else:
-				ok("opening floor %d makes it reachable: %s" % [before, opened.strip_edges()])
-			for i in range(900):
-				await process_frame
-				if not t.lift_busy():
-					break
-			t.lift_go(0)
-			for i in range(900):
-				await process_frame
-				if not t.lift_busy():
-					break
+				ok("%d doors are signed TO STAIRS" % signs)
+		# AND THE STAIRWELL DOOR IS CLEAR, on every floor, of anything the room
+		# graph does not know about: a rack, or a delivery standing on the floor.
+		var fouled2 := 0
+		for f in range(t.nfloors):
+			var st: int = t.find_room(f, t.K_STAIR)
+			if st < 0:
+				continue
+			for dd in t.room_doors(st):
+				for dev in t.devices:
+					var box := Rect2(dev.mn.x, dev.mn.z, dev.size.x, dev.size.z)
+					if absf(dev.mn.y - f * t.fheight) < t.fheight * 0.5 \
+							and box.intersects(dd.clear):
+						fouled2 += 1
+						fail("%s stands in the clear floor of the floor %d stairwell door"
+							% [dev.name, f])
+		if fouled2 == 0:
+			ok("every stairwell doorway is clear on every floor")
 
 	# ---- the stairs carry a body up, every floor, under real physics
 	for s in t.stairs:
@@ -256,6 +305,75 @@ func _init() -> void:
 		else:
 			fail("could not climb from floor %d: stopped at y = %.2f (want %.2f)"
 				% [f, t.player.global_position.y, (f + 1) * t.fheight])
+
+	# ---- OPENING A FLOOR MAKES IT REACHABLE -- AND YOU HAVE TO BE ON IT.
+	#
+	# core/session.c: "the lift does not stop at a floor nobody has opened, so
+	# the only way onto it is the stairwell, and walking up it is metres of
+	# building like any other." It charges the fit-out too. So this climbs a
+	# real flight with a real body before it signs anything off, which proves
+	# the floor is reachable before it proves it can be opened -- and the 3D
+	# needs no rule of its own for any of it, because [O] is `open` down the
+	# same session_line() a socket client uses.
+	var before: int = t.floors_in_service
+	if before < t.nfloors:
+		var refused: String = t.open_next_floor()
+		if t.floors_in_service != before:
+			fail("floor %d was signed off from the ground floor: %s" % [before, refused])
+		elif refused.find("standing on it") < 0:
+			fail("opening a floor from the wrong floor did not explain itself: " + refused)
+		else:
+			ok("opening floor %d from below is refused: %s"
+				% [before, refused.split("\n")[0].strip_edges()])
+		# up the last flight to it, under the same physics as every other climb
+		var got_up := false
+		for f in [before - 1]:
+			for st2 in t.stairs:
+				if int(st2.floor) != f:
+					continue
+				t.teleport(_foot_of(t, st2))
+				for i in range(12):
+					await process_frame
+				t.player.drive_active = true
+				t.player.drive = Vector2(0, 1)
+				t.player.look_at_yaw(_yaw_of(st2))
+				for i in range(1200):
+					await process_frame
+					if t.player.global_position.y > (f + 1) * t.fheight - 0.35:
+						got_up = true
+						break
+				# ONTO THE LANDING, not stopped on the top step. The run comes
+				# up through a hole in the slab and the top step is at the edge
+				# of it; a body that stops there and is then left alone for a
+				# moment goes back down the way it came.
+				for i in range(40):
+					await process_frame
+				t.player.drive_active = false
+				t.player.drive = Vector2.ZERO
+				break
+		for i in range(20):
+			await process_frame
+		if not got_up or t.player_floor() != before:
+			fail("could not climb to floor %d to sign it off (on %d)"
+				% [before, t.player_floor()])
+		else:
+			var opened: String = t.open_next_floor()
+			if t.floors_in_service != before + 1:
+				fail("standing on floor %d and it would not open: %s" % [before, opened])
+			elif t.lift_go(before).find("not in service") >= 0:
+				fail("floor %d opened and the lift still refuses it" % before)
+			else:
+				ok("stood on floor %d and signed it off: %s"
+					% [before, opened.split("\n")[0].strip_edges()])
+			for i in range(900):
+				await process_frame
+				if not t.lift_busy():
+					break
+			t.lift_go(0)
+			for i in range(900):
+				await process_frame
+				if not t.lift_busy():
+					break
 
 	# ---- a route exists from the lobby to a comms cupboard upstairs, as the
 	# building itself computes it, not as the renderer guesses
@@ -423,6 +541,29 @@ func _init() -> void:
 				fail("`uname -a` down the serial lead said nothing")
 			else:
 				ok("serial `uname -a`: " + out.split("\n")[0].substr(0, 60))
+			# AND YOU CAN TYPE AT IT. Plugging in takes the keyboard, the
+			# terminal on the screen is the real terminal.gd, and the line
+			# goes down machine.sh_on() -- the same call the socket console
+			# makes and the one console_speaks.gd gates.
+			if not mob.focused:
+				fail("a serial lead went in and the handset did not take the keyboard")
+			else:
+				ok("plugging in zooms the handset and takes the keyboard")
+			var before_lines: int = mob.screen_text().split("\n").size()
+			mob.type_line("uname -a")
+			var after: String = mob.screen_text()
+			if after.split("\n").size() <= before_lines:
+				fail("typed a line at the handset and nothing appeared on it")
+			elif after.find("NomnixOS") < 0:
+				fail("the handset screen does not show what the machine answered")
+			else:
+				ok("typed at the handset and the machine answered on its screen")
+			if mob.let_go().find("still in") < 0:
+				fail("[Esc] did not put the handset down")
+			elif mob.focused:
+				fail("[Esc] and the handset still has the keyboard")
+			else:
+				ok("[Esc] puts the handset down and leaves the lead in")
 			m = mob.plug(ws, "hdmi")
 			if m.find("display on") < 0: fail("the workstation would not drive a screen: " + m)
 			else: ok("HDMI on the workstation: " + m)
@@ -479,6 +620,120 @@ func _init() -> void:
 			else:
 				ok("and so does running a cable, in core's words")
 			t.drop_here()
+
+	# ---- THE CROSSHAIR NAMES WHAT IT IS AIMED AT.
+	#
+	# "It was really hard to know when I was actually hitting E on the right
+	# thing." The ray has to hit the thing the player thinks it hits, so this
+	# aims the head at a real port on a real box and asks what the crosshair
+	# says -- which is the same call the reticle draws from.
+	var uplink := _device(t, "uplink")
+	if uplink < 0:
+		fail("the ISP handoff is not drawn in the MDF")
+	else:
+		var pf: Array = t.devices[uplink].ports
+		if pf.is_empty():
+			fail("the uplink has no ports drawn on it at all")
+		else:
+			var hole: Dictionary = pf[0]
+			var stand: Vector3 = hole.c + hole.n * 0.9
+			stand.y = float(t.rooms[mdf].floor) * t.fheight + 0.2
+			t.teleport(stand)
+			for i in range(15):
+				await process_frame
+			t.aim_at(hole.c)
+			await process_frame
+			var a: Dictionary = t.aim()
+			if a.is_empty():
+				fail("stood 0.9 m in front of uplink port 0, looked at it, and the crosshair found nothing")
+			elif a.kind != "port" or int(a.dev) != uplink or int(a.port) != 0:
+				fail("aimed at uplink port 0 and the crosshair says %s" % str(a))
+			else:
+				var nm: Array = t.aim_text(a)
+				ok("the crosshair on a port: '%s   %s'" % [nm[0], nm[1]])
+			# and the ports are the model's, not the view's
+			var np := 0
+			for d in t.site_devs():
+				if str(d.name) == "uplink": np = int(d.nports)
+			if pf.size() != np:
+				fail("the site says uplink has %d ports and the view drew %d"
+					% [np, pf.size()])
+			else:
+				ok("uplink is drawn with the %d port%s the site model gives it"
+					% [np, "" if np == 1 else "s"])
+
+	# ---- A CABLE RUN IN 3D IS THE SAME RUN THE MODEL HAS.
+	#
+	# Spool, one end in a port, walk to the other end, other end in -- exactly
+	# the four things core/session.c makes a socket client do, because that is
+	# what the 3D now calls. What comes out has to be a link the site model
+	# holds, at the length the building measured, drawn between those two
+	# holes.
+	var pre: int = t.site_links().size()
+	var uplink2 := _device(t, "uplink")
+	var boxi := -1
+	for i in range(t.devices.size()):
+		if int(t.devices[i].get("site", -1)) >= 0 and t.devices[i].name == "core":
+			boxi = i
+	if uplink2 < 0 or boxi < 0:
+		fail("expected the handoff and the switch in the MDF to cable together")
+	else:
+		# stand at each end in turn, the way a person does
+		t.teleport(t.room_centre(mdf) + Vector3(0, 0.4, 0))
+		for i in range(12):
+			await process_frame
+		var one: String = t.cable_at(uplink2, 0)
+		var mid: Dictionary = t.ses_state()
+		var cabend: Array = mid.get("cab", [-1, -1])
+		if int(cabend[0]) < 0:
+			fail("put one end of a cable into uplink port 0 and the session has no end in anything: " + one)
+		else:
+			ok("one end into uplink port 0: the session is holding the drum")
+		var two: String = t.cable_at(boxi, 3)
+		var links: Array = t.site_links()
+		if links.size() != pre + 1:
+			fail("ran a cable in 3D and the site has %d links, not %d: %s"
+				% [links.size(), pre + 1, two])
+		else:
+			var l: Dictionary = links[links.size() - 1]
+			if int(l.bport) != 3 and int(l.aport) != 3:
+				fail("plugged the far end into port 3 and the model records %d/%d"
+					% [l.aport, l.bport])
+			elif int(l.metres) <= 0:
+				fail("the run is %d metres long" % l.metres)
+			else:
+				ok("a cable run in 3D is a link in the model: %d m, %d, port %d to port %d"
+					% [l.metres, l.cost, l.aport, l.bport])
+			# and it is DRAWN, as slack copper between the two holes
+			var pts: Array = t._cable_route(int(l.a), int(l.aport), int(l.b),
+				int(l.bport), int(l.i))
+			if pts.size() < 3:
+				fail("the run is drawn as %d points -- a straight line" % pts.size())
+			else:
+				var straight: float = (pts[0] as Vector3).distance_to(pts[pts.size() - 1])
+				var along := 0.0
+				var line: Array = t._sag(t._round_corners(pts, 0.09), int(l.i))
+				for i in range(line.size() - 1):
+					along += (line[i] as Vector3).distance_to(line[i + 1])
+				if along <= straight * 1.02:
+					fail("the drawn cable is %.2f m between ends %.2f m apart: no slack in it"
+						% [along, straight])
+				else:
+					ok("drawn as %.1f m of copper between two holes %.1f m apart"
+						% [along, straight])
+			# the link light on that port says up, out of the model
+			var stt: int = t.port_state(int(l.a), int(l.aport))
+			var stb: int = t.port_state(int(l.b), int(l.bport))
+			if stt != int(l.state) or stb != int(l.state):
+				fail("the port lights say %d/%d and the link is %d" % [stt, stb, l.state])
+			else:
+				ok("both ports read state %d out of the model" % stt)
+		# and the same run over the socket's own words gets the same refusal
+		var again: String = t.site("plug uplink:0")
+		if again.find("already") < 0 and again.find("cable in it") < 0:
+			fail("a port with a cable in it accepted a second one: " + again)
+		else:
+			ok("and a port that is full refuses, in core's words")
 
 	# ---- [E] AT THE WORKSTATION IS THE 2D DESKTOP. Walk to it -- so a desk
 	# nobody can reach fails here rather than looking fine in a screenshot --
@@ -544,6 +799,104 @@ func _walk_to(tree: SceneTree, t: Node3D, target: Vector2, budget: int) -> bool:
 	for i in range(4):
 		await tree.process_frame
 	return arrived
+
+
+# The rooms between `from` and `to`, as points to walk to: at each step, the
+# door-neighbour that is nearer the destination by the building's own walking
+# metric. It is a route the building says exists, so a test that cannot walk it
+# has found something standing in the way rather than a bad guess at a path.
+# Every room you can get to from `r` without opening anything: through a door,
+# or -- for two corridors -- through the opening between them, which is the
+# rule core/building.c\'s step_ok() keeps and which the wall pass now keeps too.
+func _joined(t: Node3D, r: int) -> Array:
+	var out: Array = []
+	for door in t.doors:
+		if door.a != r and door.b != r:
+			continue
+		var other: int = door.b if door.a == r else door.a
+		if other < t.rooms.size():
+			out.append(other)
+	if int(t.rooms[r].kind) == t.K_CORRIDOR:
+		for o in t.rooms:
+			if o.i == r or o.floor != t.rooms[r].floor or o.kind != t.K_CORRIDOR:
+				continue
+			# they touch if their rectangles share an edge
+			var a := Rect2(t.rooms[r].x0, t.rooms[r].y0,
+				t.rooms[r].x1 - t.rooms[r].x0, t.rooms[r].y1 - t.rooms[r].y0)
+			var b := Rect2(o.x0, o.y0, o.x1 - o.x0, o.y1 - o.y0)
+			if a.grow(0.01).intersects(b):
+				out.append(int(o.i))
+	return out
+
+
+func _route_rooms(t: Node3D, from: int, to: int) -> Array:
+	# Breadth-first over the DOOR GRAPH. It was a greedy descent on
+	# bld_walk()'s room-to-room distances, and greedy is wrong here: a corridor
+	# thirty metres long has one centre, and a shop off the middle of it can be
+	# nearer the stairwell by that measure while being a dead end. The route
+	# below is a sequence of rooms that really are joined by doors.
+	var prev := {}
+	prev[from] = -1
+	var q: Array = [from]
+	var head := 0
+	while head < q.size():
+		var at: int = q[head]
+		head += 1
+		if at == to:
+			break
+		for other in _joined(t, at):
+			if prev.has(other):
+				continue
+			prev[other] = at
+			q.append(other)
+	if not prev.has(to):
+		return []
+	var chain: Array = []
+	var cur := to
+	while cur != -1:
+		chain.push_front(cur)
+		cur = int(prev[cur])
+	var out: Array = []
+	for i in range(chain.size() - 1):
+		var a: int = chain[i]
+		var b: int = chain[i + 1]
+		# up to the doorway on this side, through it, then into the room
+		var gated := false
+		for dd in t.room_doors(a):
+			var g2: Vector2 = dd.gate
+			var o2: Vector2 = dd.out
+			var probe := g2 + o2 * 0.8
+			if t.room_of(t.rooms[a].floor, int(floor(probe.x)), int(floor(probe.y))) == b:
+				out.append(g2 - o2 * 0.7)
+				out.append(g2 + o2 * 0.7)
+				gated = true
+				break
+		if not gated:
+			# two corridors: walk to the middle of the opening between them
+			var ra := Rect2(t.rooms[a].x0, t.rooms[a].y0,
+				t.rooms[a].x1 - t.rooms[a].x0, t.rooms[a].y1 - t.rooms[a].y0)
+			var rb := Rect2(t.rooms[b].x0, t.rooms[b].y0,
+				t.rooms[b].x1 - t.rooms[b].x0, t.rooms[b].y1 - t.rooms[b].y0)
+			var ov := ra.intersection(rb.grow(0.05))
+			var cb: Vector3 = t.room_centre(b)
+			var j := ov.get_center()
+			# UP TO THE OPENING, THEN THROUGH IT. A waypoint on the far side
+			# alone makes the leg a diagonal across whatever is between here and
+			# there, and a corridor ring has rooms on the inside of every corner
+			# of it. So: a step short of the junction, then a step past it.
+			# ACROSS THE OPENING, SQUARE TO IT. Stepping towards the far
+			# room's CENTRE puts the waypoint diagonally into the corner, and a
+			# corridor ring has a riser or a cupboard on the inside of every
+			# corner: the capsule wedges on the return. The opening has an
+			# axis; go through it at right angles.
+			var ax := Vector2(0, 1) if ov.size.x >= ov.size.y else Vector2(1, 0)
+			var to_b: Vector2 = Vector2(cb.x, cb.z) - j
+			var sgn: float = 1.0 if to_b.dot(ax) >= 0.0 else -1.0
+			out.append(j - ax * sgn * 1.2)
+			out.append(j + ax * sgn * 1.2)
+		var c: Vector3 = t.room_centre(b)
+		out.append(Vector2(c.x, c.z))
+	return out
 
 
 func _device(t: Node3D, want: String) -> int:
