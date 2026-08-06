@@ -842,6 +842,212 @@ A stale ticket is also the WHOLE ticket now: no other corruption is applied,
 because a stray unrelated file in `pkg verify` is the one thing that would give
 that class away, and its whole point is that verify comes back clean.
 
+## 17. The world, which is now where faults come from
+
+Everything above is a fault a ticket generator can put on a disk. This section
+is the other half of D23 -- *the world supplies the cause* -- and it is the
+answer to the thing that had been true since the pivot: sixty-two fault types
+existed, `--solve 60` proved every one findable and repairable, and **nothing
+in the running tower could cause a single one of them.** A machine you
+installed, cabled and ran for forty days never broke.
+
+These events happen in `core/siteday.c`, at the end of a day, after the busy
+period. Every one of them damages the machine through `core/breaker.c` -- the
+same functions, the same Vfs, the same bytes -- so there is no second kind of
+broken and no flag anywhere in the boot chain that says an event happened.
+`bf --eventcheck` plays each one and repairs it.
+
+**The five rules every event is written to.** They are worth stating because
+they are what stops a world event being a tax:
+
+1. The damage is real: bytes in the Vfs, found by `pkg verify` because the
+   file genuinely differs from what shipped.
+2. The cause is findable: the site's own `events` log, the day's report, and
+   the machine's own `/var/log/messages`.
+3. It is fixable with what already exists: `fsck`, `pkg verify`, `pkg diff`,
+   `pkg reinstall`, the rescue medium.
+4. It is avoidable or survivable by good play, and the good play is a purchase
+   or a decision the player could have made first.
+5. It is deterministic from the seed.
+
+---
+
+### 17.1 The blackout — **[done]**
+
+**Cause.** The building loses mains power in the small hours.
+`site_mains_fails_on(seed, day)` is a pure function of the world seed and the
+day number: no state, nothing rolled during play, so the same seed always
+loses the lights on the same mornings. The first one is deliberately late --
+somewhere in the third or fourth week -- because a mains failure in the first
+fortnight lands on a building with one switch in it and teaches the player
+only that the game has weather. After that they come round every two or three
+weeks.
+
+It happens AFTER the day's work rather than before it. The building has
+already done its day; the player meets the mess the next morning and has that
+day to put it right. Running it before the busy period would take every
+tenancy's day with it whatever the player did, and a disaster nobody can react
+to is a tax rather than a game.
+
+**What it damages.** Every box with an operating system in it that was
+switched on and has no battery under it goes down the way a machine goes down
+when the plug is pulled: `fault_unclean_shutdown`, which is the same function
+the ticket generator has always used. The filesystem is marked dirty, and if
+the box was *writing* -- which is not a die roll, it is whether that box moved
+frames in the busy period that had just finished -- the file that was in
+flight is left half-written. Switches and routers are appliances and simply
+come back up; they have no clean shutdown to miss.
+
+**The evidence.** Three places, in the order a player meets them:
+
+- the day's report says *"the building lost mains power at 04:12 and had it
+  back by 04:31"* and names every box that went down with it;
+- `events` says the same thing afterwards, with the day beside it;
+- the machine itself stops in the initrd:
+
+  ```
+  initrd: UUID=8f41-2c07-a19d-5be3 contains a file system with errors, check forced
+  initrd: UNEXPECTED INCONSISTENCY; RUN fsck MANUALLY
+  initrd: cannot mount root -- boot the rescue medium and run `fsck /dev/sda1`
+  ```
+
+A box that was on a UPS has the receipt in its own syslog:
+`nomups: utility power lost -- load transferred to battery`, and the restore
+line under it.
+
+**The repair**, walked end to end by `--eventcheck`:
+
+```
+power files on            -> stops in the initrd; the root will not mount
+rescue files              -> the live medium on the crash cart
+plug files
+fsck /dev/sda1            -> recovers the journal, and says how many inodes
+                             it could not save
+unplug
+eject files               -> boots its own disk again, and comes up
+plug files
+pkg verify                -> names the file that was half-written
+pkg diff <path>           -> "the installed copy is N byte(s) SHORT --
+                             it was truncated, not edited"
+pkg reinstall --force <package>
+```
+
+That last distinction is the whole reason `pkg diff` exists: a blackout
+truncates and a person edits, and the tool says which without being told.
+
+**How to avoid it.** `ups <box>`, £220, fitted at the rack. A box on a battery
+stays up, keeps its filesystem, and says so in its log. It is a real decision
+because it is real money against a risk whose schedule the player cannot see.
+
+**The tower had no way to reach the rescue medium** before this, which is why
+`rescue <box>` and `eject <box>` are now verbs on the crash cart. The initrd
+had been telling players to boot the live medium since D17 and, standing in a
+comms cupboard, there was nothing that did.
+
+### 17.2 A disk that wore out — **[done]**
+
+**Cause.** Use, not time. Every day a box is switched on it accrues wear, and
+the rate is taken from how hard its own port actually worked during that day's
+busy period: one to five days of wear per day. A server holding a floor's
+files ages three or four times as fast as a box nobody has touched since it
+was installed. This is the property the brief asked for -- *"properties of the
+kit and how it has been used, not a dice roll on a timer"*.
+
+**What it damages.** At about three quarters of its life the disk starts
+reallocating sectors and saying so. Fifteen days of average use later it runs
+out of spares and loses one: 512 bytes in the middle of a package-owned file
+under `/etc` read back as zeroes. Not truncated, not edited -- a hole, which
+is what a read error handed back as zeroes looks like.
+
+**The evidence.** The disk complains first, for a fortnight, in the machine's
+own log:
+
+```
+kernel: sd 0:0:0:0: [sda] SMART attribute 5 (reallocated sector count) is 7 and rising; 46 power-on days
+```
+
+and `events` files it the first day it happens. When it finally goes:
+
+```
+kernel: sd 0:0:0:0: [sda] UNRECOVERED READ ERROR - auto reallocate failed
+kernel: end_request: critical medium error, dev sda, sector 1841776
+```
+
+`events` also prints a condition table -- days, disk life used, battery, room
+heat -- so a player who never greps a log still sees the disk at 78%.
+
+**The repair.** `pkg verify` reports the file CHANGED and `pkg reinstall
+--force <package>` puts it back. The disk is still a disk with no spares
+left, which is why the wear does not reset until somebody fits a new one.
+
+**How to avoid it.** `disk <box>`, £140: a new disk with the contents copied
+across. Fifteen days of warning is the whole of the good play. The clone
+copies whatever damage is already there, because that is what a clone does.
+
+**One judgement, written down rather than hidden.** The bad sector lands on
+package-owned configuration under `/etc`, and the files the boot chain itself
+reads are excluded, so the box comes up and can be worked on from its own
+shell. A real bad sector does not care where it lands; this one does, because
+the blackout above already covers the machine that will not boot at all, and
+two events with the same shape is one event with two names.
+
+### 17.3 A cupboard with too much in it — **[done]**
+
+**Cause.** Watts against square metres, and both numbers are real. Each class
+of kit dissipates what that class of kit dissipates (a switch is a wall wart,
+a server with disks in it is a fan heater) and each room can shed about twenty
+watts a square metre if it is a sealed cupboard, thirty in plant space, sixty
+in conditioned space and a hundred and twenty in a tenant's own server room,
+which is the one space in this world built to hold equipment. The square
+metres come out of the building generator.
+
+A 35 m² comms cupboard therefore sheds about 700 W. Three servers and a switch
+in it is 1020 W, and it is 145% of what the room can lose.
+
+**What it damages.** Nothing on the first day. Every machine in the room logs
+its intake temperature; on the third consecutive day over the trip point one
+of them shuts itself down on temperature, which is what thermal protection is
+for -- and a machine that stops dead mid-write is the same unclean shutdown a
+blackout leaves, because it is the same event, repaired the same way.
+
+**The evidence.**
+
+```
+kernel: thermal: sensor 0 (intake) at 51 C, above the 40 C trip point
+        -- the air in this room is not being changed
+```
+
+plus `events`, which prints the watts and the room's capacity in the same
+sentence: *"h1 is running hot: 1020 W of kit in a room that can shed 700 W"*,
+and the heat column in its condition table.
+
+**The repair.** Whatever went down unclean: `fsck`, then `pkg verify`, as 17.1.
+
+**How to avoid it.** Carry something out of the cupboard. This is the purest
+form of the thing the pivot was for -- the fault is a consequence of where the
+player decided to put a box, the diagnosis is arithmetic they can do
+themselves, and the fix costs nothing but the walk.
+
+### 17.4 Still to build
+
+- **[todo] A cheap power supply under load**, which is the one item on the
+  brief's list that is not here. It wants a quality attribute on kit at the
+  point of purchase and a boot that intermittently fails, and an
+  *intermittent* fault is a genuinely different design problem from every
+  other entry in this catalogue: the whole game rests on the machine telling
+  the truth about itself every time you ask, and a fault that is there on
+  every third boot is the first thing that would break that promise. It is
+  worth doing and it is worth doing carefully.
+- **[todo] A cable run past its length limit that works today and fails when
+  something else changes.** The length limit is real and already bites at
+  install time -- a run over a hundred metres is laid, paid for and does not
+  come up. What is missing is the marginal run: one that comes up now and
+  drops frames once the port beside it starts clocking bits.
+- **[todo] Weather that a player can see coming.** A blackout is deterministic
+  from the seed and completely invisible until it happens. That is honest, but
+  a building with a generator, or a landlord's notice of a planned outage,
+  would turn it from something you insure against into something you plan for.
+
 ## What makes a fault good
 
 1. **The evidence is on the machine.** The console says what it tried and what
