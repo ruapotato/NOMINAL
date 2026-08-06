@@ -259,6 +259,11 @@ long site_isp_price(int mb)
  * halves of the account use one calendar. */
 #define SITE_MONTH_DAYS  30
 
+/* One in twenty, for a box that was doing work when the lead came out. See
+ * site_unclean_stop(). Named here rather than written into the roll so the
+ * number a player is told is the number that is rolled. */
+#define SITE_UNPLUG_RISK_PCT 5
+
 /* HOW LONG A NEW TENANT GIVES YOU BEFORE THEY START RINGING. They moved in
  * this morning; they are unpacking, and nobody expects the network on day
  * one. Three days later they expect it, and a day after that with not one
@@ -925,15 +930,57 @@ bool site_unclean_stop(Site *s, int dev)
     Rng rng;
     rng_seed(&rng, s->seed ^ 0x9e3779b97f4a7c15ull ^
                    ((uint64_t)s->day << 12) ^ (uint64_t)dev);
+    /* HOW OFTEN PULLING A PLUG BREAKS SOMETHING.
+     *
+     * Every unplug of a working box used to deal a casualty, and three of
+     * pf_deal's four are damage -- so yanking a lead was a three-in-four
+     * chance of a repair. That is not what pulling a plug feels like, and
+     * the owner said so: *"pulling a plug on a live server should have a
+     * chance (somewhat low) to damage the FS and make you have to repair
+     * it."*
+     *
+     * It is also more true this way. A journalled filesystem survives most
+     * unclean stops; what kills it is being mid-write at the instant the
+     * power goes, and the busier the disk, the likelier that is. So the roll
+     * The owner set the number: *"it should be more like a 5% chance of
+     * damage to the FS."* One in twenty, flat, for any box that was doing
+     * work. I first scaled it with how busy the disk was -- 8% at a whisper
+     * up to 33% flat out -- and dropped that: a rate the player cannot count
+     * is a rate they cannot learn, and "pulling a live plug is about a one
+     * in twenty" is a thing somebody can hold in their head and take a
+     * decision against. The gradient was truer to physics and worse to
+     * play.
+     *
+     * A box that did nothing at all is clean, unchanged: there was nothing
+     * in flight to lose.
+     *
+     * The MAINS failure is deliberately NOT this. That is the whole building
+     * going down at 04:12 with everything mid-write at once, it is the event
+     * D28 built the four casualties for, and a player who has been warned by
+     * `events` for a fortnight and bought no battery should lose something.
+     * This is one lead, pulled on purpose, by somebody standing there. */
+    /* "A LIVE SERVER" IS ONE THAT IS RUNNING, not one whose port happens to
+     * read a whole per cent. The first version of this rolled only when
+     * used_pct() was above zero, and measured 0 damage in 397 unplugs of a
+     * server that was up, addressed and serving -- because that number is
+     * the port's share of the busy period as an integer, and a box nobody is
+     * hammering rounds to nothing. The machine either has a filesystem it
+     * could be part-way through writing or it does not. */
+    bool live = m && m->boot.running;
+    bool unlucky = live && rng_range(&rng, 0, 99) < SITE_UNPLUG_RISK_PCT;
     int seq = -1;
-    bool writing = used_pct(s, dev) > 0;
-    int kind = writing ? pf_deal(s, &rng, &seq) : PF_CLEAN;
+    int kind = unlucky ? pf_deal(s, &rng, &seq) : PF_CLEAN;
     char note[200] = "";
     if (m) breaker_powerfail_as(m, &rng, kind, note, sizeof note);
     site_power(s, dev, false);
-    ev_add(s, SEV_DOWN_DIRTY, dev,
-           "%s was unplugged while it was running and went down unclean.",
-           d->name);
+    if (kind == PF_CLEAN)
+        ev_add(s, SEV_DOWN_DIRTY, dev,
+               "%s was unplugged while it was running. Its filesystem came "
+               "through it.", d->name);
+    else
+        ev_add(s, SEV_DOWN_DIRTY, dev,
+               "%s was unplugged while it was running and went down unclean.",
+               d->name);
     (void)note;
     return true;
 }
