@@ -299,6 +299,24 @@ func _hole_on(f: int) -> Array:
 	for r in rooms:
 		if r.kind == K_LIFT and r.floor == f:
 			out.append(Rect2(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0))
+	# AND SO IS A RISER. It is the shaft every cable between two floors goes up,
+	# and it was a sealed slab: the tubes climbed straight through 160 mm of
+	# concrete, which is what a playtester photographed in the floor 3 comms
+	# cupboard. core/sessioncheck.c already refuses to walk you into one -- "a
+	# riser is a shaft" -- so opening it costs nobody a floor to stand on.
+	# The penetration is the part the shafts have in COMMON, so a riser that
+	# does not line up with the one below it does not open a hole into a room.
+	if f > 0:
+		var here := find_room(f, K_RISER)
+		var below := find_room(f - 1, K_RISER)
+		if here >= 0 and below >= 0:
+			var ra: Rect2 = Rect2(rooms[here].x0, rooms[here].y0,
+				rooms[here].x1 - rooms[here].x0, rooms[here].y1 - rooms[here].y0)
+			var rb: Rect2 = Rect2(rooms[below].x0, rooms[below].y0,
+				rooms[below].x1 - rooms[below].x0, rooms[below].y1 - rooms[below].y0)
+			var cut := ra.intersection(rb)
+			if cut.size.x > 0.4 and cut.size.y > 0.4:
+				out.append(cut)
 	for s in stairs:
 		if s.floor != f - 1:
 			continue
@@ -1505,6 +1523,11 @@ func _cable_colour(l: Dictionary) -> Color:
 
 
 # The waypoints a run passes through, port to port.
+# Set by _tray_route when the route crosses floors: the index in the returned
+# cells at which the leg on the far floor begins. -1 when it does not.
+var _riser_split := -1
+
+
 func _cable_route(sa: int, pa: int, sb: int, pb: int, salt: int) -> Array:
 	var a := _dev_point(sa, pa)
 	var b := _dev_point(sb, pb)
@@ -1531,10 +1554,25 @@ func _cable_route(sa: int, pa: int, sb: int, pb: int, salt: int) -> Array:
 	var ya := tray_y(fa_i)
 	var yb := tray_y(fb_i)
 	var pts: Array = [a, a1, Vector3(a1.x, ya, a1.z)]
+	_riser_split = -1
 	var cells := _tray_route(fa_i, Vector2(a1.x, a1.z), fb_i, Vector2(b1.x, b1.z))
-	for c in cells:
-		pts.append(Vector3(c.x, ya, c.y))
-	if absf(ya - yb) > 0.01 and not cells.is_empty():
+	var split := _riser_split
+	# WHERE THE CLIMB HAPPENS. The route across two floors is the leg on floor
+	# A, the riser, and the leg on floor B -- and every cell of it used to be
+	# stamped at floor A's tray height, with the single vertical put at the LAST
+	# cell, which is the one beside the box you are plugging into. So the second
+	# leg ran at the wrong storey's height and the cable climbed through the
+	# ceiling slab over the destination rack. It climbs in the riser now, which
+	# is where the hole is, and each leg is drawn at its own floor's tray.
+	for i in range(cells.size()):
+		if split > 0 and i == split:
+			var r: Vector2 = cells[split - 1]
+			pts.append(Vector3(r.x, yb, r.y))
+		var y: float = ya if (split < 0 or i < split) else yb
+		pts.append(Vector3(cells[i].x, y, cells[i].y))
+	if split < 0 and absf(ya - yb) > 0.01 and not cells.is_empty():
+		# No riser on this floor at all: the site model has already priced the
+		# real run, and the shortest honest thing to draw is a straight climb.
 		var last: Vector2 = cells[cells.size() - 1]
 		pts.append(Vector3(last.x, yb, last.y))
 	pts.append(Vector3(b1.x, yb, b1.z))
@@ -1561,6 +1599,10 @@ func _tray_route(fa: int, from: Vector2, fb: int, to: Vector2) -> Array:
 		var c := room_centre(r)
 		var up := _tray_route(fa, from, fa, Vector2(c.x, c.z))
 		var down := _tray_route(fb, Vector2(c.x, c.z), fb, to)
+		# WHICH CELL IS THE RISER, told to the caller. The two legs are on
+		# different floors and are drawn at different heights, and a flat list
+		# of corners cannot say where one stops being the other.
+		_riser_split = up.size()
 		return up + down
 	var sx := int(floor(from.x))
 	var sy := int(floor(from.y))
@@ -2719,8 +2761,104 @@ func lift_car_centre(which := 0) -> Vector3:
 
 # ------------------------------------------------------------------- the HUD
 
-var hud: Label = null
+#
+# LEGIBILITY IS NOT A COLOUR CHOICE, IT IS A BACKGROUND. The HUD was light text
+# with a one-pixel shadow drawn straight onto the world, and the world in this
+# building is a white-lit corridor, a plasterboard wall and a ceiling tile. A
+# playtester's screenshot of the floor 3 comms cupboard had eight lines of it
+# over a pale wall and a cable tray and about half of them could be read at all.
+# The day's report, on the same screen, was perfectly legible -- because it has
+# a dark panel behind it. That is the whole lesson: the text needs a surface of
+# its own, not a brighter grey.
+#
+# AND A BLOCK WITH NO STRUCTURE IS A BLOCK NOBODY READS. In that same shot the
+# permanent status line, the live `load` telemetry, a four-line hint about a
+# floor that is not open, and THE RUN IS OVER were all the same size, the same
+# weight and the same colour. So the block is tiered, and the tier says how
+# long the line is true for:
+#
+#   PLACE   where you are standing. Permanent, largest, on its own.
+#   NOW     what is in your hands and what the tower is doing this second --
+#           a cable end, a box in your arms, the lift, the port that is
+#           dropping. Warm, because it is the line that changes under you.
+#   STATE   the things that are simply the case: your hands, who is waiting,
+#           how many floors are open.
+#   HINT    the sentences core prints to explain a refusal. Smaller, dimmer,
+#           indented: they are the longest lines and the least urgent.
+#   KEY     what the next keystroke would do. Green, because it is an offer.
+#   ALERT   the run ending. Its own bar, its own colour, and big enough that
+#           it cannot be mistaken for a line about how many metres you walked.
+var hud: Control = null             # the whole top-left block; visibility hangs off it
 var reticle: Control = null
+var _hud_rows: VBoxContainer = null
+var _hud_alert: PanelContainer = null
+var _hud_alert_lab: Label = null
+var _hud_pool: Array = []           # reused row Labels, so this does not churn a frame
+var _hud_sig := ""
+
+# tier -> [font size, colour, left inset]
+const HUD_TIER := {
+	"place": [19, "#ffffff", 0.0],
+	"now":   [16, "#ffc46b", 0.0],
+	"state": [15, "#ccd9e6", 0.0],
+	"hint":  [14, "#93a6b8", 10.0],
+	"key":   [15, "#8fe0a8", 0.0],
+}
+
+
+func _hud_style(bg: Color, border: Color, left := 3) -> StyleBoxFlat:
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = bg
+	sb.corner_radius_top_left = 4
+	sb.corner_radius_top_right = 4
+	sb.corner_radius_bottom_left = 4
+	sb.corner_radius_bottom_right = 4
+	sb.border_width_left = left
+	sb.border_color = border
+	sb.content_margin_left = 12.0
+	sb.content_margin_right = 16.0
+	sb.content_margin_top = 8.0
+	sb.content_margin_bottom = 9.0
+	return sb
+
+
+# One row of the block. The shadow stays even though there is a panel behind
+# it: the panel is 78% opaque so a bright ceiling still comes through, and a
+# dark outline under the glyphs is what carries it the rest of the way.
+func _hud_row(tier: String) -> Label:
+	var spec: Array = HUD_TIER.get(tier, HUD_TIER["state"])
+	var l := Label.new()
+	l.add_theme_font_override("font", preload("res://scripts/uifont.gd").mono())
+	l.add_theme_font_size_override("font_size", int(spec[0]))
+	l.add_theme_color_override("font_color", Color(str(spec[1])))
+	l.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.9))
+	l.add_theme_constant_override("shadow_offset_x", 1)
+	l.add_theme_constant_override("shadow_offset_y", 1)
+	return l
+
+
+# WHICH TIER A LINE IS IN. hud_lines() is unchanged -- it is what `hud` over
+# the socket reads back and what game/tests/tower.gd greps -- so the tiering is
+# done by reading it, not by making every caller build a structure.
+func _hud_tier(line: String, first: bool) -> String:
+	if first:
+		return "place"
+	var t := line.strip_edges()
+	if t == "":
+		return "state"
+	if t.begins_with("THE RUN IS OVER"):
+		return "alert"
+	# The continuation lines of core's refusals arrive indented; so does the
+	# rest of the `open` paragraph, which is the longest thing on the screen.
+	if line.begins_with("  ") or t.begins_with("floor ") and t.find("not in service") > 0:
+		return "hint"
+	if t.begins_with("load:") or t.begins_with("phone:") \
+			or t.begins_with("cable in hand") or t.begins_with("carrying kit") \
+			or t.begins_with("in the lift:"):
+		return "now"
+	if t.begins_with("[") or t.find("   [O] ") > 0:
+		return "key"
+	return "state"
 
 # What is in your hands, and the two slots the mouse buttons use.
 func _bag() -> void:
@@ -2738,34 +2876,114 @@ func _hud() -> void:
 	layer.layer = 4
 	reticle = preload("res://scripts/reticle.gd").new()
 	layer.add_child(reticle)
-	hud = Label.new()
-	hud.add_theme_font_override("font", preload("res://scripts/uifont.gd").mono())
-	hud.add_theme_font_size_override("font_size", 15)
-	hud.add_theme_color_override("font_color", Color("#e8eef4"))
-	hud.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.85))
-	hud.add_theme_constant_override("shadow_offset_x", 1)
-	hud.add_theme_constant_override("shadow_offset_y", 1)
-	hud.position = Vector2(14, 12)
+	# The block: a dark panel of rows, and under it the alert bar, which is
+	# hidden until there is something to shout about.
+	var block := VBoxContainer.new()
+	block.name = "Hud"
+	block.position = Vector2(12, 10)
+	block.add_theme_constant_override("separation", 6)
+	block.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var body := PanelContainer.new()
+	body.add_theme_stylebox_override("panel",
+		_hud_style(Color(0.045, 0.065, 0.095, 0.78), Color("#4f7fa8")))
+	_hud_rows = VBoxContainer.new()
+	_hud_rows.add_theme_constant_override("separation", 2)
+	body.add_child(_hud_rows)
+	block.add_child(body)
+	# THE RUN ENDING IS NOT A LINE OF BODY TEXT. Its own bar, its own red, and
+	# large enough to be the thing you see first.
+	_hud_alert = PanelContainer.new()
+	_hud_alert.add_theme_stylebox_override("panel",
+		_hud_style(Color(0.28, 0.05, 0.03, 0.86), Color("#ff6b4a"), 5))
+	_hud_alert_lab = Label.new()
+	_hud_alert_lab.add_theme_font_override("font", preload("res://scripts/uifont.gd").mono())
+	_hud_alert_lab.add_theme_font_size_override("font_size", 23)
+	_hud_alert_lab.add_theme_color_override("font_color", Color("#ff9c7a"))
+	_hud_alert_lab.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.9))
+	_hud_alert_lab.add_theme_constant_override("shadow_offset_x", 1)
+	_hud_alert_lab.add_theme_constant_override("shadow_offset_y", 1)
+	_hud_alert.add_child(_hud_alert_lab)
+	_hud_alert.visible = false
+	block.add_child(_hud_alert)
+	hud = block
 	layer.add_child(hud)
 	# THE DATE AND THE MONEY, always up and never shouting. Top right, out of
 	# the way of the crosshair and of the location line, in `status`'s own
 	# sentences: "day 49. 58460 in hand, 1540 spent, 0 taken in rent."
+	# ... on a panel of its own, for the same reason: the top right of the view
+	# is the ceiling, and a ceiling tile is the brightest surface in the game.
+	var money := PanelContainer.new()
+	money.name = "Ledger"
+	money.add_theme_stylebox_override("panel",
+		_hud_style(Color(0.045, 0.065, 0.095, 0.78), Color("#4f7fa8"), 0))
+	money.anchor_left = 1.0
+	money.anchor_right = 1.0
+	money.offset_right = -12.0
+	money.offset_top = 10.0
+	money.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_ledger_box = money
 	ledger = Label.new()
 	ledger.add_theme_font_override("font", preload("res://scripts/uifont.gd").mono())
 	ledger.add_theme_font_size_override("font_size", 15)
-	ledger.add_theme_color_override("font_color", Color("#d8e2ea"))
-	ledger.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.85))
+	ledger.add_theme_color_override("font_color", Color("#dce7f0"))
+	ledger.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.9))
 	ledger.add_theme_constant_override("shadow_offset_x", 1)
 	ledger.add_theme_constant_override("shadow_offset_y", 1)
 	ledger.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	ledger.anchor_left = 1.0
-	ledger.anchor_right = 1.0
-	ledger.offset_left = -680.0
-	ledger.offset_right = -14.0
-	ledger.offset_top = 12.0
-	ledger.offset_bottom = 120.0
-	layer.add_child(ledger)
+	money.add_child(ledger)
+	layer.add_child(money)
 	add_child(layer)
+
+
+# PAINT THE BLOCK. Called every frame, but it rebuilds only when the text
+# actually changed -- a HUD that reallocates twenty Labels sixty times a second
+# is a HUD that costs more than the building behind it.
+func _hud_paint() -> void:
+	if hud == null or _hud_rows == null:
+		return
+	var text := where_am_i() + "\n" + hud_lines()
+	if text == _hud_sig:
+		return
+	_hud_sig = text
+	var lines := text.split("\n")
+	var n := 0
+	var alert := ""
+	for i in range(lines.size()):
+		var line: String = lines[i]
+		var tier := _hud_tier(line, i == 0)
+		if tier == "alert":
+			alert = line.strip_edges()
+			continue
+		if line.strip_edges() == "":
+			continue
+		# A row is made once and re-tiered in place. The pool is indexed by
+		# position in the block, so a line that changes tier changes font.
+		var l: Label
+		if n < _hud_pool.size():
+			l = _hud_pool[n]
+		else:
+			l = _hud_row(tier)
+			_hud_pool.append(l)
+			_hud_rows.add_child(l)
+		var spec: Array = HUD_TIER.get(tier, HUD_TIER["state"])
+		l.add_theme_font_size_override("font_size", int(spec[0]))
+		l.add_theme_color_override("font_color", Color(str(spec[1])))
+		# Everything is flush left so the block has one edge rather than four;
+		# the hints get one indent back, because they are a paragraph under the
+		# line that caused them rather than a fact of their own.
+		l.text = ("  " if tier == "hint" else "") + line.strip_edges()
+		l.visible = true
+		n += 1
+	for i in range(n, _hud_pool.size()):
+		_hud_pool[i].visible = false
+	if alert == "":
+		_hud_alert.visible = false
+	else:
+		_hud_alert_lab.text = alert
+		_hud_alert.visible = true
+	# Containers do not shrink a Control that is not in one, and Control.size is
+	# clamped up to the minimum, so zero means "exactly what fits".
+	hud.size = Vector2.ZERO
 
 
 # Everything under the location line: what is in your hands, what the tower is
@@ -3081,6 +3299,7 @@ func _free_port(s: int) -> int:
 # put where, and every number a player reads is the number core printed.
 
 var ledger: Label = null            # the date and the money, top right
+var _ledger_box: PanelContainer = null
 var _snap := {"status": "", "service": "", "load": "", "open": ""}
 var _snap_dirty := true
 var _snapping := false
@@ -3290,31 +3509,48 @@ func _show_report(said: String) -> void:
 	# hundred lines covers the HUD, the ledger and the building behind it. The
 	# tail is the part that matters -- the days you are about to live in -- and
 	# it says how many went past rather than pretending they did not.
+	var f: Font = preload("res://scripts/uifont.gd").mono()
+	var view := get_viewport().get_visible_rect().size
+	# CLEAR OF THE HUD. The location, the tenancies and what the next floor
+	# needs are all top left, and a report sitting on top of them is a report
+	# that costs you the thing it is telling you about. It used to be a fixed
+	# 250 px down, which was clear of a HUD of five lines and straight through
+	# the middle of one with seven tenancies and a run-ending bar on it -- so it
+	# is measured off the block instead of guessed at.
+	var top := 250.0
+	if hud and hud.visible:
+		top = max(top, hud.position.y + hud.size.y + 18.0)
+	top = min(top, view.y - 220.0)
+	# ... AND THE PANEL IS AS TALL AS THE TEXT REALLY IS. The height was
+	# 22 px a line against a font that draws at 24, so the last two lines of a
+	# long report -- which are the ones that say how to get out of it -- hung
+	# below the panel, on the building, unreadable. It is the font's own line
+	# height now, and how many days fit is worked out from the room there is.
+	# (a Label's line pitch is the font's height plus its line_spacing constant,
+	# which is 3 by default -- leaving it out is where the 22 came from)
+	var lh: float = f.get_height(17) + 3.0
+	var room: int = int((view.y - top - 40.0 - 36.0) / lh) - 3
+	var most: int = clampi(room, 4, REPORT_LINES)
 	var all := said.split("\n")
 	var shown := said
-	if all.size() > REPORT_LINES:
+	if all.size() > most:
 		var keep: Array = []
-		for i in range(all.size() - REPORT_LINES, all.size()):
+		for i in range(all.size() - most, all.size()):
 			keep.append(all[i])
-		shown = "... %d earlier days went past\n" % (all.size() - REPORT_LINES) \
+		shown = "... %d earlier days went past\n" % (all.size() - most) \
 			+ "\n".join(keep)
 	lab.text = shown + ("\n\n" if shown != "" else "") \
 		+ ("the run is over." if run_over else "[Esc] back to the building   [N] the next day")
 	pad.add_child(lab)
 	# The panel is the size of what core wrote: a fixed box would either crop
 	# a mains failure or leave a hole under a quiet day.
-	var f: Font = preload("res://scripts/uifont.gd").mono()
 	var w := 0.0
 	var lines := lab.text.split("\n")
 	for line in lines:
 		w = max(w, f.get_string_size(line, HORIZONTAL_ALIGNMENT_LEFT, -1, 17).x)
-	var view := get_viewport().get_visible_rect().size
 	pad.size = Vector2(min(w + 48.0, view.x - 120.0),
-		min(float(lines.size()) * 22.0 + 36.0, view.y - 180.0))
-	# CLEAR OF THE HUD. The location, the tenancies and what the next floor
-	# needs are all top left, and a report sitting on top of them is a report
-	# that costs you the thing it is telling you about.
-	pad.position = Vector2(60, 250)
+		min(float(lines.size()) * lh + 36.0, view.y - top - 40.0))
+	pad.position = Vector2(60, top)
 	lab.set_anchors_preset(Control.PRESET_FULL_RECT)
 	lab.offset_left = 24.0
 	lab.offset_top = 18.0
@@ -3761,10 +3997,17 @@ func _process(_dt: float) -> void:
 		var on: bool = not t.get("far", false) and not t.is_empty()
 		reticle.show_target(nm[0], nm[1], on,
 			t.get("kind", "") == "port" and spool_in_hand())
-	if hud:
-		hud.text = where_am_i() + "\n" + hud_lines()
+	_hud_paint()
 	if ledger:
-		ledger.text = ledger_text()
+		var lt := ledger_text()
+		if ledger.text != lt:
+			ledger.text = lt
+		# Shrink the panel to the sentence rather than reserving 700 px of dark
+		# bar across the top right of the view.
+		if _ledger_box:
+			var m := _ledger_box.get_combined_minimum_size()
+			_ledger_box.offset_left = -12.0 - m.x
+			_ledger_box.offset_bottom = _ledger_box.offset_top + m.y
 	# WHAT YOU ARE CARRYING IS IN THE ROOM YOU ARE IN, at every step of the
 	# walk -- not in an inventory that resolves when you put it down. The
 	# site is told the moment you cross the threshold, so `show` from a

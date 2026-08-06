@@ -728,6 +728,54 @@ func _init() -> void:
 				fail("the port lights say %d/%d and the link is %d" % [stt, stb, l.state])
 			else:
 				ok("both ports read state %d out of the model" % stt)
+		# ---- AND A CABLE BETWEEN TWO FLOORS GOES UP THE RISER, NOT THROUGH THE
+		# SLAB. A playtester photographed the floor 3 comms cupboard with blue
+		# tubes climbing straight through 160 mm of concrete over the rack: the
+		# route stamped every corner at the STARTING floor's tray height and put
+		# the single vertical at the last corner, which is the one beside the box
+		# you are plugging into. It looks fine in the numbers -- the metres were
+		# always right -- and only a screenshot or this check catches it.
+		var mdf_r: int = t.find_room(0, t.K_MDF)
+		var cup_r: int = t.find_room(3, t.K_COMMS)
+		if mdf_r >= 0 and cup_r >= 0:
+			var ca: Vector3 = t.room_centre(mdf_r)
+			var cb: Vector3 = t.room_centre(cup_r)
+			t._riser_split = -1
+			var cells: Array = t._tray_route(0, Vector2(ca.x, ca.z), 3,
+				Vector2(cb.x, cb.z))
+			var split: int = t._riser_split
+			if split <= 0:
+				fail("a cable from floor 0 to floor 3 does not go via a riser at all")
+			else:
+				var ya: float = t.tray_y(0)
+				var yb: float = t.tray_y(3)
+				var line: Array = []
+				for i in range(cells.size()):
+					if i == split:
+						var rc: Vector2 = cells[split - 1]
+						line.append(Vector3(rc.x, yb, rc.y))
+					line.append(Vector3(cells[i].x,
+						ya if i < split else yb, cells[i].y))
+				var through := 0
+				for i in range(line.size() - 1):
+					var p: Vector3 = line[i]
+					var q: Vector3 = line[i + 1]
+					if absf(p.y - q.y) < 0.01:
+						continue
+					for fl in range(1, t.nfloors + 1):
+						if min(p.y, q.y) > fl * t.fheight \
+								or max(p.y, q.y) < fl * t.fheight - t.SLAB_T:
+							continue
+						var holed := false
+						for h in t._hole_on(fl):
+							if (h as Rect2).has_point(Vector2(p.x, p.z)):
+								holed = true
+						if not holed:
+							through += 1
+				if through > 0:
+					fail("the cable climbs through %d sealed slabs" % through)
+				else:
+					ok("a cable across three floors climbs in the riser, through the penetration")
 		# and the same run over the socket's own words gets the same refusal
 		var again: String = t.site("plug uplink:0")
 		if again.find("already") < 0 and again.find("cable in it") < 0:

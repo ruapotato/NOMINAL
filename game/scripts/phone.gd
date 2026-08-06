@@ -69,6 +69,8 @@ var _lead: MeshInstance3D = null
 var _lead_col := Color("#1e6f3a")
 var _prompt := ""
 var _hint: Label = null
+var _idle: ColorRect = null      # the standby screen, while no lead is in anything
+var _repaint := 0                # frames of viewport left to draw while dark
 
 
 func _ready() -> void:
@@ -80,6 +82,13 @@ func _ready() -> void:
 	_show_serial()
 	_say("[no lead plugged in]")
 	_relight()
+	# A FEW FRAMES, SO THE SCREEN IS NOT BLANK. A viewport that has never
+	# rendered is a black texture, and a black texture on a handset in your hand
+	# is the black rectangle nobody could name. It cannot be one frame: the
+	# Controls on it have not had a layout pass yet when _ready returns, so the
+	# single render came back empty. Three frames, then it stops for good and
+	# the standby screen stays on the glass for the rest of the run.
+	_repaint = 3
 
 
 # ----------------------------------------------------------------- the handset
@@ -98,8 +107,19 @@ const SCREEN_H := 0.116
 # in anything, and up at reading distance when there is -- which is the whole
 # reason the 2D on it is legible: 186 mm of screen at 190 mm from your eye is
 # two fifths of the width of the view, not a postage stamp across a room.
-const POSE_DOWN := Vector3(0.30, -0.30, -0.46)
-const ROT_DOWN := Vector3(-0.55, 0.30, 0.12)
+#
+# DOWN MEANS DOWN. It used to hang at (0.30, -0.30, -0.46) nearly square to the
+# eye, which put a hand-sized black rectangle with a bright orange edge across
+# the bottom right corner of every screenshot, at the same angle in every room.
+# The owner, looking at his own playtest: "an orange-outlined black panel
+# floating at an odd angle at the bottom right that I cannot identify." It is
+# not floating -- it is the handset in your hand -- but a slab you see the face
+# of is a slab you read as a HUD element, so it is further down, further out
+# and tipped away from you: a corner of a phone at your side, which is what it
+# is. The screen also stops being blank -- see _make_viewport() -- so what does
+# show of it says "debugger" rather than "black rectangle".
+const POSE_DOWN := Vector3(0.300, -0.330, -0.470)
+const ROT_DOWN := Vector3(-0.70, 0.36, 0.22)
 const POSE_READ := Vector3(0.115, -0.070, -0.230)
 const ROT_READ := Vector3(-0.10, 0.06, 0.0)
 # AND UP IN FRONT OF YOUR FACE when you are actually typing on it: square to
@@ -129,7 +149,7 @@ func _body() -> void:
 	# building in a pocket has a rubber bumper round it
 	_mesh(Vector3(CASE_W, CASE_H, 0.013), Vector3(0, 0, -0.004), Color("#23272c"))
 	_mesh(Vector3(CASE_W + 0.008, CASE_H + 0.008, 0.009), Vector3(0, 0, -0.006),
-		Color("#c8792c"))
+		Color("#a3601f"))
 	# A speaker grille and a button, so the top and the bottom of the case are
 	# not the same. BEHIND THE SCREEN PLANE, not level with it: at 0.0035 they
 	# sit exactly where the screen quad is and win the depth test against it,
@@ -213,6 +233,36 @@ func _make_viewport() -> void:
 	_hint.position = Vector2(10, 2.0)
 	_hint.size = Vector2(float(_vp.size.x) - 20.0, 20.0)
 	_serial.add_child(_hint)
+	# THE STANDBY SCREEN, and it exists because of a screenshot. With no lead in
+	# anything the glass showed a console with one grey line in the corner of it,
+	# which at arm's length is a black rectangle: "an orange-outlined black panel
+	# floating at an odd angle that I cannot identify." A thing you are holding
+	# should say what it is from across the room, so it does -- big enough to
+	# read at the size the handset actually occupies when it is down at your side.
+	_idle = ColorRect.new()
+	_idle.color = Color("#101820")
+	_idle.set_anchors_preset(Control.PRESET_FULL_RECT)
+	var big := Label.new()
+	big.add_theme_font_override("font", _mono)
+	big.add_theme_font_size_override("font_size", 92)
+	big.add_theme_color_override("font_color", Color("#6fdc96"))
+	big.text = "DEBUGGER"
+	big.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	big.set_anchors_preset(Control.PRESET_FULL_RECT)
+	big.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	big.offset_bottom = -70.0
+	_idle.add_child(big)
+	var sub := Label.new()
+	sub.add_theme_font_override("font", _mono)
+	sub.add_theme_font_size_override("font_size", 44)
+	sub.add_theme_color_override("font_color", Color("#7e93a6"))
+	sub.text = "no lead plugged in"
+	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	sub.set_anchors_preset(Control.PRESET_FULL_RECT)
+	sub.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	sub.offset_top = 90.0
+	_idle.add_child(sub)
+	_serial.add_child(_idle)
 	_vp.add_child(_serial)
 
 	_screen = MeshInstance3D.new()
@@ -275,6 +325,9 @@ func _process(dt: float) -> void:
 	var k: float = clampf(dt * 12.0, 0.0, 1.0)
 	position = position.lerp(pw, k)
 	rotation = rotation.lerp(rw, k)
+	if _repaint > 0 and not lit and _vp:
+		_repaint -= 1
+		_vp.render_target_update_mode = SubViewport.UPDATE_ONCE
 	if lit:
 		_draw_lead()
 
@@ -288,8 +341,12 @@ func plug(dev: int, which_lead: String) -> String:
 	# so what this switches is the picture and the lead hanging off it.
 	lit = plugged >= 0
 	if _vp:
+		# ... and a few more frames on the way down, so the screen the lead left
+		# behind is the standby screen rather than whatever was last on it.
 		_vp.render_target_update_mode = SubViewport.UPDATE_ALWAYS if lit \
 			else SubViewport.UPDATE_DISABLED
+		if not lit:
+			_repaint = 3
 	if not lit:
 		_drop_lead()
 	_relight()
@@ -529,6 +586,10 @@ func _relight() -> void:
 		_term.bg = Color("#0d1116") if lit else Color("#05070a")
 		_term.fg = Color("#c9d4dd") if lit else Color("#3a444d")
 		_term.queue_redraw()
+	# The standby screen is the whole screen when there is no lead in anything,
+	# and gone the moment there is one: what is on the glass then is the console.
+	if _idle:
+		_idle.visible = not lit
 
 
 func _show_serial() -> void:
