@@ -1543,6 +1543,295 @@ static void check_cable_batch(int *passed, int *total)
     session_end(&ses);
 }
 
+/* ------------------- one box to a cupboard, walked and typed, side by side
+ *
+ * WHAT THIS IS FOR, because the obvious reading is wrong. `deliver` is not a
+ * convenience: a day-30 playtester measured 40% of their commands as
+ * `lift 0 / go goods / carry X / lift N / go comms / drop` and called it
+ * filler, and that playtester was an agent on a socket. The owner's reading
+ * is the correct one -- those are *"actions the user will do walking around
+ * in the 3d space"*. For the human there is nothing to delete; carrying a box
+ * up two floors is the game. `deliver` exists so that a tester who cannot
+ * hold a movement key can still play the half of this game that is legs,
+ * because blind playtesting is the only quality mechanism this project has.
+ *
+ * WHICH MAKES THIS CHECK THE WHOLE JUSTIFICATION. The two sessions below are
+ * the same seed and the same three switches into the same cupboard: one
+ * played with the movement verbs, one typed. If the money, the metres or the
+ * room differ by anything at all, the verb is not parity, it is an advantage
+ * the keyboard does not have -- and it should be deleted rather than tuned.
+ *
+ * The lift is why this is measured rather than assumed. `lift 3` is NOT the
+ * same metres as walking up three flights: do_lift() charges the walk to this
+ * floor's lift lobby and the ride itself is free, which is the whole reason
+ * anybody puts a switch on the eighth floor. A `deliver` that took the stairs
+ * would have been DEARER than the hands, and just as wrong. */
+static void check_deliver_played(int *passed, int *total)
+{
+    P = passed; T = total;
+    printf("\nthree switches to one floor: walked, and typed\n");
+
+    /* Six movement commands a box, exactly as the playtester typed them. */
+    static const char *LONG[] = {
+        "buy switch24 sw1", "buy switch24 sw2", "buy switch24 sw3",
+        "go goods",  "carry sw1", "lift 1", "go comms", "drop",
+        "lift 0", "go goods", "carry sw2", "lift 1", "go comms", "drop",
+        "lift 0", "go goods", "carry sw3", "lift 1", "go comms", "drop",
+        NULL
+    };
+    Session a;
+    if (!session_start(&a, GATE_SEED, 100000)) { ck("a session starts", false); return; }
+    Buf o = {0};
+    int an = 0;
+    for (int i = 0; LONG[i]; i++) { say(&a, LONG[i], &o); an++; }
+    int comms = a.room;
+    ck("walked, three switches end up in the floor one comms cupboard",
+       a.b.rooms[comms].kind == RM_COMMS && a.b.rooms[comms].floor == 1 &&
+       site_dev_by_name(&a.s, "sw1") > 0 &&
+       a.s.dev[site_dev_by_name(&a.s, "sw1")].room == (uint16_t)comms &&
+       a.s.dev[site_dev_by_name(&a.s, "sw2")].room == (uint16_t)comms &&
+       a.s.dev[site_dev_by_name(&a.s, "sw3")].room == (uint16_t)comms);
+    printf("    %d lines, %ld m walked, %ld spent\n", an, a.walked, a.s.spent);
+
+    /* The same job, with the walking typed instead of held down. */
+    static const char *SHORT[] = {
+        "buy switch24 sw1", "buy switch24 sw2", "buy switch24 sw3",
+        "deliver sw1 sw2 sw3 f1.comms", NULL
+    };
+    Session b;
+    if (!session_start(&b, GATE_SEED, 100000)) { ck("a session starts", false); return; }
+    int bn = 0;
+    for (int i = 0; SHORT[i]; i++) { say(&b, SHORT[i], &o); bn++; }
+    ck("typed, the same three end up in the same cupboard",
+       b.room == comms &&
+       b.s.dev[site_dev_by_name(&b.s, "sw1")].room == (uint16_t)comms &&
+       b.s.dev[site_dev_by_name(&b.s, "sw2")].room == (uint16_t)comms &&
+       b.s.dev[site_dev_by_name(&b.s, "sw3")].room == (uint16_t)comms);
+    printf("    %d lines, %ld m walked, %ld spent\n", bn, b.walked, b.s.spent);
+
+    /* THE THREE ASSERTIONS THE VERB EXISTS TO SATISFY. Parity, or nothing. */
+    ck("and it costs the same money -- not one penny of it is a discount",
+       a.s.spent == b.s.spent && a.s.money == b.s.money);
+    ck("and the same metres of building, lift rides and all",
+       a.walked == b.walked && a.walked > 0);
+    ck("and leaves you standing where the sixth movement command left you",
+       b.room == comms && b.b.rooms[b.room].floor == 1);
+    /* The days too: a delivery is legs, and legs do not turn the calendar,
+     * either way round. */
+    ck("and on the same day, because walking has never advanced the clock",
+       a.s.day == b.s.day);
+
+    buf_free(&o);
+    session_end(&a);
+    session_end(&b);
+}
+
+/* --------------------------------- and it refuses everything `carry` refuses
+ *
+ * A shorthand that could do something the hands cannot is a second game. Each
+ * of these is a refusal the long form gives, asked of the one-liner, and the
+ * assertion is that the WORLD DID NOT MOVE: no metres, no money, and the box
+ * still where it was. That last one is what `cable` learned the hard way --
+ * a refused line that had already taken a drum off the shelf left the player
+ * unable to pick anything up. */
+static void check_deliver_refuses(int *passed, int *total)
+{
+    P = passed; T = total;
+    printf("\nthe shorthand refuses what the hands refuse\n");
+    Session ses;
+    if (!session_start(&ses, GATE_SEED, 100000)) { ck("a session starts", false); return; }
+    Buf o = {0};
+    open_next_floor(&ses, &o);
+    say(&ses, "go mdf", &o);
+    say(&ses, "buy switch24 core", &o);
+    say(&ses, "buy switch24 sw1", &o);
+    say(&ses, "buy pc spare", &o);
+
+    long walked = ses.walked, money = ses.s.money;
+    ck("a box that does not exist is refused, and nobody walked anywhere",
+       has(say(&ses, "deliver nosuchbox f1.comms", &o), "no box called nosuchbox") &&
+       ses.walked == walked && ses.s.money == money);
+    ck("a room that does not exist is refused the same way",
+       has(say(&ses, "deliver core nosuchroom", &o), "no room or box called") &&
+       ses.walked == walked);
+    ck("and naming one box twice, because it only needs carrying once",
+       has(say(&ses, "deliver core core f1.comms", &o), "named twice") &&
+       ses.walked == walked);
+
+    /* Hands full. */
+    say(&ses, "go goods", &o);
+    say(&ses, "carry spare", &o);
+    walked = ses.walked;
+    ck("a box already in your hands stops the line before it starts",
+       has(say(&ses, "deliver core f1.comms", &o), "both your hands are on it") &&
+       ses.carrying == site_dev_by_name(&ses.s, "spare") && ses.walked == walked);
+    say(&ses, "drop", &o);
+
+    /* A drum is the other thing that takes both hands. */
+    say(&ses, "spool cat6", &o);
+    walked = ses.walked;
+    ck("so does a drum of cable, and the drum is still in your hands after",
+       has(say(&ses, "deliver core f1.comms", &o), "drum of cable") &&
+       ses.spool_kind >= 0 && ses.walked == walked);
+    say(&ses, "spool back", &o);
+
+    /* The ISP's handoff is the ISP's, and it is in the MDF, so this one
+     * walks you there first -- which is what `go mdf` then `carry uplink`
+     * does too, for the same metres. */
+    ck("the ISP handoff is on their wall and does not come with you",
+       has(say(&ses, "deliver uplink f1.comms", &o), "the handoff is the ISP's") &&
+       ses.carrying < 0);
+
+    /* A BOX WITH COPPER IN IT, and where the refusal happens matters.
+     * `go core` then `carry core` charges the walk and THEN says there is a
+     * cable in the back of it, because that is when a person finds out. So
+     * does this: the metres are spent, the box has not moved, and the words
+     * are the long form's. A shorthand that had checked from the doorway
+     * would be cheaper than the hands in the one case the player got it
+     * wrong, which is the one case it must not be. */
+    say(&ses, "deliver core sw1 f1.comms", &o);
+    int comms = ses.room;
+    say(&ses, "cable core:0 sw1:0 cat5e", &o);
+    say(&ses, "spool back", &o);
+    say(&ses, "go mdf", &o);
+    long spent = ses.s.spent;
+    walked = ses.walked;
+    ck("a cabled box is refused, in the long form's own words",
+       has(say(&ses, "deliver core mdf", &o), "on the end of a cable") &&
+       ses.s.spent == spent &&
+       ses.s.dev[site_dev_by_name(&ses.s, "core")].room == (uint16_t)comms);
+    ck("and it found out where a person finds out: at the box, walk paid for",
+       ses.walked > walked && ses.room == (int)ses.s.dev[site_dev_by_name(&ses.s, "core")].room);
+
+    /* A tenant's own kit. Move a tenancy in and try to walk off with a desk. */
+    int desk = -1;
+    for (int d = 0; d < 40 && desk < 0; d++) {
+        say(&ses, "day", &o);
+        for (int i = 0; i < ses.s.ndev; i++)
+            if (ses.s.dev[i].tenant != 0) { desk = i; break; }
+    }
+    if (desk >= 0) {
+        char c[64];
+        snprintf(c, sizeof c, "deliver %s mdf", ses.s.dev[desk].name);
+        int was = ses.s.dev[desk].room;
+        ck("and a tenant's own computer stays on the tenant's own desk",
+           has(say(&ses, c, &o), "belongs to the tenant") &&
+           ses.s.dev[desk].room == (uint16_t)was);
+    } else ck("and a tenant's own computer stays on the tenant's own desk", false);
+
+    /* AND WHEN IT CANNOT FINISH, IT STOPS WHERE A PERSON WOULD STOP. Two
+     * boxes named, the second of them cabled: the first is delivered and the
+     * line stops with it there, rather than silently unwinding a trip that
+     * really happened. */
+    say(&ses, "go mdf", &o);
+    say(&ses, "buy switch8 pair1", &o);
+    say(&ses, "buy switch8 pair2", &o);
+    say(&ses, "go goods", &o);
+    say(&ses, "carry pair2", &o);
+    say(&ses, "go f1.comms", &o);
+    say(&ses, "drop", &o);
+    say(&ses, "cable pair2:0 sw1:1 cat5e", &o);
+    say(&ses, "spool back", &o);
+    say(&ses, "go mdf", &o);
+    int mdf = ses.room;
+    const char *half = say(&ses, "deliver pair1 pair2 mdf", &o);
+    ck("half a delivery is half done, not undone: the first box arrived",
+       ses.s.dev[site_dev_by_name(&ses.s, "pair1")].room == (uint16_t)mdf &&
+       has(half, "on the end of a cable"));
+    ck("and the second is exactly where the copper left it",
+       ses.s.dev[site_dev_by_name(&ses.s, "pair2")].room == (uint16_t)comms);
+
+    buf_free(&o);
+    session_end(&ses);
+}
+
+/* ------------------- the two ends of a tagged link, and the sentence between
+ *
+ * THE MEASUREMENT. A day-30 playtester named the real burden in this game and
+ * it is not typing: *"the bookkeeping around a tenancy is five places to get
+ * right -- `vlan 13` = tenant 3 = `10.0.3.0/24` = `subif edge 1 13` = `trunk
+ * core 2 13` = `trunk sw2b 23 13` -- and the game checks none of them against
+ * each other."* Both commands answer "set" and neither mentions the other.
+ *
+ * What follows does not assert that a warning is PRINTED. It asserts that the
+ * warning is TRUE, by playing both sides of it: a real host on a real vlan
+ * pings a real router across a real switch, and it fails while the note is on
+ * the screen and succeeds the moment the trunk carries the tag. That is the
+ * rule this project runs on -- every technical claim true of this machine,
+ * verified by running it -- and a note that said something false at the
+ * moment of a mistake would be worse than no note at all. */
+static void check_tag_hop(int *passed, int *total)
+{
+    P = passed; T = total;
+    printf("\nwhat one end of a tagged link says about the other\n");
+    Session ses;
+    if (!session_start(&ses, GATE_SEED, 100000)) { ck("a session starts", false); return; }
+    Buf o = {0};
+
+    static const char *SETUP[] = {
+        /* Built with the movement verbs on purpose: this check is about the
+         * note, and it must fail on a tree that has the note missing rather
+         * than on one that could not carry a box to the MDF. */
+        "buy router edge", "buy switch24 core", "buy pc t14",
+        "go goods", "carry edge", "go mdf", "drop",
+        "go goods", "carry core", "go mdf", "drop",
+        "go goods", "carry t14", "go mdf", "drop",
+        "cable edge:1 core:2 cat6",
+        "cable t14:0 core:5 cat5e",
+        "spool back",
+        "power t14 on",
+        "vlan core 5 14",
+        "addr t14 10.0.14.9/24",
+        NULL
+    };
+    for (int i = 0; SETUP[i]; i++) say(&ses, SETUP[i], &o);
+
+    const char *sub = say(&ses, "subif edge 1 14 10.0.14.1/24", &o);
+    ck("a subinterface on a card whose far port does not carry the tag says so",
+       has(sub, "wears vlan 14") && has(sub, "does not carry vlan 14") &&
+       has(sub, "trunk core 2 14"));
+
+    /* AND THE NOTE IS TRUE. Not "the game printed a warning" -- the frame
+     * really does not get there, and this is the frame. */
+    int t14 = site_dev_by_name(&ses.s, "t14");
+    int rtt = 0;
+    PingResult before = net_ping(ses.s.net, ses.s.dev[t14].node,
+                                 net_ip(10, 0, 14, 1), &rtt);
+    ck("and it is true: a host in vlan 14 cannot reach its gateway across it",
+       before != PING_OK);
+
+    const char *tr = say(&ses, "trunk core 2 14", &o);
+    ck("letting the vlan across the trunk stops the note being printed",
+       !has(tr, "does not carry vlan 14"));
+    PingResult after = net_ping(ses.s.net, ses.s.dev[t14].node,
+                                net_ip(10, 0, 14, 1), &rtt);
+    ck("and stops it being true, in the same move: the ping crosses now",
+       after == PING_OK);
+
+    /* THE SAME DISAGREEMENT, NOTICED FROM THE SWITCH. `trunk` is typed on the
+     * box at the other end from `subif`, and a player who takes a vlan back
+     * off a trunk has just broken the subinterface riding on it. */
+    const char *off = say(&ses, "trunk core 2 -14", &o);
+    ck("and taking it back off says which subinterface that just cut off",
+       has(off, "wears vlan 14") && has(off, "does not carry vlan 14"));
+    ck("which is true as well: the ping stops crossing again",
+       net_ping(ses.s.net, ses.s.dev[t14].node, net_ip(10, 0, 14, 1), &rtt) != PING_OK);
+
+    /* AND IT DOES NOT CRY WOLF. A link that works gets no note, ever: a
+     * warning printed beside a correct configuration teaches a player to
+     * stop reading them, which is worse than printing nothing. */
+    say(&ses, "trunk core 2 14", &o);
+    const char *quiet = say(&ses, "subif edge 1 14 10.0.14.1/24", &o);
+    ck("a subinterface whose trunk does carry it is not warned about",
+       !has(quiet, "NOTE") && has(quiet, "eth1.14"));
+    const char *plain = say(&ses, "addr t14 10.0.14.9/24", &o);
+    ck("nor is an ordinary address on an access port",
+       !has(plain, "NOTE"));
+
+    buf_free(&o);
+    session_end(&ses);
+}
+
 /* ------------------------------- the same riser, bought both ways, played
  *
  * A playtest that reached day 34 said the thing this feature has to answer:
@@ -2431,6 +2720,9 @@ int session_selfcheck(int *passed, int *total)
     check_prompt(passed, total);
     check_inventory(passed, total);
     check_cable_batch(passed, total);
+    check_deliver_played(passed, total);
+    check_deliver_refuses(passed, total);
+    check_tag_hop(passed, total);
     check_jack_played(passed, total);
     check_quote_played(passed, total);
     check_vlan_server_reboot(passed, total);

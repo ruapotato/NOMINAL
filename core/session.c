@@ -1144,6 +1144,16 @@ static void do_help(const Session *ses, Buf *out)
         "                     metre of copper is measured from there\n"
         "                     -- a box with a cable in it will not be picked\n"
         "                     up again until you `uncable` it\n"
+        "  deliver <box> [<box>...] <room>\n"
+        "                     THIS IS THE MOVEMENT KEYS, FOR A KEYBOARD THAT HAS\n"
+        "                     NONE. In the building you walk to goods in, pick it\n"
+        "                     up and carry it; over a pipe there is no walking to\n"
+        "                     do, so this is `go`, `carry`, `lift`, `go`, `drop`\n"
+        "                     performed in order. It is PARITY, not a shortcut:\n"
+        "                     the same metres, the same money, the same days, no\n"
+        "                     advantage of any kind, and several boxes is several\n"
+        "                     trips because both hands are still on one box.\n"
+        "                     `deliver <box>` alone brings it to this room\n"
         "\n"
         "CABLING, which is four things a person does and four things you type:\n"
         "  spool cat6         take a drum off the shelf. cat5, cat5e, cat6, fibre.\n"
@@ -2096,6 +2106,243 @@ static void do_patch(Session *ses, int n, char *t[MAXTOK], Buf *out)
     site_cmd(&ses->s, cmd, out);
 }
 
+/* ------------------------------------------------------ picking it up, and
+ * putting it down. These two are the whole of what `carry` and `drop` do,
+ * lifted out of session_line() unchanged so that `deliver` can call them
+ * rather than reimplement them. A shorthand that grew its own refusals would
+ * drift out of the long form's voice within a week, and the refusals ARE the
+ * teaching: "both your hands are on it" is where a player learns why one box
+ * a trip is the rule. One copy, both verbs. */
+static bool carry_box(Session *ses, int d, Buf *out)
+{
+    if (ses->carrying == d) {
+        buf_printf(out, "you are already carrying %s.\n", ses->s.dev[d].name);
+        return true;
+    }
+    if (ses->carrying >= 0) {
+        buf_printf(out, "refused: %s is still in your hands and both your "
+                        "hands are on it --\n  you did not pick %s up. `drop` "
+                        "puts %s down here, and then\n  `carry %s`.\n",
+                   ses->s.dev[ses->carrying].name, ses->s.dev[d].name,
+                   ses->s.dev[ses->carrying].name, ses->s.dev[d].name);
+        return false;
+    }
+    if (ses->spool_kind >= 0) {
+        buf_printf(out, "refused: you have a drum of cable in your hands, so "
+                        "%s is still on\n  the floor -- you did not pick it up. "
+                        "`spool back` puts the drum on the\n  shelf, and then "
+                        "`carry %s`.\n",
+                   ses->s.dev[d].name, ses->s.dev[d].name);
+        return false;
+    }
+    /* A tenant's computer is a tenant's computer. The model will happily
+     * move it -- it is not cabled and not fixed to a wall -- but walking
+     * out of a leased floor with the machine somebody works on is not a
+     * thing the building's IT department gets to do. */
+    if (ses->s.dev[d].tenant != 0) {
+        buf_printf(out, "refused: %s belongs to the tenant on floor %d, not "
+                        "to you, and it\n  stays where it is. Their kit is "
+                        "theirs; you are here for the wall, the\n  cupboard "
+                        "and the copper.\n",
+                   ses->s.dev[d].name, ses->s.dev[d].floor);
+        return false;
+    }
+    if (!site_move(&ses->s, d, ses->room)) {
+        buf_printf(out, "refused: %s\n", site_err_text(ses->s.err));
+        if (ses->s.err == SITE_ECABLED)
+            buf_printf(out, "  %s is on the end of a cable. `links` says which "
+                            "one, `uncable <n>` pulls\n  it out -- and the copper "
+                            "is paid for, so moving a box costs the run.\n",
+                       ses->s.dev[d].name);
+        if (ses->s.err == SITE_EFIXED)
+            buf_puts(out, "  the handoff is the ISP's, on their wall, in their "
+                          "conduit.\n");
+        if (ses->s.err == SITE_EJACK)
+            buf_printf(out, "  a jack is punched down onto a socket on the back "
+                            "of %s, and the other\n  end of that run is screwed "
+                            "to a wall in another room. `jacks` says which.\n"
+                            "  That is what `for good` meant when you bought "
+                            "it: this box stays here.\n",
+                       ses->s.dev[d].name);
+        return false;
+    }
+    ses->carrying = d;
+    buf_printf(out, "you pick %s up. It goes where you go until you `drop` it.\n",
+               ses->s.dev[d].name);
+    return true;
+}
+
+static void drop_box(Session *ses, Buf *out)
+{
+    int d = ses->carrying;
+    ses->carrying = -1;
+    site_move(&ses->s, d, ses->room);
+    char w[48];
+    room_label(ses, ses->room, w, sizeof w);
+    buf_printf(out, "%s is in %s now. %d port%s, and nothing in any of them "
+                    "yet.\n", ses->s.dev[d].name, w, ses->s.dev[d].nports,
+               ses->s.dev[d].nports == 1 ? "" : "s");
+}
+
+/* --------------------------------------------------------- getting there
+ * THE LIFT IS PART OF THE ROUTE, and leaving it out would have made the
+ * shorthand dearer than the long form rather than the same.
+ *
+ * `lift 3` then `go comms` is what a person types and it is not the same
+ * number of metres as walking up three flights: do_lift() charges the walk to
+ * this floor's lift lobby and the ride itself is free, which is why anybody
+ * ever puts a switch on the eighth floor. So this is `lift` and `go`,
+ * performed in that order, with walk_to() charging every metre of both. A
+ * floor with no lit button -- one nobody has opened -- has no lift, and the
+ * fallback is the stairs, which is also exactly what a person would do. */
+static bool travel_to(Session *ses, int dst, Buf *out)
+{
+    if (dst < 0 || dst >= ses->b.nrooms) { buf_puts(out, "no such room.\n"); return false; }
+    if (dst == ses->room) return true;
+    int f = ses->b.rooms[dst].floor;
+    if (f != here_floor(ses) && f < ses->floors) {
+        int from = lift_lobby(ses, here_floor(ses));
+        int to   = lift_lobby(ses, f);
+        if (from >= 0 && to >= 0) {
+            if (from != ses->room && !walk_to(ses, from, out, false)) return false;
+            if (to != ses->room) {
+                ses->room = to;
+                if (ses->carrying >= 0) site_move(&ses->s, ses->carrying, to);
+                buf_printf(out, "you take the lift to floor %d.\n", f);
+            }
+        }
+    }
+    return walk_to(ses, dst, out, false);
+}
+
+/* ------------------------------------------------------------- the delivery
+ * THE MOVEMENT KEYS, FOR A CLIENT THAT HAS NO MOVEMENT KEYS. Read the next
+ * three paragraphs before touching this, because the obvious reading of it
+ * is the wrong one and this project has already made that mistake once.
+ *
+ * A day-30 playtester measured roughly 40% of their commands as
+ * `lift 0 / go goods / carry X / lift N / go comms / drop`, once per box, and
+ * called it filler. It was reported as tedium in the GAME and it is not:
+ * that playtester was an agent on a socket, and the owner's reading is the
+ * correct one -- *"lift 0 / go goods / carry X / lift N / drop are all things
+ * the AI has to do because they are not in the 3d space. Those are actions
+ * the user will do walking around in the 3d space."* For the human at the
+ * keyboard there is nothing to delete. Carrying a box up two floors is the
+ * physical act that makes where you put it mean something, it is what D23
+ * built the floor plan for, and a `deliver` sold as a convenience would be
+ * quietly undoing the game to save typing nobody does.
+ *
+ * SO THIS IS NOT A CONVENIENCE AND MUST NEVER BE DOCUMENTED AS ONE. It
+ * exists because of the rule in session.h -- *"if it cannot be played over a
+ * socket, it cannot be tested, and it will rot"* -- and blind playtests are
+ * the only quality mechanism this project has ever had. A tester who cannot
+ * hold W needs a line that IS holding W: the same route, the same lift, the
+ * same metres, the same money, the same days, and no advantage whatsoever.
+ * `cable` was given the identical treatment for the identical reason, in the
+ * owner's own words: *"for things like cabling, we should have an easy way
+ * for agents to do what a person would do moving around."*
+ *
+ * WHICH MAKES THE COST IDENTITY THE ENTIRE JUSTIFICATION, not a guard rail
+ * around one. --sessioncheck plays the six-command sequence and this one line
+ * side by side on the same seed and asserts the money, the metres walked and
+ * the room you end up in are equal. If that check ever fails, this verb is
+ * not parity any more and it should be deleted rather than repaired.
+ *
+ * Everything under it is the long form's own code: travel_to() is `lift` then
+ * `go`, carry_box() and drop_box() are `carry` and `drop`, so the refusals
+ * are the same refusals in the same words. Several boxes is several trips,
+ * because both hands are on one box and that has not stopped being true. It
+ * does not walk you back to where you started, because `drop` does not
+ * either -- it ends in the room with the box, which is where the long form
+ * leaves you. */
+static void do_deliver(Session *ses, int n, char *t[MAXTOK], Buf *out)
+{
+    /* The last word is where it goes; everything before it is a box. One
+     * word alone means this room, which is what somebody standing in the
+     * comms cupboard means when they say `deliver sw1`. */
+    int nbox = n - 2, dst = ses->room;
+    if (n == 2) nbox = 1;
+    else {
+        dst = room_arg(ses, t[n - 1]);
+        if (dst < 0) {
+            buf_printf(out, "there is no room or box called %s. The last word is "
+                            "where it goes:\n  `deliver <box> <room>`, `deliver "
+                            "<box>` on its own for the room you are\n  standing "
+                            "in. `rooms` lists them, `map` draws the floor.\n",
+                       t[n - 1]);
+            return;
+        }
+    }
+    if (nbox > MAXTOK - 2) nbox = MAXTOK - 2;
+
+    /* EVERYTHING KNOWABLE FROM A STANDING START IS CHECKED FROM A STANDING
+     * START, exactly as do_cable() checks before the drum comes off the
+     * shelf: a line that refuses leaves the world as it found it, including
+     * the metres. What is NOT knowable from here is whether the walk exists,
+     * and that one stops the delivery where it stops, with the box in
+     * whatever room it really reached. */
+    int box[MAXTOK];
+    for (int i = 0; i < nbox; i++) {
+        box[i] = dev_arg(ses, t[1 + i]);
+        if (box[i] < 0) {
+            buf_printf(out, "refused: nothing was carried anywhere -- there is no "
+                            "box called %s in\n  this building. `look` in goods "
+                            "in says what the van has left.\n", t[1 + i]);
+            return;
+        }
+        for (int j = 0; j < i; j++)
+            if (box[j] == box[i]) {
+                buf_printf(out, "refused: nothing was carried anywhere -- %s is "
+                                "named twice, and it only\n  needs carrying "
+                                "once.\n", ses->s.dev[box[i]].name);
+                return;
+            }
+    }
+    if (ses->carrying >= 0 && ses->carrying != box[0]) {
+        buf_printf(out, "refused: nothing was carried anywhere -- %s is still in "
+                        "your hands and\n  both your hands are on it. `drop` puts "
+                        "it down here first.\n",
+                   ses->s.dev[ses->carrying].name);
+        return;
+    }
+    if (ses->spool_kind >= 0) {
+        buf_printf(out, "refused: nothing was carried anywhere -- you have a drum "
+                        "of cable in your\n  hands, and a box takes both of them. "
+                        "`spool back` puts the drum on the\n  shelf.\n");
+        return;
+    }
+    /* WHY THE REST IS NOT CHECKED FROM HERE, and it was on the first draft.
+     *
+     * Whether a box is cabled, jacked, the ISP's or a tenant's is knowable
+     * from a standing start, and refusing the whole line before moving would
+     * have been tidier. It would also have been a DIFFERENT GAME from the
+     * long form: `go core` then `carry core` charges you the walk and THEN
+     * tells you there is copper in the back of it, because that is when a
+     * person finds out. Checking it early would make the shorthand cheaper
+     * than the hands in exactly the case the player got something wrong,
+     * which is the one case it must not be. So carry_box() asks, at the box,
+     * in its own words -- and a delivery that cannot finish stops there with
+     * the boxes before it delivered and this one where it has always been. */
+
+    char w[48];
+    room_label(ses, dst, w, sizeof w);
+    for (int i = 0; i < nbox; i++) {
+        int d = box[i];
+        if (ses->s.dev[d].room == dst && ses->carrying != d) {
+            buf_printf(out, "%s is in %s already.\n", ses->s.dev[d].name, w);
+            continue;
+        }
+        if (ses->carrying != d && !travel_to(ses, ses->s.dev[d].room, out)) return;
+        if (!carry_box(ses, d, out)) return;
+        if (!travel_to(ses, dst, out)) {
+            buf_printf(out, "%s is still in your hands. `drop` puts it down where "
+                            "you are standing.\n", ses->s.dev[d].name);
+            return;
+        }
+        drop_box(ses, out);
+    }
+}
+
 /* ------------------------------------------- handing a line to site_cmd */
 /* The verbs that name a box. On the management line the box is assumed, so
  * `addr 10.0.1.1/24` is rewritten into the spelling site_cmd wants -- and
@@ -2143,10 +2390,108 @@ static bool is_config(const char *v)
            strcmp(v, "dns") == 0;
 }
 
+/* --------------------------------------- the two ends of a tagged link, and
+ * whether they agree about what is crossing it.
+ *
+ * THE MEASUREMENT. A playtester who reached day 30 named the real burden in
+ * this game, and it is not typing: *"the bookkeeping around a tenancy is five
+ * places to get right -- `vlan 13` = tenant 3 = `10.0.3.0/24` = `subif edge 1
+ * 13` = `trunk core 2 13` = `trunk sw2b 23 13` -- and the game checks none of
+ * them against each other."* They found the consequence the hard way: a
+ * subinterface whose vlan was not on the trunk it rides, with both commands
+ * answering "set" and nothing anywhere saying the two disagreed. That is a
+ * burden a human carries exactly as an agent does, because it is held in the
+ * head rather than in the fingers.
+ *
+ * WHAT THIS DOES AND WHAT IT DELIBERATELY DOES NOT. It checks ONE hop: the
+ * cable in front of you, the tag one end wears, and whether the socket at the
+ * other end will pass it. It does not check the subnet against the tenancy,
+ * it does not check the far switch's uplink, and it does not tell you what
+ * the convention should be -- those are the player's to hold, and a checklist
+ * that held them would be playing the game. It is one sentence at the moment
+ * of the mistake, which is the only moment it is worth anything.
+ *
+ * AND IT NEVER CRIES WOLF, which is why it is narrower than it looks.
+ * netstack's port_carries() passes a vlan if it is the port's native OR in
+ * the allowed set, and session.c can read the native out of net_dump_trunk()
+ * and the set out of net_trunk_allows(). A frame tagged with a vlan neither
+ * of those admits is dropped at that port on ingress AND filtered on egress
+ * -- switch_rx() does both -- so when this speaks, the claim is true. It
+ * stays quiet on an access port that happens to be in the right vlan (where
+ * the tagged frame is in fact dropped, and it under-warns) rather than risk
+ * saying something false about a link that works. */
+static bool port_passes_tag(const Session *ses, int dev, int port, int vlan)
+{
+    if (net_trunk_allows(ses->s.net, ses->s.dev[dev].node, port, vlan)) return true;
+    /* The native vlan, read out of the one printer netstack has for it, so
+     * this cannot drift from what `show` says about the same port. */
+    Buf b = {0};
+    net_dump_trunk(ses->s.net, ses->s.dev[dev].node, port, &b);
+    int native = (b.p && strncmp(b.p, "native ", 7) == 0) ? atoi(b.p + 7) : -1;
+    buf_free(&b);
+    return native == vlan;
+}
+
+static void tag_hop_note(Session *ses, int dev, Buf *out)
+{
+    if (dev < 0 || dev >= ses->s.ndev) return;
+    int said = 0;
+    for (int l = 0; l < ses->s.nlink && said < 3; l++) {
+        const SiteLink *lk = &ses->s.link[l];
+        if (lk->cable < 0) continue;
+        if (lk->a != dev && lk->b != dev) continue;
+        int me = lk->a, mp = lk->aport, peer = lk->b, pp = lk->bport;
+        if (lk->b == dev) { me = lk->b; mp = lk->bport; peer = lk->a; pp = lk->aport; }
+        /* One end has to be the box wearing tags and the other the switch
+         * deciding what crosses. Either of them may be the one just
+         * configured -- `subif` names the router, `trunk` names the switch,
+         * and both should hear about the same disagreement. */
+        int host = -1, hport = -1, sw = -1, sport = -1;
+        if (!site_kind_is_switch(ses->s.dev[me].kind) &&
+             site_kind_is_switch(ses->s.dev[peer].kind)) {
+            host = me; hport = mp; sw = peer; sport = pp;
+        } else if (site_kind_is_switch(ses->s.dev[me].kind) &&
+                  !site_kind_is_switch(ses->s.dev[peer].kind)) {
+            host = peer; hport = pp; sw = me; sport = mp;
+        } else continue;
+        int hnode = ses->s.dev[host].node;
+        for (int ifx = 0; ifx < NET_IF_MAX && said < 3; ifx++) {
+            if (!net_if_exists(ses->s.net, hnode, ifx)) continue;
+            if (net_if_nic(ses->s.net, hnode, ifx) != hport) continue;
+            int v = net_if_get_vlan(ses->s.net, hnode, ifx);
+            if (v <= 0) continue;
+            if (port_passes_tag(ses, sw, sport, v)) continue;
+            char nm[24];
+            net_if_name(ses->s.net, hnode, ifx, nm, sizeof nm);
+            buf_printf(out, "  NOTE: %s on %s wears vlan %d, and %s port %d -- "
+                            "the socket at the\n  other end of that cable -- does "
+                            "not carry vlan %d. A frame tagged %d is\n  dropped "
+                            "there, coming and going, so nothing on vlan %d "
+                            "crosses this link.\n"
+                            "  `trunk %s %d %d` lets it across; `show %s` says "
+                            "what that port carries.\n",
+                       nm, ses->s.dev[host].name, v, ses->s.dev[sw].name, sport,
+                       v, v, v, ses->s.dev[sw].name, sport, v,
+                       ses->s.dev[sw].name);
+            said++;
+        }
+    }
+}
+
 static void after_config(Session *ses, const char *verb, int dev, Buf *out)
 {
-    if (!is_config(verb) && strcmp(verb, "router") != 0) return;
     if (dev < 0 || dev >= ses->s.ndev) return;
+    /* THE THREE VERBS THAT CAN DISAGREE WITH THE BOX AT THE OTHER END OF A
+     * CABLE. `vlan` and `trunk` are not is_config() -- a switch has no disk
+     * to write them onto -- but they are exactly half of the pair this note
+     * is about, so the check has to happen before that gate rather than
+     * after it. `subif` is is_config() and goes the long way round below. */
+    bool tagverb = strcmp(verb, "trunk") == 0 || strcmp(verb, "vlan") == 0 ||
+                   strcmp(verb, "subif") == 0;
+    if (!is_config(verb) && strcmp(verb, "router") != 0) {
+        if (tagverb) tag_hop_note(ses, dev, out);
+        return;
+    }
     if (ses->mach[dev]) sync_disk(ses, dev);
     /* WHETHER THAT WILL SURVIVE THE POWER GOING OFF, said out loud, because
      * for a name server it sometimes will not. A zone goes into
@@ -2181,6 +2526,7 @@ static void after_config(Session *ses, const char *verb, int dev, Buf *out)
         if (strcmp(verb, "subif") == 0) {
             buf_printf(out, "%s:\n", ses->s.dev[dev].name);
             net_dump_ifaces(ses->s.net, ses->s.dev[dev].node, out);
+            tag_hop_note(ses, dev, out);
             return;
         }
         if (strcmp(verb, "router") == 0) {
@@ -2197,6 +2543,7 @@ static void after_config(Session *ses, const char *verb, int dev, Buf *out)
             buf_printf(out, "    (written onto its disk: it has an OS and netd "
                             "reads that file)\n");
     }
+    if (tagverb) tag_hop_note(ses, dev, out);
 }
 
 /* --------------------------------------------------------------- day one */
@@ -2651,8 +2998,16 @@ bool session_line(Session *ses, const char *line, Buf *out)
             nom_free(dm);
             if (m < BLD_INF) buf_printf(out, ", %d m from here.\n", (int)(m + 0.5));
             else buf_puts(out, ".\n");
+            /* THE LONG FORM IS WHAT THIS TEACHES, because carrying a box up
+             * two floors is the game and not an errand: it is how a player
+             * finds out what a floor plan costs. `deliver` is named beside
+             * it as what a keyboard with no W key types instead, and the
+             * words say that rather than selling it as quicker. */
             buf_printf(out, "  `go goods`, `carry %s`, walk it to where it goes, "
-                            "`drop`.\n", ses->s.dev[d].name);
+                            "`drop`.\n  (over a pipe, with no building to walk "
+                            "through: `deliver %s <room>`,\n  which is those four "
+                            "and the same metres.)\n",
+                       ses->s.dev[d].name, ses->s.dev[d].name);
         }
         return true;
     }
@@ -2678,60 +3033,7 @@ bool session_line(Session *ses, const char *line, Buf *out)
         }
         int d;
         if (!need_here(ses, t[at], &d, out)) return true;
-        if (ses->carrying == d) {
-            buf_printf(out, "you are already carrying %s.\n", ses->s.dev[d].name);
-            return true;
-        }
-        if (ses->carrying >= 0) {
-            buf_printf(out, "refused: %s is still in your hands and both your "
-                            "hands are on it --\n  you did not pick %s up. `drop` "
-                            "puts %s down here, and then\n  `carry %s`.\n",
-                       ses->s.dev[ses->carrying].name, ses->s.dev[d].name,
-                       ses->s.dev[ses->carrying].name, ses->s.dev[d].name);
-            return true;
-        }
-        if (ses->spool_kind >= 0) {
-            buf_printf(out, "refused: you have a drum of cable in your hands, so "
-                            "%s is still on\n  the floor -- you did not pick it up. "
-                            "`spool back` puts the drum on the\n  shelf, and then "
-                            "`carry %s`.\n",
-                       ses->s.dev[d].name, ses->s.dev[d].name);
-            return true;
-        }
-        /* A tenant's computer is a tenant's computer. The model will happily
-         * move it -- it is not cabled and not fixed to a wall -- but walking
-         * out of a leased floor with the machine somebody works on is not a
-         * thing the building's IT department gets to do. */
-        if (ses->s.dev[d].tenant != 0) {
-            buf_printf(out, "refused: %s belongs to the tenant on floor %d, not "
-                            "to you, and it\n  stays where it is. Their kit is "
-                            "theirs; you are here for the wall, the\n  cupboard "
-                            "and the copper.\n",
-                       ses->s.dev[d].name, ses->s.dev[d].floor);
-            return true;
-        }
-        if (!site_move(&ses->s, d, ses->room)) {
-            buf_printf(out, "refused: %s\n", site_err_text(ses->s.err));
-            if (ses->s.err == SITE_ECABLED)
-                buf_printf(out, "  %s is on the end of a cable. `links` says which "
-                                "one, `uncable <n>` pulls\n  it out -- and the copper "
-                                "is paid for, so moving a box costs the run.\n",
-                           ses->s.dev[d].name);
-            if (ses->s.err == SITE_EFIXED)
-                buf_puts(out, "  the handoff is the ISP's, on their wall, in their "
-                              "conduit.\n");
-            if (ses->s.err == SITE_EJACK)
-                buf_printf(out, "  a jack is punched down onto a socket on the back "
-                                "of %s, and the other\n  end of that run is screwed "
-                                "to a wall in another room. `jacks` says which.\n"
-                                "  That is what `for good` meant when you bought "
-                                "it: this box stays here.\n",
-                           ses->s.dev[d].name);
-            return true;
-        }
-        ses->carrying = d;
-        buf_printf(out, "you pick %s up. It goes where you go until you `drop` it.\n",
-                   ses->s.dev[d].name);
+        carry_box(ses, d, out);
         return true;
     }
     if (strcmp(t[0], "drop") == 0 || strcmp(t[0], "put") == 0 ||
@@ -2740,14 +3042,26 @@ bool session_line(Session *ses, const char *line, Buf *out)
             buf_puts(out, "you are not carrying anything.\n");
             return true;
         }
-        int d = ses->carrying;
-        ses->carrying = -1;
-        site_move(&ses->s, d, ses->room);
-        char w[48];
-        room_label(ses, ses->room, w, sizeof w);
-        buf_printf(out, "%s is in %s now. %d port%s, and nothing in any of them "
-                        "yet.\n", ses->s.dev[d].name, w, ses->s.dev[d].nports,
-                   ses->s.dev[d].nports == 1 ? "" : "s");
+        drop_box(ses, out);
+        return true;
+    }
+    /* THE WHOLE DELIVERY IN ONE LINE, and every metre of it still walked. */
+    if (strcmp(t[0], "deliver") == 0 || strcmp(t[0], "fetch") == 0) {
+        if (n < 2) {
+            buf_puts(out, "deliver <box> [<box>...] <room>\n"
+                          "  WALKING, FOR A CLIENT WITH NOTHING TO WALK WITH. In "
+                          "the building you hold\n  a key down; over a pipe you "
+                          "type this, and it is `go`, `carry`, `lift`,\n  `go`, "
+                          "`drop` performed in that order -- the lift where you "
+                          "would take the\n  lift, the stairs where there is no "
+                          "button. Parity, not a shortcut: the\n  same metres, the "
+                          "same money, the same days, and one box a trip because\n"
+                          "  both hands are on it.\n"
+                          "  `deliver <box>` on its own brings it to the room you "
+                          "are standing in.\n");
+            return true;
+        }
+        do_deliver(ses, n, t, out);
         return true;
     }
     if (strcmp(t[0], "uncable") == 0 && n < 2) {
