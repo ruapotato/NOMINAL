@@ -919,6 +919,98 @@ func _init() -> void:
 		else:
 			ok("%d of their computers stand in the %s (%d devices, was %d)"
 				% [drawn, t.rooms[troom].name, t.devices.size(), was_dev])
+		# ---- AND SOMEBODY IS SITTING AT EVERY ONE OF THEM.
+		#
+		# A person per desk device, in the room the tenancy rents, derived from
+		# the model rather than scattered: the count is `service`'s desk count,
+		# the room is the one core let to them, and the postures are that
+		# tenancy's own columns. Nothing here is drawn as a node, so this is
+		# read off the instance buffers.
+		var pc: Array = t.people_counts()
+		var npeople: int = pc[0] + pc[1] + pc[2] + pc[3]
+		var ndesk := 0
+		var nup := 0
+		for r2 in rows:
+			ndesk += int(r2.desks)
+			nup += int(r2.up)
+		if npeople != ndesk:
+			fail("%d desks in the building and %d people at them" % [ndesk, npeople])
+		else:
+			ok("%d people at %d desks, in %d instance buffers"
+				% [npeople, ndesk, t._people_buffers()])
+		# NOTHING IS CABLED YET, so nobody in the building can do any work and
+		# the rooms have to say so. `up 0` is the model's; hands up is the
+		# view's rendering of it, and one following the other is the point.
+		if nup == 0 and pc[0] > 0:
+			fail("no desk in the building has a port and %d people are working" % pc[0])
+		elif nup == 0:
+			ok("no port in any of them, so all %d have their hand up"
+				% [pc[1] + pc[2]])
+		# ---- AND NOBODY IS SITTING IN A DOORWAY OR IN A RACK AISLE.
+		#
+		# People have no collision -- a person is not a wall -- so the walking
+		# tests above cannot catch this. It is the same claim the rack check
+		# makes as data, for the same reason: a chair in the door of an office
+		# you never walk through is a regression that would go quiet.
+		var seat_bad := 0
+		var seats: Array = t.people_seats()
+		for st in seats:
+			var s: Vector3 = st.pos
+			var sf: int = int(floor((s.y + 0.3) / t.fheight))
+			var sx: int = int(floor(s.x))
+			var sz: int = int(floor(s.z))
+			var sr: int = t.room_of(sf, sx, sz)
+			if sr != t.tenant_room(int(st.tenant)):
+				seat_bad += 1
+				fail("somebody of tenant %d is sitting at (%.1f, %.1f), which is not the room their tenancy rents"
+					% [int(st.tenant), s.x, s.z])
+				continue
+			var cell := Rect2(sx, sz, 1, 1)
+			for dd in t.room_doors(sr):
+				if cell.intersects(dd.clear):
+					seat_bad += 1
+					fail("somebody is sitting in the clear floor of the %s door"
+						% t.rooms[sr].name)
+			for ri in t.racks_in(sr):
+				var k: Dictionary = t.racks[ri]
+				var kw: float = t.RACK_W if k.along_x else t.RACK_D
+				var kd: float = t.RACK_D if k.along_x else t.RACK_W
+				if cell.intersects(Rect2(k.x, k.z, kw, kd)):
+					seat_bad += 1
+					fail("somebody is sitting inside a rack in the %s"
+						% t.rooms[sr].name)
+		if seat_bad == 0 and not seats.is_empty():
+			ok("all %d of them are in their own room, clear of every doorway"
+				% seats.size())
+		# ---- AND YOU CAN STILL WALK THE ROOM THEY ARE IN. Twenty desks, twenty
+		# chairs and twenty people between the door and the far wall: the
+		# chequerboard is what leaves a way through, and this is a real body
+		# walking it rather than the arithmetic that says it should fit.
+		var oroom: Dictionary = t.rooms[troom]
+		var od: Array = t.room_doors(troom)
+		if not od.is_empty():
+			var gate2: Vector2 = od[0].gate
+			var into: Vector2 = gate2 - od[0].out * 1.2
+			var far := Vector2(float(oroom.x1) - 0.8, float(oroom.y1) - 0.8)
+			if into.distance_to(far) < 3.0:
+				far = Vector2(float(oroom.x0) + 0.8, float(oroom.y0) + 0.8)
+			# WHERE THE BODY WAS. `_be_here()` tells the site the room you are
+			# standing in, and the checks after this one ask the session which
+			# floor you are on -- so this walk puts the body back afterwards.
+			var was_at: Vector3 = t.player.global_position
+			t.teleport(Vector3(into.x, float(oroom.floor) * t.fheight + 0.3, into.y))
+			for i in range(16):
+				await process_frame
+			if await _walk_to(self, t, far, 900):
+				ok("walked from their door to the far corner of the office")
+			else:
+				fail("blocked crossing an occupied office at (%.1f, %.1f), heading for (%.1f, %.1f)"
+					% [t.player.global_position.x, t.player.global_position.z,
+						far.x, far.y])
+			t.teleport(was_at)
+			for i in range(8):
+				await process_frame
+
 		# and you can find out without typing a verb: over their door, and on
 		# the HUD, in `service`'s own columns
 		if t.waiting_signs() == 0:

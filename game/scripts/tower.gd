@@ -902,13 +902,20 @@ func _floor_slot(room: int, k: int, nu: int) -> Dictionary:
 			"size": Vector3(0.62, h, 0.62), "face": b.face}
 
 
-# A TENANT'S COMPUTER, standing on the floor of the room they rent.
+# A TENANT'S DESK, on the floor of the room they rent.
 #
 # One per square metre on a chequerboard, in reading order, skipping the clear
 # floor every doorway needs -- so twenty desks read as a room somebody works
 # in and there is a way between them. `k` is the desk's number in that room,
 # which is the order site_devs() lists them and therefore the order they were
 # installed: t3d0 is always in the same place.
+#
+# What comes back is where the tenant's COMPUTER stands -- under the desk, on
+# the left, its back to the desk's back so the patch lead rises behind the
+# furniture rather than through the top of it. The desk itself and the person
+# at it are drawn by people.gd from the same cell and the same yaw, which is
+# what makes "walk over to their desk" and `go t7d3` the same act: there is one
+# place, and the computer, the desk and the person all read it.
 func _tenant_desk_slot(room: int, k: int) -> Dictionary:
 	var r: Dictionary = rooms[room]
 	var clear: Array = []
@@ -931,8 +938,61 @@ func _tenant_desk_slot(room: int, k: int) -> Dictionary:
 	if spots.is_empty():
 		return {}
 	var p: Vector2 = spots[k % spots.size()]
-	return {"mn": Vector3(p.x + 0.30, float(r.floor) * fheight + 0.02, p.y + 0.30),
-		"size": Vector3(0.40, 0.42, 0.40), "face": Vector3(0, 0, 1)}
+	var yaw := _desk_yaw(room, int(p.x), int(p.y))
+	var centre := Vector3(p.x + 0.5, float(r.floor) * fheight, p.y + 0.5)
+	var P = preload("res://scripts/people.gd")
+	var a := centre + _rot_xz(Vector3(P.BOX_X0, 0.02, P.BOX_Z0), yaw)
+	var b := centre + _rot_xz(Vector3(P.BOX_X1, 0.02 + P.BOX_H, P.BOX_Z1), yaw)
+	var mn := Vector3(min(a.x, b.x), a.y, min(a.z, b.z))
+	var mx := Vector3(max(a.x, b.x), b.y, max(a.z, b.z))
+	return {"mn": mn, "size": mx - mn, "face": _rot_xz(Vector3(0, 0, -1), yaw),
+		"centre": centre, "yaw": yaw}
+
+
+# WHICH WAY THE DESK FACES, decided by the room rather than chosen. The chair
+# goes in a square metre that is inside the room and not the clear floor a
+# doorway needs -- otherwise a person is sitting in the door -- and of the ways
+# that are left, the one with a wall BEHIND the monitor wins, because that is
+# where anybody puts a desk. The order is fixed, so the same room always lays
+# out the same way.
+func _desk_yaw(room: int, x: int, z: int) -> float:
+	var r: Dictionary = rooms[room]
+	var clear: Array = []
+	for dd in room_doors(room):
+		clear.append(dd.clear)
+	var best := 0.0
+	var best_score := -1
+	var i := 0
+	for d in [Vector2(0, 1), Vector2(0, -1), Vector2(1, 0), Vector2(-1, 0)]:
+		var yaw: float = [0.0, PI, PI * 0.5, -PI * 0.5][i]
+		i += 1
+		var seat := Vector2(x + d.x, z + d.y)
+		var score := 0
+		if room_of(int(r.floor), int(seat.x), int(seat.y)) != room:
+			continue                       # the chair would be in the wall
+		var blocked := false
+		for c in clear:
+			if Rect2(seat.x, seat.y, 1, 1).intersects(c):
+				blocked = true
+		if blocked:
+			continue                       # or in the doorway
+		score += 1
+		if room_of(int(r.floor), x - int(d.x), z - int(d.y)) != room:
+			score += 2                     # a wall behind the screen
+		if score > best_score:
+			best_score = score
+			best = yaw
+	return best
+
+
+# A point in a desk's own frame, put into the building's. The yaws are all
+# multiples of a right angle, so this is snapped back to millimetres: a box
+# that comes out of a sine 1e-16 off the axis is a box that z-fights the floor.
+func _rot_xz(v: Vector3, yaw: float) -> Vector3:
+	var s := sin(yaw)
+	var c := cos(yaw)
+	return Vector3(snappedf(v.x * c + v.z * s, 0.001), v.y,
+		snappedf(-v.x * s + v.z * c, 0.001))
 
 
 func racks_in(room: int) -> Array:
@@ -1881,6 +1941,7 @@ const DEV_COL := {"uplink": Color("#9a7b3a"), "switch8": Color("#3f6f96"),
 
 func _place_devices() -> void:
 	devices.clear()
+	_desks.clear()
 	for k in racks:
 		k.next_u = 34
 	var mdf := find_room(0, K_MDF)
@@ -1920,6 +1981,15 @@ func _place_devices() -> void:
 			slot = {}
 			if str(d.kindname) == "desk":
 				slot = _tenant_desk_slot(room, k)
+				# AND SOMEBODY IS SITTING AT IT. The seat is this slot's own
+				# cell and yaw, so the person, the desk and the computer are
+				# one place: `go t7d3` walks you to the desk you can see them
+				# at. `k` is their number in the tenancy, which is the only
+				# thing _seats() needs to know to say which of them can work.
+				if not slot.is_empty():
+					_desks.append({"tenant": int(d.tenant), "k": k,
+						"pos": slot.centre, "yaw": float(slot.yaw),
+						"floor": int(d.floor)})
 			if slot.is_empty():
 				slot = _floor_slot(room, k, nu)
 		# A managed box has a management line and no picture on the back of it.
@@ -1956,6 +2026,120 @@ func _place_devices() -> void:
 			continue
 		_add_device("patch panel", -1, false, false, slot.mn, slot.size,
 			Color("#4a4033"), slot.face, 24, -1)
+
+	_people()
+
+
+# ================================================== THE PEOPLE AT THE DESKS
+#
+# "let's also add in the virtual people to actually be in their office at a
+# computer desk similar to the server room, where if you felt like it you could
+# go over to their desk and see what issues they're complaining about...
+# basically let's make the world feel alive."
+#
+# One person per desk device the site installed, in the room the tenancy rents,
+# at the cell _tenant_desk_slot() put their computer in. There is no list of
+# people: `_desks` is filled by the same loop that draws the computers, and
+# every one of them disappears the moment the model stops saying that desk is
+# there.
+#
+# WHAT IS WRONG WITH THEM IS `service`'s COLUMNS, NOT A MOOD KEPT HERE.
+#   addr    how many of the tenancy's desks have a live port AND an address.
+#           Only an addressed desk does any work, so the ones past that count
+#           have their hand up: they are the job, and they are visible from
+#           the doorway without opening a panel.
+#   strikes days in a row the tenancy did not get four fifths of its work
+#           done. One or more and the room has had a bad week: the ones who
+#           CAN work are bent over their desks, and the ones who cannot go
+#           from amber to red -- the same two colours the door beacon uses.
+#           A served day resets it in core, so the room comes back up the
+#           same day the player fixes it.
+#
+# core says HOW MANY are addressed, not WHICH, so the view spends them in
+# install order: t7d0 first. That is a presentation of a number, and it is the
+# same order the room was cabled in, which is the order they really would be.
+var _desks: Array = []          # {tenant, k, pos, yaw} -- one per desk device
+var _people_node: Node3D = null
+
+func _seats() -> Array:
+	var P = preload("res://scripts/people.gd")
+	var addr := {}
+	var bad := {}
+	for row in service_rows():
+		addr[int(row.tenant)] = int(row.addr)
+		# THE STRIKE COUNT AND NOT THE STAR. A filed complaint never un-files,
+		# so a room read off `complained` would be red for the rest of the run
+		# however well it was served afterwards -- and the day a player finally
+		# fixes a tenancy is the day the building has to show it.
+		bad[int(row.tenant)] = int(row.strikes) > 0
+	var out: Array = []
+	for d in _desks:
+		var t := int(d.tenant)
+		var works: bool = int(d.k) < int(addr.get(t, 0))
+		var sad: bool = bool(bad.get(t, false))
+		var mood: int = P.M_WORKING
+		if works and sad:
+			mood = P.M_SLUMPED
+		elif not works:
+			mood = P.M_WAITING_BAD if sad else P.M_WAITING
+		out.append({"pos": d.pos, "yaw": d.yaw, "mood": mood,
+			"floor": int(d.get("floor", 0))})
+	return out
+
+
+func _people() -> void:
+	if _people_node == null or not is_instance_valid(_people_node):
+		_people_node = preload("res://scripts/people.gd").new()
+		_people_node.name = "People"
+		add_child(_people_node)
+	_people_node.rebuild(_seats())
+
+
+# What is drawn, by mood, for a test that cannot see -- there are no nodes to
+# count, because a floor of people is four instance buffers.
+func people_counts() -> Array:
+	if _people_node == null or not is_instance_valid(_people_node):
+		return [0, 0, 0, 0]
+	return _people_node.counts()
+
+
+func _people_buffers() -> int:
+	if _people_node == null or not is_instance_valid(_people_node):
+		return 0
+	return int(_people_node.buffers())
+
+
+# WHAT THE WINDOW COSTS RIGHT NOW. Godot's own counters, averaged over the
+# last second by the engine, plus the two numbers this file is responsible
+# for: how many people are drawn and in how many buffers. A crowd that is
+# cheap in theory and dear in the frame is still dear.
+func perf_text() -> String:
+	var c := people_counts()
+	var n: int = c[0] + c[1] + c[2] + c[3]
+	return "fps %d, %.2f ms of process, %.2f ms of physics\n" \
+			% [int(Performance.get_monitor(Performance.TIME_FPS)),
+				Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0,
+				Performance.get_monitor(Performance.TIME_PHYSICS_PROCESS) * 1000.0] \
+		+ "%d draw calls, %d primitives, %d objects in the frame\n" \
+			% [int(Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME)),
+				int(Performance.get_monitor(Performance.RENDER_TOTAL_PRIMITIVES_IN_FRAME)),
+				int(Performance.get_monitor(Performance.RENDER_TOTAL_OBJECTS_IN_FRAME))] \
+		+ "%d people at %d desks, in %d multimesh buffers: %d working, " \
+			% [n, n, _people_buffers(), c[0]] \
+		+ "%d waiting, %d waiting badly, %d struck\n" % [c[1], c[2], c[3]] \
+		+ "%d devices drawn, %d triangles of building\n" \
+			% [devices.size(), triangle_count()]
+
+
+# Where everybody is sitting, in world metres: the chair's square metre, which
+# is the one thing about a person that could stand in somebody's way.
+func people_seats() -> Array:
+	var P = preload("res://scripts/people.gd")
+	var out: Array = []
+	for d in _desks:
+		out.append({"tenant": int(d.tenant),
+			"pos": d.pos + _rot_xz(Vector3(P.SEAT_X, 0, 0.41), float(d.yaw))})
+	return out
 
 
 # ------------------------------------------------------------ the workstation
@@ -3023,6 +3207,8 @@ func _hud_paint() -> void:
 # waiting for, what is struggling, and what the next key would need. It is a
 # function rather than a block inside _process so that `hud` over the socket
 # reads exactly what the window is showing.
+const HUD_TENANCIES := 3        # how many of them the block will ever name
+
 func hud_lines() -> String:
 	var s := ""
 	if phone and str(phone.status) != "unplugged":
@@ -3039,12 +3225,50 @@ func hud_lines() -> String:
 		s += "hands: %s / %s   [I] inventory\n" % [_hand_name(0), _hand_name(1)]
 	# WHO IS WAITING. A tenancy with the keys and no ports is the job, and it
 	# is `service`'s own columns rather than a sentence invented here.
+	#
+	# AND IT CANNOT GROW WITHOUT BOUND. This was one line per tenancy that was
+	# short of ports, which is fine at one tenancy and is nine rows plus the
+	# `open` paragraph at seven -- a HUD that fills the left half of the window
+	# and hides the building behind it. A full tower has more than seven.
+	#
+	# So the list is the WORST THREE and a count of the rest. Worst is the
+	# strike count first, because that is the clock that ends the run, then how
+	# many of their desks are still dark: both are `service`'s columns and
+	# neither is a number this file invents. `service` is named in the line
+	# that stands in for the others, because the whole list is one verb away.
+	#
+	# A TENANCY THAT IS CABLED AND STILL STRIKING IS ON IT NOW. The old test
+	# was `up < desks`, so a tenancy whose every desk had a port and whose
+	# work was not finishing -- the thing `load` exists for -- never appeared
+	# here at all. The people at those desks are bent over them in the world;
+	# the HUD said nothing.
+	var trouble: Array = []
 	for row in service_rows():
-		if int(row.up) >= int(row.desks):
-			continue
+		if int(row.up) < int(row.desks) or int(row.strikes) > 0:
+			trouble.append(row)
+	trouble.sort_custom(func(a, b):
+		if int(a.strikes) != int(b.strikes):
+			return int(a.strikes) > int(b.strikes)
+		var da: int = int(a.desks) - int(a.up)
+		var db: int = int(b.desks) - int(b.up)
+		if da != db:
+			return da > db
+		return int(a.tenant) < int(b.tenant))
+	for i in range(min(trouble.size(), HUD_TENANCIES)):
+		var row: Dictionary = trouble[i]
+		var tail := ""
+		if int(row.strikes) > 0:
+			tail = "   %d strike%s" % [int(row.strikes),
+				"" if int(row.strikes) == 1 else "s"]
+		if bool(row.complained):
+			tail += "   *complaint filed"
 		s += "tenant %d on floor %d: %d desks, %d up, %d addr%s\n" \
 			% [int(row.tenant), int(row.floor), int(row.desks), int(row.up),
-				int(row.addr), "   *complaint filed" if bool(row.complained) else ""]
+				int(row.addr), tail]
+	if trouble.size() > HUD_TENANCIES:
+		var rest: int = trouble.size() - HUD_TENANCIES
+		s += "and %d more %s of the %d in: `service`\n" \
+			% [rest, "tenancy" if rest == 1 else "tenancies", service_rows().size()]
 	# WHAT IS STRUGGLING, pointed at with the tool that can be pointed. `load`
 	# names the port and prints the drops beside it; `show <box>` is where the
 	# reason is, and neither is netstat, because a switch has no shell in it.
@@ -3384,6 +3608,12 @@ func _snapshot() -> void:
 		_snap.open = site("open")
 	_snapping = false
 	_beacons()
+	# AND THE ROOM ITSELF SAYS SO. The beacon over the door is `service`'s
+	# columns in words; the people at the desks under it are the same columns
+	# in postures, re-read here rather than remembered, so a tenancy that got
+	# its day's work done stops looking like one that did not the moment the
+	# day is counted.
+	_people()
 
 
 # The rows of `service`, as the columns it printed them in. Nothing is computed
@@ -3391,14 +3621,59 @@ func _snapshot() -> void:
 # and this is that line, split.
 func service_rows() -> Array:
 	var out: Array = []
+	# BY THE HEADER'S OWN NAMES, not by counting from the left. `service` grew
+	# a `trade` column between `tenant` and `desks` while this file was being
+	# written, and a positional parser read the word "office" as a desk count
+	# -- so every tenancy in the tower had nought desks, the HUD said so, and
+	# the people at those desks vanished. The columns are core's to change; the
+	# names are what it prints them under.
+	# COUNTED BACK FROM THE END, because one of the columns holds words. A
+	# trade is "office" on most rows and "web host" on some, which is two
+	# tokens, so nothing to the right of it can be found by counting forwards
+	# either. The header says how far each name is from the last column and the
+	# row is read from its own end -- and a `files` cell that ends in the "<-"
+	# that means "served off another floor" has that taken off first.
+	var back := {}
+	var wide := 0
 	for line in str(_snap.service).split("\n", false):
 		var f: PackedStringArray = line.split(" ", false)
-		if f.size() < 9 or not f[0].is_valid_int():
+		if f.size() >= 4 and str(f[0]) == "floor" and str(f[1]) == "tenant":
+			back.clear()
+			wide = f.size()
+			for i in range(f.size()):
+				back[str(f[i])] = f.size() - 1 - i
 			continue
-		out.append({"floor": int(f[0]), "tenant": int(f[1]), "desks": int(f[2]),
-			"up": int(f[3]), "addr": int(f[4]), "done": str(f[5]),
-			"worst": str(f[6]), "strikes": int(str(f[7]).replace("*", "")),
-			"complained": str(f[7]).find("*") >= 0, "rent": int(f[8])})
+		if back.is_empty() or f.size() < wide:
+			continue
+		# AND IT REALLY IS A ROW. `service` prints a sentence under a tenancy
+		# that is having a bad day -- "20 of 80 transfers did not finish inside
+		# the busy period" -- which begins with a number and is longer than the
+		# header. Read as a row it said tenant 0 on floor 20 had eighty desks,
+		# and the HUD printed that. A row is two numbers first and numbers in
+		# every numeric column; a sentence is not.
+		if not f[0].is_valid_int() or not f[1].is_valid_int():
+			continue
+		var toks: Array = Array(f)
+		if str(toks[toks.size() - 1]) == "<-":
+			toks.remove_at(toks.size() - 1)
+		var last: int = toks.size() - 1
+		var sane := true
+		for nm in ["desks", "up", "addr", "rent/day"]:
+			var at: int = last - int(back.get(nm, -1))
+			if at < 2 or at > last or not str(toks[at]).is_valid_int():
+				sane = false
+		if not sane:
+			continue
+		var strikes := str(toks[last - int(back.get("strikes", 2))])
+		out.append({"floor": int(f[0]), "tenant": int(f[1]),
+			"desks": int(toks[last - int(back.get("desks", 7))]),
+			"up": int(toks[last - int(back.get("up", 6))]),
+			"addr": int(toks[last - int(back.get("addr", 5))]),
+			"done": str(toks[last - int(back.get("done", 4))]),
+			"worst": str(toks[last - int(back.get("worst", 3))]),
+			"strikes": int(strikes.replace("*", "")),
+			"complained": strikes.find("*") >= 0,
+			"rent": int(toks[last - int(back.get("rent/day", 1))])})
 	return out
 
 
@@ -3786,6 +4061,13 @@ func command(line: String) -> String:
 		if report_open():
 			s += "\n--- the day's report is up ---\n" + report_text
 		return s + "\n"
+	# WHAT THE FRAME COSTS, from the engine's own counters rather than from a
+	# stopwatch in a comment. A tower fills up with people, racks and copper as
+	# it is played and nothing else in this project could say what that did to
+	# the frame; `hud` is the same kind of verb -- the window's state, asked for
+	# by a client that cannot see the window.
+	if line == "perf":
+		return perf_text()
 	# POINTING THE CAMERA, which a socket player had no way to do at all.
 	#
 	# A playtester's end-of-run screenshot of the MDF showed a desk and an
