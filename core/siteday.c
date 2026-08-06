@@ -698,6 +698,8 @@ void site_dump_events(const Site *s, Buf *out)
         "  quarters it starts saying so in its own /var/log/messages, and a\n"
         "  new one is `disk <box>`. `ups <box>` fits a battery: a box on one\n"
         "  rides a mains failure out instead of coming back with a filesystem\n"
+        "  to check.\n"
+        "\n"
         "  heat is the watts of kit in that box's room against what the room\n"
         "  can shed -- a cupboard sheds what its walls and its door will take\n"
         "  and no more, and a server room has cooling in it. Past a hundred\n"
