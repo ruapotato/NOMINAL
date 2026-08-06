@@ -16,6 +16,7 @@
  * the socket calls, on the same text a player types.
  */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "nom.h"
 #include "session.h"
@@ -44,6 +45,16 @@ static const char *say(Session *ses, const char *line, Buf *o)
 static bool has(const char *hay, const char *needle)
 {
     return hay && strstr(hay, needle) != NULL;
+}
+
+/* The tray metres out of a quote, read back out of the words the player
+ * reads rather than out of a variable this file also set. */
+static int metres_of(const char *s)
+{
+    const char *p = s ? strstr(s, " m through the tray") : NULL;
+    if (!p) return -1;
+    while (p > s && p[-1] >= '0' && p[-1] <= '9') p--;
+    return atoi(p);
 }
 
 #define GATE_SEED  7008ull
@@ -147,6 +158,11 @@ static void check_verbs(int *passed, int *total)
         "day", "serve", "service", "status", "load", "isp", "events",
         "get", "httpd", "dnsd", "ups", "disk",
         "jack", "patch", "jacks",
+        /* D32. What a run would cost, before the money leaves. Both halves
+         * matter here too: the tower help has to NAME it, and it has to
+         * answer at the prompt -- which is where a player is standing, with
+         * a drum in their hands, when they want it. */
+        "quote",
         /* D31. The verb that walks you round to the complainant's side of the
          * problem. It is in this list rather than the one above because both
          * halves matter: the tower help has to NAME it, and it has to answer
@@ -1570,6 +1586,128 @@ static void check_jack_played(int *passed, int *total)
     session_end(&ses);
 }
 
+/* ======================================= the quote, from where you stand
+ *
+ * D28 recorded a playtester at day 62 who could not exercise the
+ * marginal-copper rule because nothing in the game measures a run before you
+ * pay for it: *"guess-and-pay at ~110 a guess."* The same blindness covered
+ * every cable decision D27 built.
+ *
+ * This is that verb played the way a person plays it: standing in the room,
+ * with the drum in their hands, asking what the far end costs -- and then
+ * paying for it and comparing. The assertion that carries the feature is the
+ * last one: THE QUOTE IS THE BILL. A quote that disagrees with the invoice is
+ * worse than no quote.
+ */
+static void check_quote_played(int *passed, int *total)
+{
+    P = passed; T = total;
+    printf("\nwhat the run costs, asked from the room you are standing in\n");
+    Session ses;
+    if (!session_start(&ses, GATE_SEED, 100000)) { ck("a session starts", false); return; }
+    Buf o = {0};
+
+    static const char *SETUP[] = {
+        "buy switch24 core", "go goods", "carry core", "go mdf", "drop", NULL
+    };
+    for (int i = 0; SETUP[i]; i++) say(&ses, SETUP[i], &o);
+
+    /* THE TWO ROOMS ON ONE FLOOR THAT LOOK THE SAME AND ARE NOT. Floor 3 of
+     * this seed's tower runs from sixty metres to ninety-five from the MDF,
+     * and `rooms 3` prints both of them as "office". */
+    int mdf = ses.room, far = -1, near = -1, dfar = -1, dnear = 1 << 30;
+    for (int i = 0; i < ses.b.nrooms; i++) {
+        const Room *r = &ses.b.rooms[i];
+        if (r->floor != 3 || r->kind != RM_OFFICE) continue;
+        int m = site_metres(&ses.s, mdf, i);
+        if (m < 0) continue;
+        if (m > dfar)  { dfar = m; far = i; }
+        if (m < dnear) { dnear = m; near = i; }
+    }
+    char line[64];
+    snprintf(line, sizeof line, "quote #%d", far);
+    long money = ses.s.money, walked = ses.walked;
+    int where = ses.room;
+    const char *q = say(&ses, line, &o);
+    ck("`quote <room>` answers from the room you are standing in",
+       has(q, "a run from f0 MDF") && has(q, "through the tray"));
+    ck("and asking costs no money, no metres of your legs, and does not move "
+       "you",
+       ses.s.money == money && ses.walked == walked && ses.room == where &&
+       ses.s.nlink == 0 && ses.s.njack == 0);
+
+    /* THE DECISION IT EXISTS TO INFORM. Two offices on one floor: the far one
+     * is past the margin and the near one is not, and before this verb the
+     * only way to find out was to pay. */
+    char want[64];
+    snprintf(want, sizeof want, "%d m through the tray", dfar);
+    ck("the far office on that floor is past what copper has margin for",
+       has(q, want) && dfar >= SITE_COPPER_MARGIN_M &&
+       has(q, "copper has margin for"));
+    snprintf(line, sizeof line, "quote #%d", near);
+    q = say(&ses, line, &o);
+    snprintf(want, sizeof want, "%d m through the tray", dnear);
+    ck("and the near one, which `rooms 3` prints identically, is not",
+       has(q, want) && dnear < SITE_COPPER_MARGIN_M &&
+       !has(q, "copper has margin for"));
+    printf("    #%d is %d m and #%d is %d m, and both of them say `office`\n",
+           near, dnear, far, dfar);
+
+    /* WHAT EACH GRADE BUYS OVER THAT DISTANCE, which is the other half of the
+     * blindness: over sixty metres cat6 is a gigabit, exactly as cat5e is,
+     * for more money -- and the quote is where a player can see that before
+     * spending it. */
+    ck("every grade is priced and speeded on one screen, cheapest first",
+       has(q, "grade   off the spool   as a jack   it comes up at") &&
+       site_cable_speed(CAB_CAT6, dnear) == site_cable_speed(CAB_CAT5E, dnear) &&
+       site_cable_price(CAB_CAT6, dnear) > site_cable_price(CAB_CAT5E, dnear));
+
+    /* BETWEEN TWO NAMED ENDS, from the chair, which is the other spelling. */
+    say(&ses, "go f0.goods", &o);
+    snprintf(line, sizeof line, "quote core #%d", far);
+    q = say(&ses, line, &o);
+    ck("`quote <a> <b>` quotes two named ends from wherever you happen to be",
+       has(q, "a run from core:0 in f0 MDF") && metres_of(q) == dfar &&
+       ses.b.rooms[ses.room].kind == RM_GOODS);
+    ck("a name that is neither a box nor a room is refused in words",
+       has(say(&ses, "quote nowhere", &o), "there is no room or box called"));
+
+    /* AND THE ONE THAT MATTERS. Buy it, put it there, run it, compare. */
+    static const char *KIT[] = {
+        "buy switch8 fsw", "go goods", "carry fsw", NULL
+    };
+    for (int i = 0; KIT[i]; i++) say(&ses, KIT[i], &o);
+    snprintf(line, sizeof line, "go #%d", far);
+    say(&ses, line, &o);
+    say(&ses, "drop", &o);
+    q = say(&ses, "quote fsw core", &o);
+    int qm = metres_of(q);
+    int qp = site_cable_price(CAB_CAT5E, qm);
+    snprintf(want, sizeof want, "  cat5e   %11d", qp);
+    ck("standing at the box, the quote prices the run in every grade",
+       qm == dfar && has(q, want));
+    money = ses.s.money;
+    say(&ses, "cable fsw:0 core:0 cat5e", &o);
+    ck("and the run it quoted is the run that was laid, to the metre",
+       ses.s.nlink == 1 && ses.s.link[0].metres == qm);
+    ck("and the price it quoted is the money that actually left the account",
+       ses.s.link[0].cost == qp && money - ses.s.money == qp);
+    printf("    quoted %d m of cat5e at %d; paid %d for %d m\n",
+           qm, qp, ses.s.link[0].cost, ses.s.link[0].metres);
+    /* AND THE SPEED. The quote said what it would come up at; `show` reads
+     * the port. */
+    int fsw = site_dev_by_name(&ses.s, "fsw");
+    char mb[32];
+    int came_up = net_port_speed(ses.s.net, ses.s.dev[fsw].node, 0);
+    snprintf(mb, sizeof mb, "%d Mb", came_up);
+    ck("and the speed it promised is the speed the port really came up at",
+       came_up > 0 && has(q, mb) &&
+       came_up == site_cable_speed(CAB_CAT5E, qm));
+
+    buf_free(&o);
+    session_end(&ses);
+}
+
 /* ---------------------------- a floor server on vlans, across the mains
  *
  * THE WORST THING A PLAYTEST HAS FOUND IN THIS GAME. Every `addr`, `gw` and
@@ -2220,6 +2358,7 @@ int session_selfcheck(int *passed, int *total)
     check_inventory(passed, total);
     check_cable_batch(passed, total);
     check_jack_played(passed, total);
+    check_quote_played(passed, total);
     check_vlan_server_reboot(passed, total);
     check_vlan_only_server(passed, total);
     check_documented(passed, total);

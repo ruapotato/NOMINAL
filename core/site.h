@@ -111,6 +111,30 @@ int   site_jack_lead_price(void);
  * hands now and a jack is not there until the day it is there. */
 int   site_jack_days(int metres);
 
+/* WHAT A RUN OF THAT GRADE OVER THAT MANY METRES NEGOTIATES, in megabits, or
+ * 0 for a run past what the cable carries at all.
+ *
+ * It is not a table. Copper's reach and the speed it settles at are the
+ * netstack's rules and live nowhere else, so this LAYS ONE -- two ports and a
+ * cable, in a world of its own -- and reads net_port_speed off it, which is
+ * the same function `show` and `load` print from. A quote that restated the
+ * fifty-five metre rule in a second place would be the bug this project has
+ * shipped three times already; this one cannot drift, because it is the
+ * measurement.
+ *
+ * The PORT at each end still has the last word (site_kind_port_mb), so this
+ * is the cable's half of the answer and never the whole of it. */
+int   site_cable_speed(CableKind k, int metres);
+/* All four grades at that distance in one pass, out[CAB_KIND_COUNT]. */
+void  site_cable_speeds(int metres, int *out);
+
+/* THE LAST TEN METRES OF WHAT COPPER CARRIES ARE THE MARGIN, and a run that
+ * long takes CRC errors under load and eventually retrains to a hundred
+ * megabits. The behaviour is core/siteday.c's and the number lives there;
+ * this is the same number where the QUOTE can read it, and `--sitecheck`
+ * plays a run at each side of it rather than trusting that the two agree. */
+#define SITE_COPPER_MARGIN_M  90
+
 /* Why an operation refused. The player reads these, so they are the whole
  * vocabulary of "you cannot do that". */
 typedef enum {
@@ -492,6 +516,27 @@ void site_uncable(Site *s, int link);
 PortState site_link_state(const Site *s, int link);
 /* The tray distance between two rooms, patch leads included, or -1. */
 int  site_metres(const Site *s, int room_a, int room_b);
+/* THE METRES A RUN BETWEEN THESE TWO ROOMS REALLY IS -- site_metres(), plus
+ * the one rule about them that is not distance: the ISP's handoff is outside
+ * the building (BLD_NOROOM) and the lead into it is a patch lead. site_cable,
+ * site_jack and the quote all price the same run, so all three ask this. */
+int  site_run_metres(const Site *s, int room_a, int room_b);
+
+/* ------------------------------------------------------------- the quote
+ * WHAT A RUN WOULD COST, BEFORE THE MONEY LEAVES. Every cable decision D27
+ * built -- which grade, spool or jack, this cupboard or that one -- was made
+ * blind: a playtester at day 62 could not tell a 39 m office from a 92 m one
+ * on the same floor and called exercising the marginal-copper rule
+ * "guess-and-pay at ~110 a guess".
+ *
+ * `room_a`/`room_b` are the two ends. `dev_a`/`dev_b` are the boxes at them
+ * when the player named boxes, or -1 when they named a room -- and the
+ * difference is the honest part: with no box at an end, the port that decides
+ * the speed does not exist yet, and this says so rather than guessing.
+ *
+ * Nothing is bought, nothing is booked, and nothing is charged. */
+void site_dump_quote(const Site *s, int room_a, int room_b,
+                     int dev_a, int port_a, int dev_b, int port_b, Buf *out);
 
 /* ------------------------------------------------------------- the jack */
 /* HAVE A JACK PUT IN. `room` gets a faceplate; the run behind it goes to

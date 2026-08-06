@@ -23,6 +23,7 @@
  *     than a segmented one, doing identical work. Not a rule. A number.
  */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "nom.h"
 #include "site.h"
@@ -1724,6 +1725,216 @@ static void check_jack(const Building *b)
     site_free(&s);
 }
 
+/* =========================================== WHAT IT COSTS, BEFORE IT COSTS
+ *
+ * D28's correction, in the playtester's own words: *"There is no way to
+ * measure a run before paying for it, so exercising the marginal-copper rule
+ * is guess-and-pay at ~110 a guess."* They were right about more than that
+ * rule -- cat5 against cat5e against cat6, spool against jack, this cupboard
+ * against that one are all decisions D27 built and every one of them was made
+ * blind. `quote` is the answer, and the only thing that makes it worth having
+ * is that it is the SAME arithmetic that will charge for the run.
+ *
+ * So the load-bearing assertion in here is not that a quote prints a number.
+ * It is that the number it prints is the number the invoice shows: quote a
+ * run, run it, and compare the money. A quote that disagrees with the bill is
+ * worse than no quote at all.
+ */
+static int metres_in(const char *s)
+{
+    /* "...: 95 m through the tray." -- read it back out of the words the
+     * player reads, not out of a variable the test also set. */
+    const char *p = s ? strstr(s, " m through the tray") : NULL;
+    if (!p) return -1;
+    while (p > s && p[-1] >= '0' && p[-1] <= '9') p--;
+    return atoi(p);
+}
+
+/* The nearest and farthest lettable room on a floor, by TRAY metres from the
+ * MDF. This is the fact the whole feature exists for: D28 measured floor 3
+ * ranging from 39 m to 92 m and a player had no way to tell which room they
+ * were looking at. */
+static void far_and_near(const Site *s, const Building *b, int floor, int from,
+                         int *far, int *near)
+{
+    int bf = -1, bn = -1, dfar = -1, dnear = 1 << 30;
+    for (int i = 0; i < b->nrooms; i++) {
+        if (b->rooms[i].floor != floor || !leasable(b->rooms[i].kind)) continue;
+        int m = site_metres(s, from, i);
+        if (m < 0) continue;
+        if (m > dfar)  { dfar = m; bf = i; }
+        if (m < dnear) { dnear = m; bn = i; }
+    }
+    *far = bf; *near = bn;
+}
+
+static void check_quote(const Building *b)
+{
+    printf("\nwhat a run would cost, asked before the money leaves\n");
+    Site s; Buf o = {0};
+    site_new(&s, b, GATE_SEED, 200000);
+    int mdf = bld_find(b, 0, RM_MDF);
+    int core = site_install(&s, SDEV_SWITCH24, mdf, "core");
+
+    /* ---- THE THING THE PLAYTESTER COULD NOT SEE. One floor, two rooms, and
+     * the difference between them is the whole marginal-copper rule. */
+    int far = -1, near = -1;
+    far_and_near(&s, b, 3, mdf, &far, &near);
+    int mfar = site_metres(&s, mdf, far), mnear = site_metres(&s, mdf, near);
+    ck("one floor spans safe to marginal, which is why a room name tells "
+       "you nothing",
+       far >= 0 && near >= 0 && mfar >= SITE_COPPER_MARGIN_M &&
+       mnear < SITE_COPPER_MARGIN_M);
+    printf("    floor 3 from the MDF: #%d is %d m and #%d is %d m\n",
+           near, mnear, far, mfar);
+
+    /* ---- THE METRES ARE bld_cable_all()'s, THROUGH site_metres(). */
+    char line[80];
+    snprintf(line, sizeof line, "quote core #%d", far);
+    buf_clear(&o);
+    site_cmd(&s, line, &o);
+    ck("`quote` answers with the tray metres the run will be charged on",
+       metres_in(o.p) == mfar);
+
+    /* ---- EVERY PRICE IN IT IS THE FUNCTION THAT WILL CHARGE IT. Four
+     * grades, both ways of buying the same metres, all read out of the text
+     * the player sees. */
+    bool priced = true, jacked = true;
+    for (int k = 0; k < CAB_KIND_COUNT; k++) {
+        char want[96];
+        snprintf(want, sizeof want, "  %-6s  %11d", site_cable_name((CableKind)k),
+                 site_cable_price((CableKind)k, mfar));
+        if (!has(o.p, want)) {
+            printf("    the quote's spool price for %s is not "
+                   "site_cable_price()'s\n", site_cable_name((CableKind)k));
+            priced = false;
+        }
+        snprintf(want, sizeof want, "%11d   %9d",
+                 site_cable_price((CableKind)k, mfar),
+                 site_jack_price((CableKind)k, mfar));
+        if (!has(o.p, want) ||
+            site_jack_price((CableKind)k, mfar) <=
+            site_cable_price((CableKind)k, mfar)) {
+            printf("    the quote's jack price for %s is not "
+                   "site_jack_price()'s\n", site_cable_name((CableKind)k));
+            jacked = false;
+        }
+    }
+    ck("every grade is priced off the spool at site_cable_price()", priced);
+    ck("and beside it as a jack, at site_jack_price() and always dearer",
+       jacked);
+    {
+        char days[64];
+        snprintf(days, sizeof days, "a jack is %d day", site_jack_days(mfar));
+        ck("and the days the trade takes are site_jack_days() of the same metres",
+           has(o.p, days) && has(o.p, "not a socket before then"));
+    }
+
+    /* ---- WHAT EACH GRADE WOULD COME UP AT, which since D27 is the cable AND
+     * the kit. `core` is a switch24 and port 0 of it is a gigabit socket, so
+     * cat6 and fibre buy nothing here and the quote says so. */
+    ck("cat5 is a hundred megabit at any distance and the quote says so",
+       site_cable_speed(CAB_CAT5, mfar) == 100 &&
+       site_cable_speed(CAB_CAT5, 3) == 100);
+    ck("cat6 is ten gigabit to 55 m and a gigabit past it, measured not stated",
+       site_cable_speed(CAB_CAT6, 55) == 10000 &&
+       site_cable_speed(CAB_CAT6, 56) == 1000);
+    ck("copper of every grade carries a hundred metres and no more",
+       site_cable_speed(CAB_CAT5E, 100) == 1000 &&
+       site_cable_speed(CAB_CAT5E, 101) == 0 &&
+       site_cable_speed(CAB_CAT6, 101) == 0 &&
+       site_cable_speed(CAB_FIBRE, 101) == 10000);
+    ck("and the port at the end has the last word, said where the grade is "
+       "chosen",
+       has(o.p, "core:0 does 1000 Mb whatever you plug into it"));
+
+    /* ---- AND THE RULE THAT COULD NOT BE REACHED. */
+    ck("a run past the margin says so, about this run, in metres",
+       has(o.p, "is past the 90 m copper has margin for"));
+    buf_clear(&o);
+    snprintf(line, sizeof line, "quote core #%d", near);
+    site_cmd(&s, line, &o);
+    ck("and the room on the same floor that is not does not",
+       metres_in(o.p) == mnear && !has(o.p, "copper has margin for"));
+
+    /* ---- A QUOTE IS A QUOTE. Nothing is bought, nothing is booked, nothing
+     * is charged, and nothing moves. */
+    long money = s.money, spent = s.spent;
+    int nl = s.nlink, nj = s.njack, nd = s.ndev;
+    buf_clear(&o);
+    site_cmd(&s, line, &o);
+    ck("asking costs nothing: no money, no link, no jack, no box",
+       s.money == money && s.spent == spent && s.nlink == nl &&
+       s.njack == nj && s.ndev == nd);
+    ck("and it says so, so nobody has to wonder", has(o.p, "nothing was bought"));
+
+    /* ---- AND THE ONE THAT MATTERS: THE QUOTE IS THE BILL. */
+    int sw = site_install(&s, SDEV_SWITCH8, far, "sw3");
+    buf_clear(&o);
+    site_cmd(&s, "quote sw3:0 core:0", &o);
+    int quoted_m = metres_in(o.p);
+    int quoted_price = site_cable_price(CAB_CAT5E, quoted_m);
+    long before = s.money;
+    int l = site_cable(&s, sw, 0, core, 0, CAB_CAT5E);
+    ck("the run the quote measured is the run the invoice measures",
+       l >= 0 && s.link[l].metres == quoted_m && quoted_m == mfar);
+    ck("and the price it quoted is the money that actually left",
+       s.link[l].cost == quoted_price && before - s.money == quoted_price);
+    printf("    quoted %d m of cat5e at %d; the bill was %d m at %d\n",
+           quoted_m, quoted_price, s.link[l].metres, s.link[l].cost);
+    /* And the speed it promised is the speed the port really came up at. */
+    int cabmb = site_cable_speed(CAB_CAT5E, quoted_m);
+    int kitmb = site_kind_port_mb(SDEV_SWITCH8, 0);
+    ck("and the speed it promised is what net_port_speed reads off the port",
+       net_port_speed(s.net, s.dev[sw].node, 0) ==
+       (cabmb < kitmb ? cabmb : kitmb));
+
+    /* ---- THE MARGIN IS core/siteday.c's NUMBER, NOT A SECOND COPY OF IT.
+     * The quote prints ninety because SITE_COPPER_MARGIN_M says ninety, and
+     * the behaviour lives in another file. So play it: put a floor of desks
+     * behind the marginal run and behind a short one carrying the identical
+     * frames, turn the days, and let `events` say which of the two the world
+     * thinks is marginal. If that number ever moves in siteday.c and not
+     * here, this fails. */
+    int rt = site_install(&s, SDEV_ROUTER, mdf, "rt");
+    site_cable(&s, rt, 0, s.uplink, 0, CAB_CAT6);
+    int shortm = site_cable(&s, rt, 1, core, 1, CAB_CAT6);
+    site_addr(&s, rt, 0, s.wan_you, s.wan_mask);
+    site_addr(&s, rt, 1, net_ip(10, 0, 0, 1), net_mask_bits(16));
+    site_gateway(&s, rt, s.wan_isp);
+    site_forwarding(&s, rt, true);
+    site_dhcpd(&s, rt, net_ip(10, 0, 1, 1), 400, net_mask_bits(16),
+               net_ip(10, 0, 0, 1), s.wan_isp);
+    int who = -1;
+    for (int i = 0; i < 400 && who < 0; i++) {
+        unserved_day(&s, NULL);
+        for (int t = 0; t < s.ntenant; t++)
+            if (s.tenant[t].moved && s.tenant[t].floor == 3) who = t;
+    }
+    if (who >= 0) site_serve(&s, who, sw, CAB_CAT5E);
+    bool warned = false, control = true;
+    for (int i = 0; i < 40 && !warned; i++) {
+        unserved_day(&s, NULL);
+        buf_clear(&o);
+        site_dump_events(&s, &o);
+        if (has(o.p, "taking errors under load")) warned = true;
+    }
+    ck("the world agrees the marginal run is the marginal one: it takes "
+       "errors",
+       warned && has(o.p, "sw3"));
+    /* THE CONTROL, and it is the same frames. Every desk behind sw3 pulls its
+     * files through rt:1 to core:1 as well, so the short run carried the
+     * identical load and the world never called it marginal. */
+    if (has(o.p, "rt:1")) control = false;
+    ck("and the short run carrying the identical frames never does",
+       control && shortm >= 0 && s.link[shortm].metres < SITE_COPPER_MARGIN_M);
+    printf("    %d m warned; %d m through the same traffic did not\n",
+           s.link[l].metres, s.link[shortm].metres);
+
+    buf_free(&o);
+    site_free(&s);
+}
+
 /* Everything above is reachable from a pipe, or a blind playtester cannot
  * find any of it. This builds a working network out of nothing but lines of
  * text, and then asks the machine on floor two what it can see. */
@@ -2203,6 +2414,7 @@ int site_selfcheck(void)
     check_reports(&b);
     check_tolerance(&b);
     check_jack(&b);
+    check_quote(&b);
     check_shell(&b);
     check_industry_rent(&b);
     check_industry_upload();

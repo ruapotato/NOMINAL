@@ -1137,6 +1137,25 @@ static void do_help(const Session *ses, Buf *out)
         "                     with nothing in between\n"
         "  uncable <n>        pull one out\n"
         "\n"
+        "AND WHAT IT WOULD COST, BEFORE ANY OF IT IS BOUGHT. The tray metres are\n"
+        "not the metres you walk and there is no way to guess them from the floor\n"
+        "plan, so ask:\n"
+        "  quote <room|box>   from the room you are standing in. One name is the\n"
+        "                     common case: you are in the cupboard with the drum,\n"
+        "                     wondering what the far end costs\n"
+        "  quote <a> <b>      between two named ends, from wherever you are. An\n"
+        "                     end is a box (`core`, `core:2`) or a room (`comms`,\n"
+        "                     `f3.office`, `#41`)\n"
+        "                     It prints the tray metres for the route, the price\n"
+        "                     off the spool AND as a jack in every grade, the days\n"
+        "                     the trade would take, and WHAT EACH GRADE COMES UP\n"
+        "                     AT over that distance -- which is the whole cable\n"
+        "                     decision on one screen. Where a box is named at each\n"
+        "                     end it takes that port into account; where one is\n"
+        "                     not, it says so rather than guessing. Nothing is\n"
+        "                     bought, nothing is booked, nothing is charged, and\n"
+        "                     you do not move\n"
+        "\n"
         "OR HAVE THE RUN PUT IN FOR GOOD, which is the same metres bought the\n"
         "other way. A jack is a socket on a room's wall with the run behind it\n"
         "punched down onto one port at the far end. You do not pull it: a trade\n"
@@ -1929,6 +1948,65 @@ static void do_jack(Session *ses, int n, char *t[MAXTOK], Buf *out)
     site_cmd(&ses->s, cmd, out);
 }
 
+/* ---------------------------------------------------------------- the quote
+ * WHAT IT WOULD COST, ASKED BEFORE IT IS PAID FOR.
+ *
+ * The tower charges by the metre and prints the metres at the moment the
+ * money leaves, and until now that was the FIRST moment anybody could learn
+ * them. A playtester at day 62 put it exactly: there is no way to measure a
+ * run before paying for it, so exercising the marginal-copper rule is
+ * guess-and-pay at ~110 a guess. And it is not only that rule -- cat5 against
+ * cat5e against cat6, spool against jack, this cupboard against that one are
+ * all decisions D27 built and all of them were made blind.
+ *
+ * It quotes BOTH ways, because both are things a person asks:
+ *
+ *   quote f3.office        from the room you are standing in, which is where
+ *                          you are when you are wondering where to put a box
+ *   quote core f8.comms    between two named places, which is what you ask
+ *                          with the floor plan in front of you and your legs
+ *                          still in the chair
+ *
+ * It costs nothing and it takes no time: see docs/decisions-d32.md. A quote
+ * does not walk you anywhere either -- reading a plan is not a journey. */
+static void do_quote(Session *ses, int n, char *t[MAXTOK], Buf *out)
+{
+    char end[2][80];
+    const char *want[2];
+    int nw = 0;
+    if (n >= 3) { want[0] = t[1]; want[1] = t[2]; nw = 2; }
+    else        { want[0] = t[1]; nw = 1; }
+
+    for (int i = 0; i < nw; i++) {
+        /* A BOX FIRST, because a box is where a run really ends and the port
+         * on the back of it is half the answer about speed. */
+        int d = dev_arg(ses, want[i]);
+        if (d >= 0) {
+            const char *colon = strchr(want[i], ':');
+            if (colon && colon[1])
+                snprintf(end[i], sizeof end[i], "%s:%d", ses->s.dev[d].name,
+                         atoi(colon + 1));
+            else
+                snprintf(end[i], sizeof end[i], "%s", ses->s.dev[d].name);
+            continue;
+        }
+        int r = room_arg(ses, want[i]);
+        if (r < 0) {
+            buf_printf(out, "there is no room or box called %s. An end of a quote "
+                            "is a box (`core`,\n  `core:2`) or a room (`comms`, "
+                            "`f3.office`, `#41`).\n", want[i]);
+            return;
+        }
+        snprintf(end[i], sizeof end[i], "#%d", r);
+    }
+    char line[192];
+    if (nw == 2) snprintf(line, sizeof line, "quote %s %s", end[0], end[1]);
+    /* FROM WHERE YOU STAND. One name is the common case: you are in the
+     * cupboard with the drum, wondering what the far end costs. */
+    else snprintf(line, sizeof line, "quote #%d %s", ses->room, end[0]);
+    site_cmd(&ses->s, line, out);
+}
+
 /* THE LEAD. A metre of moulded patch cord between a box in this room and the
  * faceplate on this room's wall, and the only thing anybody pays for after
  * the jack is in. */
@@ -2654,6 +2732,19 @@ bool session_line(Session *ses, const char *line, Buf *out)
             return true;
         }
         do_jack(ses, n, t, out);
+        return true;
+    }
+    if (strcmp(t[0], "quote") == 0) {
+        if (n < 2) {
+            buf_puts(out, "quote <room|box> [<room|box>]\n"
+                          "  what that run would cost before you run it: the tray "
+                          "metres, the price\n  in every grade, what each would "
+                          "come up at over that distance, and the\n  same run as a "
+                          "jack. One name quotes from the room you are standing "
+                          "in.\n  Nothing is bought and nothing is charged.\n");
+            return true;
+        }
+        do_quote(ses, n, t, out);
         return true;
     }
     if (strcmp(t[0], "patch") == 0) {

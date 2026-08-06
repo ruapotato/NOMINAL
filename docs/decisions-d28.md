@@ -140,9 +140,18 @@ guess-and-pay at ~110 a guess."
 
 That is the real finding, and it is not about this rule. Every cable decision
 D27 built is made blind, which is a strange thing to say about a game whose
-central resource is priced by the metre. Recorded here rather than fixed
-because the verb that would fix it lives in a file another agent held at the
-time.
+central resource is priced by the metre.
+
+**FIXED IN D32.** This paragraph read "recorded here rather than fixed because
+the verb that would fix it lives in a file another agent held at the time",
+and that is no longer true. `quote <a> <b>` -- or `quote <room>` from where you
+are standing -- prints the tray metres for a route, the price in every grade
+off the spool AND as a jack, the days the trade would take, and what each grade
+would come up at over that distance, out of the same functions that charge for
+it. It costs nothing. On this seed's floor three it is the difference between
+60 m and 95 m between two rooms `rooms 3` prints identically, which is exactly
+the pair of offices the playtester picked between blind. See
+docs/decisions-d32.md.
 
 Played in the gate: named in `events` on day 25, retrained on day 34, the floor
 behind it stopped getting its work done on day 35, and `uncable` plus a fibre

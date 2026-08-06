@@ -226,6 +226,46 @@ int site_jack_days(int metres)
     return 1 + (metres + 39) / 40;
 }
 
+/* ------------------------------------------------ what the copper carries */
+/* MEASURED, NOT RESTATED. How far each grade reaches and what it settles at
+ * over that distance are rules in core/netstack.c and they are private to it
+ * -- correctly, because the frames obey them. So the only honest way to
+ * answer "what would this run negotiate?" before laying it is to lay one:
+ * two switches and a cable in a world of their own, and read the same
+ * net_port_speed() that `show` and `load` print off a real port. Nothing here
+ * knows that cat 6 stops doing ten gigabit at fifty-five metres or that
+ * copper stops at a hundred, and nothing here can therefore disagree.
+ *
+ * A whole Net is not a small object, so all four grades are done in one
+ * world and the world is thrown away at the end of the call. */
+void site_cable_speeds(int metres, int *out)
+{
+    for (int i = 0; i < CAB_KIND_COUNT; i++) out[i] = 0;
+    if (metres < 0) return;
+    Net *n = net_new(1);
+    if (!n) return;
+    int a = net_add_switch(n, "a", CAB_KIND_COUNT);
+    int b = net_add_switch(n, "b", CAB_KIND_COUNT);
+    /* One at a time, and pulled out again: four cables between the same two
+     * switches at once would be a loop, and a loop is not what is being
+     * asked about. */
+    if (a >= 0 && b >= 0)
+        for (int i = 0; i < CAB_KIND_COUNT; i++) {
+            int c = net_cable(n, a, 0, b, 0, metres, (CableKind)i);
+            if (c < 0) continue;
+            out[i] = net_port_speed(n, a, 0);
+            net_uncable(n, c);
+        }
+    net_free(n);
+}
+int site_cable_speed(CableKind k, int metres)
+{
+    int mb[CAB_KIND_COUNT];
+    if (k < 0 || k >= CAB_KIND_COUNT) return 0;
+    site_cable_speeds(metres, mb);
+    return mb[k];
+}
+
 const char *site_err_text(int e)
 {
     switch (e) {
@@ -515,6 +555,19 @@ int site_metres(const Site *s, int room_a, int room_b)
     return SITE_PATCH_M + (int)(v + 0.5);
 }
 
+/* AND THE ONE RULE ABOUT A RUN'S METRES THAT IS NOT DISTANCE. The ISP's
+ * handoff is on the far side of a wall the landlord has no key to, so it has
+ * no room in this building (BLD_NOROOM) and the lead into it is a patch lead.
+ * That line used to be written out in site_cable, in site_jack and again in
+ * the session's own spool -- three copies of the same sentence, and a quote
+ * would have made a fourth. One function, so the price a quote prints and the
+ * price the bill charges cannot come from different arithmetic. */
+int site_run_metres(const Site *s, int room_a, int room_b)
+{
+    if (room_a == BLD_NOROOM || room_b == BLD_NOROOM) return SITE_PATCH_M;
+    return site_metres(s, room_a, room_b);
+}
+
 /* ---------------------------------------------------------- installation */
 int site_install(Site *s, int kind, int room, const char *name)
 {
@@ -706,9 +759,7 @@ int site_cable(Site *s, int a, int aport, int b, int bport, CableKind k)
     if (site_port_jack(s, a, aport) >= 0 ||
         site_port_jack(s, b, bport) >= 0) { s->err = SITE_EJACK; return -1; }
 
-    int ra = s->dev[a].room, rb = s->dev[b].room;
-    int m = (ra == BLD_NOROOM || rb == BLD_NOROOM) ? SITE_PATCH_M
-                                                   : site_metres(s, ra, rb);
+    int m = site_run_metres(s, s->dev[a].room, s->dev[b].room);
     if (m < 0) { s->err = SITE_ENOROUTE; return -1; }
     /* Note what is NOT here: any check that the run is short enough. The
      * cable is bought, laid and paid for, and whether it carries anything is
@@ -747,8 +798,7 @@ int site_jack(Site *s, int room, int home, int hport, CableKind k)
     /* THE SAME METRES THE SPOOL WOULD HAVE COST. bld_cable_all() through
      * site_metres(), so the two prices in front of the player are prices for
      * the same piece of copper up the same riser. */
-    int hroom = s->dev[home].room;
-    int m = (hroom == BLD_NOROOM) ? SITE_PATCH_M : site_metres(s, room, hroom);
+    int m = site_run_metres(s, room, s->dev[home].room);
     if (m < 0) { s->err = SITE_ENOROUTE; return -1; }
     int cost = site_jack_price(k, m);
     if (s->money < cost) { s->err = SITE_EMONEY; return -1; }
@@ -1487,6 +1537,133 @@ void site_dump_links(const Site *s, Buf *out)
     }
 }
 
+/* ------------------------------------------------------------- the quote */
+/* WHAT THIS RUN WOULD COST, PRINTED BEFORE ANY OF IT IS BOUGHT.
+ *
+ * The rule this obeys is the one this project has broken three times in a
+ * day: every number below comes out of the function that will charge for it
+ * or measure it, and none of them is typed twice. The metres are
+ * site_run_metres(), which is what site_cable() and site_jack() price from.
+ * The prices are site_cable_price() and site_jack_price() themselves. The
+ * days are site_jack_days(). The speeds are laid in a scratch world and read
+ * off net_port_speed(), and the port half of them is site_kind_port_mb() by
+ * way of the rate the port really has. There is no table in this function.
+ *
+ * AND IT IS HONEST ABOUT WHAT IT CANNOT KNOW. A quote is for a ROUTE. The
+ * kit at each end has the last word on the speed, so an end with no box in
+ * it yet gets a sentence saying the cable's number is all there is, rather
+ * than a number that assumes a gigabit card somebody has not bought. */
+static int quote_port_mb(const Site *s, int dev, int port)
+{
+    if (dev < 0 || dev >= s->ndev) return 0;
+    if (port < 0 || port >= s->dev[dev].nports) port = 0;
+    /* WHAT THE PORT REALLY DOES, off the port itself: the catalogue rate
+     * site_install() set, or the circuit on the handoff, which is a smaller
+     * number than the socket and is the one the frames obey. */
+    int mb = net_port_rate_of(s->net, s->dev[dev].node, port);
+    return mb > 0 ? mb : site_kind_port_mb(s->dev[dev].kind, port);
+}
+
+static void quote_end(const Site *s, int room, int dev, int port,
+                      char *out, size_t cap)
+{
+    char w[64];
+    if (room >= 0 && s->b && room < s->b->nrooms) {
+        const Room *r = &s->b->rooms[room];
+        snprintf(w, sizeof w, "f%d %s #%d", r->floor, bld_kind_name(r->kind), room);
+    } else {
+        snprintf(w, sizeof w, "outside");
+    }
+    if (dev >= 0 && dev < s->ndev)
+        snprintf(out, cap, "%s:%d in %s", s->dev[dev].name, port < 0 ? 0 : port, w);
+    else
+        snprintf(out, cap, "%s", w);
+}
+
+void site_dump_quote(const Site *s, int room_a, int room_b,
+                     int dev_a, int port_a, int dev_b, int port_b, Buf *out)
+{
+    int m = site_run_metres(s, room_a, room_b);
+    char ea[96], eb[96];
+    quote_end(s, room_a, dev_a, port_a, ea, sizeof ea);
+    quote_end(s, room_b, dev_b, port_b, eb, sizeof eb);
+    if (m < 0) {
+        buf_printf(out, "no quote: there is no cable tray between %s and %s.\n",
+                   ea, eb);
+        return;
+    }
+    buf_printf(out, "a run from %s to %s: %d m through the tray.\n", ea, eb, m);
+
+    int mb[CAB_KIND_COUNT];
+    site_cable_speeds(m, mb);
+    /* The port half. 0 at an end means nobody has put a box there yet. */
+    int pa = quote_port_mb(s, dev_a, port_a), pb = quote_port_mb(s, dev_b, port_b);
+    int kit = 0;
+    if (pa && pb) kit = pa < pb ? pa : pb;
+    else if (pa || pb) kit = pa ? pa : pb;
+
+    /* CHEAPEST FIRST, and the order is the prices themselves rather than a
+     * second list of grades that could fall out of step with the first. */
+    int ord[CAB_KIND_COUNT];
+    for (int i = 0; i < CAB_KIND_COUNT; i++) ord[i] = i;
+    for (int i = 1; i < CAB_KIND_COUNT; i++)
+        for (int j = i; j > 0 &&
+             site_cable_price((CableKind)ord[j], m) <
+             site_cable_price((CableKind)ord[j - 1], m); j--) {
+            int t = ord[j]; ord[j] = ord[j - 1]; ord[j - 1] = t;
+        }
+
+    buf_puts(out, "  grade   off the spool   as a jack   it comes up at\n");
+    int held = 0;                       /* grades the kit, not the copper, caps */
+    for (int i = 0; i < CAB_KIND_COUNT; i++) {
+        int k = ord[i];
+        int neg = mb[k];
+        if (neg && kit && kit < neg) { neg = kit; held++; }
+        buf_printf(out, "  %-6s  %11d   %9d   ", site_cable_name((CableKind)k),
+                   site_cable_price((CableKind)k, m),
+                   site_jack_price((CableKind)k, m));
+        if (!mb[k]) buf_puts(out, "nothing: the run is longer than it carries");
+        else buf_printf(out, "%d Mb", neg);
+        buf_putc(out, '\n');
+    }
+    /* WHY SOME OF THOSE ARE NOT THE DRUM'S NUMBER. Once, under the table,
+     * because it is one fact about one port and not four facts about four
+     * grades -- and it is the sentence that says which of them is money
+     * burnt. */
+    if (held) {
+        int hd = (pa && (!pb || pa <= pb)) ? dev_a : dev_b;
+        int hp = (pa && (!pb || pa <= pb)) ? port_a : port_b;
+        buf_printf(out, "  %s:%d does %d Mb whatever you plug into it, and that "
+                        "is what holds the\n  faster %s down. Paying for reach "
+                        "you cannot land is money burnt.\n",
+                   s->dev[hd].name, hp < 0 ? 0 : hp, kit,
+                   held == 1 ? "grade" : "grades");
+    }
+    /* THE OTHER HALF OF THE JACK, which is not money. */
+    buf_printf(out, "  a jack is %d day%s of the trade's time and it is not a "
+                    "socket before then;\n  a lead into it afterwards is %d, "
+                    "for every box that ever stands there.\n",
+               site_jack_days(m), site_jack_days(m) == 1 ? "" : "s",
+               site_jack_lead_price());
+    /* THE MARGIN. Not a warning about a rule: a statement about this run. */
+    if (m >= SITE_COPPER_MARGIN_M)
+        buf_printf(out, "  %d m is past the %d m copper has margin for: under a "
+                        "floor's load this run\n  takes CRC errors, says so in "
+                        "`events`, and retrains itself down. Fibre does not.\n",
+                   m, SITE_COPPER_MARGIN_M);
+    /* AND WHAT THE QUOTE CANNOT KNOW. */
+    if (!pa || !pb) {
+        char bare[200];
+        if (!pa && !pb) snprintf(bare, sizeof bare, "either end");
+        else snprintf(bare, sizeof bare, "%s", !pa ? ea : eb);
+        buf_printf(out, "  no box is named at %s:\n  those speeds are the MOST "
+                        "this run comes up at, because the port at each\n  end "
+                        "has the last word and it arrives with the box.\n", bare);
+    }
+    buf_puts(out, "  nothing was bought, nothing was booked and nothing was "
+                  "charged.\n");
+}
+
 void site_dump_rooms(const Site *s, int floor, Buf *out)
 {
     buf_printf(out, "floor %d\n", floor);
@@ -1784,6 +1961,36 @@ static bool port_arg(const Site *s, char *a, int *dev, int *port)
     return *dev >= 0;
 }
 
+/* ONE END OF A QUOTE, in either of the two ways a player thinks about a run.
+ * A box (`core`, `core:2`) is where a run really terminates, and the port is
+ * what decides the speed. A room (`#41`, `f3.comms`) is the question asked
+ * before the box is bought -- which is most of the questions worth asking,
+ * because the whole point is to find out what a room costs to reach BEFORE
+ * putting anything in it. Returns false only when it is neither. */
+static bool quote_end_arg(const Site *s, const char *a, int *room, int *dev,
+                          int *port)
+{
+    char b[64];
+    snprintf(b, sizeof b, "%s", a);
+    char *colon = strchr(b, ':');
+    if (colon) { *colon = 0; *port = colon[1] ? atoi(colon + 1) : -1; }
+    int d = dev_arg(s, b);
+    if (d >= 0) {
+        *dev = d;
+        *room = s->dev[d].room;
+        if (*port < 0 || *port >= s->dev[d].nports) {
+            int f = site_free_port(s, d);
+            *port = f >= 0 ? f : 0;
+        }
+        return true;
+    }
+    if (colon) return false;           /* `x:2` only ever means a box       */
+    int r = site_room_by_name(s, b);
+    if (r < 0) return false;
+    *room = r; *dev = -1; *port = -1;
+    return true;
+}
+
 static CableKind cable_arg(const char *a)
 {
     for (int i = 0; i < CAB_KIND_COUNT; i++)
@@ -1825,6 +2032,13 @@ static const struct { const char *verb; int need; const char *usage; } VERB[] = 
     { "move",     3, "move <box> <room>     rooms: #41, f3.comms, f0.mdf" },
     { "cable",    3, "cable <box>:<port> <box>:<port> [cat5e|cat6|fibre|cat5]" },
     { "uncable",  2, "uncable <n>           `links` numbers them" },
+    { "quote",    3, "quote <a> <b>         what that run would cost, before it\n"
+                     "                      is run: the tray metres, the price in\n"
+                     "                      every grade, what each would come up\n"
+                     "                      at over that distance, and the same\n"
+                     "                      run as a jack. Each end is a box\n"
+                     "                      (`core`, `core:2`) or a room (`#41`,\n"
+                     "                      `f3.comms`). Nothing is bought" },
     { "jack",     3, "jack <room> <box>:<port> [cat5e|cat6|fibre|cat5]\n"
                      "                      have a permanent socket put in that\n"
                      "                      room, with the run behind it punched\n"
@@ -1920,6 +2134,12 @@ bool site_cmd(Site *s, const char *line, Buf *out)
             "                               f0.mdf, f2.office\n"
             "cable <dev>:<port> <dev>:<port> [cat5|cat5e|cat6|fibre]\n"
             "uncable <n>                    pull one out\n"
+            "quote <a> <b>                  what that run would cost BEFORE it is\n"
+            "                               run: the tray metres, the price in\n"
+            "                               every grade, what each comes up at\n"
+            "                               over that distance, and the same run\n"
+            "                               as a jack. An end is a box or a room\n"
+            "                               (`core`, `core:2`, `#41`, `f3.comms`)\n"
             "jack <room> <dev>:<port> [cat5|cat5e|cat6|fibre]\n"
             "                               the other way to buy the same metres:\n"
             "                               a socket on that room's wall, with the\n"
@@ -2204,6 +2424,28 @@ bool site_cmd(Site *s, const char *line, Buf *out)
         else buf_printf(out, "link %d: %d m of %s, %d, %s\n", l, s->link[l].metres,
                         site_cable_name(k), s->link[l].cost,
                         pstate(site_link_state(s, l)));
+        return true;
+    }
+    /* A QUOTE COSTS NOTHING, and the reason is in docs/decisions-d32.md: a
+     * fee on asking is a tax on carefulness, and every number it prints is
+     * one the game already prints for free at the moment the money leaves.
+     * What it does not do is walk you anywhere -- it is a plan on a
+     * clipboard, and the legs are the same legs whichever end you start at. */
+    if (strcmp(t[0], "quote") == 0 && n >= 3) {
+        int ra, rb, da = -1, db = -1, pa = -1, pb = -1;
+        if (!quote_end_arg(s, t[1], &ra, &da, &pa)) {
+            buf_printf(out, "no box or room called %s. An end of a quote is a box "
+                            "(`core`, `core:2`)\n  or a room (`#41`, `f3.comms`).\n",
+                       t[1]);
+            return true;
+        }
+        if (!quote_end_arg(s, t[2], &rb, &db, &pb)) {
+            buf_printf(out, "no box or room called %s. An end of a quote is a box "
+                            "(`core`, `core:2`)\n  or a room (`#41`, `f3.comms`).\n",
+                       t[2]);
+            return true;
+        }
+        site_dump_quote(s, ra, rb, da, pa, db, pb, out);
         return true;
     }
     if (strcmp(t[0], "uncable") == 0 && n >= 2) {
