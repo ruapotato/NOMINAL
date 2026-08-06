@@ -558,16 +558,60 @@ func _init() -> void:
 				fail("the handset screen does not show what the machine answered")
 			else:
 				ok("typed at the handset and the machine answered on its screen")
-			if mob.let_go().find("still in") < 0:
-				fail("[Esc] did not put the handset down")
+			# [Esc] TAKES THE LEAD OUT, and it does it through core's own
+			# `unplug` so that the prop and the session cannot disagree about
+			# what a lead is in. This check used to assert the opposite --
+			# handset down, lead still in -- which was the behaviour until the
+			# session was told about it.
+			var out_said: String = mob.let_go()
+			if out_said.find("take the lead out") < 0:
+				fail("[Esc] did not take the lead out: " + out_said)
 			elif mob.focused:
 				fail("[Esc] and the handset still has the keyboard")
+			elif mob.plugged >= 0 or str(mob.status) != "unplugged":
+				fail("[Esc] and the lead is still in something")
 			else:
-				ok("[Esc] puts the handset down and leaves the lead in")
+				ok("[Esc] takes the lead out and puts the handset down")
+			# AND THE RECONCILER FORGOT IT TOO. Its cache of "what the prop is
+			# showing" was not cleared when the lead came out, so the third
+			# line of `plug core` / `unplug` / `plug core` matched the pair it
+			# still remembered, took the early return, and left the handset
+			# dark on a machine the session was sitting at. [Esc] takes that
+			# path every time now, so this is the sequence that broke.
+			mob.detach()
 			m = mob.plug(ws, "hdmi")
 			if m.find("display on") < 0: fail("the workstation would not drive a screen: " + m)
 			else: ok("HDMI on the workstation: " + m)
 			mob.unplug()
+
+			# AND THE RECONCILER FORGOT THE LEAD TOO. Its cache of what the
+			# prop is showing was not cleared when the lead came out, so the
+			# third line of `plug core` / `unplug` / `plug core` matched the
+			# pair it still remembered, took the early return, and left the
+			# handset dark on a box the session was sitting at. [Esc] takes
+			# that path every time now, so this is the sequence that broke.
+			#
+			# IT IS LAST IN THIS BLOCK because a session command reconciles the
+			# view, and `t.devices` is rebuilt when it does: every index above
+			# is stale after this runs, which is why the answer is checked by
+			# the NAME of the box the prop says it is on.
+			var first: String = t.command("plug core")
+			if first.find("refused") >= 0 or first.find("no box") >= 0:
+				fail("could not put the cart's lead into core to test it: "
+					+ first.strip_edges())
+			else:
+				t.command("unplug")
+				var again2: String = t.command("plug core")
+				var on := ""
+				if int(mob.plugged) >= 0 and int(mob.plugged) < t.devices.size():
+					on = str(t.devices[int(mob.plugged)].name)
+				if on != "core" or str(mob.status) == "unplugged":
+					fail("plug, unplug, plug again and the handset is on %s (%s): %s"
+						% [on if on != "" else "nothing", str(mob.status),
+							again2.strip_edges()])
+				else:
+					ok("plug, unplug and plug again puts the lead back in the prop")
+			mob.detach()
 
 	# ---- THE INVENTORY IS A PICTURE OF THE SIMULATION, not a second one. The
 	# hands are the rule core/session.c already keeps: both of them are on a box
@@ -813,6 +857,200 @@ func _init() -> void:
 			fail("a port with a cable in it accepted a second one: " + again)
 		else:
 			ok("and a port that is full refuses, in core's words")
+
+	# ================ A RUN MADE BY WALKING, AND THE SAME RUN MADE BY TYPING
+	#
+	# The owner, playing his own game: "As is, I can't figure out how to
+	# actually attach a cable, run a cable from a particular port to another."
+	# Cabling is the central verb of this game and it was unreachable from the
+	# window -- not missing, unsignposted, which no blind playtest could ever
+	# find because a socket client never looks at a crosshair.
+	#
+	# So this walks it: one end in with the key, the legs across the building,
+	# the other end in with the key -- and then charges the identical run over
+	# the session and asserts the two cost the same money for the same metres.
+	# That is `deliver`'s rule from this morning applied to copper: a line that
+	# stands in for holding W has to be the same act, or it is not testing the
+	# game that ships.
+	var comms0: int = t.find_room(0, t.K_COMMS)
+	if comms0 < 0:
+		fail("floor 0 has no comms cupboard to run a cable to")
+	else:
+		# A box at the far end, put there the way a socket client puts one
+		# there. The drum goes back on the shelf first because both hands are
+		# on a box you are carrying and core refuses the delivery otherwise --
+		# the earlier run in this file left one in them.
+		t.command("spool back")
+		var moved: String = t.command("deliver files %s" % ("#%d" % comms0))
+		for i in range(10):
+			await process_frame
+		var far := -1
+		for d in t.site_devs():
+			if str(d.name) == "files" and int(d.room) == comms0:
+				far = int(d.i)
+		var fardev := _device(t, "files")
+		var swi2 := -1
+		for i in range(t.devices.size()):
+			if str(t.devices[i].name) == "core" and int(t.devices[i].get("site", -1)) >= 0:
+				swi2 = i
+		if far < 0 or fardev < 0 or swi2 < 0:
+			fail("could not stand a server in the comms cupboard to cable to: "
+				+ moved.strip_edges())
+		else:
+			# ---- THE CROSSHAIR NAMES A KEY THAT EXISTS. The one sentence in
+			# the game that mentioned cabling said "[Tab] spool in hand to
+			# cable it", and Tab has belonged to the terminal since the bag
+			# moved to [I]: the only signpost to the central verb pointed at a
+			# key that did nothing here. A hint that names a key is checked
+			# against the keys _unhandled_input really handles.
+			var freep: int = t._free_port(int(t.devices[swi2].site))
+			var hole := {"kind": "port", "dev": swi2, "port": freep}
+			# with a spool dragged into a hand the offer is the mouse, and
+			# with both hands empty it is [C]: the hint has to name whichever
+			# of the two is really armed. An earlier check in this file left
+			# the spool in the left hand, so both states are reachable here.
+			if t.bag:
+				t.bag.equip("spool", 0)
+			var armed: Array = t.aim_text(hole)
+			if str(armed[1]).find("[LMB]") < 0:
+				fail("the spool is in a hand and the crosshair does not offer the mouse: '%s'"
+					% str(armed[1]))
+			else:
+				ok("spool in hand, the crosshair on an empty port: '%s   %s'"
+					% [armed[0], armed[1]])
+			if t.bag:
+				t.bag.equip("serial", 0)
+			var say: Array = t.aim_text(hole)
+			if str(say[1]).find("[C]") < 0:
+				fail("the crosshair on an empty port does not offer [C]: '%s'"
+					% str(say[1]))
+			elif str(say[1]).find("[Tab]") >= 0:
+				fail("the crosshair still points at [Tab], which cables nothing")
+			else:
+				ok("hands empty, the crosshair on an empty port: '%s   %s'"
+					% [say[0], say[1]])
+
+			# ---- ONE END IN, WITH THE KEY, STANDING AT THE BOX.
+			t.teleport(t.room_centre(mdf) + Vector3(0, 0.4, 0))
+			for i in range(12):
+				await process_frame
+			var money0: int = int(t.ses_state().get("money", 0))
+			var walked0: int = int(t.ses_state().get("walked", 0))
+			var end1: String = t.cable_at(swi2, freep)
+			if int(t.ses_state().get("cab", [-1])[0]) < 0:
+				fail("[C] at core port %d did not put an end in: %s" % [freep, end1])
+			else:
+				ok("[C] at core port %d: %s" % [freep, end1.split("\n")[0]])
+
+			# ---- AND NOW THE LEGS. Every room between here and there, on
+			# foot, with the drum paying out.
+			var legs2: Array = _route_rooms(t, mdf, comms0)
+			var arrived := true
+			for w in legs2:
+				if not await _walk_to(self, t, w, 1400):
+					arrived = false
+					break
+			if not arrived or t.player_room() != comms0:
+				fail("could not walk from the MDF to the comms cupboard with a cable in hand")
+			else:
+				ok("walked %d rooms from the MDF to the comms cupboard, drum in hand"
+					% legs2.size())
+			var walked1: int = int(t.ses_state().get("walked", 0))
+			if walked1 <= walked0:
+				fail("walked the building on foot and the session charged no metres")
+			else:
+				ok("the legs cost %d m of walking, which the session counted"
+					% (walked1 - walked0))
+
+			# ---- THE COPPER IS ON THE FLOOR, WHERE THE FEET WENT.
+			# "It'd be fun to literally run cable down corridors... that should
+			# rest on the floor when we're cabling things."
+			var crumbs: Array = t._crumbs
+			if crumbs.size() < 3:
+				fail("walked a building with a drum and left %d m of it on the floor"
+					% crumbs.size())
+			else:
+				var high := 0.0
+				for c in crumbs:
+					var fl: float = float(int(floor((float(c.y) + 0.3) / t.fheight))) * t.fheight
+					high = max(high, float(c.y) - fl)
+				if high > 0.35:
+					fail("the cable being pulled floats %.2f m off the floor" % high)
+				else:
+					ok("%d m of copper lying on the floor behind you, none of it more than %d mm up"
+						% [crumbs.size(), int(high * 1000.0)])
+
+			# ---- WHAT THE HUD SAID IT WOULD COST, BEFORE IT COST IT.
+			var hud_said: String = t.hud_lines()
+			var quoted := -1
+			for line in hud_said.split("\n"):
+				var s2: String = line.strip_edges()
+				if s2.begins_with("from here:") and s2.find(" m of ") > 0:
+					quoted = int(s2.substr(10).strip_edges().split(" ")[0])
+			if quoted < 0:
+				fail("stood at the far end with a run in hand and the HUD quoted nothing:\n"
+					+ hud_said)
+
+			# ---- THE OTHER END IN, WITH THE KEY.
+			var links0: int = t.site_links().size()
+			var end2: String = t.cable_at(fardev, 0)
+			var links1: Array = t.site_links()
+			if links1.size() != links0 + 1:
+				fail("[C] at the far end ran no cable: " + end2)
+			else:
+				var lk: Dictionary = links1[links1.size() - 1]
+				var money1: int = int(t.ses_state().get("money", 0))
+				var walkcost: int = money0 - money1
+				ok("walked run: %d m of cable, %d paid, %d m of legs"
+					% [int(lk.metres), walkcost, walked1 - walked0])
+				if quoted >= 0 and quoted != int(lk.metres):
+					fail("the HUD quoted %d m while walking and the invoice was %d m"
+						% [quoted, int(lk.metres)])
+				elif quoted >= 0:
+					ok("the metres the HUD quoted on the way are the metres it charged: %d"
+						% quoted)
+				# and the floor copper is gone: what is drawn now is the run
+				# the model billed, through the tray.
+				if not t._crumbs.is_empty() or t._laid != null:
+					fail("the run finished and the copper it was pulled along is still drawn")
+				else:
+					ok("the floor copper goes when the run does: what is left is the billed route")
+
+				# ---- THE SAME RUN, TYPED. Same two rooms, so the same tray
+				# metres and the same price -- and if those two numbers ever
+				# stop matching, one of the two ways of playing this game is
+				# cheaper than the other.
+				t.command("spool back")
+				var money2: int = int(t.ses_state().get("money", 0))
+				var typed: String = t.command("cable core:%d files:1 %s"
+					% [t._free_port(int(t.devices[swi2].site)),
+						str(t.drum_grade())])
+				var links2: Array = t.site_links()
+				if links2.size() != links1.size() + 1:
+					fail("`cable` over the session ran nothing: " + typed)
+				else:
+					var lk2: Dictionary = links2[links2.size() - 1]
+					var typecost: int = money2 - int(t.ses_state().get("money", 0))
+					ok("typed run:  %d m of cable, %d paid" % [int(lk2.metres), typecost])
+					if int(lk2.metres) != int(lk.metres) or typecost != walkcost:
+						fail("the same run costs %d m / %d walked and %d m / %d typed"
+							% [int(lk.metres), walkcost, int(lk2.metres), typecost])
+					else:
+						ok("walking it and typing it cost the same: %d m, %d"
+							% [int(lk.metres), walkcost])
+					# AND IT PUTS THE FURNITURE BACK. This file is one long
+					# session: the socket check further down carries `files`
+					# out of goods in and cables it, and a check that leaves
+					# the server in a comms cupboard with both its ports full
+					# breaks a check that has nothing to do with it. Pulling
+					# the runs refunds nothing, which is the point of
+					# site_uncable() and is why the money is read before this.
+					t.command("uncable %d" % int(lk2.i))
+					t.command("uncable %d" % int(lk.i))
+					t.command("spool back")
+					t.command("deliver files goods")
+					for i in range(8):
+						await process_frame
 
 	# ---- [E] AT THE WORKSTATION IS THE 2D DESKTOP. Walk to it -- so a desk
 	# nobody can reach fails here rather than looking fine in a screenshot --

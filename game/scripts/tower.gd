@@ -2391,7 +2391,9 @@ func perf_text() -> String:
 		+ "%d waiting, %d waiting badly, %d struck\n" % [c[1], c[2], c[3]] \
 		+ _screen_perf() \
 		+ "%d devices drawn, %d triangles of building\n" \
-			% [devices.size(), triangle_count()]
+			% [devices.size(), triangle_count()] \
+		+ "%d run quotes asked and kept, last one %.1f ms\n" \
+			% [_quote_n, float(_quote_us) / 1000.0]
 
 
 # WHAT THE SCREENS COST AND WHAT THEY ARE SHOWING, in the same breath. They are
@@ -2986,15 +2988,36 @@ func aim_text(a: Dictionary) -> Array:
 		# does not tell.
 		if s < 0:
 			return [what, "no line to it: the site does not own this panel"]
-		if spool_in_hand():
-			if _cable_from >= 0:
-				return [what, "[LMB] plug this end in"]
-			return [what, "[LMB] plug in"]
+		# A HOLE WITH SOMETHING IN IT IS NOT A HOLE YOU CAN RUN A CABLE FROM,
+		# and it says that BEFORE the offer rather than after it. With a spool
+		# in hand this used to read "[LMB] plug in" over a port that already
+		# had a link up in it, and the click was refused by core in words the
+		# crosshair had just contradicted.
 		if st == 3:
 			return [what, "link up"]
 		if st == 2:
 			return [what, "too long: no link"]
-		return [what, "empty  [Tab] spool in hand to cable it"]
+		# THE KEY THAT RUNS THE CABLE, SAID WHERE THE CABLE WOULD GO IN.
+		#
+		# The owner, playing his own game: "As is, I can't figure out how to
+		# actually attach a cable, run a cable from a particular port to
+		# another." The machinery was all here -- [C] at a port has run a
+		# cable since the tower had ports -- and the only sentence in the game
+		# that mentioned cabling at all pointed at [Tab], which went back to
+		# the terminal when the bag moved to [I] and has done nothing here
+		# since. One dead key was the whole distance between a player and the
+		# central verb of this game.
+		var key := "[LMB]" if spool_in_hand() else "[C]"
+		if _cable_from >= 0:
+			# THE END THAT IS ALREADY IN IT. It has no link yet, so the model
+			# still calls this port empty; offering to plug the other end into
+			# it is offering something core answers with "that is the end you
+			# already put in".
+			if s == _cable_from and p == _cable_port:
+				return [what, "the end of the run you are holding is in here"]
+			return [what, "%s this end in%s" % [key, run_cost_at(s)]]
+		return [what, "empty  %s run %s from here  [R] grade"
+			% [key, drum_grade()]]
 	if bool(d.get("is_desk", false)):
 		return [str(d.name), "[E] sit down"]
 	# SOMEBODY ELSE'S DESK SAYS WHOSE IT IS. `desks <tenant>` names the person
@@ -3012,6 +3035,13 @@ func aim_text(a: Dictionary) -> Array:
 		hint += "  [G] pick up"
 	if not bool(d.serial) and not bool(d.hdmi):
 		hint = "passive: copper and a label"
+	# AND EVERY BOX WITH A HOLE IN THE BACK OF IT SAYS SO. [C] at a box is the
+	# next free port -- which is how anybody patches a switch -- so the key is
+	# offered from the whole box as well as from one socket on it. The ISP
+	# handoff is "passive: copper and a label" and is still the far end of the
+	# first cable anybody runs in this building, so it gets the offer too.
+	if s >= 0 and not d.get("ports", []).is_empty():
+		hint += "  [C] cable" if _cable_from < 0 else "  [C] this end in"
 	return [str(d.name), hint]
 
 
@@ -3031,6 +3061,19 @@ func aim_at(p: Vector3) -> void:
 	var flat := Vector2(to.x, to.z).length()
 	player.pitch = clampf(atan2(to.y, flat), -1.45, 1.45)
 	player.cam.rotation.x = player.pitch
+
+
+# WOULD THE NEXT PRESS RUN COPPER? A port the site owns with nothing in it,
+# and both hands free of a box -- which is the same test cable_at() makes
+# before it types anything at the session.
+func would_cable(t: Dictionary) -> bool:
+	if t.is_empty() or str(t.get("kind", "")) != "port" or carrying >= 0:
+		return false
+	var d: Dictionary = devices[int(t.dev)]
+	var s: int = int(d.get("site", -1))
+	if s < 0:
+		return false
+	return port_state(s, int(t.port)) == 1
 
 
 func spool_in_hand() -> bool:
@@ -3477,6 +3520,12 @@ func _hud_tier(line: String, first: bool) -> String:
 		return "state"
 	if t.begins_with("THE RUN IS OVER"):
 		return "alert"
+	# WHAT THE RUN HAS COST SO FAR IS NOT A FOOTNOTE. It is indented because it
+	# belongs to the line above it, but it changes with every room you walk
+	# through and it is the number the next keypress spends -- which is the
+	# definition of the NOW tier, not of the paragraph tier.
+	if t.begins_with("from here:") or t.begins_with("drum:"):
+		return "now"
 	# The continuation lines of core's refusals arrive indented; so does the
 	# rest of the `open` paragraph, which is the longest thing on the screen.
 	if line.begins_with("  ") or t.begins_with("floor ") and t.find("not in service") > 0:
@@ -3647,9 +3696,32 @@ func hud_lines() -> String:
 	var s := ""
 	if phone and str(phone.status) != "unplugged":
 		s += "phone: " + str(phone.status) + "\n"
+	# THE DRUM, AND WHAT IT HAS PAID OUT SO FAR.
+	#
+	# A run is the one thing in this game you commit to in two moves with a
+	# walk in between, and until now the walk was the part with no numbers on
+	# it: the metres and the money arrived together, at the far end, after the
+	# decision. Now the drum says what is left on it and where the grade is
+	# chosen, and once an end is in a socket the line underneath is `quote`'s
+	# own answer for the room you are standing in -- the metres this run has
+	# reached, the price, or the reason the copper cannot come with you.
+	var dm := drum()
 	if _cable_from >= 0:
 		s += "cable in hand from %s port %d   walk to the other end\n" \
 			% [_cable_name(_cable_from), _cable_port]
+		var here_room := int(ses_state().get("room", -1))
+		if here_room >= 0:
+			var q := run_quote("#%d" % here_room)
+			var w := _cost_words(q).strip_edges()
+			if w.begins_with("--"):
+				w = w.substr(2).strip_edges()
+			if w != "":
+				s += "  from here: %s\n" % w
+		if not dm.is_empty():
+			s += "  %d m left on the drum\n" % int(dm.left)
+	elif not dm.is_empty():
+		s += "drum: %d m of %s in your hands   [R] another grade\n" \
+			% [int(dm.left), str(dm.grade)]
 	if carrying >= 0:
 		s += "carrying kit in both hands   [G] put it down here\n"
 	var car: Object = lift_in()
@@ -3912,26 +3984,273 @@ func _sync_cable() -> void:
 	var was := _cable_from
 	_cable_from = int(cab[0])
 	_cable_port = int(cab[1]) if cab.size() > 1 else 0
+	if _cable_from != was:
+		# A NEW RUN STARTS WITH NOTHING ON THE FLOOR, and a finished one leaves
+		# nothing on it: what is on the floor from here on is the link the
+		# model holds, drawn where the model billed it.
+		_drop_run()
 	if _cable_from < 0 and was >= 0:
 		_drop_trail()
+
+
+# ============================ WHAT THE WALK COSTS, WHILE YOU ARE STILL WALKING
+#
+# D32 built `quote` because "there is no way to measure a run before paying for
+# it", and it fixed that for somebody at a keyboard typing `quote a b`. A
+# person WALKING a run is in exactly the position that record describes: the
+# drum is paying out behind them and the first number they see is the invoice.
+#
+# So the crosshair and the HUD carry the quote, and NOTHING HERE COMPUTES IT.
+# `quote` is the billing function -- site_run_metres(), site_cable_price() --
+# printed, and this reads its lines. There is no metre, no price and no grade
+# name in this file: the reason D32 gives is the reason here too, that a second
+# copy of the arithmetic is a second thing to be wrong, and a view that quoted
+# a price the invoice then disagreed with would be worse than no price at all.
+#
+# IT IS CACHED BECAUSE IT IS EXPENSIVE. `quote` lays a cable in a Net of its
+# own to read the port speed off it (D32), which is about 70 MB allocated and
+# freed per call -- fine for a line a person types, not fine sixty times a
+# second under a crosshair. The metres between two rooms are a property of the
+# building and the building does not change, so a quote is asked once per pair
+# per grade and kept. `perf` prints how many and what they cost.
+var _quotes := {}                   # "from:port>to:grade" -> {m, price, why}
+var _quote_n := 0
+var _quote_us := 0
+
+
+# WHAT IS ON THE DRUM, in core's words. `spool` on its own prints "305 m of
+# cat6 on the spool." and that sentence is the only place this file learns
+# either number: there is no table of grades in the view and no count of
+# metres. Empty when your hands are empty, which is what `spool` says too.
+func drum() -> Dictionary:
+	var f: PackedStringArray = str(_snap.get("spool", "")).split(" ", false)
+	if f.size() >= 4 and str(f[1]) == "m" and str(f[2]) == "of":
+		return {"left": int(f[0]), "grade": str(f[3])}
+	return {}
+
+
+# The grade [C] would run: whatever drum is in your hands, and cat6 off the
+# shelf if there is none -- which is the word cable_at() types.
+func drum_grade() -> String:
+	return str(drum().get("grade", "cat6"))
+
+
+# EVERY GRADE THE GAME SELLS, ASKED OF THE GAME. `spool` refuses a word it
+# does not know by naming the ones it does -- "no such cable: ?. cat5, cat5e,
+# cat6 or fibre." -- so the key that cycles the drum cannot offer a drum that
+# is not on the shelf, and a grade added to core/site.c turns up on it without
+# anybody editing this file. A list written out here would be the fourth copy
+# of the catalogue in a project that has shipped that bug three times in a day
+# (D32). The refusal buys nothing and changes nothing.
+var _grades: Array = []
+
+func grades() -> Array:
+	if not _grades.is_empty():
+		return _grades
+	var said := str(site("spool ?"))
+	if not said.begins_with("no such cable"):
+		return []                  # your hands are full: core said something else
+	var i := said.find(". ")
+	if i < 0:
+		return []
+	var list := said.substr(i + 2).strip_edges().replace(" or ", ", ")
+	for w in list.trim_suffix(".").split(",", false):
+		var g := str(w).strip_edges()
+		if g != "":
+			_grades.append(g)
+	return _grades
+
+
+# [R]: THE OTHER DRUM. Cat5 and fibre have been in the catalogue since D27 and
+# a player at the keyboard could buy neither: cable_at() types `spool cat6` and
+# there was no key that said anything else, so the grade -- which is most of
+# what `quote` exists to help you decide -- was a decision only a socket client
+# could make. This is `spool <grade>`, so the refusals are core's: it will not
+# swap a drum with an end of it already in a socket, and says why.
+func drum_next() -> String:
+	var g := grades()
+	if g.is_empty():
+		return str(site("spool cat6")).strip_edges()
+	var want: String = str(g[0])
+	if not drum().is_empty():
+		var i: int = g.find(drum_grade())
+		want = str(g[(i + 1) % g.size()])
+	elif g.has(drum_grade()):
+		want = drum_grade()        # the first press takes the drum [C] would
+	return str(site("spool %s" % want)).strip_edges()
+
+
+# One quote, from the end that is already in a socket to somewhere else. `to`
+# is spelled the way `quote` spells an end: a box name, or `#41` for a room.
+func run_quote(to: String) -> Dictionary:
+	if _cable_from < 0 or not site_up:
+		return {}
+	var grade := drum_grade()
+	var key := "%s:%d>%s:%s" % [_cable_name(_cable_from), _cable_port, to, grade]
+	if _quotes.has(key):
+		return _quotes[key]
+	var t0 := Time.get_ticks_usec()
+	# A quote buys nothing, books nothing and charges nothing -- it says so
+	# itself, in its last line -- so it is not a reason to re-read the
+	# clipboard. The `desks` cache does the same thing for the same reason.
+	var was_dirty := _snap_dirty
+	var said := site("quote %s:%d %s" % [_cable_name(_cable_from), _cable_port, to])
+	_snap_dirty = was_dirty
+	_quote_us = Time.get_ticks_usec() - t0
+	_quote_n += 1
+	var q := {"m": -1, "price": -1, "grade": grade, "why": ""}
+	for line in said.split("\n", false):
+		var t := line.strip_edges()
+		# "no quote: there is no cable tray between uplink:0 in f0 MDF #22 and
+		# f0 corridor #1." -- core's sentence, kept whole, because the reason
+		# a run cannot land somewhere is the interesting half of it.
+		if t.begins_with("no quote:"):
+			q.why = t.substr(9).strip_edges()
+			break
+		var m := t.find(" m through the tray")
+		if m > 0 and t.begins_with("a run from"):
+			var head: String = t.substr(0, m)
+			q.m = int(head.substr(head.rfind(" ") + 1))
+		var f: PackedStringArray = t.split(" ", false)
+		if f.size() >= 2 and str(f[0]) == grade:
+			q.price = int(f[1])
+	_quotes[key] = q
+	return q
+
+
+# What the crosshair says beside "[C] this end in", when there is already an
+# end in a socket somewhere behind you. Three things can be true and each of
+# them is a different move, so each of them is a different sentence:
+#
+#   the run fits          the metres and the price, before the money goes
+#   the drum is short     core's own two numbers, at the moment you could
+#                         still walk back rather than after the refusal
+#   there is no tray      the copper cannot follow you here at all
+#
+# The refusals themselves stay core's: this changes nothing about what the
+# next keystroke is allowed to do, it only stops the answer being a surprise.
+func run_cost_at(s: int) -> String:
+	if s < 0 or _cable_from < 0:
+		return ""
+	var q := run_quote(_cable_name(s))
+	return _cost_words(q)
+
+
+func _cost_words(q: Dictionary) -> String:
+	if q.is_empty():
+		return ""
+	if str(q.get("why", "")) != "":
+		return "  -- " + str(q.why)
+	var m := int(q.get("m", -1))
+	if m < 0:
+		return ""
+	var left := int(drum().get("left", -1))
+	if left >= 0 and m > left:
+		return "  -- %d m of run and %d m left on the drum: it will not reach" \
+			% [m, left]
+	var p := int(q.get("price", -1))
+	if p < 0:
+		return "  -- %d m through the tray" % m
+	return "  -- %d m of %s, %d" % [m, str(q.grade), p]
 
 
 # ---------------------------------------------------- the cable in your hands
 #
 # One end is in a socket and the rest of the drum is in your arms, so the
-# copper trails from the port you plugged to your hands as you walk. It is the
-# same length of cable the run will be made of -- same sweep, same sag, same
-# colour -- redrawn every frame from where you are actually standing, so the
-# walk that costs the metres is the walk you can see costing them.
+# copper trails from the port you plugged to your hands as you walk.
+#
+# AND IT LIES ON THE FLOOR BEHIND YOU, WHERE YOU WALKED. The owner: "it'd be
+# fun to literally run cable down corridors... you shouldn't be penalized for
+# running cables literally physically wherever you want", and, of the drawing:
+# "that should rest on the floor when we're cabling things." A straight line
+# from the port to your hands went through walls and through the floor of the
+# room next door, which is the one thing a person pulling a drum never does.
+# So the walk is remembered: a crumb every 800 mm, at the height of the feet
+# that dropped it, and the copper is drawn along them. Round a corner, and the
+# cable is round the corner.
+#
+# WHAT IT IS AND IS NOT. This is the drum paying out -- slack cable on the
+# floor, exactly as far as you have walked -- and it is a picture of an act
+# rather than a claim about the invoice. The moment the far end goes in, this
+# is thrown away and the run is redrawn where core BILLED it: through the tray,
+# up the riser, the metres `quote` has been printing in the HUD the whole time
+# you were walking. A view that went on drawing 60 m of floor copper for a run
+# billed at 21 m through the ceiling would be telling you the price was wrong.
+# See docs/decisions-d38.md, which is a record of exactly this reconciliation.
+const CRUMB_M := 0.8            # how often the drum leaves one
+const CRUMB_MAX := 400          # 320 m of walk, and the drum holds 305
 var _cable_port := -1
 var _cable_dev := -1
 var _trail: MeshInstance3D = null
+var _laid: MeshInstance3D = null
+var _crumbs: Array = []
 
 
 func _drop_trail() -> void:
 	if _trail:
 		_trail.queue_free()
 		_trail = null
+
+
+# The end came out, or the run finished: the floor copper goes with it.
+func _drop_run() -> void:
+	_crumbs.clear()
+	if _laid:
+		_laid.queue_free()
+		_laid = null
+
+
+# One step of the walk, if it was far enough from the last one to be a
+# different place. Height is the feet, plus the thickness of a lead, because
+# that is where a cable somebody is pulling actually is.
+func _lay_crumb() -> void:
+	if _cable_from < 0 or player == null:
+		return
+	var p: Vector3 = player.global_position
+	p.y += CABLE_R
+	if not _crumbs.is_empty():
+		var last: Vector3 = _crumbs[_crumbs.size() - 1]
+		if Vector2(p.x - last.x, p.z - last.z).length() < CRUMB_M \
+				and absf(p.y - last.y) < 0.5:
+			return
+	_crumbs.append(p)
+	# A LONGER WALK THAN THE DRUM HOLDS. Nothing stops a player wandering the
+	# tower with an end in their hand, so the oldest half is thinned rather
+	# than grown without bound: the shape of where they went survives and the
+	# buffer does not.
+	if _crumbs.size() > CRUMB_MAX:
+		var keep: Array = []
+		for i in range(_crumbs.size()):
+			if i >= CRUMB_MAX / 2 or i % 2 == 0:
+				keep.append(_crumbs[i])
+		_crumbs = keep
+	_draw_laid()
+
+
+# The copper already on the floor. Rebuilt when a crumb is added rather than
+# every frame: it is up to four hundred segments and it does not move.
+func _draw_laid() -> void:
+	if _laid:
+		_laid.queue_free()
+		_laid = null
+	if _cable_from < 0 or _crumbs.size() < 1:
+		return
+	var a := _dev_point(_cable_from, _cable_port)
+	if a == Vector3.INF:
+		return
+	var face := _dev_face(_cable_from)
+	var pts: Array = [a, a + face * 0.06]
+	# down the front of the rack to the floor, then away along the walk
+	var foot: Vector3 = a + face * 0.10
+	foot.y = float(_crumbs[0].y)
+	pts.append(foot)
+	pts.append_array(_crumbs)
+	var g = preload("res://scripts/vgeo.gd").new()
+	_run_cable(g, pts, Color("#2f6fd0"), 1)
+	_laid = MeshInstance3D.new()
+	_laid.name = "CableLaid"
+	_laid.mesh = g.mesh()
+	add_child(_laid)
 
 
 func _draw_trail() -> void:
@@ -3948,9 +4267,18 @@ func _draw_trail() -> void:
 	var hands: Vector3 = cam.global_position \
 		+ cam.global_transform.basis * Vector3(-0.22, -0.30, -0.45)
 	var g = preload("res://scripts/vgeo.gd").new()
-	var mid := (a + face * 0.10 + hands) * 0.5
-	mid.y = min(a.y, hands.y) - a.distance_to(hands) * 0.16
-	_run_cable(g, [a, a + face * 0.06, mid, hands], Color("#2f6fd0"), 1)
+	# THE LAST FEW METRES ONLY. Everything behind the last crumb is already
+	# drawn and lying still; this is the piece between the floor and your
+	# hands, which is the only part that moves with you.
+	var from: Vector3 = a + face * 0.06
+	if not _crumbs.is_empty():
+		from = _crumbs[_crumbs.size() - 1]
+	var mid := (from + hands) * 0.5
+	mid.y = min(from.y, hands.y) - from.distance_to(hands) * 0.16
+	var pts: Array = [from, mid, hands]
+	if _crumbs.is_empty():
+		pts = [a, a + face * 0.06, mid, hands]
+	_run_cable(g, pts, Color("#2f6fd0"), 1)
 	_drop_trail()
 	_trail = MeshInstance3D.new()
 	_trail.name = "CableInHand"
@@ -3995,7 +4323,7 @@ var _ledger_pool: Array = []
 var _ledger_alert: PanelContainer = null
 var _ledger_alert_lab: Label = null
 var _ledger_sig := ""
-var _snap := {"status": "", "service": "", "load": "", "open": ""}
+var _snap := {"status": "", "service": "", "load": "", "open": "", "spool": ""}
 var _snap_dirty := true
 var _snapping := false
 var _waiting: Node3D = null         # the beacons over tenancies with no ports
@@ -4037,6 +4365,10 @@ func _snapshot() -> void:
 	_snap.status = site("status")
 	_snap.service = site("service")
 	_snap.load = site("load")
+	# WHAT IS IN YOUR HANDS, in core's words rather than in a copy of them.
+	# `spool` is the drum: how much is left on it and what grade it is, which
+	# is what the HUD and the crosshair both say and what [R] changes.
+	_snap.spool = site("spool")
 	# WHAT THE NEXT FLOOR NEEDS, IN CORE'S WORDS, BEFORE THE KEY IS PRESSED.
 	# `open` refuses from anywhere but the floor itself and says what it wants
 	# and what it costs while refusing -- so asking it from the wrong floor is
@@ -4497,6 +4829,14 @@ func _reconcile() -> void:
 		_dev_sig = sig
 		_rebuild_devices()
 	_draw_cables()
+	# AND THE END OF THE CABLE IS IN THE SOCKET WHOEVER PUT IT THERE. `plug
+	# uplink:0` typed at the socket left the session holding a drum with one
+	# end in a port and the window showing neither the trail of copper nor the
+	# line in the HUD that says a run is open -- so the one state a player can
+	# be in that spends money on the NEXT keystroke was invisible to exactly
+	# the client that cannot see the window anyway. Same rule as the handset
+	# below: the session knows, and this makes the picture agree.
+	_sync_cable()
 	# AND THE HANDSET FOLLOWS THE LEAD, WHOEVER PUT IT IN.
 	#
 	# `plug core` over the socket put the SESSION on a management line and left
@@ -4532,6 +4872,19 @@ func _reconcile_phone() -> void:
 	if dev < 0:
 		if str(phone.status) != "unplugged":
 			phone.unplug()
+		# AND THE MEMORY GOES OUT WITH THE LEAD.
+		#
+		# The two variables below are an optimisation -- plugging the same box
+		# in twice is not an event, and re-plugging sixty times a second is --
+		# and this branch cleared the PROP without clearing them. So `plug
+		# core`, `unplug`, `plug core` left the pair still reading `core` on
+		# the third line, the early return below fired, and the handset stayed
+		# dark while the session was sitting on a management line. Rare until
+		# [Esc] started taking the lead out through this same path, and
+		# constant afterwards. The cache is only allowed to say what the prop
+		# is really showing.
+		_phone_dev = -1
+		_phone_lead = ""
 		return
 	if dev == _phone_dev and want_lead == _phone_lead:
 		return
@@ -4832,7 +5185,15 @@ func wire_port() -> int:
 # TAB BELONGS TO THE TERMINAL. It is a shell and it completes paths, and
 # terminal.gd has had real completion in it since before the building existed;
 # a key that opened a bag instead was the view stealing a key from the machine.
-# So the inventory is on [I], and Tab goes where Tab goes.
+# So the inventory is on [I] -- and, since the owner asked for it by name,
+# ALSO on Tab, handled inside inventory.gd itself so that it steps aside for
+# anything with a shell in it: a desk, somebody else's machine, the handset.
+# Tab still goes where Tab goes whenever there is something to complete.
+#
+# AND CABLING IS ON [C], WHICH IS THE KEY THIS WINDOW EXISTS FOR. See
+# aim_text(): the crosshair says it at every port and every box, because the
+# one sentence that used to mention cabling named a key that did nothing and
+# the owner could not find the verb at all. D38.
 #
 # ESC LEAVES WHATEVER YOU ARE IN, and it is the same key every time: out of the
 # desktop, out of the handset, out of the bag. It is handled in _input rather
@@ -4902,14 +5263,32 @@ func _unhandled_input(event: InputEvent) -> void:
 				said2 = l.call_to(player_floor()) if l != null else ""
 			else:
 				said2 = use_here(dev)
+		# THE LEAD GOES IN THROUGH THE SESSION, NOT INTO THE PROP.
+		#
+		# These two keys moved the handset directly and left core believing
+		# nothing was plugged in anywhere -- the exact fault _reconcile_phone()
+		# was written to fix, running the other way. `ses_prompt()` still said
+		# `f0 MDF>` while the player was typing at a machine, and a socket
+		# client asking `look` was told the cart was on the shelf.
+		#
+		# `plug <box>` and `plug hdmi <box>` are the session's own words for
+		# these, so pressing [F] is now the same act as typing it: the same
+		# refusals in the same sentences, and the prop follows the session
+		# afterwards through the reconciler like everything else does. A box
+		# the site model does not own -- a patch panel the view drew -- has no
+		# name to type, so that one is still the prop's own answer.
 		KEY_F:
-			if dev >= 0 and phone: said2 = phone.plug(dev, "serial")
+			said2 = _lead_in(dev, false)
 		KEY_H:
-			if dev >= 0 and phone: said2 = phone.plug(dev, "hdmi")
+			said2 = _lead_in(dev, true)
 		KEY_U:
-			if phone: phone.unplug()
+			# and out again through core's `unplug`, which is what detach()
+			# does: the prop cannot put a lead down the session still holds.
+			if phone: said2 = str(phone.detach())
 		KEY_C:
 			said2 = cable_at(dev, int(t.get("port", -1)))
+		KEY_R:
+			said2 = drum_next()
 		KEY_G:
 			said2 = carry_here(dev)
 		KEY_O:
@@ -4931,6 +5310,22 @@ func _unhandled_input(event: InputEvent) -> void:
 	if said2 != "":
 		print(said2)
 	get_viewport().set_input_as_handled()
+
+
+# [F] and [H], as the session's own `plug`. The device has to be one core
+# knows by name; the panels and the customer's rack server are the view's own
+# scenery and there is nothing in the session to plug into, so the prop
+# answers for those and says what it is.
+func _lead_in(dev: int, hdmi: bool) -> String:
+	if dev < 0 or phone == null:
+		return ""
+	var s: int = int(devices[dev].get("site", -1))
+	if s < 0:
+		return str(phone.plug(dev, "hdmi" if hdmi else "serial"))
+	var out: String = site("plug %s%s"
+		% ["hdmi " if hdmi else "", _cable_name(s)]).strip_edges()
+	_reconcile_phone()
+	return out
 
 
 func _hand_name(side: int) -> String:
@@ -4958,7 +5353,9 @@ func _process(_dt: float) -> void:
 		var h1: String = str(bag.hand(1))
 		phone.visible = h0 == "serial" or h0 == "display" \
 			or h1 == "serial" or h1 == "display"
-	# The cable trailing out of the port you plugged into, to your hands.
+	# The cable trailing out of the port you plugged into, to your hands --
+	# and the metres of it already lying on the floor where you walked.
+	_lay_crumb()
 	_draw_trail()
 	if bag and bag.visible:
 		if reticle:
@@ -4974,8 +5371,12 @@ func _process(_dt: float) -> void:
 		# arm's reach still names itself -- but the dot is the honest report of
 		# where the ray landed, which is the thing the owner was missing.
 		var on: bool = not t.get("far", false) and not t.is_empty()
-		reticle.show_target(nm[0], nm[1], on,
-			t.get("kind", "") == "port" and spool_in_hand())
+		# AND IT IS GREEN WHEN THE NEXT PRESS RUNS COPPER. The accent used to
+		# mean "a spool is in your hand", which was the state of the inventory
+		# rather than the state of the building -- and [C] runs a cable with
+		# both hands empty, so the one press that spends money was the one the
+		# dot said nothing about.
+		reticle.show_target(nm[0], nm[1], on, would_cable(t))
 	_hud_paint()
 	_ledger_paint()
 	# WHAT YOU ARE CARRYING IS IN THE ROOM YOU ARE IN, at every step of the
