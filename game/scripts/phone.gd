@@ -70,6 +70,7 @@ var _lead_col := Color("#1e6f3a")
 var _prompt := ""
 var _hint: Label = null
 var _idle: ColorRect = null      # the standby screen, while no lead is in anything
+var _hand: Array = []            # the thumb, visible only at the down pose
 var _repaint := 0                # frames of viewport left to draw while dark
 
 
@@ -108,18 +109,31 @@ const SCREEN_H := 0.116
 # reason the 2D on it is legible: 186 mm of screen at 190 mm from your eye is
 # two fifths of the width of the view, not a postage stamp across a room.
 #
-# DOWN MEANS DOWN. It used to hang at (0.30, -0.30, -0.46) nearly square to the
-# eye, which put a hand-sized black rectangle with a bright orange edge across
-# the bottom right corner of every screenshot, at the same angle in every room.
-# The owner, looking at his own playtest: "an orange-outlined black panel
-# floating at an odd angle at the bottom right that I cannot identify." It is
-# not floating -- it is the handset in your hand -- but a slab you see the face
-# of is a slab you read as a HUD element, so it is further down, further out
-# and tipped away from you: a corner of a phone at your side, which is what it
-# is. The screen also stops being blank -- see _make_viewport() -- so what does
-# show of it says "debugger" rather than "black rectangle".
-const POSE_DOWN := Vector3(0.300, -0.330, -0.470)
-const ROT_DOWN := Vector3(-0.70, 0.36, 0.22)
+# DOWN MEANS DOWN, AND STILL HELD. It hung at (0.30, -0.33, -0.47) rolled a
+# fifth of a radian, which put a black rectangle with an orange edge into the
+# bottom right corner of every screenshot -- clipped by two screen edges, at
+# about twenty degrees, with the words on the glass running off the side of it.
+# The owner, twice, on his own playtests: "an orange-outlined black panel
+# floating at an odd angle at the bottom right that I cannot identify", and
+# then "a picture frame falling over rather than a device somebody is holding".
+#
+# Three things were wrong and none of them was the brightness:
+#
+#   THE ROLL. A rectangle tipped off the horizontal reads as a thing that has
+#   fallen. There is no roll now: the case is level with the bottom of the
+#   view, and so is the writing on the glass, which is the whole of the "the
+#   label should be level with the screen" note.
+#
+#   THE CLIP. Two edges cut it, so you never saw an outline, and an object
+#   with no silhouette cannot be named. The whole handset is in frame now,
+#   sitting on the bottom edge with its own margin, tipped back the way a
+#   thing held at your waist is tipped: you look down the face of it.
+#
+#   THE DEPTH. It was a bezel and a pane -- literally a picture frame. The
+#   case has a back, shoulders and side rails now (see _body()), so the near
+#   edge shows its thickness and it reads as something with a weight in it.
+const POSE_DOWN := Vector3(0.208, -0.222, -0.430)
+const ROT_DOWN := Vector3(-0.40, 0.13, 0.0)
 const POSE_READ := Vector3(0.115, -0.070, -0.230)
 const ROT_READ := Vector3(-0.10, 0.06, 0.0)
 # AND UP IN FRONT OF YOUR FACE when you are actually typing on it: square to
@@ -131,7 +145,7 @@ const POSE_ZOOM := Vector3(0.0, -0.012, -0.152)
 const ROT_ZOOM := Vector3(0.0, 0.0, 0.0)
 
 
-func _mesh(size: Vector3, pos: Vector3, col: Color) -> void:
+func _mesh(size: Vector3, pos: Vector3, col: Color) -> MeshInstance3D:
 	var mi := MeshInstance3D.new()
 	var bm := BoxMesh.new()
 	bm.size = size
@@ -142,14 +156,46 @@ func _mesh(size: Vector3, pos: Vector3, col: Color) -> void:
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	mi.material_override = mat
 	add_child(mi)
+	return mi
 
 
 func _body() -> void:
-	# the case, and a rubber bumper round it, because a thing carried round a
-	# building in a pocket has a rubber bumper round it
-	_mesh(Vector3(CASE_W, CASE_H, 0.013), Vector3(0, 0, -0.004), Color("#23272c"))
-	_mesh(Vector3(CASE_W + 0.008, CASE_H + 0.008, 0.009), Vector3(0, 0, -0.006),
+	# THE SHELL, AND IT HAS A BACK TO IT. It was a 13 mm slab with a 9 mm
+	# orange plate hiding behind it, which from the front is a bezel and a pane
+	# of glass -- a picture frame, which is what the owner called it. A handset
+	# is 26 mm of case with a rubber bumper wrapped round the SIDES of it, so
+	# that is what this is: the case stands proud of the bumper front and back,
+	# the bumper stands proud of the case left, right, top and bottom, and the
+	# near edge of the thing shows its own thickness at any angle but square-on.
+	_mesh(Vector3(CASE_W + 0.008, CASE_H + 0.008, 0.020), Vector3(0, 0, -0.010),
 		Color("#a3601f"))
+	_mesh(Vector3(CASE_W, CASE_H, 0.027), Vector3(0, 0, -0.011), Color("#23272c"))
+	# and the grips: a rubber rail down each side, which is the part of a
+	# handheld tool your fingers are actually on
+	for sx in [-1.0, 1.0]:
+		_mesh(Vector3(0.007, CASE_H * 0.52, 0.031),
+			Vector3(sx * (CASE_W * 0.5 + 0.005), 0, -0.012), Color("#191c20"))
+	# AND A HAND ON IT. The last thing anybody said about this object was that
+	# it looks like a device rather than a device somebody is holding, and the
+	# difference between the two in a first-person view is a thumb: it comes
+	# round the near corner and lies across the bumper, in front of the glass,
+	# which is the one silhouette nobody mistakes for a picture frame.
+	#
+	# ONLY WHILE IT IS AT YOUR SIDE. Up at reading distance the case is three
+	# times the size it is down here and the same thumb is a slab across a
+	# third of the view; at the zoom pose the glass IS the view and every
+	# millimetre of it is console, so a thumb over the left margin is a thumb
+	# over the first character of every line. It goes when the lead goes in --
+	# which is also when the screen stops needing to say what the thing is.
+	# See _process().
+	_hand = [
+		_mesh(Vector3(0.026, 0.056, 0.020),
+			Vector3(-CASE_W * 0.5 + 0.003, -CASE_H * 0.5 + 0.022, 0.004),
+			Color("#b07a55")),
+		_mesh(Vector3(0.040, 0.030, 0.026),
+			Vector3(-CASE_W * 0.5 + 0.001, -CASE_H * 0.5 - 0.006, -0.004),
+			Color("#9c6a48")),
+	]
 	# A speaker grille and a button, so the top and the bottom of the case are
 	# not the same. BEHIND THE SCREEN PLANE, not level with it: at 0.0035 they
 	# sit exactly where the screen quad is and win the depth test against it,
@@ -262,6 +308,19 @@ func _make_viewport() -> void:
 	sub.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	sub.offset_top = 90.0
 	_idle.add_child(sub)
+	# AND WHAT IT IS FOR, which is the half of "what is that object" that a
+	# name does not answer. A thing in your hand that says what it does when
+	# you point it at something is a tool; a thing with a word on it is a sign.
+	var how := Label.new()
+	how.add_theme_font_override("font", _mono)
+	how.add_theme_font_size_override("font_size", 32)
+	how.add_theme_color_override("font_color", Color("#4f6272"))
+	how.text = "point at a box -- [F] serial  [H] display"
+	how.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	how.set_anchors_preset(Control.PRESET_FULL_RECT)
+	how.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	how.offset_top = 200.0
+	_idle.add_child(how)
 	_serial.add_child(_idle)
 	_vp.add_child(_serial)
 
@@ -325,6 +384,9 @@ func _process(dt: float) -> void:
 	var k: float = clampf(dt * 12.0, 0.0, 1.0)
 	position = position.lerp(pw, k)
 	rotation = rotation.lerp(rw, k)
+	for h in _hand:
+		if is_instance_valid(h):
+			h.visible = not lit and not focused
 	if _repaint > 0 and not lit and _vp:
 		_repaint -= 1
 		_vp.render_target_update_mode = SubViewport.UPDATE_ONCE

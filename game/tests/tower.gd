@@ -735,47 +735,78 @@ func _init() -> void:
 		# the single vertical at the last corner, which is the one beside the box
 		# you are plugging into. It looks fine in the numbers -- the metres were
 		# always right -- and only a screenshot or this check catches it.
-		var mdf_r: int = t.find_room(0, t.K_MDF)
-		var cup_r: int = t.find_room(3, t.K_COMMS)
-		if mdf_r >= 0 and cup_r >= 0:
-			var ca: Vector3 = t.room_centre(mdf_r)
-			var cb: Vector3 = t.room_centre(cup_r)
-			t._riser_split = -1
-			var cells: Array = t._tray_route(0, Vector2(ca.x, ca.z), 3,
-				Vector2(cb.x, cb.z))
-			var split: int = t._riser_split
-			if split <= 0:
-				fail("a cable from floor 0 to floor 3 does not go via a riser at all")
-			else:
-				var ya: float = t.tray_y(0)
-				var yb: float = t.tray_y(3)
-				var line: Array = []
-				for i in range(cells.size()):
-					if i == split:
-						var rc: Vector2 = cells[split - 1]
-						line.append(Vector3(rc.x, yb, rc.y))
-					line.append(Vector3(cells[i].x,
-						ya if i < split else yb, cells[i].y))
-				var through := 0
-				for i in range(line.size() - 1):
-					var p: Vector3 = line[i]
-					var q: Vector3 = line[i + 1]
-					if absf(p.y - q.y) < 0.01:
+		#
+		# IT CHECKS THE LINE THAT IS DRAWN, and it checks every pair of rooms
+		# rather than the one pair the playtester happened to photograph. The
+		# first version of this check did neither: it re-derived the leg heights
+		# from _tray_route() itself, so it was testing its own copy of the
+		# drawing rather than the drawing, and it only ever ran floor 0 to
+		# floor 3 -- a route with no riser on it at all, or a riser that does
+		# not line up with the one below, would have sailed straight through.
+		# _route_between() is now the one place the heights are stamped and
+		# this asks it directly.
+		var sealed_slabs := func(line: Array) -> int:
+			var through := 0
+			for i in range(line.size() - 1):
+				var p: Vector3 = line[i]
+				var q: Vector3 = line[i + 1]
+				if absf(p.y - q.y) < 0.01:
+					continue
+				for fl in range(1, t.nfloors + 1):
+					if min(p.y, q.y) > fl * t.fheight \
+							or max(p.y, q.y) < fl * t.fheight - t.SLAB_T:
 						continue
-					for fl in range(1, t.nfloors + 1):
-						if min(p.y, q.y) > fl * t.fheight \
-								or max(p.y, q.y) < fl * t.fheight - t.SLAB_T:
-							continue
-						var holed := false
-						for h in t._hole_on(fl):
-							if (h as Rect2).has_point(Vector2(p.x, p.z)):
-								holed = true
-						if not holed:
-							through += 1
-				if through > 0:
-					fail("the cable climbs through %d sealed slabs" % through)
-				else:
-					ok("a cable across three floors climbs in the riser, through the penetration")
+					var holed := false
+					for h in t._hole_on(fl):
+						if (h as Rect2).has_point(Vector2(p.x, p.z)):
+							holed = true
+					if not holed:
+						through += 1
+			return through
+		# every run that is actually in the model, as it is actually drawn
+		var drawn_bad := 0
+		for l in t.site_links():
+			if int(l.state) < 0:
+				continue
+			var line: Array = t._cable_route(int(l.a), int(l.aport), int(l.b),
+				int(l.bport), int(l.i))
+			if line.size() >= 2:
+				drawn_bad += sealed_slabs.call(line)
+		if drawn_bad > 0:
+			fail("a link in the model is drawn through %d sealed slabs" % drawn_bad)
+		else:
+			ok("every link in the model is drawn without crossing a sealed slab")
+		# and every pair of rooms in the tower, floor by floor, because the run
+		# the player makes next is not the one that was photographed
+		var pairs := 0
+		var bad_pairs := 0
+		var worst := ""
+		for ra in t.rooms:
+			if not t.TRAY_KINDS.has(int(ra.kind)):
+				continue
+			for rb in t.rooms:
+				if int(rb.i) <= int(ra.i) or not t.TRAY_KINDS.has(int(rb.kind)):
+					continue
+				var ca: Vector3 = t.room_centre(int(ra.i))
+				var cb: Vector3 = t.room_centre(int(rb.i))
+				# where a box in that room would sit: on the floor, not at the
+				# centroid's height, which is what _route_between reads the
+				# storey off
+				ca.y += 0.6
+				cb.y += 0.6
+				pairs += 1
+				var n: int = sealed_slabs.call(t._route_between(ca, cb))
+				if n > 0:
+					bad_pairs += 1
+					if worst == "":
+						worst = "%s (f%d) to %s (f%d), %d slabs" \
+							% [str(ra.name), int(ra.floor), str(rb.name),
+								int(rb.floor), n]
+		if bad_pairs > 0:
+			fail("%d of %d room-to-room routes climb through a sealed slab: %s"
+				% [bad_pairs, pairs, worst])
+		else:
+			ok("all %d room-to-room routes climb only where there is a hole" % pairs)
 		# and the same run over the socket's own words gets the same refusal
 		var again: String = t.site("plug uplink:0")
 		if again.find("already") < 0 and again.find("cable in it") < 0:

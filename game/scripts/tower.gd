@@ -1549,11 +1549,24 @@ func _cable_route(sa: int, pa: int, sb: int, pb: int, salt: int) -> Array:
 		var a2 := a + fa * outd
 		var b2 := b + fb * outd
 		return [a, a1, a2, Vector3(a2.x, lo, a2.z), Vector3(b2.x, lo, b2.z), b2, b1, b]
-	var fa_i := int(floor((a.y + 0.3) / fheight))
-	var fb_i := int(floor((b.y + 0.3) / fheight))
+	var pts: Array = [a, a1]
+	pts.append_array(_route_between(a1, b1))
+	pts.append(b1)
+	pts.append(b)
+	return pts
+
+
+# THE PART OF THE ROUTE THAT IS IN THE BUILDING: up into the tray at one end,
+# along it, up or down the riser if the two ends are on different floors, and
+# along the far floor's tray to over the other end. It is its own function
+# because game/tests/tower.gd checks it against the slabs -- a check that
+# re-derived the leg heights itself would be checking its own copy of the bug.
+func _route_between(a1: Vector3, b1: Vector3) -> Array:
+	var fa_i := int(floor((a1.y + 0.3) / fheight))
+	var fb_i := int(floor((b1.y + 0.3) / fheight))
 	var ya := tray_y(fa_i)
 	var yb := tray_y(fb_i)
-	var pts: Array = [a, a1, Vector3(a1.x, ya, a1.z)]
+	var pts: Array = [Vector3(a1.x, ya, a1.z)]
 	_riser_split = -1
 	var cells := _tray_route(fa_i, Vector2(a1.x, a1.z), fb_i, Vector2(b1.x, b1.z))
 	var split := _riser_split
@@ -1576,8 +1589,6 @@ func _cable_route(sa: int, pa: int, sb: int, pb: int, salt: int) -> Array:
 		var last: Vector2 = cells[cells.size() - 1]
 		pts.append(Vector3(last.x, yb, last.y))
 	pts.append(Vector3(b1.x, yb, b1.z))
-	pts.append(b1)
-	pts.append(b)
 	return pts
 
 
@@ -2912,25 +2923,47 @@ func _hud() -> void:
 	# sentences: "day 49. 58460 in hand, 1540 spent, 0 taken in rent."
 	# ... on a panel of its own, for the same reason: the top right of the view
 	# is the ceiling, and a ceiling tile is the brightest surface in the game.
-	var money := PanelContainer.new()
+	#
+	# AND IN THE SAME TIERS AS THE LEFT-HAND BLOCK, because it was two flat
+	# lines of the same 15 px grey: the balance, the burn, the circuit and the
+	# billing date all weighed the same, and the balance is the number that
+	# ends the run. It gets PLACE; the countdown to the bill gets NOW, because
+	# it is the thing that moves under you; and when the bill is close or the
+	# balance will not cover it, the block gets its own red bar -- the same one
+	# the left side uses for the run ending, which is where this ends up.
+	var money := VBoxContainer.new()
 	money.name = "Ledger"
-	money.add_theme_stylebox_override("panel",
-		_hud_style(Color(0.045, 0.065, 0.095, 0.78), Color("#4f7fa8"), 0))
+	money.add_theme_constant_override("separation", 6)
 	money.anchor_left = 1.0
 	money.anchor_right = 1.0
 	money.offset_right = -12.0
 	money.offset_top = 10.0
 	money.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_ledger_box = money
-	ledger = Label.new()
-	ledger.add_theme_font_override("font", preload("res://scripts/uifont.gd").mono())
-	ledger.add_theme_font_size_override("font_size", 15)
-	ledger.add_theme_color_override("font_color", Color("#dce7f0"))
-	ledger.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.9))
-	ledger.add_theme_constant_override("shadow_offset_x", 1)
-	ledger.add_theme_constant_override("shadow_offset_y", 1)
-	ledger.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	money.add_child(ledger)
+	var mbody := PanelContainer.new()
+	mbody.add_theme_stylebox_override("panel",
+		_hud_style(Color(0.045, 0.065, 0.095, 0.78), Color("#4f7fa8")))
+	mbody.size_flags_horizontal = Control.SIZE_SHRINK_END
+	_ledger_rows = VBoxContainer.new()
+	_ledger_rows.add_theme_constant_override("separation", 2)
+	mbody.add_child(_ledger_rows)
+	money.add_child(mbody)
+	_ledger_alert = PanelContainer.new()
+	_ledger_alert.add_theme_stylebox_override("panel",
+		_hud_style(Color(0.28, 0.05, 0.03, 0.86), Color("#ff6b4a"), 5))
+	_ledger_alert.size_flags_horizontal = Control.SIZE_SHRINK_END
+	_ledger_alert_lab = Label.new()
+	_ledger_alert_lab.add_theme_font_override("font",
+		preload("res://scripts/uifont.gd").mono())
+	_ledger_alert_lab.add_theme_font_size_override("font_size", 20)
+	_ledger_alert_lab.add_theme_color_override("font_color", Color("#ff9c7a"))
+	_ledger_alert_lab.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.9))
+	_ledger_alert_lab.add_theme_constant_override("shadow_offset_x", 1)
+	_ledger_alert_lab.add_theme_constant_override("shadow_offset_y", 1)
+	_ledger_alert_lab.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	_ledger_alert.add_child(_ledger_alert_lab)
+	_ledger_alert.visible = false
+	money.add_child(_ledger_alert)
 	layer.add_child(money)
 	add_child(layer)
 
@@ -3298,8 +3331,12 @@ func _free_port(s: int) -> int:
 # the TEXT those verbs printed, parsed only far enough to know which line to
 # put where, and every number a player reads is the number core printed.
 
-var ledger: Label = null            # the date and the money, top right
-var _ledger_box: PanelContainer = null
+var _ledger_box: VBoxContainer = null      # the date and the money, top right
+var _ledger_rows: VBoxContainer = null
+var _ledger_pool: Array = []
+var _ledger_alert: PanelContainer = null
+var _ledger_alert_lab: Label = null
+var _ledger_sig := ""
 var _snap := {"status": "", "service": "", "load": "", "open": ""}
 var _snap_dirty := true
 var _snapping := false
@@ -3395,6 +3432,113 @@ func ledger_text() -> String:
 		var st := ses_state()
 		return "day %d.  %d in hand." % [int(st.get("day", 0)), int(st.get("money", 0))]
 	return "\n".join(out)
+
+
+# THE MONEY BLOCK, TIERED. ledger_text() is untouched -- it is what `hud` over
+# the socket reads back and what game/tests/tower.gd greps -- so the tiering is
+# done by reading it, exactly the way _hud_tier() reads hud_lines().
+#
+# The two sentences were one weight of grey: the balance, the burn, the circuit
+# and the day the bill lands all looked equally like scenery. They are not the
+# same thing. The BALANCE is the number the run ends on -- money below zero and
+# the lease is done, core/siteday.c -- so it is PLACE, the same size as the room
+# you are standing in. The COUNTDOWN is NOW, because it moves under you whether
+# or not you touch anything. And the circuit's size and price are STATE: facts
+# about the building, true until you change them.
+#
+# Returns [[tier, text], ...], with an "alert" row last when there is one.
+const BILL_SOON_DAYS := 3
+
+func ledger_rows() -> Array:
+	var txt := ledger_text()
+	var rows: Array = []
+	var m1 := RegEx.create_from_string(
+		"day (\\d+)\\. (-?\\d+) in hand, (-?\\d+) spent, (-?\\d+) taken in rent"
+		).search(txt)
+	if m1 == null:
+		# Before the first snapshot there is only the fallback sentence. Show
+		# it rather than showing nothing: a HUD that is empty until a verb runs
+		# is a HUD that looks broken.
+		for line in txt.split("\n", false):
+			rows.append(["state", line.strip_edges()])
+		return rows
+	var money := int(m1.get_string(2))
+	rows.append(["place", "%d in hand" % money])
+	rows.append(["state", "day %s   %s spent, %s taken in rent"
+		% [m1.get_string(1), m1.get_string(3), m1.get_string(4)]])
+	var m2 := RegEx.create_from_string(
+		"the circuit is (\\d+) Mb \\((-?\\d+) a month, next billed in (\\d+) day"
+		).search(txt)
+	if m2 == null:
+		return rows
+	var price := int(m2.get_string(2))
+	var days := int(m2.get_string(3))
+	rows.append(["state", "%s Mb circuit, %d a month" % [m2.get_string(1), price]])
+	rows.append(["now", "next billed in %d day%s" % [days, "" if days == 1 else "s"]])
+	# AND THE BILL YOU CANNOT PAY, SAID BEFORE IT LANDS. The circuit is the one
+	# standing charge in the game and it is taken whatever the network did with
+	# it; a run that ends overdrawn ends on the morning that charge went out.
+	# A player who reads "1540 a month" in the same grey as everything else has
+	# not been told anything. So: red when the balance will not cover the bill,
+	# from the day that becomes true rather than on the day it lands, and red
+	# when the bill is a few days out whatever the balance is.
+	var alert := ""
+	var s := "" if days == 1 else "S"
+	if money < 0:
+		alert = "OVERDRAWN BY %d" % -money
+	elif money < price:
+		alert = "%d DUE IN %d DAY%s, %d IN HAND" % [price, days, s, money]
+	elif days <= BILL_SOON_DAYS:
+		alert = "%d DUE IN %d DAY%s" % [price, days, s]
+	if alert != "":
+		rows.append(["alert", alert])
+	return rows
+
+
+# PAINT IT, on the same terms as _hud_paint(): rebuilt only when the text
+# changed, rows pooled and re-tiered in place, and the panel shrunk to the
+# sentence rather than reserving a dark bar across the top right of the view.
+func _ledger_paint() -> void:
+	if _ledger_box == null or _ledger_rows == null:
+		return
+	var rows := ledger_rows()
+	var sig := str(rows)
+	if sig == _ledger_sig:
+		return
+	_ledger_sig = sig
+	var n := 0
+	var alert := ""
+	for row in rows:
+		var tier: String = str(row[0])
+		var text: String = str(row[1])
+		if tier == "alert":
+			alert = text
+			continue
+		var l: Label
+		if n < _ledger_pool.size():
+			l = _ledger_pool[n]
+		else:
+			l = _hud_row(tier)
+			l.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+			_ledger_pool.append(l)
+			_ledger_rows.add_child(l)
+		var spec: Array = HUD_TIER.get(tier, HUD_TIER["state"])
+		l.add_theme_font_size_override("font_size", int(spec[0]))
+		l.add_theme_color_override("font_color", Color(str(spec[1])))
+		l.text = text
+		l.visible = true
+		n += 1
+	for i in range(n, _ledger_pool.size()):
+		_ledger_pool[i].visible = false
+	if alert == "":
+		_ledger_alert.visible = false
+	else:
+		_ledger_alert_lab.text = alert
+		_ledger_alert.visible = true
+	_ledger_box.size = Vector2.ZERO
+	var m := _ledger_box.get_combined_minimum_size()
+	_ledger_box.offset_left = -12.0 - m.x
+	_ledger_box.offset_bottom = _ledger_box.offset_top + m.y
 
 
 # The room a tenancy holds, so a beacon can hang over their door.
@@ -3998,16 +4142,7 @@ func _process(_dt: float) -> void:
 		reticle.show_target(nm[0], nm[1], on,
 			t.get("kind", "") == "port" and spool_in_hand())
 	_hud_paint()
-	if ledger:
-		var lt := ledger_text()
-		if ledger.text != lt:
-			ledger.text = lt
-		# Shrink the panel to the sentence rather than reserving 700 px of dark
-		# bar across the top right of the view.
-		if _ledger_box:
-			var m := _ledger_box.get_combined_minimum_size()
-			_ledger_box.offset_left = -12.0 - m.x
-			_ledger_box.offset_bottom = _ledger_box.offset_top + m.y
+	_ledger_paint()
 	# WHAT YOU ARE CARRYING IS IN THE ROOM YOU ARE IN, at every step of the
 	# walk -- not in an inventory that resolves when you put it down. The
 	# site is told the moment you cross the threshold, so `show` from a
