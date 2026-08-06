@@ -2917,6 +2917,92 @@ static const Package PKG_MAN = {
        * with `svc` and could only find the verbs by typing a wrong one and
        * reading the usage line. Half of them did not exist yet, which is the
        * other half of the same bug. */
+      /* THREE TOOLS THE SHELL'S OWN HELP NAMES AND THE MANUAL DID NOT.
+       * Written from what these programs actually print on a booted machine,
+       * not from what their Linux namesakes do -- netstat here has six
+       * options and no -a, -n or -p, and saying otherwise would send a
+       * player hunting for a flag that does not exist. */
+      { "/usr/share/man/netstat",
+        "netstat(8)\n\n"
+        "  netstat            the SOCKETS: what is listening, and to whom\n"
+        "  netstat -i         the interfaces, as the kernel holds them\n"
+        "  netstat -r         the routing table\n"
+        "  netstat -A         the arp cache\n"
+        "  netstat -P         the network PORT: link, tx, rx, drops\n"
+        "  netstat -F         the firewall, and what each rule has dropped\n"
+        "  netstat -W         start capturing frames\n"
+        "  netstat -w         print what has been captured since -W\n"
+        "That is the whole list. There is no -a, -n or -p on this machine,\n"
+        "and an option it does not know is refused by name.\n"
+        "\n"
+        "WHY THE BARE FORM IS THE INTERESTING ONE. These are REAL sockets. A\n"
+        "service that died has none, so a unit `svc` calls running and a port\n"
+        "missing here is a service that came up and fell over. And a service\n"
+        "started before somebody edited its config is listening on the port\n"
+        "it LOADED, not the port the file now says -- so\n"
+        "  netstat                              says 80\n"
+        "  grep Listen /etc/httpd/httpd.conf    says 8080\n"
+        "is not a contradiction. It is a config edited after the service\n"
+        "started, and `svc reload httpd` is what closes it.\n"
+        "\n"
+        "AN EMPTY TABLE SAYS WHAT IT MEANS rather than printing a header and\n"
+        "nothing: `the routing table is empty -- this machine cannot send\n"
+        "anywhere`, `the arp cache is empty -- nothing on this wire has\n"
+        "answered yet`. Those two sentences are different diagnoses and the\n"
+        "difference matters: no route is configuration, no arp is the wire.\n"
+        "\n"
+        "See also ip(8), which SHOWS the same tables and cannot change them,\n"
+        "ss(8) for sockets alone, and tcpdump(8) for the frames themselves.\n",
+        0644, NULL },
+
+      { "/usr/share/man/blkid",
+        "blkid(8)\n\n"
+        "  blkid              every block device, its UUID and its type\n"
+        "\n"
+        "  /dev/sda1: UUID=\"8f41-2c07-a19d-5be3\" TYPE=\"ext4\"\n"
+        "  /dev/sr0:  no medium (the drive is empty)\n"
+        "\n"
+        "WHAT IT IS FOR HERE. /etc/fstab and /boot/zbl/zbl.cfg both name the\n"
+        "root filesystem BY UUID, not by device. So when the loader says it\n"
+        "cannot find the root, or the boot stops on a mount, the question is\n"
+        "whether the UUID those files ask for is the UUID the disk has -- and\n"
+        "this is the only thing that will tell you what the disk has.\n"
+        "\n"
+        "  blkid                      what the disk says it is\n"
+        "  grep UUID /etc/fstab       what the mount asks for\n"
+        "  cat /boot/zbl/zbl.cfg      what the loader asks for\n"
+        "\n"
+        "An empty optical drive says so plainly, which matters because a boot\n"
+        "order still pointing at /dev/sr0 with nothing in it is a real fault\n"
+        "and looks nothing like a broken disk. See also fsck(8), zbl(8).\n",
+        0644, NULL },
+
+      { "/usr/share/man/dmesg",
+        "dmesg(8)\n\n"
+        "  dmesg              the console log of this boot, from the top\n"
+        "\n"
+        "Everything the firmware, the loader, the kernel, the initrd and\n"
+        "svcinit printed while this machine was coming up -- the same text\n"
+        "that went past on the console, kept so you can read it after the\n"
+        "fact. On a box you reached over the service processor after it had\n"
+        "already booted, this is the only place that boot exists.\n"
+        "\n"
+        "IT IS WHERE THE FAULT USUALLY NAMES ITSELF. The boot chain stops at\n"
+        "the stage that is actually wrong and says which file it could not\n"
+        "use, so the first move on a machine that is up but not right is to\n"
+        "read this from the top rather than to guess:\n"
+        "  zbl: /boot/zbl/zbl.cfg: not found        the loader\n"
+        "  initrd: UNEXPECTED INCONSISTENCY         the filesystem -- fsck\n"
+        "  rc: /opt/monitoring/bin/probe: not found a boot script\n"
+        "  kernel: httpd respawning too fast,       a service that starts\n"
+        "          giving up on it                  and immediately dies\n"
+        "\n"
+        "It is this boot only. Nothing here survives a reboot, so read it\n"
+        "BEFORE power-cycling a machine -- a reboot is how the evidence gets\n"
+        "thrown away. What syslog kept is in /var/log. See also svc(1),\n"
+        "fsck(8), pkg(1).\n",
+        0644, NULL },
+
       /* THE PAGE FOR THE TOOL THE INITRD TELLS YOU TO RUN. A playtester
        * repaired a mains-damaged filesystem here and said afterwards that
        * they only knew to type `fsck` because the boot had named it -- and
@@ -3379,7 +3465,7 @@ static const Package PKG_MAN = {
         "\n"
         "If that is not `cat /etc/hostname` then the pipe is what is wrong.\n",
         0644, NULL },
-    }, 21
+    }, 24
 };
 
 /* THE JOKE PACKAGE, built exactly like the serious ones.
