@@ -102,6 +102,10 @@ Here the terminal is the machine, and it follows that:
     ./build/bf --loadcheck  the loop: a day, the rent, the load, and the
                             calibration — where a naive tower falls over and
                             how much further a planned one carries
+    ./build/bf --sitecheck  the rules of the building, and that a person with
+                            no eyes can play them over a pipe -- including that
+                            every command a help text names really exists
+    ./build/bf --netcheck   the stack: frames, vlans, arp, routing, tcp, dns
     ./build/bf --health     every pristine machine boots with every service up
     ./build/bf --solve 60   every generated fault is findable and repairable
     ./build/bf --askcheck   the person on the phone never says anything untrue
