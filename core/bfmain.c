@@ -571,10 +571,36 @@ int main(int argc, char **argv)
                      || strstr(c, "died --") || strstr(c, "respawning too fast")
                      || strstr(c, "refusing to start");
             buf_free(&sick);
-            if (!up || died) {
+            /* THE MENU MUST BE THE FILE. zbl drew three hardcoded lines and
+             * then announced "booting entry 0 of 1" underneath them, so the
+             * box advertised a rescue entry and a single-user entry that the
+             * config did not hold and that nothing could select. Count the
+             * rows between the rules and make them agree with what zbl says
+             * it is choosing from. */
+            bool menu_lies = false;
+            {
+                const char *bar = strstr(c, "  +---");
+                const char *of  = strstr(c, "zbl: booting entry ");
+                if (bar && of) {
+                    int rows = 0;
+                    for (const char *p = strchr(bar, '\n'); p; p = strchr(p + 1, '\n')) {
+                        if (strncmp(p + 1, "  +---", 6) == 0) break;
+                        if (strncmp(p + 1, "  |", 3) == 0) rows++;
+                        else break;
+                    }
+                    int nent = 0;
+                    if (sscanf(of, "zbl: booting entry %*d of %d", &nent) == 1)
+                        menu_lies = rows != nent;
+                    if (menu_lies)
+                        printf("MENU seed %d: the box has %d row(s) and zbl says "
+                               "it is choosing from %d\n", 3000 + i, rows, nent);
+                }
+            }
+            if (!up || died || menu_lies) {
                 bad++;
-                printf("UNHEALTHY seed %d%s%s\n", 3000 + i,
-                       up ? "" : " (did not boot)", died ? " (a service died)" : "");
+                printf("UNHEALTHY seed %d%s%s%s\n", 3000 + i,
+                       up ? "" : " (did not boot)", died ? " (a service died)" : "",
+                       menu_lies ? " (the boot menu disagrees with the config)" : "");
                 if (bad == 1) fwrite(c, 1, m.boot.console.len, stdout);
             }
             machine_free(&m);

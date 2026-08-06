@@ -233,6 +233,41 @@ static int cfg_entry_count(const Buf *b)
     return n;
 }
 
+/* The TITLE of entry `idx` -- what `entry "NomnixOS 11.4"` is calling it.
+ * The menu used to be three lines of decoration printed regardless of what
+ * the file said, so a machine whose config held one entry drew a box
+ * offering three and then announced `booting entry 0 of 1` underneath it. A
+ * playtester read that box, went looking for the rescue entry it advertised,
+ * and there was no way to pick anything: zbl has no menu keys and the rescue
+ * medium is reached from the service processor instead. */
+static bool cfg_entry_title(const Buf *b, int idx, char *out, size_t cap)
+{
+    int n = -1;
+    const char *p = b->p, *end = b->p + b->len;
+    while (p && p < end) {
+        const char *nl = memchr(p, '\n', (size_t)(end - p));
+        size_t len = nl ? (size_t)(nl - p) : (size_t)(end - p);
+        const char *s = p;
+        while (len && (*s == ' ' || *s == '\t')) { s++; len--; }
+        if (len >= 5 && strncmp(s, "entry", 5) == 0 &&
+            (len == 5 || s[5] == ' ' || s[5] == '\t')) {
+            if (++n == idx) {
+                const char *t = s + 5;
+                size_t tl = len - 5;
+                while (tl && (*t == ' ' || *t == '\t' || *t == '"')) { t++; tl--; }
+                while (tl && (t[tl - 1] == ' ' || t[tl - 1] == '\t' ||
+                              t[tl - 1] == '"' || t[tl - 1] == '\r')) tl--;
+                if (tl >= cap) tl = cap - 1;
+                memcpy(out, t, tl);
+                out[tl] = 0;
+                return tl > 0;
+            }
+        }
+        p = nl ? nl + 1 : NULL;
+    }
+    return false;
+}
+
 /* The bytes of entry `idx`, not including the `entry` line itself. */
 static bool cfg_entry_range(const Buf *b, int idx, Buf *out)
 {
@@ -521,12 +556,31 @@ void machine_boot(Machine *m)
     }
     say(c, "");
     say(c, "zbl 2.06");
-    say(c, "  +----------------------------------------------+");
-    say(c, "  | NomnixOS 11.4                                |");
-    say(c, "  | NomnixOS 11.4 (single user)                  |");
-    say(c, "  | rescue medium                                |");
-    say(c, "  +----------------------------------------------+");
-    say(c, "  booting the default entry in 0s...");
+    /* THE MENU IS THE FILE. Every line in this box is an entry zbl.cfg
+     * really holds, so the count under it agrees with it, and a config
+     * somebody has edited shows what they edited. */
+    {
+        int shown = cfg_entry_count(&f);
+        char ds[32];
+        int def = cfg_get(&f, "default", ds, sizeof ds) ? atoi(ds) : 0;
+        say(c, "  +----------------------------------------------+");
+        for (int i = 0; i < shown; i++) {
+            char title[64];
+            if (!cfg_entry_title(&f, i, title, sizeof title))
+                snprintf(title, sizeof title, "entry %d", i);
+            say(c, "  | %c %-42.42s |", i == def ? '*' : ' ', title);
+        }
+        if (shown == 0)
+            say(c, "  | %-44.44s |", "(no entries in zbl.cfg)");
+        say(c, "  +----------------------------------------------+");
+        /* And the way to the OTHER medium, which is not in this file and
+         * never was: zbl has no menu keys, so advertising `rescue medium` as
+         * a fourth line was offering something nobody could pick. */
+        say(c, "  * is the default. zbl has no keyboard: `default` in");
+        say(c, "  zbl.cfg is what picks. The rescue medium is not booted");
+        say(c, "  from here -- it is the service processor's `rescue`.");
+        say(c, "  booting the default entry in 0s...");
+    }
     say(c, "");
 
     /* Validate the whole file before using any of it, the way a real loader
