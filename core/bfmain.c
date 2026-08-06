@@ -453,6 +453,15 @@ int main(int argc, char **argv)
     if (argc > 1 && strcmp(argv[1], "--sitecheck") == 0)
         return site_selfcheck();
 
+    /* THE LOOP. A clock, tenants who really use the network, load that hurts
+     * for reasons the tools can find, and the calibration: the same tower
+     * built naively and built properly, played out floor by floor, with the
+     * floor each one falls over on printed rather than claimed. */
+    if (argc > 1 && strcmp(argv[1], "--loadcheck") == 0) {
+        int load_selfcheck(void);
+        return load_selfcheck();
+    }
+
     /* THE SITE, OVER A PIPE. The 3D view cannot be playtested and blind
      * agents found roughly forty bugs in this project, so ordering,
      * carrying, cabling and configuring all have to be reachable from a

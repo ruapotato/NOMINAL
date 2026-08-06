@@ -2591,6 +2591,21 @@ static void tcp_input(Net *n, int node, int ifx, uint32_t src, uint32_t dst,
     (void)si;
 }
 
+int net_tcp_reap(Net *n, int idle_ms)
+{
+    int k = 0;
+    for (int i = 0; i < NET_SOCK_MAX; i++) {
+        Sock *s = &n->sock[i];
+        if (!s->used || s->proto != IP_PROTO_TCP) continue;
+        if (s->state == TCP_LISTEN) continue;
+        if (n->now - s->last_tx < (uint64_t)idle_ms) continue;
+        s->state = TCP_CLOSED;
+        s->used = false;
+        k++;
+    }
+    return k;
+}
+
 /* Timers: retransmission, TIME_WAIT, and the give-up on a handshake that
  * nobody is answering. Called once per tick. */
 static void tcp_timers(Net *n)

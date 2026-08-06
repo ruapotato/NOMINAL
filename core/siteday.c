@@ -162,21 +162,29 @@ typedef struct {
     int      began, ended; /* ticks, for the latency the player feels       */
 } Xfer;
 
-/* Who serves the files. A tenancy's own server if the player put one up for
- * them, otherwise any server in the building that is listening, otherwise
- * the internet -- which is the naive answer and costs the ISP circuit. */
+/* WHO SERVES THE FILES, and it is the nearest one, which is why WHERE the
+ * player puts a server is a decision rather than a purchase.
+ *
+ * Their own tenancy's server first; then any server on their own floor,
+ * because that is the one their people would be told to use and because it
+ * is the one whose traffic never has to leave the floor; then any server in
+ * the building at all; and if there is none, the internet -- which is the
+ * naive answer and puts every file anybody opens onto the landlord's
+ * circuit. Nothing here decides how much that costs. It only decides where
+ * the frames are addressed, and the wires decide the rest. */
 static uint32_t file_server_for(const Site *s, int tenant)
 {
-    uint32_t any = 0;
+    uint32_t any = 0, floor = 0;
     for (int i = 0; i < s->ndev; i++) {
         const SiteDev *d = &s->dev[i];
         if (d->kind != SDEV_SERVER || !d->powered) continue;
         uint32_t ip = net_if_get_addr(s->net, d->node, 0);
         if (!ip) continue;
-        if (d->tenant == s->tenant[tenant].tenant) return ip;
+        if (d->tenant && d->tenant == s->tenant[tenant].tenant) return ip;
+        if (!floor && d->floor == s->tenant[tenant].floor) floor = ip;
         if (!any) any = ip;
     }
-    return any;
+    return floor ? floor : any;
 }
 
 static void xfer_begin(Site *s, Xfer *x, int tick)
@@ -414,6 +422,13 @@ bool site_day(Site *s, SiteDay *rep)
     for (int i = 0; i < s->ndev; i++)
         if (s->dev[i].kind == SDEV_DESK) net_close_all(s->net, s->dev[i].node);
     net_step(s->net, 5);
+    /* AND EVERYBODY WENT HOME. Whatever was still half open at either end is
+     * gone: the servers' side of a transfer nobody finished, the handshakes
+     * that never completed, the teardowns that are still waiting for an ACK
+     * that is not coming. Without this a bad day leaves its wreckage in the
+     * socket pool and the NEXT day cannot open a connection at all -- which
+     * looks like a network that has died and is only a leak. */
+    net_tcp_reap(s->net, 1);
     nom_free(xs);
 
     for (int i = 0; i < s->ndev; i++)

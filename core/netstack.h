@@ -65,7 +65,13 @@
  * NET_PORTS_MAX with nothing plugged into any of them. */
 #define NET_HOST_NICS     4     /* physical sockets on one host             */
 #define NET_IF_MAX       34     /* interfaces, incl. tagged subinterfaces   */
-#define NET_ARP_MAX      64
+/* A ROUTER'S NEIGHBOUR TABLE, and it has to be bigger than the building.
+ * At sixty-four this was the first thing to break in a tenanted tower and it
+ * broke silently: a router terminating a floor of desks evicted an entry per
+ * new conversation, re-ARPed for a neighbour it had known a millisecond ago,
+ * and every transfer in the building stalled at about seventy desks -- which
+ * looked exactly like congestion and was not. Real gear holds thousands. */
+#define NET_ARP_MAX     512
 #define NET_ROUTE_MAX     8
 #define NET_FW_MAX       12
 #define NET_FDB_MAX     512     /* forwarding entries on one switch         */
@@ -350,6 +356,13 @@ void  net_sock_free(Net *n, int sock);
  * a new configuration has to do before it opens the new ones -- otherwise
  * the old listener is still bound and the port looks taken. */
 void  net_close_all(Net *n, int node);
+/* EVERYBODY WENT HOME. Free every TCP connection anywhere in the world that
+ * has had no traffic for `idle_ms` of wire time, leaving listeners alone.
+ * A stack really does give up on a connection nobody is using, and without
+ * it a busy period that ended with three hundred half-finished transfers
+ * leaves three hundred sockets held for the next one -- which looks exactly
+ * like a network that has stopped working, and is not. Returns how many. */
+int   net_tcp_reap(Net *n, int idle_ms);
 /* Take a machine off the network without forgetting it exists: sockets shut,
  * addresses and routes gone, cables out, but the node and its factory MAC
  * kept so that plugging the same box back in is the same box. That identity
