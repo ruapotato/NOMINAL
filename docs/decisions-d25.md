@@ -149,3 +149,60 @@ they are the only judgement in the loop. They are set to a defensible
 busy-hour figure for one office worker and to nothing else. Everything
 downstream of them, including the entire difficulty curve, is arithmetic
 the netstack does.
+
+## Addendum, 2026-08-05: two of the three costs were not there
+
+This record opens by listing what was wrong before D25 -- *"Cable refunded in
+full, floors opened free from anywhere, no day ever ended"* -- in a way that
+reads as three things fixed. A blind playtester of the build spent ninety
+minutes in it and found that only one and a half of them were.
+
+**The day ended.** That half was real, and the loop works.
+
+**Opening a floor was still free**, and still typeable from anywhere, so the
+correct play remained to open the whole tower in the first minute. It now
+costs the landlord's fit-out, priced by the square metre of let space on the
+floor, and somebody has to be standing on the floor to sign it off -- which
+means the stairs, because the lift button for a floor nobody has opened is
+not lit. The rate is a chosen number in the same sense as the two above, and
+it says so where it is defined.
+
+**Cable was in fact never refundable**, which this record's opening sentence
+implies was a thing that got fixed and which the code shows was simply never
+implemented: `site_uncable` gives the port back and no money. That is the
+right behaviour and it is now asserted by a gate rather than believed.
+
+**And the ISP was never billed at all.** `isp` printed "the circuit is 500
+Mb, 1540 a month" and across forty-two days -- a month and a half -- not a
+penny of it was taken; `spent` only ever equalled hardware plus cable. So the
+one genuinely recurring decision in the game, how much circuit to buy against
+how much traffic you keep off it by putting a server on the floor, cost the
+same either way. The standing charge lands on the thirtieth day now, on the
+same thirty-day month the rent is a thirtieth of.
+
+The lesson worth keeping is not about any of the three. It is that this
+record asserted them as done, and the assertions were not gated. Everything
+above is now checked by `--sitecheck`, which plays the days and reads the
+account, so the next version of this paragraph cannot be written from
+memory.
+
+## Addendum, 2026-08-05: the advice pointed at a tool you cannot point
+
+David's constraint is quoted above as *"if a frame is dropped, it must be
+dropped BY the stack, on a port, for a reason `netstat -P` will show."* The
+constraint held. The advice built on top of it did not.
+
+Every degraded day printed `something is dropping -- `netstat -P` it`, and
+the same playtester's verdict was that this was *"the single most
+trust-destroying thing in the build: the first thing the game asks you to do
+is impossible."* They were right. `netstat` is a program on a machine with an
+operating system in it. The ports that drop are on switches, routers and the
+ISP handoff -- appliances with a management line and no shell, exactly as
+they are in a rack -- and `netstat` is not a verb at the tower prompt or on a
+management line either.
+
+The counters were always reachable from the tower: `load` names the busiest
+eight ports and `show <box>` prints the drops with the reason beside them in
+words. The advice names those now, and `netstat -P` is claimed only where a
+box has a shell to type it into -- which includes the README, whose opening
+paragraph invited the reader to type netstat on a switch.

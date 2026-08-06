@@ -20,7 +20,8 @@
  * number added to a counter, not a bandwidth budget, not a difficulty
  * constant. Every byte in this file goes through core/netstack.c as frames
  * on ports, and every frame that is lost is lost BY the stack, on a port,
- * for a reason `netstat -P` prints in words. The reason a flat tower falls
+ * for a reason the port counter prints in words -- `show <box>` from the
+ * tower, or `netstat -P` on a box that has a shell. The reason a flat tower falls
  * over and a segmented one does not is that the frames really go somewhere
  * different, and nobody wrote down that they should.
  *
