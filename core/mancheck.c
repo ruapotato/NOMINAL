@@ -160,6 +160,104 @@ static bool example_of(const char *line, char *out, size_t cap)
     return true;
 }
 
+/* Run every example in one file of text and say how it went. Shared by the
+ * manuals and by the package documentation, because they make the same kind
+ * of claim and there is no reason for a README to be held to a lower
+ * standard than a man page. */
+typedef struct {
+    int  tried, bad, skipped;
+    char firstbad[220];
+} Scan;
+
+static Scan scan_text(Machine *m, const char *body)
+{
+    Scan r = {0, 0, 0, {0}};
+    const char *p = body;
+    while (*p) {
+        const char *e = strchr(p, '\n');
+        size_t l = e ? (size_t)(e - p) : strlen(p);
+        char line[220], ex[200];
+        if (l < sizeof line) {
+            memcpy(line, p, l);
+            line[l] = 0;
+            if (example_of(line, ex, sizeof ex)) {
+                char word[32];
+                size_t w = 0;
+                while (ex[w] && ex[w] != ' ' && w < sizeof word - 1) {
+                    word[w] = ex[w]; w++;
+                }
+                word[w] = 0;
+                bool ok_to_run = safe_cmd(word) ||
+                    (strcmp(word, "pkg") == 0 && safe_pkg(ex));
+                if (ok_to_run) {
+                    Buf out = {0};
+                    kernel_run(m, ex, &out);
+                    const char *why = out.p ? misunderstood(out.p) : NULL;
+                    r.tried++;
+                    if (why) {
+                        r.bad++;
+                        if (!r.firstbad[0])
+                            snprintf(r.firstbad, sizeof r.firstbad,
+                                     "`%.150s` -> %.40s", ex, why);
+                    }
+                    buf_free(&out);
+                } else {
+                    r.skipped++;
+                }
+            }
+        }
+        p = e ? e + 1 : p + l;
+    }
+    return r;
+}
+
+/* THE PACKAGE DOCUMENTATION, held to the same standard as the manuals.
+ * pkg(1) tells the player to start with `ls /usr/share/doc` and every
+ * package with anything to say ships a README, a CHANGELOG and a
+ * known-issues there. Those name commands too, and nothing was checking
+ * them. */
+static void check_docs(Machine *m, int *ran, int *skipped)
+{
+    printf("\nand every command the package documentation shows\n");
+    Buf dirs = {0};
+    if (vfs_list(&m->disk, "/usr/share/doc", &dirs) != IO_OK || !dirs.p) {
+        ck("the documentation is on the disk", false, "/usr/share/doc did not list");
+        buf_free(&dirs);
+        return;
+    }
+    static const char *FILES[] = { "README", "CHANGELOG", "known-issues", NULL };
+    const char *d = dirs.p;
+    while (*d) {
+        const char *nl = strchr(d, '\n');
+        size_t len = nl ? (size_t)(nl - d) : strlen(d);
+        char name[64];
+        if (len && len < sizeof name) {
+            memcpy(name, d, len);
+            name[len] = 0;
+            /* vfs_list marks directories with a trailing slash. */
+            if (len && name[len - 1] == '/') name[len - 1] = 0;
+            for (int i = 0; FILES[i]; i++) {
+                char path[160];
+                snprintf(path, sizeof path, "/usr/share/doc/%s/%s", name, FILES[i]);
+                Buf body = {0};
+                if (vfs_read(&m->disk, path, &body) == IO_OK && body.p) {
+                    Scan r = scan_text(m, body.p);
+                    *ran += r.tried; *skipped += r.skipped;
+                    if (r.tried) {
+                        char what[128];
+                        snprintf(what, sizeof what, "%.30s/%.20s (%d run)",
+                                 name, FILES[i], r.tried);
+                        ck(what, r.bad == 0, r.firstbad);
+                    }
+                }
+                buf_free(&body);
+            }
+        }
+        d = nl ? nl + 1 : d + len;
+    }
+    buf_free(&dirs);
+}
+
 int man_check(void)
 {
     passed = total = 0;
@@ -225,48 +323,14 @@ int man_check(void)
                 }
                 buf_free(&o);
 
-                int bad = 0, tried = 0;
-                char firstbad[220] = {0};
-                const char *p = body.p;
-                while (*p) {
-                    const char *e = strchr(p, '\n');
-                    size_t l = e ? (size_t)(e - p) : strlen(p);
-                    char line[220], ex[200];
-                    if (l < sizeof line) {
-                        memcpy(line, p, l);
-                        line[l] = 0;
-                        if (example_of(line, ex, sizeof ex)) {
-                            char word[32];
-                            size_t w = 0;
-                            while (ex[w] && ex[w] != ' ' && w < sizeof word - 1) {
-                                word[w] = ex[w]; w++;
-                            }
-                            word[w] = 0;
-                            bool ok_to_run = safe_cmd(word) ||
-                                (strcmp(word, "pkg") == 0 && safe_pkg(ex));
-                            if (ok_to_run) {
-                                Buf out = {0};
-                                kernel_run(&m, ex, &out);
-                                const char *why = out.p ? misunderstood(out.p) : NULL;
-                                tried++; ran++;
-                                if (why) {
-                                    bad++;
-                                    if (!firstbad[0])
-                                        snprintf(firstbad, sizeof firstbad,
-                                                 "`%.150s` -> %.40s", ex, why);
-                                }
-                                buf_free(&out);
-                            } else {
-                                skipped++;
-                            }
-                        }
-                    }
-                    p = e ? e + 1 : p + l;
-                }
+                Scan r = scan_text(&m, body.p);
+                int tried = r.tried;
+                ran += r.tried;
+                skipped += r.skipped;
                 char what[128];
                 snprintf(what, sizeof what, "%.40s (%d example%s run)",
                          page, tried, tried == 1 ? "" : "s");
-                ck(what, bad == 0, firstbad);
+                ck(what, r.bad == 0, r.firstbad);
                 if (tried == 0) {
                     if (nunverified) buf_puts(&unverified, " ");
                     buf_puts(&unverified, page);
@@ -281,6 +345,7 @@ int man_check(void)
     }
 
     buf_free(&names);
+    check_docs(&m, &ran, &skipped);
     machine_free(&m);
 
     printf("\n%d page(s), %d example(s) run, %d skipped as not read-only\n",
