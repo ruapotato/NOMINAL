@@ -74,7 +74,7 @@
  * moment is a hundred connections, each with a client end, a server end and
  * a listener above it, and the busy period is precisely when they all exist
  * at once. */
-#define NET_SOCK_MAX   1024
+#define NET_SOCK_MAX    800
 #define NET_LEASE_MAX   254     /* a /24 of pool, which is what one is     */
 #define NET_ZONE_MAX     64
 #define NET_ALIAS_MAX    64     /* extra addresses, pooled across the world */
@@ -89,8 +89,15 @@
 #define NET_FRAME_MAX  1518     /* 1500 MTU + 14 ethernet + 4 for a tag     */
 #define NET_TRACE_MAX   512
 #define NET_TRACE_LINE   96
-#define NET_RXBUF       2048    /* the receive window is this, honestly     */
-#define NET_TXBUF       2048
+/* THE RECEIVE WINDOW, AND IT IS THE REAL ONE. A connection cannot go faster
+ * than a window per round trip, so this number and the per-hop millisecond
+ * in port_tx together decide what one transfer can do: twelve kilobytes over
+ * a six millisecond round trip is about sixteen megabits, which is what one
+ * desk pulling one file really gets on a healthy LAN in this world. It is
+ * here rather than buried because it is the ceiling every other number in
+ * the load model has to live under. */
+#define NET_RXBUF      12288
+#define NET_TXBUF      12288
 #define NET_NAME_MAX     24
 
 /* ------------------------------------------------------------------- L1  */
@@ -233,6 +240,10 @@ uint64_t net_port_queue_us(const Net *n, int node, int port);
  * elapsed wire time that is utilisation, and it is measured rather than
  * modelled. */
 uint64_t net_port_busy_us(const Net *n, int node, int port);
+/* Start the utilisation stopwatch again. The tx/rx/drop counters are NOT
+ * touched: those are lifetime counters on a real switch and a player reads
+ * them expecting them to be. */
+void  net_port_busy_reset(Net *n, int node, int port);
 /* Of net_port_drops, how many were the egress buffer being full. The rest
  * are frames offered to a port with no link. */
 uint64_t net_port_qdrops(const Net *n, int node, int port);

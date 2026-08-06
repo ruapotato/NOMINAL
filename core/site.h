@@ -344,9 +344,9 @@ void site_dump_demand(const Site *s, Buf *out);
  * megabits off the riser and a server in the basement does not. Internet
  * traffic crosses the ISP circuit whatever anybody does. */
 #define SITE_DESK_FILE_KB 2048
-#define SITE_DESK_WEB_KB   300
+#define SITE_DESK_WEB_KB   512
 /* What the landlord's circuit carries until somebody buys a bigger one. */
-#define SITE_ISP_MB_DEFAULT 500
+#define SITE_ISP_MB_DEFAULT 300
 
 /* THE DESKS ARRIVE WITH THE TENANT. `serve` is the player's half: it runs
  * copper from a box they own to the tenancy's desks, as many as there are

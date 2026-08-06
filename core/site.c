@@ -182,6 +182,15 @@ bool site_new(Site *s, const Building *b, uint64_t seed, long budget)
     }
     net_httpd(s->net, d->node, 80);
 
+    /* WHAT THE CIRCUIT CARRIES, which is not what the fibre in the street
+     * carries. The handoff is rate-limited to what the landlord has bought,
+     * because a media converter on a wall is exactly that, and it is why a
+     * tower with gigabit copper in every riser can still be starved of the
+     * internet. `isp <mb>` buys a bigger one and the ISP charges for it. */
+    s->day = 0;
+    s->isp_mb = SITE_ISP_MB_DEFAULT;
+    net_port_rate(s->net, d->node, 0, s->isp_mb);
+
     /* --------------------------------------------------- who is moving in */
     /* One tenancy per Room.tenant, each with an arrival day and a set of
      * requirements drawn from this seed and no other. The building decided
@@ -710,6 +719,10 @@ void site_dump(const Site *s, Buf *out)
     buf_puts(out, "\n  name         kind      where                 what\n");
     for (int i = 0; i < s->ndev; i++) {
         const SiteDev *d = &s->dev[i];
+        /* THREE HUNDRED AND FIFTY DESKS ARE NOT A DEVICE LIST. They belong
+         * to the tenants, they arrive by the score, and a player wants one
+         * line per tenancy about them. `service` is that line. */
+        if (d->kind == SDEV_DESK) continue;
         where(s, d, w, sizeof w);
         buf_printf(out, "  %-12s %-9s %-21s", d->name, site_kind_name(d->kind), w);
         if (site_kind_is_switch(d->kind)) {
@@ -911,6 +924,15 @@ bool site_cmd(Site *s, const char *line, Buf *out)
             "trace <dev> <ip>               traceroute, counted by ttl\n"
             "resolve <dev> <name>           a real DNS query\n"
             "get <dev> <ip> <path>          fetch a page over TCP\n"
+            "\n"
+            "day [n]                        advance the clock. Tenants move in on\n"
+            "                               their day, their people work over what\n"
+            "                               you built, and rent arrives for the work\n"
+            "                               that finished\n"
+            "serve <tenant> <box> [cable]   run copper from a box you own to a\n"
+            "                               tenancy's desks, one each, by the metre\n"
+            "isp [mb]                       what the circuit carries, and what it costs\n"
+            "status | service | load        the day, who is suffering, which port is full\n"
             "show [dev] | links | rooms <f> | demand | money | frames\n");
         return true;
     }
@@ -925,6 +947,54 @@ bool site_cmd(Site *s, const char *line, Buf *out)
         return true;
     }
     if (strcmp(t[0], "demand") == 0) { site_dump_demand(s, out); return true; }
+    /* ------------------------------------------------------------ the loop */
+    if (strcmp(t[0], "day") == 0) {
+        int days = n > 1 ? atoi(t[1]) : 1;
+        if (days < 1) days = 1;
+        if (days > 400) days = 400;
+        site_advance(s, days, out);
+        return true;
+    }
+    if (strcmp(t[0], "status") == 0) { site_dump_day(s, out); return true; }
+    if (strcmp(t[0], "service") == 0) { site_dump_service(s, out); return true; }
+    if (strcmp(t[0], "load") == 0) { site_dump_load(s, out); return true; }
+    if (strcmp(t[0], "isp") == 0) {
+        if (n < 2) {
+            buf_printf(out, "the circuit is %d Mb, %ld a month. `isp <mb>` buys "
+                            "another size.\n", s->isp_mb, site_isp_price(s->isp_mb));
+            return true;
+        }
+        int mb = atoi(t[1]);
+        if (!site_isp(s, mb))
+            buf_printf(out, "refused: %s\n", site_err_text(s->err));
+        else
+            buf_printf(out, "the circuit is %d Mb now, %ld a month. %ld left.\n",
+                       s->isp_mb, site_isp_price(s->isp_mb), s->money);
+        return true;
+    }
+    if (strcmp(t[0], "serve") == 0 && n >= 3) {
+        /* `serve <tenant> <box> [cable]` -- run copper from a box you own to
+         * a tenancy's desks. One cable each, priced by the metre, stopping
+         * when the box runs out of holes. */
+        int ti = -1;
+        int want = atoi(t[1]);
+        for (int i = 0; i < s->ntenant; i++)
+            if (s->tenant[i].tenant == want) { ti = i; break; }
+        int d = dev_arg(s, t[2]);
+        if (ti < 0) { buf_printf(out, "no tenancy %s. `service` lists who is in.\n", t[1]); return true; }
+        if (d < 0) { buf_printf(out, "no such box: %s\n", t[2]); return true; }
+        CableKind k = n > 3 ? cable_arg(t[3]) : CAB_CAT5E;
+        int before = site_tenant_connected(s, ti);
+        int got = site_serve(s, ti, d, k);
+        if (got < 0) { buf_printf(out, "refused: %s\n", site_err_text(s->err)); return true; }
+        buf_printf(out, "tenancy %d: %d of %d desks have a port (%d new). %ld left.\n",
+                   s->tenant[ti].tenant, got, s->tenant[ti].ndesk, got - before,
+                   s->money);
+        if (got < s->tenant[ti].ndesk)
+            buf_printf(out, "  %d of them have nowhere to go: %s\n",
+                       s->tenant[ti].ndesk - got, site_err_text(s->err));
+        return true;
+    }
     if (strcmp(t[0], "money") == 0) {
         buf_printf(out, "%ld left, %ld spent\n", s->money, s->spent);
         return true;
@@ -1118,6 +1188,22 @@ bool site_cmd(Site *s, const char *line, Buf *out)
         net_fmt_ip(net_if_get_addr(s->net, s->dev[d].node, 0), ip, sizeof ip);
         buf_printf(out, "%s\n", got ? ip
                    : "no lease: nothing answered, or the pool is empty");
+        return true;
+    }
+    /* THE SERVICES A BOX RUNS. There was no verb for either of these, so a
+     * server the player bought could hold files for nobody and a tower could
+     * not resolve a name without asking the ISP. */
+    if (strcmp(t[0], "httpd") == 0 && n >= 2) {
+        int d = dev_arg(s, t[1]);
+        if (d < 0) { buf_puts(out, "?\n"); return true; }
+        buf_printf(out, "%s\n", site_httpd(s, d, n > 2 ? atoi(t[2]) : 80)
+                   ? "serving" : site_err_text(s->err));
+        return true;
+    }
+    if (strcmp(t[0], "dnsd") == 0 && n >= 2) {
+        int d = dev_arg(s, t[1]);
+        if (d < 0) { buf_puts(out, "?\n"); return true; }
+        buf_printf(out, "%s\n", site_dnsd(s, d) ? "serving" : site_err_text(s->err));
         return true;
     }
     if (strcmp(t[0], "resolver") == 0 && n >= 3) {

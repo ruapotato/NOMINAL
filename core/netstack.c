@@ -688,6 +688,8 @@ static PortState port_state(const Net *n, int p)
     return PORT_UP;
 }
 
+static int port_rate_mb(const Net *n, int p);
+
 PortState net_port_state(const Net *n, int node, int port)
 {
     return port_state(n, pid_of(n, node, port));
@@ -696,8 +698,11 @@ int net_port_speed(const Net *n, int node, int port)
 {
     int p = pid_of(n, node, port);
     if (port_state(n, p) != PORT_UP) return 0;
-    const Cable *c = &n->cable[n->port[p].cable];
-    return cable_speed_mb(c->kind, c->metres);
+    /* WHAT THE PORT REALLY DOES, which is the circuit when there is one and
+     * the cable otherwise. Printing the cable's speed for a rate-limited
+     * handoff was a number that disagreed with every other number about the
+     * same port, including the one the frames actually obey. */
+    return port_rate_mb(n, p);
 }
 Duplex net_port_duplex(const Net *n, int node, int port)
 {
@@ -714,6 +719,8 @@ uint64_t net_port_qdrops(const Net *n, int node, int port)
 { int p = pid_of(n, node, port); return p < 0 ? 0 : n->port[p].qdrops; }
 uint64_t net_port_busy_us(const Net *n, int node, int port)
 { int p = pid_of(n, node, port); return p < 0 ? 0 : n->port[p].busy_total; }
+void net_port_busy_reset(Net *n, int node, int port)
+{ int p = pid_of(n, node, port); if (p >= 0) n->port[p].busy_total = 0; }
 uint64_t net_port_queue_us(const Net *n, int node, int port)
 {
     int p = pid_of(n, node, port);
