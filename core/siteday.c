@@ -234,19 +234,21 @@ typedef struct {
  * naive answer and puts every file anybody opens onto the landlord's
  * circuit. Nothing here decides how much that costs. It only decides where
  * the frames are addressed, and the wires decide the rest. */
-static uint32_t file_server_for(const Site *s, int tenant)
+/* Returns the DEVICE, not the address, so that the day report can name it.
+ * The preference order is the same as it always was: their own machine, then
+ * one on their floor, then anything powered and addressed in the building. */
+static int file_server_for(const Site *s, int tenant)
 {
-    uint32_t any = 0, floor = 0;
+    int any = -1, floor = -1;
     for (int i = 0; i < s->ndev; i++) {
         const SiteDev *d = &s->dev[i];
         if (d->kind != SDEV_SERVER || !d->powered) continue;
-        uint32_t ip = net_if_get_addr(s->net, d->node, 0);
-        if (!ip) continue;
-        if (d->tenant && d->tenant == s->tenant[tenant].tenant) return ip;
-        if (!floor && d->floor == s->tenant[tenant].floor) floor = ip;
-        if (!any) any = ip;
+        if (!net_if_get_addr(s->net, d->node, 0)) continue;
+        if (d->tenant && d->tenant == s->tenant[tenant].tenant) return i;
+        if (floor < 0 && d->floor == s->tenant[tenant].floor) floor = i;
+        if (any < 0) any = i;
     }
-    return floor ? floor : any;
+    return floor >= 0 ? floor : any;
 }
 
 static void xfer_begin(Site *s, Xfer *x, int tick)
@@ -777,10 +779,13 @@ bool site_day(Site *s, SiteDay *rep)
         SiteTenant *t = &s->tenant[i];
         t->tried = t->finished = t->worst_ms = 0;
         t->bytes = 0;
+        t->files_dev = -1;
         if (!t->moved) continue;
         r.tenants_in++;
         r.desks += t->ndesk;
-        uint32_t files = file_server_for(s, i);
+        int fsd = file_server_for(s, i);
+        t->files_dev = fsd;
+        uint32_t files = fsd >= 0 ? net_if_get_addr(s->net, s->dev[fsd].node, 0) : 0;
         for (int j = 0; j < t->ndesk && nx + 1 < cap; j++) {
             int d = t->desk0 + j;
             if (net_port_state(s->net, s->dev[d].node, 0) != PORT_UP) continue;
@@ -1057,7 +1062,8 @@ void site_dump_day(const Site *s, Buf *out)
 
 void site_dump_service(const Site *s, Buf *out)
 {
-    buf_puts(out, "  floor tenant  desks   up  addr   done  worst   strikes  rent/day\n");
+    buf_puts(out, "  floor tenant  desks   up  addr   done  worst   strikes  rent/day  files\n");
+    bool offfloor = false;
     for (int i = 0; i < s->ntenant; i++) {
         const SiteTenant *t = &s->tenant[i];
         if (!t->moved) continue;
@@ -1065,9 +1071,21 @@ void site_dump_service(const Site *s, Buf *out)
         char done[16];
         if (t->tried) snprintf(done, sizeof done, "%d/%d", t->finished, t->tried);
         else snprintf(done, sizeof done, "-");
-        buf_printf(out, "  %5d %6d  %5d %4d %5d  %5s %5dms  %7d%s  %8d\n",
+        /* Whose server their people actually pulled off. A tenancy being
+         * served from another floor is not an error and is not refused --
+         * it is the naive build working, right up until the riser fills --
+         * so it is reported rather than prevented. */
+        char files[NET_NAME_MAX + 8];
+        if (t->files_dev < 0) snprintf(files, sizeof files, "%s", "none");
+        else {
+            const SiteDev *fd = &s->dev[t->files_dev];
+            bool away = fd->floor != t->floor;
+            snprintf(files, sizeof files, "%s%s", fd->name, away ? " <-" : "");
+            if (away) offfloor = true;
+        }
+        buf_printf(out, "  %5d %6d  %5d %4d %5d  %5s %5dms  %7d%s  %8d  %s\n",
                    t->floor, t->tenant, t->ndesk, up, ad, done, t->worst_ms,
-                   t->strikes, t->complained ? "*" : " ", t->rent / 30);
+                   t->strikes, t->complained ? "*" : " ", t->rent / 30, files);
     }
     buf_puts(out, "\n  up is desks whose port has LINK on it: copper in a socket at both\n"
                   "  ends, short enough to carry. addr is how many of those also got an\n"
@@ -1075,7 +1093,14 @@ void site_dump_service(const Site *s, Buf *out)
                   "  number `day` counts. up 20 addr 0 is twenty cables and no dhcp.\n"
                   "\n  a tenancy is served on a day when four fifths of its people got\n"
                   "  their work done. Three days in a row without that is a complaint,\n"
-                  "  and a * is one that has been filed. `load` says which port is full.\n");
+                  "  and a * is one that has been filed. `load` says which port is full.\n"
+                  "\n  files is the server their people actually pulled off yesterday.\n"
+                  "  Their own machine if they have one and it is on; otherwise one on\n"
+                  "  their floor; otherwise anything powered in the building.\n");
+    if (offfloor)
+        buf_puts(out, "  <- is a tenancy being served from another floor. Nothing refused\n"
+                      "  it -- their traffic is just crossing a riser to get there, and\n"
+                      "  `load` will show you which port is carrying it.\n");
 }
 
 void site_dump_load(const Site *s, Buf *out)

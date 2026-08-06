@@ -170,6 +170,13 @@ typedef struct {
     int      tried, finished;
     int      worst_ms;         /* the slowest desk's transfer               */
     long     bytes;            /* what their people pulled that day         */
+    /* WHICH SERVER TOOK THEIR FILES. A tenancy whose own machine is off, or
+     * who never had one, is served by whatever else is powered -- their
+     * floor's if there is one, otherwise anything at all, possibly six
+     * floors down through a riser somebody has already filled. That is the
+     * right behaviour and it used to be silent, which made the resulting
+     * slowness unattributable. -1 is nobody: no server was powered. */
+    int      files_dev;
 } SiteTenant;
 
 /* HOW A DAY WENT, for the whole site. Every number in here was counted

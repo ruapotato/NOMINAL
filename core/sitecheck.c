@@ -538,6 +538,32 @@ static void check_agreement(const Building *b)
        addressed > 1 && s.last.connected == addressed);
     printf("    %d desks with link, %d of them addressed, in both places\n",
            site_tenant_connected(&s, 0), addressed);
+
+    /* WHOSE SERVER THEY ARE ACTUALLY ON. The fallback -- their own machine,
+     * else one on their floor, else anything powered in the building -- is
+     * correct and used to be silent, so a tenancy hairpinning six floors
+     * down through a riser looked exactly like one that was not. */
+    {
+        int srv = site_install(&s, SDEV_SERVER, mdf, "fs");
+        site_cable(&s, rt, 2, srv, 0, CAB_CAT6);
+        site_power(&s, srv, true);
+        site_addr(&s, srv, 0, net_ip(10, 0, 1, 10), net_mask_bits(16));
+        site_day(&s, NULL);
+        sv.len = 0; if (sv.p) sv.p[0] = 0;
+        site_dump_service(&s, &sv);
+        ck("`service` names the server a tenancy's people actually pulled off",
+           s.tenant[0].files_dev == srv && sv.p && strstr(sv.p, "fs") != NULL);
+        ck("and marks it when that server is not on their floor",
+           s.dev[srv].floor != s.tenant[0].floor &&
+           strstr(sv.p, "fs <-") != NULL &&
+           strstr(sv.p, "being served from another floor") != NULL);
+        site_power(&s, srv, false);
+        site_day(&s, NULL);
+        sv.len = 0; if (sv.p) sv.p[0] = 0;
+        site_dump_service(&s, &sv);
+        ck("switch it off and it says nobody served them, rather than the last name",
+           s.tenant[0].files_dev < 0 && strstr(sv.p, "fs") == NULL);
+    }
     buf_free(&d);
     buf_free(&sv);
     site_free(&s);
