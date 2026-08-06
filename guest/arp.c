@@ -66,6 +66,13 @@ static int table(const char *only, int bsd)
 {
     i64 n = g_netinfo(NETINFO_ARP, buf, sizeof buf);
     if (n < 0) { g_putln("arp: the kernel has no network state to report"); g_exit(1); }
+    /* NO CARD AT ALL. The kernel says so in one line rather than an empty
+     * list, and a parser that treated it as data would print nonsense at
+     * exactly the moment a player most needs a straight answer. */
+    if (g_contains(buf, "no network interface")) {
+        g_putln("this machine has no network card in the world at all.");
+        g_exit(1);
+    }
     if (n == 0) {
         g_putln("(the arp cache is empty -- nothing on this wire has answered yet)");
         g_putln("  it fills when this machine talks to a neighbour: try `ping`.");

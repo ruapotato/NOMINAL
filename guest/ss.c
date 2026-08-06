@@ -89,6 +89,13 @@ void _start(void)
     i64 got = g_netinfo(NETINFO_SOCK, buf, sizeof buf);
     if (got < 0) { g_putln("ss: the kernel has no network state to report"); g_exit(1); }
 
+    /* NO CARD AT ALL. The kernel says so in one line rather than an empty
+     * list, and a parser that treated it as data would print nonsense at
+     * exactly the moment a player most needs a straight answer. */
+    if (g_contains(buf, "no network interface")) {
+        g_putln("this machine has no network card in the world at all.");
+        g_exit(1);
+    }
     g_putln("NETID STATE        LOCAL ADDRESS:PORT     PEER ADDRESS:PORT");
     int shown = 0;
     char *s = buf;

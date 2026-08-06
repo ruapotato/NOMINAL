@@ -2035,7 +2035,7 @@ static const Package PKG_SOUNDS = {
 };
 
 static const Package PKG_SHELL = {
-    "nomsh", "1.10", "the shell and the base tools",
+    "nomsh", "1.11", "the shell and the base tools",
     {
       { "/bin/rc",    NULL, 0755, NULL },
       { "/bin/sh",    NULL, 0755, NULL },
@@ -2136,7 +2136,7 @@ static const Package PKG_SHELL = {
        * only the second name for it. */
       { "/sbin/telinit", NULL, 0755, NULL },
       { "/usr/share/doc/nomsh/README",
-        "nomsh 1.10 -- the shell and the base tools.\n"
+        "nomsh 1.11 -- the shell and the base tools.\n"
         "\n"
         "/bin/sh is the interactive shell. /bin/rc is a different program with a\n"
         "different job: rc runs SCRIPT FILES during the boot and knows five verbs\n"
@@ -2164,6 +2164,11 @@ static const Package PKG_SHELL = {
         "and a filter that has not finished has nothing to say. A builtin cannot be a\n"
         "stage, which is why /bin/echo exists as a real program as well.\n"
         "\n"
+        "THE NETWORK: ip (addr, link, route, neigh), arp, ping, traceroute, ss,\n"
+        "netstat and tcpdump. All of them read the running stack rather than the\n"
+        "files that configure it, which is the whole point of them: the config is\n"
+        "what somebody intended and these are what the machine has. `man` each.\n"
+        "\n"
         "THE FILTERS: grep, sed, head, tail, wc, sort-of-everything-else via find.\n"
         "`sed -i` is the only editor on this machine, and it is enough:\n"
         "\n"
@@ -2176,10 +2181,26 @@ static const Package PKG_SHELL = {
       { "/usr/share/doc/nomsh/CHANGELOG",
         "nomsh CHANGELOG -- newest first.\n"
         "\n"
-        "1.10 -- current. ping. Every other network tool on this machine reads\n"
-        "       state -- what address the card HAS, what the routing table SAYS,\n"
-        "       who has answered an arp. ping is the only one that makes the\n"
-        "       machine try, and it reports the six answers the stack really\n"
+        "1.11 -- current. ip, arp, traceroute, ss and tcpdump. `netstat` and\n"
+        "       `ping` were the whole of the toolbox inside a machine, and the\n"
+        "       first person to build a network with it said so: one instrument,\n"
+        "       and it cannot test reachability. These read the same running\n"
+        "       stack netstat does. `ip addr`, `ip link`, `ip route`, `ip neigh`\n"
+        "       in iproute2's shapes; `arp` with the card each neighbour answered\n"
+        "       on and a real `arp -d`; `traceroute` counting real ttls off real\n"
+        "       ICMP; `ss` for the sockets in the columns people type now; and\n"
+        "       `tcpdump`, which is the one that changes what can be diagnosed --\n"
+        "       the frames at this card, in both directions, with the fields that\n"
+        "       were in the headers. On a pristine box `ping` says no answer and\n"
+        "       `tcpdump icmp` shows the reply arriving, because the filter drops\n"
+        "       it above IP. Nothing else on the machine can tell those apart.\n"
+        "       Each one documents its subset: no `ip addr add`, no traceroute\n"
+        "       times nobody measured, no `ss -p`, and a tcpdump filter it cannot\n"
+        "       apply is refused by name rather than ignored.\n"
+        "\n"
+        "1.10 -- ping, the first program here that makes the machine TRY rather\n"
+        "       than report what it believes. It reports the six answers the\n"
+        "       stack really\n"
         "       produces rather than collapsing them into `no reply`: a router\n"
         "       with no route, a last hop with no arp answer, a ttl that ran out\n"
         "       and a packet that never left this box are four different repairs.\n"
@@ -3044,7 +3065,10 @@ static const Package PKG_MAN = {
         "A real echo request, out of this machine's card, down whatever cable\n"
         "is in it. Everything else here reads state -- `netstat -i` says what\n"
         "address the card HAS, `-r` what the table SAYS, `-A` who has\n"
-        "answered before. This is the one that tries.\n"
+        "answered before, `ip` and `arp` and `ss` the same things in the\n"
+        "shapes iproute2 prints them. This is the one that tries, and the one\n"
+        "that measures: traceroute(8) also sends, but it counts hops and does\n"
+        "not time them.\n"
         "\n"
         "WHAT IT CAN SAY, and each line is a different repair:\n"
         "\n"

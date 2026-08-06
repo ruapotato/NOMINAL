@@ -80,6 +80,13 @@ static void show(int link_only)
 {
     i64 n = g_netinfo(NETINFO_IFACE, buf, sizeof buf);
     if (n < 0) { g_putln("ip: the kernel has no network state to report"); g_exit(1); }
+    /* NO CARD AT ALL. The kernel says so in one line rather than an empty
+     * list, and a parser that treated it as data would print nonsense at
+     * exactly the moment a player most needs a straight answer. */
+    if (g_contains(buf, "no network interface")) {
+        g_putln("this machine has no network card in the world at all.");
+        g_exit(1);
+    }
     if (n == 0) {
         g_putln("(no interface is configured -- this machine is on no network)");
         g_putln("  `svc status net` for the daemon that configures it.");
@@ -227,6 +234,20 @@ void _start(void)
     /* A verb after the object. `show` and `list` are the ones that read;
      * anything else would be a change, and this program does not make
      * changes -- so it says which, rather than ignoring the word. */
+    /* THE VERB FIRST, THEN THE REST OF THE LINE. `ip addr add 10.0.0.1/24 dev
+     * eth0` has to be answered as "this ip does not configure" -- complaining
+     * about the third word instead sends the reader looking for a filter they
+     * never asked for. */
+    if (n > 1) {
+        if (!g_streq(v[1], "show") && !g_streq(v[1], "list") && !g_streq(v[1], "sh")) {
+            g_puts("ip: this ip only shows; it cannot `"); g_puts(v[1]);
+            g_putln("`.");
+            g_putln("  an address on this machine comes from /etc/net/interfaces");
+            g_putln("  by way of netd. Edit that, `svc reload net`, and look again.");
+            g_exit(2);
+        }
+        show_only = 1;
+    }
     if (n > 2) {
         /* `ip addr show eth0` filters, and a filter this program does not
          * apply would print every card and look like it had applied one. */
@@ -234,17 +255,6 @@ void _start(void)
         g_puts(v[2]); g_putln("`.");
         g_putln("  it prints every interface; read the one you want.");
         g_exit(2);
-    }
-    if (n > 1) {
-        if (g_streq(v[1], "show") || g_streq(v[1], "list") || g_streq(v[1], "sh"))
-            show_only = 1;
-        else {
-            g_puts("ip: this ip only shows; it cannot `"); g_puts(v[1]);
-            g_putln("`.");
-            g_putln("  an address on this machine comes from /etc/net/interfaces");
-            g_putln("  by way of netd. Edit that, `svc reload net`, and look again.");
-            g_exit(2);
-        }
     }
     (void)show_only;
 

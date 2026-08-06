@@ -130,8 +130,22 @@ void _start(void)
     g_puts(buf);
     if (r > 0 && buf[r - 1] != '\n') g_putln("");
 
+    /* NOT ONE HOP ANSWERED. On this system the commonest reason is not the
+     * path at all: a machine ships `policy drop`, and the ICMP that carries
+     * every answer a traceroute has is dropped on the way back IN. Saying so
+     * here is the difference between reading twelve stars as "the network is
+     * gone" and as "this box is not listening to the answers". */
+    int answered = 0;
+    for (i64 k = 0; k < r; k++)
+        if (buf[k] == ' ' && buf[k + 1] != '*') answered = 1;
+
     char last[64];
     last_hop(last, sizeof last);
+    if (!answered) {
+        g_putln("nothing answered at any ttl. before blaming the path, check");
+        g_putln("  that THIS machine accepts icmp coming back: `netstat -F`.");
+        g_putln("  a pristine box ships `policy drop` and hears none of it.");
+    }
     if (!g_streq(last, addr)) {
         g_puts("the trace stops there: "); g_puts(addr);
         g_putln(" never answered.");
