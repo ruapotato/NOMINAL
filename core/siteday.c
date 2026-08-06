@@ -1191,9 +1191,17 @@ void site_tenant_why(const Site *s, int ti, char *out, int cap)
     if (site_tenant_served(s, ti)) return;
     switch (t->kind) {
     case TEN_VOICE:
+        /* AND WHERE TO GO NEXT. This row is the landlord's view of a fault
+         * whose evidence lives on the tenant's own machine, and a playtester
+         * who read exactly this line then sat at one of those desks found
+         * nothing, because every tool they knew asks about NOW and the calls
+         * were over. `voice` is the one that remembers, and it names the port
+         * that threw the audio away -- which on a naive tower is three hops
+         * from the desk and not on that floor at all. */
         snprintf(out, (size_t)cap,
                  "%d of %d calls broke up: %d.%d%% of the audio concealed, "
-                 "%d ms one way, %u us of jitter.",
+                 "%d ms one way, %u us of jitter. `sit` at one of their desks "
+                 "and run `voice` for which port threw it away.",
                  t->tried - t->finished, t->tried,
                  t->conceal_ppm / 10000, (t->conceal_ppm / 1000) % 10,
                  t->delay_ms, (unsigned)t->jitter_us);

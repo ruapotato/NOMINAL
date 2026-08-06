@@ -1009,6 +1009,21 @@ static void do_help(const Session *ses, Buf *out)
             "  traceroute <addr>            where it stops\n"
             "  netstat -r routes   -P this port's own counters   -A the arp cache\n"
             "  ss    arp    tcpdump    svc    ps    dmesg\n"
+            /* AND THE ONE THAT IS NOT LIKE THE OTHERS. A playtester sat at a
+             * call centre's desk on a day it scored 0 of 18 calls with 29% of
+             * its audio concealed, and found a machine in perfect health --
+             * ping 3/3, traceroute clean, `ip addr` with 20,175 packets and
+             * nothing dropped. Every tool above asks about NOW and about THIS
+             * card, and a call is neither: it is over by the time you sit
+             * down, and it was thrown away on somebody else's port. `voice`
+             * is the only one here that answers about a day that has already
+             * happened, so it has to be named where somebody would look. */
+            "  voice                        what its calls actually sounded\n"
+            "                               like, after they are over. The only\n"
+            "                               one here that remembers yesterday --\n"
+            "                               and it names the port that threw the\n"
+            "                               audio away, which is usually not on\n"
+            "                               this floor\n"
             "\n"
             "  stand                        get up. Their machine goes back to\n"
             "                               being a card on a wire, and anything\n"

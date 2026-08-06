@@ -47,6 +47,10 @@ static const char *SAFE[] = {
     "ls", "cat", "grep", "head", "tail", "wc", "stat", "find", "du", "df",
     "blkid", "dmesg", "netstat", "ip", "ss", "arp", "svc", "ps", "ns",
     "uname", "whoami", "ldd", "man", "pwd", "echo", "seq", "rev", "sort",
+    /* `voice` reads this machine's own call counters and changes nothing, the
+     * same as ss and tcpdump above. Without it here its manual's examples were
+     * existence-checked and never run, which is the weaker half of this gate. */
+    "voice",
     "fortune", "cowsay", "traceroute", "tcpdump", "ping", NULL
 };
 
