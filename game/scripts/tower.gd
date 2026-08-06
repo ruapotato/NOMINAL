@@ -1583,8 +1583,16 @@ func _draw_cables() -> void:
 #   of its own disorder off its link number so that two cables between the same
 #   two frames are not one cable drawn twice.
 
-const CABLE_R := 0.0032        # 6.4 mm across, which is what cat6 is
+# 9 mm across, which is what a patch lead with a moulded boot on it measures
+# -- and it is drawn at the size the thing in your hand is rather than at the
+# 6.4 mm of the cable inside its jacket, because the owner's note on a floor of
+# twenty cabled desks was "I don't see cabling for any of the boxes" and 6.4 mm
+# at four metres is one pixel of hairline. The METRES and the PRICE are the site
+# model's and are untouched: this is the diameter of the picture, not of the
+# copper the game charges you for.
+const CABLE_R := 0.0045
 const BEND_R := 0.09           # the radius copper will actually take
+const SKIRT_Y := 0.06          # where a lead lies when it is lying on a floor
 
 
 # The colour of a kind of cable, as core/netstack.h numbers them. Grey for
@@ -1608,6 +1616,8 @@ func _cable_colour(l: Dictionary) -> Color:
 # Set by _tray_route when the route crosses floors: the index in the returned
 # cells at which the leg on the far floor begins. -1 when it does not.
 var _riser_split := -1
+# The rooms whose leg of a run lies on the floor: see _route_between().
+var _skirt_rooms: Array = []
 
 
 func _cable_route(sa: int, pa: int, sb: int, pb: int, salt: int) -> Array:
@@ -1632,10 +1642,37 @@ func _cable_route(sa: int, pa: int, sb: int, pb: int, salt: int) -> Array:
 		var b2 := b + fb * outd
 		return [a, a1, a2, Vector3(a2.x, lo, a2.z), Vector3(b2.x, lo, b2.z), b2, b1, b]
 	var pts: Array = [a, a1]
-	pts.append_array(_route_between(a1, b1))
+	pts.append_array(_route_between(a1, b1, _dev_skirting(sa), _dev_skirting(sb)))
 	pts.append(b1)
 	pts.append(b)
 	return pts
+
+
+# A DESK'S LEAD DOES NOT FLY ACROSS THE OFFICE AT CEILING HEIGHT.
+#
+# The owner, looking at a floor of twenty cabled desks: "I don't see cabling
+# for any of the boxes." The cable was there and the model had every metre of
+# it: it climbed out of the machine under the desk straight up to tray height
+# and crossed the room two and a half metres in the air, where it is a hairline
+# against a ceiling with nothing else near it to give it a scale.
+#
+# A tenancy's office has no containment in it -- see TRAY_KINDS, an office is
+# not one -- and what really happens in a floor somebody has patched off a
+# spool is that the leads run along the skirting to the door and go up into the
+# tray in the corridor. So that is what the leg INSIDE their room does now:
+# floor level, past the feet of the desks, out of the door. It reads as cable
+# somebody ran because it is where cable somebody ran would be, and it is the
+# same length of copper the site model already charged for.
+#
+# Which room, or -1 for a device whose lead behaves as it always did.
+func _dev_skirting(site_i: int) -> int:
+	for d in devices:
+		if int(d.get("site", -1)) != site_i:
+			continue
+		if not bool(d.get("tenant_desk", false)):
+			return -1
+		return int(d.get("room_i", -1))
+	return -1
 
 
 # THE PART OF THE ROUTE THAT IS IN THE BUILDING: up into the tray at one end,
@@ -1643,14 +1680,28 @@ func _cable_route(sa: int, pa: int, sb: int, pb: int, salt: int) -> Array:
 # along the far floor's tray to over the other end. It is its own function
 # because game/tests/tower.gd checks it against the slabs -- a check that
 # re-derived the leg heights itself would be checking its own copy of the bug.
-func _route_between(a1: Vector3, b1: Vector3) -> Array:
+func _route_between(a1: Vector3, b1: Vector3, skirt_a := -1, skirt_b := -1) -> Array:
 	var fa_i := int(floor((a1.y + 0.3) / fheight))
 	var fb_i := int(floor((b1.y + 0.3) / fheight))
 	var ya := tray_y(fa_i)
 	var yb := tray_y(fb_i)
-	var pts: Array = [Vector3(a1.x, ya, a1.z)]
+	# Where a lead lies on the floor of the room it starts in: 60 mm up, which
+	# is the middle of a skirting and clear of the slab it is drawn on.
+	var la := float(fa_i) * fheight + SKIRT_Y
+	var lb := float(fb_i) * fheight + SKIRT_Y
+	var pts: Array = [Vector3(a1.x, la if skirt_a >= 0 else ya, a1.z)]
 	_riser_split = -1
+	# WHICH ROOMS THE ROUTE IS NOT ALLOWED TO SIMPLIFY THROUGH. _tray_route
+	# returns the CORNERS of the path, and a lead that runs straight out of an
+	# office has no corner in it -- so the whole in-room leg vanished and the
+	# only thing left to draw was the diagonal from the door to the desk. The
+	# cell each side of a doorway is kept when one of these rooms is involved,
+	# which is where the run stops lying on the floor and climbs into the tray.
+	_skirt_rooms = []
+	if skirt_a >= 0: _skirt_rooms.append(skirt_a)
+	if skirt_b >= 0: _skirt_rooms.append(skirt_b)
 	var cells := _tray_route(fa_i, Vector2(a1.x, a1.z), fb_i, Vector2(b1.x, b1.z))
+	_skirt_rooms = []
 	var split := _riser_split
 	# WHERE THE CLIMB HAPPENS. The route across two floors is the leg on floor
 	# A, the riser, and the leg on floor B -- and every cell of it used to be
@@ -1664,13 +1715,52 @@ func _route_between(a1: Vector3, b1: Vector3) -> Array:
 			var r: Vector2 = cells[split - 1]
 			pts.append(Vector3(r.x, yb, r.y))
 		var y: float = ya if (split < 0 or i < split) else yb
+		# STILL ON THE FLOOR WHILE IT IS STILL IN THE ROOM. A cell that belongs
+		# to the room the lead came out of is a cell the lead is lying on the
+		# floor of; the first cell that is not is the doorway, and the climb up
+		# to the tray happens there rather than over the desk.
+		# A ROOM INDEX IS UNIQUE IN THE BUILDING, not per floor, so which leg a
+		# cell belongs to does not come into it: a cell that is in the room the
+		# lead came out of is a cell the lead is lying on the floor of. The
+		# earlier version asked which LEG it was and got a same-floor run wrong,
+		# because a run that never leaves the floor is all one leg and the far
+		# end's room never matched.
+		var on_a: bool = split < 0 or i < split
+		var room_here: int = room_of(fa_i if on_a else fb_i,
+			int(floor(cells[i].x)), int(floor(cells[i].y)))
+		if skirt_a >= 0 and room_here == skirt_a:
+			y = la
+		elif skirt_b >= 0 and room_here == skirt_b:
+			y = lb
+		# AND THE CLIMB HAPPENS AT THE DOOR, NOT OVER THE DESK. It is a vertical
+		# at the cell the run is leaving -- the corridor side of the doorway,
+		# because the two cells either side of it are both kept -- and then a
+		# horizontal into the room at the new height. Climbing at the cell it is
+		# ARRIVING at put the vertical just inside the office and left the
+		# horizontal leg crossing their room at tray height, which is the
+		# picture this was written to get rid of; game/tests/tower.gd measures
+		# it now.
+		var prev: Vector3 = pts[pts.size() - 1]
+		if absf(prev.y - y) > 0.01:
+			pts.append(Vector3(prev.x, y, prev.z))
 		pts.append(Vector3(cells[i].x, y, cells[i].y))
 	if split < 0 and absf(ya - yb) > 0.01 and not cells.is_empty():
 		# No riser on this floor at all: the site model has already priced the
 		# real run, and the shortest honest thing to draw is a straight climb.
 		var last: Vector2 = cells[cells.size() - 1]
 		pts.append(Vector3(last.x, yb, last.y))
-	pts.append(Vector3(b1.x, yb, b1.z))
+	# OVER THE FAR END, at whatever height that end's leg runs at. This was
+	# always the same point as the last cell -- _tray_route ends ON the target
+	# -- and it stays that way for a lead that comes down out of the tray; for
+	# one lying on the floor of the room it is going into, a point at tray
+	# height here would send it back up to the ceiling above the desk it has
+	# just reached.
+	var endy: float = yb
+	if skirt_b >= 0 and room_of(fb_i, int(floor(b1.x)), int(floor(b1.z))) == skirt_b:
+		endy = lb
+	var tail := Vector3(b1.x, endy, b1.z)
+	if pts.is_empty() or pts[pts.size() - 1].distance_to(tail) > 0.01:
+		pts.append(tail)
 	return pts
 
 
@@ -1747,13 +1837,22 @@ func _tray_route(fa: int, from: Vector2, fb: int, to: Vector2) -> Array:
 		path.push_front(Vector2(float(at % bw) + 0.5, float(at / bw) + 0.5))
 		at = prev[at]
 	# only the corners: a hundred metre-long segments is the same line with a
-	# hundred times the triangles in it
+	# hundred times the triangles in it -- and the two cells either side of the
+	# door of a room whose leg runs along the floor, because that is where the
+	# run leaves the floor and there is no corner there to keep.
 	var out: Array = []
 	for i in range(1, path.size() - 1):
 		var p0: Vector2 = path[i - 1]
 		var p1: Vector2 = path[i]
 		var p2: Vector2 = path[i + 1]
-		if absf((p1 - p0).angle_to(p2 - p1)) > 0.01:
+		var keep := absf((p1 - p0).angle_to(p2 - p1)) > 0.01
+		if not keep and not _skirt_rooms.is_empty():
+			var r1 := room_of(fa, int(floor(p1.x)), int(floor(p1.y)))
+			var r0 := room_of(fa, int(floor(p0.x)), int(floor(p0.y)))
+			var r2 := room_of(fa, int(floor(p2.x)), int(floor(p2.y)))
+			keep = (r1 != r0 or r1 != r2) \
+				and (_skirt_rooms.has(r0) or _skirt_rooms.has(r1) or _skirt_rooms.has(r2))
+		if keep:
 			out.append(p1)
 	out.append(to)
 	return out
@@ -1833,6 +1932,12 @@ func _sag(line: Array, salt: int) -> Array:
 		if span < 0.25 or absf(b.y - a.y) > 0.3:
 			continue                       # a drop does not sag: it hangs straight
 		var lying := absf(a.y - tray_y(int(floor((a.y + 0.3) / fheight)))) < 0.06
+		# AND A CABLE ON THE FLOOR DOES NOT SAG AT ALL, because the floor is
+		# holding it up. Without this the skirting run of a desk lead dips
+		# through the slab it is lying on and half of it is inside the concrete.
+		var down: float = a.y - float(int(floor((a.y + 0.3) / fheight))) * fheight
+		if down < SKIRT_Y + 0.06:
+			continue
 		var drop: float = span * (0.02 if lying else 0.09)
 		drop += float(salt % 3) * 0.004
 		var n := int(clamp(span * 3.0, 3.0, 12.0))
@@ -2017,6 +2122,25 @@ func _place_devices() -> void:
 		# A managed box has a management line and no picture on the back of it.
 		_add_device(d.name, -2, false, true, slot.mn, slot.size,
 			DEV_COL.get(d.kindname, Color("#2f343a")), slot.face, d.nports, d.i)
+		# AND A TENANT'S DESK IS SOMETHING YOU SIT AT. The box under the desk is
+		# the device; what a person walks up to and uses is the monitor above
+		# it, so the reach point is the screen and the place to stand is the
+		# far side of the chair -- the same two facts the workstation in the MDF
+		# states about itself, for the same reason.
+		# WHICH ROOM IT STANDS IN, kept because a cable has to know: a lead out
+		# of a desk runs along the floor of the room it is in and climbs in the
+		# corridor, and the route is drawn cell by cell without any other way of
+		# asking which of those cells are still theirs.
+		devices[devices.size() - 1]["room_i"] = room
+		if str(d.kindname) == "desk" and slot.has("centre"):
+			var td: Dictionary = devices[devices.size() - 1]
+			td.tenant_desk = true
+			var gl: Dictionary = _glass_at()
+			td.pos = Vector3(slot.centre) \
+				+ _rot_xz(Vector3(gl.get("mid", Vector3(0.12, 1.06, -0.27))), float(slot.yaw))
+			td.use_from = Vector3(slot.centre) \
+				+ _rot_xz(Vector3(0.12, 0.1, 1.15), float(slot.yaw))
+			devices[devices.size() - 1] = td
 
 	if mdf >= 0:
 		_workstation(mdf)
@@ -2082,6 +2206,7 @@ func _place_devices() -> void:
 # same order the room was cabled in, which is the order they really would be.
 var _desks: Array = []          # {tenant, k, pos, yaw, dev} -- one per desk device
 var _people_node: Node3D = null
+var _screens_node: Node3D = null    # what is on their monitors -- see screens.gd
 
 # AND WHO SITS AT EACH ONE, WHICH IS CORE'S TO SAY AND NOT THIS FILE'S.
 # `desks <tenant>` prints a name against every desk -- "t1d4  Ola Jelinek" --
@@ -2138,8 +2263,18 @@ func _seats() -> Array:
 	var P = preload("res://scripts/people.gd")
 	var addr := {}
 	var bad := {}
+	# AND WHAT IS ON THE SCREEN IN FRONT OF THEM, which is the same three
+	# columns read one more time: `up` is a desk with a lead in it, `addr` is
+	# one that also got an address, and the trade is what its software is.
+	# See screens.gd for what is real on that glass and what is a depiction.
+	var up := {}
+	var trade := {}
+	var done := {}
 	for row in service_rows():
 		addr[int(row.tenant)] = int(row.addr)
+		up[int(row.tenant)] = int(row.up)
+		trade[int(row.tenant)] = _trade_no(str(row.get("trade", "")))
+		done[int(row.tenant)] = _done_fraction(str(row.get("done", "")))
 		# THE STRIKE COUNT AND NOT THE STAR. A filed complaint never un-files,
 		# so a room read off `complained` would be red for the rest of the run
 		# however well it was served afterwards -- and the day a player finally
@@ -2160,10 +2295,48 @@ func _seats() -> Array:
 		elif not works:
 			mood = P.M_WAITING_BAD if sad else P.M_WAITING
 		var dev := str(d.get("dev", ""))
+		var S = preload("res://scripts/screens.gd")
+		# THE SCREEN'S STATE IS THE SAME SPENT COUNT THE POSTURE IS. core says
+		# how many desks have a link and how many of those have an address, not
+		# WHICH, so both are spent in install order -- t7d0 first -- and the
+		# screen on a desk always agrees with the person sitting at it.
+		var st: int = S.S_NOLINK
+		if works:
+			st = S.S_WORKING
+		elif int(d.k) < int(up.get(t, 0)):
+			st = S.S_NOADDR
 		out.append({"pos": d.pos, "yaw": d.yaw, "mood": mood,
-			"floor": int(d.get("floor", 0)),
+			"floor": int(d.get("floor", 0)), "dev": dev,
+			"trade": int(trade.get(t, S.T_OFFICE)),
+			"state": st, "done": float(done.get(t, 0.0)),
 			"who": str(_who.get(dev, dev))})
 	return out
+
+
+# `service`'s trade column, as screens.gd numbers the trades. The words are
+# core's -- "office", "voice", "web host", "studio" -- and anything else lands
+# on office, which is the baseline trade rather than a guess.
+func _trade_no(s: String) -> int:
+	var S = preload("res://scripts/screens.gd")
+	match s.strip_edges():
+		"voice": return S.T_VOICE
+		"web host": return S.T_WEBHOST
+		"studio": return S.T_STUDIO
+	return S.T_OFFICE
+
+
+# `done` is printed as "12/20" -- what happened out of what was promised -- and
+# this is that fraction and nothing else. A tenancy that has not had a day yet
+# prints 0/0 and gets nothing on the screen, which is true: no work has been
+# asked of them.
+func _done_fraction(s: String) -> float:
+	var f: PackedStringArray = s.split("/", false)
+	if f.size() < 2 or not str(f[0]).is_valid_int() or not str(f[1]).is_valid_int():
+		return 0.0
+	var b := int(f[1])
+	if b <= 0:
+		return 0.0
+	return clampf(float(int(f[0])) / float(b), 0.0, 1.0)
 
 
 func _people() -> void:
@@ -2171,7 +2344,17 @@ func _people() -> void:
 		_people_node = preload("res://scripts/people.gd").new()
 		_people_node.name = "People"
 		add_child(_people_node)
-	_people_node.rebuild(_seats())
+	if _screens_node == null or not is_instance_valid(_screens_node):
+		_screens_node = preload("res://scripts/screens.gd").new()
+		_screens_node.name = "Screens"
+		add_child(_screens_node)
+	var seats := _seats()
+	_people_node.rebuild(seats)
+	# THE DESK YOU ARE SITTING AT DOES NOT GET A PICTURE OF A DESK. There is a
+	# real machine behind that one glass for as long as you are in the chair,
+	# and a depiction painted over the top of the real thing would be the one
+	# lie this whole file exists to avoid.
+	_screens_node.rebuild(seats, seat_desk)
 
 
 # What is drawn, by mood, for a test that cannot see -- there are no nodes to
@@ -2206,8 +2389,23 @@ func perf_text() -> String:
 		+ "%d people at %d desks, in %d multimesh buffers: %d working, " \
 			% [n, n, _people_buffers(), c[0]] \
 		+ "%d waiting, %d waiting badly, %d struck\n" % [c[1], c[2], c[3]] \
+		+ _screen_perf() \
 		+ "%d devices drawn, %d triangles of building\n" \
 			% [devices.size(), triangle_count()]
+
+
+# WHAT THE SCREENS COST AND WHAT THEY ARE SHOWING, in the same breath. They are
+# two triangles and one instance buffer per floor, and the three numbers are
+# `service`'s own columns spent over the desks -- so a socket client can read
+# what is on the monitors in a room it cannot see, and a screenshot can be
+# checked against it.
+func _screen_perf() -> String:
+	if _screens_node == null or not is_instance_valid(_screens_node):
+		return ""
+	var c: Array = _screens_node.counts()
+	return "%d screens in %d multimesh buffers: %d no link, %d no address, %d working\n" \
+		% [int(_screens_node.total()), int(_screens_node.buffers()),
+			int(c[0]), int(c[1]), int(c[2])]
 
 
 # Where everybody is sitting, in world metres: the chair's square metre, which
@@ -2723,12 +2921,17 @@ func aim() -> Dictionary:
 		# then the box itself
 		var mn: Vector3 = d.mn
 		var mx: Vector3 = mn + d.size
-		if bool(d.get("is_desk", false)):
+		if bool(d.get("is_desk", false)) or bool(d.get("tenant_desk", false)):
 			# YOU AIM AT THE SCREEN, not at the tower unit under the desk: the
-			# monitor is the thing a person looks at and reaches for.
+			# monitor is the thing a person looks at and reaches for. That is as
+			# true of a tenant's desk as of the workstation, and on theirs the
+			# box is under the desk behind a person's legs -- so the only thing
+			# in this room you could aim at is the glass anyway.
 			var c: Vector3 = d.pos
-			mn = c - Vector3(0.30, 0.22, 0.30)
-			mx = c + Vector3(0.30, 0.22, 0.30)
+			var half := Vector3(0.30, 0.22, 0.30) if bool(d.get("is_desk", false)) \
+				else Vector3(0.26, 0.20, 0.26)
+			mn = c - half
+			mx = c + half
 		var td: float = _ray_box(o, dir, mn - Vector3(0.01, 0.01, 0.01),
 			mx + Vector3(0.01, 0.01, 0.01))
 		if td >= 0.0 and td < bt:
@@ -2794,6 +2997,14 @@ func aim_text(a: Dictionary) -> Array:
 		return [what, "empty  [Tab] spool in hand to cable it"]
 	if bool(d.get("is_desk", false)):
 		return [str(d.name), "[E] sit down"]
+	# SOMEBODY ELSE'S DESK SAYS WHOSE IT IS. `desks <tenant>` names the person
+	# at every desk and the view has already read it for the crowd, so the
+	# crosshair says "t1d3 -- Ola Jelinek" rather than a device number: the
+	# whole point of the verb is that a complaint is a person's, not a row's.
+	if bool(d.get("tenant_desk", false)):
+		var who := str(_who.get(str(d.name), ""))
+		var nm := str(d.name) if who == "" else "%s -- %s" % [str(d.name), who]
+		return [nm, "[E] sit down at their machine"]
 	var hint := "[F] serial"
 	if bool(d.hdmi):
 		hint += "  [H] display"
@@ -2948,14 +3159,158 @@ func stand_up() -> String:
 	return "you stand up. The desktop is still up on the screen behind you."
 
 
+# ------------------------------------------- SITTING DOWN AT SOMEBODY ELSE'S
+#
+# "I'd like those to act a lot like our main one, but with whatever software
+# the end user is using."
+#
+# The screens in a tenancy's office are a DEPICTION -- see screens.gd, which
+# says so at the top of itself and says which numbers drive it. This is the
+# other half, and it is the half that is real: `sit <desk>` in core/session.c
+# boots that machine, and while you are in the chair the window is a terminal
+# on it. Every line typed here is session_line(), the same call the socket
+# makes, going to a Machine that really exists for as long as you are sat
+# there. There is exactly one of them, because a person has one backside and
+# because 176 of them would be 3.2 GB (D31).
+#
+# So the two things a player sees are cleanly separated and neither pretends
+# to be the other: across the room, a picture of what the model knows; in the
+# chair, the machine.
+
+var seat_layer: CanvasLayer = null
+var seat_term: Control = null
+var seat_desk := ""              # the desk device the session says you are at
+var _seat_intro := ""            # what core said as the chair came out
+
+
+# Where the glass is on a tenant's desk, in the desk's own frame. Read off the
+# desk mesh by screens.gd rather than copied out of people.gd, so a reshaped
+# desk moves the reach point with it.
+var _glass_cache := {}
+
+func _glass_at() -> Dictionary:
+	if _glass_cache.is_empty():
+		_glass_cache = preload("res://scripts/screens.gd").new().glass_rect()
+	return _glass_cache
+
+
+# WHICH DESK, IN CORE'S OWN WORDS. session_prompt() prints `desk:t1d3#` while
+# you are in the seat and nothing else prints that, so the view reads the desk
+# off the prompt instead of keeping a second opinion about where you are
+# sitting -- the same rule the room and the money already follow.
+func seat_at() -> String:
+	if ses_where() != 4:              # SES_SEAT, core/session.h
+		return ""
+	var p := ses_prompt()
+	if not p.begins_with("desk:"):
+		return ""
+	return p.substr(5).trim_suffix("# ").trim_suffix("#").strip_edges()
+
+
+# THE VIEW FOLLOWS THE SESSION. `sit t1d3` typed at the socket and [E] pressed
+# at the desk are the same line to core, so the chair is not opened by the key:
+# it is opened by noticing that the session says you are in one. That is D23's
+# rule -- the 3D is a view of the session, never a second copy of it -- and it
+# is why a socket client's screenshot of a sitting is a screenshot of the
+# terminal rather than of the room they left.
+func _reconcile_seat() -> void:
+	var at := seat_at()
+	if at == seat_desk:
+		return
+	seat_desk = at
+	if at == "":
+		_seat_close()
+	else:
+		_seat_open()
+	# the screen on that desk is real while you are in it, and a picture again
+	# the moment you are not
+	_people()
+
+
+func _seat_open() -> void:
+	if seat_layer != null or not with_desktop:
+		return
+	seat_layer = CanvasLayer.new()
+	seat_layer.name = "Seat"
+	seat_layer.layer = 10
+	add_child(seat_layer)
+	var bg := ColorRect.new()
+	bg.color = Color("#05070a")
+	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
+	seat_layer.add_child(bg)
+	seat_term = preload("res://scripts/terminal.gd").new()
+	seat_term.mono = preload("res://scripts/uifont.gd").mono()
+	# ONE MACHINE, TWO FRONT ENDS, AGAIN. on_command is site(), which is
+	# ses_cmd() -- the socket's own call -- so what this terminal says and what
+	# a socket client typing the same word says cannot differ. The prompt is
+	# core's `desk:t1d3#`, not a string built here.
+	seat_term.on_command = func(s: String) -> String: return site(s)
+	seat_term.prompt_fn = func() -> String: return ses_prompt()
+	var intro := PackedStringArray()
+	for l in _seat_intro.split("\n", false):
+		intro.append(l)
+	intro.append("")
+	intro.append("[Esc] stands up -- and their machine goes with the chair.")
+	intro.append("")
+	seat_term.banner = intro
+	seat_term.set_anchors_preset(Control.PRESET_FULL_RECT)
+	seat_layer.add_child(seat_term)
+	seat_term.take_focus()
+	if player:
+		player.capture(false)
+		player.velocity = Vector3.ZERO
+		player.set_physics_process(false)
+	if hud:
+		hud.visible = false
+	if reticle:
+		reticle.visible = false
+
+
+func _seat_close() -> void:
+	if seat_layer == null:
+		return
+	seat_layer.queue_free()
+	seat_layer = null
+	seat_term = null
+	if player:
+		player.set_physics_process(true)
+		player.capture(true)
+	if hud:
+		hud.visible = true
+	if reticle:
+		reticle.visible = true
+
+
+func seat_open() -> bool:
+	return seat_layer != null
+
+
+# [Esc] IS `stand`, AND `stand` IS CORE'S. The key does not close the window
+# and then tell the session: it types the word, core frees the machine, and the
+# window closes because the session stopped saying you were sitting down.
+func seat_stand() -> String:
+	var said := site("stand")
+	_reconcile_seat()
+	return said
+
+
 # What [E] does where you are standing. A workstation is something you USE; a
 # lift landing is something you call. One key, and what it does is whatever is
 # in front of you.
 func use_here(dev: int) -> String:
+	if seat_open():
+		return seat_stand()
 	if desk_open():
 		return stand_up()
 	if dev >= 0 and bool(devices[dev].get("is_desk", false)):
 		return sit_down()
+	# THEIR desk, which is core's `sit` and not a second way in. It refuses
+	# from the wrong room, in core's words, exactly as it does over the socket.
+	if dev >= 0 and bool(devices[dev].get("tenant_desk", false)):
+		var said := site("sit %s" % str(devices[dev].name))
+		_seat_intro = said
+		_reconcile_seat()
+		return said
 	var landing := _lift_landing()
 	if landing != null:
 		return landing.call_to(player_floor())
@@ -3750,7 +4105,15 @@ func service_rows() -> Array:
 		if not sane:
 			continue
 		var strikes := str(toks[last - int(back.get("strikes", 2))])
+		# THE TRADE, WHICH IS WORDS AND SO IS READ AS THE GAP. It sits between
+		# `tenant` and `desks` and is one token on most rows and two on a "web
+		# host", which is why nothing here counts from either end to find it:
+		# it is everything between the column before it and the column after.
+		var tr: Array = []
+		for at in range(2, last - int(back.get("desks", 7))):
+			tr.append(str(toks[at]))
 		out.append({"floor": int(f[0]), "tenant": int(f[1]),
+			"trade": " ".join(tr),
 			"desks": int(toks[last - int(back.get("desks", 7))]),
 			"up": int(toks[last - int(back.get("up", 6))]),
 			"addr": int(toks[last - int(back.get("addr", 5))]),
@@ -4267,15 +4630,37 @@ func command(line: String) -> String:
 		_dismiss_report()
 		return "the report is dismissed and the building is behind it again.\n"
 	var out := ""
+	# WHAT THE PROMPT SAID BEFORE THE LINE RAN, because the line may be the one
+	# that changes it -- `sit` and `stand` both do.
+	var was_prompt := ses_prompt()
 	if line == "day" or line.begins_with("day "):
 		out = advance_day(line)
 	else:
 		out = site(line)
+	# AND THE WINDOW SHOWS WHAT THE SOCKET TYPED, when the socket is typing at
+	# somebody's desk. Two front ends onto one session is this project's rule
+	# everywhere else; a terminal in the window that stayed blank while an agent
+	# drove the same machine down the wire would be a screenshot that could not
+	# be used as evidence of anything.
+	if seat_open() and seat_term != null:
+		seat_term.write(was_prompt + line + "\n" + out)
+	# AND WHAT CORE SAID WHEN THE CHAIR CAME OUT IS THE FIRST THING ON THAT
+	# SCREEN. `sit` prints who stood up, what state their machine is in and
+	# what they think of their week -- read off the model -- and a terminal
+	# that opened on a bare prompt would have thrown all of it away.
+	if line == "sit" or line.begins_with("sit "):
+		_seat_intro = out
 	var st := ses_state()
 	var r := int(st.get("room", -1))
 	if r >= 0 and r < rooms.size() and r != player_room():
 		stand_in(r)
 	_reconcile()
+	# AND `sit` OVER THE SOCKET PUTS THE WINDOW IN THE CHAIR. The session is
+	# the authority on where the body is and what it is typing at, so the
+	# terminal on somebody's desk opens because core says you are sitting at
+	# it -- not because a key was pressed. A socket client and a player at the
+	# keyboard get the same window out of the same word.
+	_reconcile_seat()
 	_snapshot()
 	# AND THE HEAD TURNS TO THE HOLE THE LINE NAMED. The owner: "if you give a
 	# command to cable a particular port, the mouse automatically aligns to
@@ -4467,6 +4852,8 @@ func _input(event: InputEvent) -> void:
 		bag.toggle()
 	elif desk_open():
 		print(stand_up())
+	elif seat_open():
+		print(seat_stand())
 	elif phone and phone.focused:
 		print(phone.let_go())
 	else:
@@ -4482,7 +4869,7 @@ func _input(event: InputEvent) -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if player == null:
 		return
-	if desk_open() or (bag and bag.visible) or (phone and phone.focused):
+	if desk_open() or seat_open() or (bag and bag.visible) or (phone and phone.focused):
 		return
 	# THE HANDS. Left and right click use whatever is in the left and right
 	# hand, which is inventory.gd's business; what is under the crosshair is
@@ -4556,7 +4943,7 @@ func _hand_name(side: int) -> String:
 func _process(_dt: float) -> void:
 	if player == null:
 		return
-	if desk_open():
+	if desk_open() or seat_open():
 		return                 # the world waits while you are sitting at it
 	# THE CLIPBOARD, RE-READ WHEN SOMETHING HAPPENED AND NOT OTHERWISE. Four
 	# session verbs is nothing once, and a great deal sixty times a second.

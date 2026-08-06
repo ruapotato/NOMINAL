@@ -1036,6 +1036,167 @@ func _init() -> void:
 		else:
 			ok("the HUD names them: " + _line_with(t.hud_lines(), "tenant "))
 
+		# ---- AND THERE IS SOMETHING ON EVERY ONE OF THEIR SCREENS, saying
+		# what the model says about that machine and nothing else.
+		#
+		# The owner: "Those people at the desks don't seem to show a 2d
+		# interface like the one in the IT room." screens.gd draws one quad per
+		# desk with the tenancy's trade, that desk's link and address, and the
+		# tenancy's own `done` fraction in it -- so what is checked here is that
+		# the count follows the model, that the state follows the two columns
+		# that decide it, and that the picture is ON THE GLASS rather than
+		# floating where a monitor used to be. See D36.
+		var scr: Node = t.get_node_or_null("Screens")
+		if scr == null:
+			fail("a tenancy has moved in and nothing draws their screens")
+		else:
+			var ndesk2 := 0
+			for r3 in rows:
+				ndesk2 += int(r3.desks)
+			if int(scr.total()) != ndesk2:
+				fail("%d desks in the building and %d screens on them"
+					% [ndesk2, int(scr.total())])
+			else:
+				ok("%d screens, one per desk, in %d instance buffers"
+					% [int(scr.total()), int(scr.buffers())])
+			# NOTHING IS CABLED YET, so every screen in the building is the
+			# error a machine with no link shows. This is the same claim the
+			# raised hands make, read off the other half of the view.
+			var sc: Array = scr.counts()
+			if nup == 0 and (int(sc[1]) > 0 or int(sc[2]) > 0):
+				fail("no desk has a port and %d screens claim a network"
+					% [int(sc[1]) + int(sc[2])])
+			elif nup == 0:
+				ok("no port in any of them, so all %d screens show the link error"
+					% int(sc[0]))
+			# THE PICTURE IS ON THE MONITOR. The rectangle is read off the desk
+			# mesh's own P_SCREEN tag rather than copied out of people.gd, so
+			# this is the check that the two files still agree about where a
+			# monitor is: it has to be a real rectangle, at monitor height,
+			# facing the same way the person is.
+			var gr: Dictionary = scr.glass_rect()
+			if gr.is_empty():
+				fail("screens.gd could not find the glass on the desk mesh")
+			elif float(gr.w) < 0.15 or float(gr.h) < 0.10:
+				fail("the glass came back %.2f x %.2f m, which is not a monitor"
+					% [float(gr.w), float(gr.h)])
+			elif float(gr.mid.y) < 0.80 or float(gr.mid.y) > 1.60:
+				fail("the screen sits %.2f m off the floor, which is not where a monitor is"
+					% float(gr.mid.y))
+			else:
+				ok("the screen is %.2f x %.2f m of glass at %.2f m, off the desk mesh itself"
+					% [float(gr.w), float(gr.h), float(gr.mid.y)])
+
+		# ---- AND THEN YOU CABLE THEM, AND THE ROOM SAYS SO.
+		#
+		# One switch, carried to the floor's cupboard, and `serve` patches the
+		# tenancy off it. What is gated is the two things the player is meant to
+		# be able to SEE afterwards: the screens stop showing the link error,
+		# and the leads are on the floor of their office rather than crossing it
+		# at head height. The second is D36's answer to "I don't see cabling for
+		# any of the boxes" and it is the kind of thing only a check like this
+		# keeps true, because it looks right in the data either way.
+		var sw_room: String = "f%d.comms" % int(row.floor)
+		for cmd2 in ["spool back", "buy switch24 tsw", "go goods", "carry tsw",
+				"go " + sw_room, "drop",
+				"serve %d tsw cat5e 10" % int(row.tenant)]:
+			t.command(cmd2)
+			await process_frame
+		var rows2: Array = t.service_rows()
+		var up2 := 0
+		for r4 in rows2:
+			up2 += int(r4.up)
+		if up2 == 0:
+			fail("`serve` patched nothing: the tenancy still has no port")
+		else:
+			ok("%d of their desks have a lead in them now" % up2)
+			var sc2: Array = t.get_node_or_null("Screens").counts()
+			var tot2: int = int(sc2[0]) + int(sc2[1]) + int(sc2[2])
+			if int(sc2[0]) != tot2 - up2:
+				fail("%d of %d desks have a link and %d screens show no link, not %d"
+					% [up2, tot2, int(sc2[0]), tot2 - up2])
+			else:
+				ok("and %d screens came off the link error with them"
+					% [int(sc2[1]) + int(sc2[2])])
+			# WHERE THE COPPER IS. Every point of a desk's run that is inside
+			# the room it serves has to be at floor level: a lead that crosses
+			# somebody's office at 2.5 m is the picture the owner could not see.
+			var high := 0
+			var lead_n := 0
+			for l3 in t.site_links():
+				var sk: int = t._dev_skirting(int(l3.a))
+				if sk < 0:
+					sk = t._dev_skirting(int(l3.b))
+				if sk < 0:
+					continue
+				lead_n += 1
+				var fl: int = int(t.rooms[sk].floor)
+				for p in t._cable_route(int(l3.a), int(l3.aport), int(l3.b),
+						int(l3.bport), int(l3.i)):
+					if t.room_of(fl, int(floor(p.x)), int(floor(p.z))) != sk:
+						continue
+					if p.y - float(fl) * t.fheight > 0.75:
+						high += 1
+			if lead_n == 0:
+				fail("the tenancy is served and no run in the model belongs to a desk")
+			elif high > 0:
+				fail("%d points of %d desk leads cross their own office above desk height"
+					% [high, lead_n])
+			else:
+				ok("all %d desk leads run along the floor of the room they serve"
+					% lead_n)
+
+		# ---- AND [E] AT ONE OF THEIR DESKS IS THEIR MACHINE.
+		#
+		# Not a picture of one: `sit` in core/session.c boots it, and the
+		# window's terminal types at the session that owns it. The prompt is
+		# what proves which machine the keyboard is on -- `desk:t1d3#` is
+		# printed by session_prompt() and by nothing else.
+		var di := -1
+		for i in range(t.devices.size()):
+			if bool(t.devices[i].get("tenant_desk", false)):
+				di = i
+				break
+		if di < 0:
+			fail("a tenancy has moved in and no desk in the view can be sat at")
+		else:
+			var dname: String = str(t.devices[di].name)
+			if t.aim_text({"kind": "device", "dev": di, "port": -1})[1].find("[E]") < 0:
+				fail("the crosshair on %s does not offer to sit down at it" % dname)
+			else:
+				ok("the crosshair on %s offers [E]" % dname)
+			t.command("go " + dname)
+			await process_frame
+			# the device list is rebuilt by the walk, so find it again by name
+			di = _device(t, dname)
+			var sat2: String = t.use_here(di)
+			await process_frame
+			if not t.seat_open():
+				fail("[E] at %s did not sit down at it: %s" % [dname, sat2])
+			elif t.ses_prompt().find("desk:") != 0:
+				fail("sat down at %s and the session's prompt is '%s'"
+					% [dname, t.ses_prompt()])
+			else:
+				ok("[E] at %s is a terminal on their machine: %s"
+					% [dname, t.ses_prompt().strip_edges()])
+				# and it is a REAL shell: a program runs on it and answers
+				var who: String = t.site("whoami")
+				if who.find("root") < 0:
+					fail("`whoami` on their machine said '%s'" % who.strip_edges())
+				else:
+					ok("and a program really runs on it: whoami -> "
+						+ who.strip_edges())
+			# NOBODY IS LEFT SITTING IN SOMEBODY ELSE'S CHAIR. Standing up frees
+			# the machine in core, and the window has to follow it out.
+			t.seat_stand()
+			await process_frame
+			if t.seat_open():
+				fail("stood up and the window is still at their desk")
+			elif t.ses_where() != 1:
+				fail("stood up and the session says where %d" % t.ses_where())
+			else:
+				ok("and standing up gives them their machine back")
+
 	# ---- WHAT THE NEXT FLOOR NEEDS, BEFORE THE KEY IS PRESSED, IN CORE'S WORDS.
 	if t.floors_in_service < t.nfloors:
 		var says: String = t.hud_lines()
