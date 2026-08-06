@@ -878,10 +878,10 @@ they are what stops a world event being a tax:
 `site_mains_fails_on(seed, day)` is a pure function of the world seed and the
 day number: no state, nothing rolled during play, so the same seed always
 loses the lights on the same mornings. The first one is deliberately late --
-somewhere in the third or fourth week -- because a mains failure in the first
-fortnight lands on a building with one switch in it and teaches the player
-only that the game has weather. After that they come round every two or three
-weeks.
+somewhere between the twentieth and the thirtieth day -- because a mains
+failure in the first fortnight lands on a building with one switch in it and
+teaches the player only that the game has weather. After that they come round
+every seventeen to twenty-nine days.
 
 It happens AFTER the day's work rather than before it. The building has
 already done its day; the player meets the mess the next morning and has that
@@ -935,7 +935,7 @@ pkg reinstall --force <package>
 That last distinction is the whole reason `pkg diff` exists: a blackout
 truncates and a person edits, and the tool says which without being told.
 
-**How to avoid it.** `ups <box>`, £220, fitted at the rack. A box on a battery
+**How to avoid it.** `ups <box>`, 220, fitted at the rack. A box on a battery
 stays up, keeps its filesystem, and says so in its log. It is a real decision
 because it is real money against a risk whose schedule the player cannot see.
 
@@ -980,8 +980,10 @@ heat -- so a player who never greps a log still sees the disk at 78%.
 --force <package>` puts it back. The disk is still a disk with no spares
 left, which is why the wear does not reset until somebody fits a new one.
 
-**How to avoid it.** `disk <box>`, £140: a new disk with the contents copied
-across. Fifteen days of warning is the whole of the good play. The clone
+**How to avoid it.** `disk <box>`, 140: a new disk with the contents copied
+across. Fifteen days of average use is the whole of the warning and the whole
+of the good play -- fewer than fifteen calendar days if the box is working
+hard, which is the same arithmetic that got it there. The clone
 copies whatever damage is already there, because that is what a clone does.
 
 **One judgement, written down rather than hidden.** The bad sector lands on
