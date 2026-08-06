@@ -67,7 +67,6 @@ func _ready() -> void:
 	_show_serial()
 	_say("[no lead plugged in]")
 	_relight()
-	visible = false
 
 
 # ----------------------------------------------------------------- the handset

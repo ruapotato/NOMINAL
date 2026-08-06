@@ -30,9 +30,12 @@ const TILE := 74.0
 const SLOT := 112.0
 
 const KIT := {
-	"spool": {"label": "cable spool", "hint": "run copper between two boxes"},
-	"serial": {"label": "debugger: serial", "hint": "the console, even on a machine that never booted"},
-	"display": {"label": "debugger: display", "hint": "a picture, only from a box that has an output"},
+	"spool": {"label": "cable spool",
+		"hint": ["run copper between", "two boxes"]},
+	"serial": {"label": "debugger: serial",
+		"hint": ["a console, even on a box", "that never booted"]},
+	"display": {"label": "debugger: display",
+		"hint": ["a picture, only from a", "box that has an output"]},
 }
 
 const COL := {
@@ -148,7 +151,7 @@ func toggle() -> void:
 
 func _panel() -> Rect2:
 	var vs := get_viewport_rect().size
-	var sz := Vector2(660.0, 330.0)
+	var sz := Vector2(720.0, 330.0)
 	return Rect2(((vs - sz) * 0.5).round(), sz)
 
 
@@ -159,7 +162,7 @@ func _kit_rect(i: int) -> Rect2:
 
 func _hand_rect(side: int) -> Rect2:
 	var p := _panel()
-	return Rect2(p.position + Vector2(p.size.x - 2 * SLOT - 56 + float(side) * (SLOT + 24), 92),
+	return Rect2(p.position + Vector2(p.size.x - 2 * SLOT - 86 + float(side) * (SLOT + 60), 92),
 		Vector2(SLOT, SLOT))
 
 
@@ -211,7 +214,7 @@ func _draw() -> void:
 		draw_rect(r, Color("#454e58"), false, 1.0)
 		_icon(r, kit[i])
 		draw_string(_font, r.position + Vector2(0, r.size.y + 16),
-			str(KIT[kit[i]].label), HORIZONTAL_ALIGNMENT_LEFT, TILE + 12, 11,
+			str(KIT[kit[i]].label), HORIZONTAL_ALIGNMENT_LEFT, 160, 11,
 			Color("#a9b3bd"))
 	if box != "":
 		draw_string(_font, _kit_rect(0).position + Vector2(0, 24),
@@ -231,9 +234,11 @@ func _draw() -> void:
 		draw_string(_font, r.position + Vector2(-10, r.size.y + 18), what,
 			HORIZONTAL_ALIGNMENT_CENTER, SLOT + 20, 12, Color("#a9b3bd"))
 		if h != "" and h != "box":
-			draw_string(_font, r.position + Vector2(-30, r.size.y + 34),
-				str(KIT[h].hint), HORIZONTAL_ALIGNMENT_CENTER, SLOT + 60, 10,
-				Color("#77828c"))
+			var hint: Array = KIT[h].hint
+			for li in range(hint.size()):
+				draw_string(_font, r.position + Vector2(-26, r.size.y + 36 + li * 13),
+					str(hint[li]), HORIZONTAL_ALIGNMENT_CENTER, SLOT + 52, 10,
+					Color("#77828c"))
 
 	if msg != "":
 		draw_string(_font, p.position + Vector2(26, p.size.y - 22), msg,

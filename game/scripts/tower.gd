@@ -1781,6 +1781,10 @@ func stand_up() -> String:
 	desk_de = null
 	if player:
 		player.set_physics_process(true)
+		# BACK TO MOUSELOOK. walker.gd releases the pointer on Escape and it
+		# gets the key before this does, so standing up has to take it back or
+		# [Esc] leaves you standing in the room with a free cursor.
+		player.capture(true)
 	if hud:
 		hud.visible = true
 	return "you stand up."
@@ -2114,6 +2118,15 @@ func _process(_dt: float) -> void:
 		return
 	if desk_de != null:
 		return                 # the world waits while you are sitting at it
+	# IT IS IN YOUR HAND WHEN IT IS THE EQUIPPED ITEM, and nowhere otherwise.
+	# The crash cart appeared out of the air the moment a lead went in; a
+	# handset you have dragged into a slot is a handset you are holding, and it
+	# comes up to your face when the lead goes in.
+	if phone and bag:
+		var h0: String = str(bag.hand(0))
+		var h1: String = str(bag.hand(1))
+		phone.visible = h0 == "serial" or h0 == "display" \
+			or h1 == "serial" or h1 == "display"
 	if bag and bag.visible:
 		return                 # and while you are looking in the bag
 	var near := nearest_device(player.global_position)
