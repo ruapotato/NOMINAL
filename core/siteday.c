@@ -2237,7 +2237,21 @@ void site_dump_load(const Site *s, Buf *out)
          * drop count -- and a playtester quite reasonably concluded the tool
          * was pointing at nothing. A 48 KB buffer is 394 us of wire at a
          * gigabit; the interesting queues here are all under a millisecond. */
-        unsigned long long qus = net_port_queue_us(s->net, s->dev[bd].node, bp);
+        /* THE PEAK, WHICH IS WHAT THE COLUMN IS HEADED AND WHAT THE FOOTER
+         * TELLS YOU TO READ.
+         *
+         * This called net_port_queue_us() -- the queue RIGHT NOW -- under a
+         * heading that says "queue peak", so every row read 0us: by the time
+         * a player types `load` the busy period is over and every queue has
+         * drained. `show <box>` on the same port in the same second said
+         * "the queue reached 406us", because it reads pt->qpeak_us. Two
+         * functions, one fact, and the tool the README stakes the whole
+         * difficulty model on was printing the wrong one -- while its own
+         * footer said READ THE DROPS AND THE PEAK QUEUE.
+         *
+         * A playtester found it the only way anybody could: by disbelieving
+         * one of the game's reports and checking it against another. */
+        unsigned long long qus = net_port_qpeak_us(s->net, s->dev[bd].node, bp);
         char q[24];
         if (qus >= 1000) snprintf(q, sizeof q, "%llums", qus / 1000);
         else             snprintf(q, sizeof q, "%lluus", qus);
