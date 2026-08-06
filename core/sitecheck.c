@@ -30,6 +30,11 @@
 
 static int passed, total;
 
+static bool has(const char *hay, const char *needle)
+{
+    return hay && strstr(hay, needle) != NULL;
+}
+
 static void ck(const char *what, bool ok)
 {
     total++;
@@ -691,6 +696,153 @@ static void check_demand(const Building *b)
     site_free(&c);
 }
 
+/* ------------------------------------------------- a pool, and a way out of it
+ *
+ * The same fault as the netcheck above, in the words a player types, plus
+ * the two lines that did not exist: `dhcpd <box> off`, and `dhcpd <box>` to
+ * find out what a box is serving before deciding.
+ */
+static void check_dhcp_scope(const Building *b)
+{
+    printf("\na dhcp pool, the segment it serves, and the way out of it\n");
+    Site s;
+    site_new(&s, b, GATE_SEED, 100000);
+    site_credit(&s, 200000);
+    Buf o = {0};
+    static const char *SCRIPT[] = {
+        "order router edge",   "move edge f0.mdf",
+        "order switch24 core", "move core f0.mdf",
+        "cable edge:1 core:0 cat6",
+        "vlan core 1 11",
+        "vlan core 2 13",
+        "trunk core 0 11 13",
+        "subif edge 1 11 10.11.0.1/24",
+        "subif edge 1 13 10.13.0.1/24",
+        "router edge on",
+        NULL
+    };
+    for (int i = 0; SCRIPT[i]; i++) site_cmd(&s, SCRIPT[i], &o);
+
+    /* THE LINE THAT USED TO POISON A TENANCY NOBODY HAD TOUCHED. */
+    buf_clear(&o);
+    site_cmd(&s, "dhcpd edge 10.11.0.100 20 24 10.11.0.1 10.11.0.1", &o);
+    ck("`dhcpd` answers with the segment the pool landed on, not just `serving`",
+       has(o.p, "10.11.0.100-10.11.0.119") && has(o.p, "eth1.11") &&
+       has(o.p, "vlan 11"));
+
+    buf_clear(&o);
+    site_cmd(&s, "dhcpd edge 10.99.0.100 20 24 10.99.0.1 10.99.0.1", &o);
+    ck("a pool for a subnet the box is not on is refused, and says what it "
+       "does have",
+       has(o.p, "serves the segment") && has(o.p, "eth1.11"));
+
+    /* A desk on each vlan. The one on thirteen must get nothing from a
+     * router that serves eleven, and the router's own answer says so. */
+    int room = a_room(b, 2);
+    int d11 = site_install(&s, SDEV_PC, room, "d11");
+    int d13 = site_install(&s, SDEV_PC, room, "d13");
+    site_power(&s, d11, true);
+    site_power(&s, d13, true);
+    site_cable(&s, d11, 0, site_dev_by_name(&s, "core"), 1, CAB_CAT5E);
+    site_cable(&s, d13, 0, site_dev_by_name(&s, "core"), 2, CAB_CAT5E);
+    buf_clear(&o);
+    site_cmd(&s, "dhcp d11", &o);
+    ck("the desk on the vlan it serves gets an address", has(o.p, "10.11.0.100"));
+    buf_clear(&o);
+    site_cmd(&s, "dhcp d13", &o);
+    ck("the desk on the vlan it does not serve gets nothing, and is not "
+       "given somebody else's subnet",
+       has(o.p, "no lease") &&
+       net_if_get_addr(s.net, s.dev[d13].node, 0) == 0);
+
+    /* AND IT CAN BE STOPPED. There was no `dhcpd off`, a router has no power
+     * button, and `count 0` did not stop it either. */
+    buf_clear(&o);
+    site_cmd(&s, "dhcpd edge 10.11.0.100 0 24 10.11.0.1 10.11.0.1", &o);
+    ck("a pool of no addresses is refused rather than taken as a way to stop "
+       "one", has(o.p, "serves nobody"));
+    buf_clear(&o);
+    site_cmd(&s, "dhcpd edge off", &o);
+    ck("`dhcpd <box> off` stops it and says how much it stopped",
+       has(o.p, "stops serving addresses") && has(o.p, "1 pool"));
+    buf_clear(&o);
+    site_cmd(&s, "dhcpd edge", &o);
+    ck("and afterwards the box says it serves nothing",
+       has(o.p, "serves no addresses"));
+    int d11b = site_install(&s, SDEV_PC, room, "d11b");
+    site_power(&s, d11b, true);
+    site_cable(&s, d11b, 0, site_dev_by_name(&s, "core"), 3, CAB_CAT5E);
+    site_cmd(&s, "vlan core 3 11", &o);
+    buf_clear(&o);
+    site_cmd(&s, "dhcp d11b", &o);
+    ck("a stopped server answers a discover with nothing at all",
+       has(o.p, "no lease") &&
+       net_if_get_addr(s.net, s.dev[d11b].node, 0) == 0);
+
+    /* And `show` names what a box serves, which it never did. */
+    site_cmd(&s, "dhcpd edge 10.13.0.100 20 24 10.13.0.1 10.13.0.1", &o);
+    buf_clear(&o);
+    site_cmd(&s, "show edge", &o);
+    ck("`show <box>` lists the services it is running and on which interface",
+       has(o.p, "services:") && has(o.p, "dhcpd  10.13.0.100") &&
+       has(o.p, "eth1.13"));
+    buf_free(&o);
+    site_free(&s);
+}
+
+/* --------------------------------------------- a verb that is short of words
+ *
+ * `dhcpd edge` answered "no such command: dhcpd (try help)". The verb is in
+ * the help and is a verb; what was wrong was the number of arguments. That
+ * is the same failure as a help text naming a command the machine has not
+ * got, and the last round was spent eliminating that one -- so every verb is
+ * swept here rather than the one that was reported.
+ */
+static void check_arity(const Building *b)
+{
+    printf("\nevery verb, handed too few words\n");
+    Site s;
+    site_new(&s, b, GATE_SEED, 100000);
+    site_credit(&s, 400000);
+    site_install(&s, SDEV_SWITCH24, bld_find(b, 0, RM_MDF), "core");
+    Buf o = {0};
+    bool denied = false, silent = false;
+    for (int i = 0; i < site_verb_count(); i++) {
+        const char *v = site_verb_name(i);
+        for (int k = 1; k <= site_verb_arity(i); k++) {
+            char line[128];
+            int l = snprintf(line, sizeof line, "%s", v);
+            for (int j = 1; j < k; j++)
+                l += snprintf(line + l, sizeof line - (size_t)l, " core");
+            buf_clear(&o);
+            site_cmd(&s, line, &o);
+            if (has(o.p, "no such command")) {
+                printf("    `%s` -> %s", line, o.p);
+                denied = true;
+            }
+            if (!o.len) {
+                printf("    `%s` answered nothing at all\n", line);
+                silent = true;
+            }
+        }
+    }
+    ck("no verb answers a short line by denying it is a verb", !denied);
+    ck("and none of them answers a short line with silence", !silent);
+
+    /* The reported one, in the exact spelling that produced the denial. */
+    buf_clear(&o);
+    site_cmd(&s, "dhcpd", &o);
+    ck("`dhcpd` on its own says what dhcpd wants",
+       has(o.p, "dhcpd <box> <first> <count> <bits> <gw> <dns>") &&
+       has(o.p, "dhcpd <box> off"));
+    buf_clear(&o);
+    site_cmd(&s, "frobnicate core", &o);
+    ck("and a word that really is not a verb still says so",
+       has(o.p, "no such command"));
+    buf_free(&o);
+    site_free(&s);
+}
+
 /* Everything above is reachable from a pipe, or a blind playtester cannot
  * find any of it. This builds a working network out of nothing but lines of
  * text, and then asks the machine on floor two what it can see. */
@@ -779,6 +931,8 @@ int site_selfcheck(void)
     check_agreement(&b);
     check_flat(&b);
     check_demand(&b);
+    check_dhcp_scope(&b);
+    check_arity(&b);
     check_shell(&b);
     /* AND THAT A PERSON CAN PLAY ALL OF IT OVER A SOCKET, which is the
      * claim that had quietly stopped being true. See core/sessioncheck.c. */

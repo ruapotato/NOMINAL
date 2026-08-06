@@ -704,6 +704,130 @@ static void check_dhcp(void)
     net_free(n);
 }
 
+/* ------------------------------------------------ a pool serves ONE segment
+ *
+ * THE WORST THING A PLAYTESTER FOUND IN SIXTY DAYS. They ran a pool on the
+ * router for the tenancy on vlan 11 -- the obvious box, for a tenancy with
+ * no server of its own -- and the desks of the tenancy on vlan 13, behind
+ * their own server, took 10.11.0.x addresses off it. A pool was a property
+ * of a BOX, so one pool answered every broadcast that reached any leg of
+ * that box. Their words: "a one-way door that poisons a segment you never
+ * touched is the worst thing in the build".
+ *
+ * The router below is on both vlans, down one trunk, exactly as the
+ * recommended architecture builds it. It serves eleven and it must not serve
+ * thirteen -- not because anything knows about tenancies, but because a pool
+ * is scoped to the interface whose address is inside it, and vlan 13's
+ * DISCOVER arrives on a different interface. */
+static void check_dhcp_scope(void)
+{
+    printf("DHCP -- the segment a pool serves, and the ones it does not\n");
+    Net *n = net_new(29);
+    int sw = net_add_switch(n, "sw2", 8);
+    int rt = net_add_host(n, "edge");
+    net_cable(n, rt, 0, sw, 0, 5, CAB_CAT6);
+    net_port_mode(n, sw, 0, PORT_TRUNK);
+    net_trunk_allow(n, sw, 0, 11);
+    net_trunk_allow(n, sw, 0, 13);
+    int v11 = net_if_subif(n, rt, 0, 11), v13 = net_if_subif(n, rt, 0, 13);
+    net_if_addr(n, rt, v11, net_ip(10, 11, 0, 1), net_mask_bits(24));
+    net_if_addr(n, rt, v13, net_ip(10, 13, 0, 1), net_mask_bits(24));
+
+    /* Tenant one's desk on vlan 11, tenant three's on vlan 13, and tenant
+     * three's own server beside it. */
+    int d11 = net_add_host(n, "desk11"), d13 = net_add_host(n, "desk13"),
+        srv3 = net_add_host(n, "srv3");
+    net_cable(n, d11,  0, sw, 1, 5, CAB_CAT5E);
+    net_cable(n, d13,  0, sw, 2, 5, CAB_CAT5E);
+    net_cable(n, srv3, 0, sw, 3, 5, CAB_CAT5E);
+    net_port_vlan(n, sw, 1, 11);
+    net_port_vlan(n, sw, 2, 13);
+    net_port_vlan(n, sw, 3, 13);
+    net_if_addr(n, srv3, 0, net_ip(10, 13, 0, 2), net_mask_bits(24));
+
+    /* The pool the player typed. No vlan in the line: the segment is the leg
+     * of the router that is standing on that subnet. */
+    ck("a pool goes on the interface whose address is inside it",
+       net_dhcpd(n, rt, net_ip(10, 11, 0, 100), 20, net_mask_bits(24),
+                 net_ip(10, 11, 0, 1), net_ip(10, 11, 0, 1)) &&
+       net_dhcpd_scope(n, rt, net_ip(10, 11, 0, 100), net_mask_bits(24)) == v11);
+    ck("a pool on a subnet no leg of the box is on is refused, and starts "
+       "nothing",
+       !net_dhcpd(n, rt, net_ip(10, 99, 0, 100), 20, net_mask_bits(24),
+                  net_ip(10, 99, 0, 1), 0) && net_dhcpd_pools(n, rt) == 1);
+
+    ck("the desk on the segment it serves gets an address from it",
+       net_dhcp_client(n, d11, 0) &&
+       net_if_get_addr(n, d11, 0) == net_ip(10, 11, 0, 100));
+    /* THE FAULT ITSELF. Same router, same wire, same broadcast; a segment the
+     * pool has nothing to do with. */
+    ck("the desk on the OTHER vlan gets nothing at all from it",
+       !net_dhcp_client(n, d13, 0) && net_if_get_addr(n, d13, 0) == 0);
+
+    /* And with its own server on its own segment, it gets that server's. */
+    net_dhcpd(n, srv3, net_ip(10, 13, 0, 100), 20, net_mask_bits(24),
+              net_ip(10, 13, 0, 1), net_ip(10, 13, 0, 2));
+    ck("with a server of its own it takes ITS lease, not the router's",
+       net_dhcp_client(n, d13, 0) &&
+       net_if_get_addr(n, d13, 0) == net_ip(10, 13, 0, 100) &&
+       net_dhcpd_leases(n, srv3) == 1 && net_dhcpd_leases(n, rt) == 1);
+
+    /* A ROUTER PLAUSIBLY RUNS A POOL PER VLAN, and that is the same rule
+     * read the other way: three subinterfaces, three pools, each answering
+     * on its own leg. */
+    ck("the same router runs a second pool, on its other vlan",
+       net_dhcpd(n, rt, net_ip(10, 13, 0, 200), 10, net_mask_bits(24),
+                 net_ip(10, 13, 0, 1), net_ip(10, 13, 0, 1)) &&
+       net_dhcpd_pools(n, rt) == 2);
+    int ifx = -1;
+    uint32_t first = 0;
+    ck("and each of them says which interface it is on",
+       net_dhcpd_pool(n, rt, 0, &ifx, &first, NULL, NULL, NULL, NULL) &&
+       ifx == v11 && first == net_ip(10, 11, 0, 100) &&
+       net_dhcpd_pool(n, rt, 1, &ifx, &first, NULL, NULL, NULL, NULL) &&
+       ifx == v13 && first == net_ip(10, 13, 0, 200));
+
+    /* AND IT CAN BE SWITCHED OFF, which it could not. A router has no power
+     * button, `count 0` is not a way out, and re-pointing a rogue pool at
+     * whichever segment is currently asking was the only escape there was. */
+    ck("stopping it stops every pool on the box",
+       net_dhcpd_stop(n, rt) == 2 && net_dhcpd_pools(n, rt) == 0 &&
+       net_dhcpd_leases(n, rt) == 0);
+    int d11b = net_add_host(n, "desk11b");
+    net_cable(n, d11b, 0, sw, 4, 5, CAB_CAT5E);
+    net_port_vlan(n, sw, 4, 11);
+    ck("and a box that has been stopped answers a discover with nothing",
+       !net_dhcp_client(n, d11b, 0) && net_if_get_addr(n, d11b, 0) == 0);
+    ck("stopping one that was not serving says so rather than pretending",
+       net_dhcpd_stop(n, rt) == 0);
+    /* The server on thirteen never stopped, and proves the switch-off was
+     * the box's and not the world's. */
+    int d13b = net_add_host(n, "desk13b");
+    net_cable(n, d13b, 0, sw, 5, 5, CAB_CAT5E);
+    net_port_vlan(n, sw, 5, 13);
+    ck("the other server on the other segment is still serving",
+       net_dhcp_client(n, d13b, 0) &&
+       net_if_get_addr(n, d13b, 0) == net_ip(10, 13, 0, 101));
+
+    /* A ROGUE SERVER ON THE SAME L2 IS STILL A HAZARD -- that is real, and
+     * worth having. What a client refuses is the impossible lease: an
+     * address it could not reach the server that gave it. */
+    int rogue = net_add_host(n, "rogue");
+    net_cable(n, rogue, 0, sw, 6, 5, CAB_CAT5E);
+    net_port_vlan(n, sw, 6, 11);
+    net_if_addr(n, rogue, 0, net_ip(10, 11, 0, 250), net_mask_bits(24));
+    net_dhcpd(n, rogue, net_ip(10, 11, 0, 60), 5, net_mask_bits(24),
+              net_ip(10, 11, 0, 1), net_ip(10, 11, 0, 1));
+    int d11c = net_add_host(n, "desk11c");
+    net_cable(n, d11c, 0, sw, 7, 5, CAB_CAT5E);
+    net_port_vlan(n, sw, 7, 11);
+    ck("a rogue server on the same broadcast domain is still heard, as on "
+       "real copper",
+       net_dhcp_client(n, d11c, 0) &&
+       net_if_get_addr(n, d11c, 0) == net_ip(10, 11, 0, 60));
+    net_free(n);
+}
+
 static void check_dns(void)
 {
     printf("DNS\n");
@@ -1193,6 +1317,7 @@ int net_selfcheck(void)
     check_firewall();
     check_drop_reasons();
     check_dhcp();
+    check_dhcp_scope();
     check_dns();
     check_http();
     check_determinism();

@@ -112,6 +112,14 @@ typedef enum {
 } SiteErr;
 const char *site_err_text(int e);
 
+/* EVERY VERB THE TOWER ANSWERS TO, and the smallest number of words it can
+ * do anything with. A gate walks this so that no verb can answer a short
+ * line by denying it is a verb -- which is the same lie as a help text
+ * naming a command that does not exist, arriving from the other side. */
+int         site_verb_count(void);
+const char *site_verb_name(int i);
+int         site_verb_arity(int i);
+
 typedef struct {
     uint8_t  kind;             /* SiteDevKind                               */
     uint8_t  floor;

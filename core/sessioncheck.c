@@ -625,6 +625,82 @@ static void check_power(int *passed, int *total)
     session_end(&ses);
 }
 
+/* --------------------------------------- what a box serves, across the mains
+ *
+ * A mains failure, an fsck and three reboots, and `dhcpd`, `dnsd` and
+ * `httpd` were gone from all three servers -- with no indication anywhere.
+ * `show <box>` did not list services at all, and on the box `svc` still said
+ * httpd was running and `ss` still showed :80 listening, which was true of
+ * the operating system and not true of the tower. A machine reporting a
+ * service running while the tower serves nothing from it is the worst class
+ * of bug this project can have.
+ *
+ * The address survives a power cut because it is written on the disk. A
+ * service the player configured is a decision of exactly the same kind, so
+ * it is written there too and netd starts it again.
+ */
+static void check_services(int *passed, int *total)
+{
+    P = passed; T = total;
+    printf("\nwhat a box serves, and whether it still serves it in the morning\n");
+    Session ses;
+    if (!session_start(&ses, GATE_SEED, 100000)) { ck("a session starts", false); return; }
+    Buf o = {0};
+    static const char *SCRIPT[] = {
+        "buy switch24 core", "buy server files", "buy pc desk1",
+        "go goods", "carry core",  "go mdf", "drop",
+        "go goods", "carry files", "go mdf", "drop",
+        "go goods", "carry desk1", "go mdf", "drop",
+        "cable core:1 files:0 cat6",
+        "cable core:2 desk1:0 cat6",
+        "power files on",
+        "power desk1 on",
+        "addr files 10.0.1.10/24",
+        "dhcpd files 10.0.1.100 20 24 10.0.1.10 10.0.1.10",
+        "dnsd files",
+        "httpd files",
+        NULL
+    };
+    for (int i = 0; SCRIPT[i]; i++) say(&ses, SCRIPT[i], &o);
+
+    ck("`show <box>` says what a box is serving, which it never did",
+       has(say(&ses, "show files", &o), "services:") &&
+       has(o.p, "dhcpd  10.0.1.100-10.0.1.119 on eth0") &&
+       has(o.p, "dnsd") && has(o.p, "httpd"));
+    ck("and a desk on that segment really gets an address from it",
+       has(say(&ses, "dhcp desk1", &o), "10.0.1.100"));
+    ck("and a page really comes back over TCP",
+       has(say(&ses, "get desk1 10.0.1.10 /", &o), "HTTP"));
+
+    /* THE POWER CUT. Off, on, and nothing else typed. */
+    say(&ses, "power files off", &o);
+    ck("switched off it serves nothing, because nothing of it is running",
+       has(say(&ses, "show files", &o), "SWITCHED OFF"));
+    say(&ses, "power files on", &o);
+
+    ck("switched on again it is serving what it was serving",
+       has(say(&ses, "show files", &o), "dhcpd  10.0.1.100-10.0.1.119") &&
+       has(o.p, "dnsd") && has(o.p, "httpd"));
+    ck("and it says so because it read it off its own disk",
+       has(say(&ses, "dhcpd files", &o), "10.0.1.100-10.0.1.119"));
+    ck("a desk that asks after the power cut gets its address back",
+       has(say(&ses, "dhcp desk1", &o), "10.0.1.100"));
+    ck("and the page comes back too: the tower serves what the box says it "
+       "serves", has(say(&ses, "get desk1 10.0.1.10 /", &o), "HTTP"));
+
+    /* And the other direction: stopping it has to survive too, or the next
+     * boot starts a pool the player switched off. */
+    say(&ses, "dhcpd files off", &o);
+    say(&ses, "power files off", &o);
+    say(&ses, "power files on", &o);
+    ck("a pool the player stopped stays stopped across the power too",
+       has(say(&ses, "dhcpd files", &o), "serves no addresses"));
+    ck("and the box says it is serving nothing rather than pretending",
+       !has(say(&ses, "show files", &o), "dhcpd  10.0.1.100"));
+    buf_free(&o);
+    session_end(&ses);
+}
+
 /* ================================================ four help texts, one truth
  *
  * There are four surfaces that tell a player what they can do -- the tower
@@ -743,5 +819,6 @@ int session_selfcheck(int *passed, int *total)
     check_build(passed, total);
     check_dangling(passed, total);
     check_power(passed, total);
+    check_services(passed, total);
     return 0;
 }
