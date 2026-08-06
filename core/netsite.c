@@ -238,8 +238,14 @@ static void bind_services(Net *n, Machine *m, int node)
 {
     if (kernel_svc_running(m, "sshd"))
         net_tcp_listen(n, node, (uint16_t)svc_port(m, "sshd", "Port", 22));
+    /* A WEB SERVER THAT SERVES. This used to open a bare listening socket,
+     * so a machine whose httpd was running accepted connections and then
+     * answered nothing at all -- and worse, it held the port, so the site's
+     * own `httpd <box>` could not bind and the box served nobody however
+     * many times you started it. If the service is running on the disk, the
+     * daemon that answers is what listens. */
     if (kernel_svc_running(m, "httpd"))
-        net_tcp_listen(n, node, (uint16_t)svc_port(m, "httpd", "Listen", 80));
+        net_httpd(n, node, (uint16_t)svc_port(m, "httpd", "Listen", 80));
     if (kernel_svc_running(m, "postfix"))
         net_tcp_listen(n, node, 25);
 }

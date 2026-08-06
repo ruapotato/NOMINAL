@@ -902,7 +902,9 @@ static void do_cable(Session *ses, int n, char *t[MAXTOK], Buf *out)
  * through untouched and the two must not disagree. */
 static const char *DEVVERB[] = {
     "addr", "gw", "router", "subif", "vlan", "trunk", "dhcpd", "dhcp",
-    "resolver", "ping", "trace", "resolve", "get", "show", NULL
+    "resolver", "ping", "trace", "resolve", "get", "show",
+    /* A service is something you start ON a box, so you are at the box. */
+    "httpd", "dnsd", NULL
 };
 
 static bool is_devverb(const char *v)
@@ -1335,11 +1337,32 @@ bool session_line(Session *ses, const char *line, Buf *out)
         return true;
     }
 
+    /* TIME PASSES WHEREVER YOU ARE STANDING, and so does the phone call to
+     * the ISP. `day` is the whole loop: tenants move in, their people work
+     * over what you built, and the rent for the work that finished arrives. */
+    if (strcmp(t[0], "day") == 0 || strcmp(t[0], "isp") == 0) {
+        site_cmd(&ses->s, raw, out);
+        return true;
+    }
+    /* RUNNING COPPER TO A TENANCY'S DESKS. You have to be at the box it
+     * comes out of, because somebody is standing at that box with a drum. */
+    if (strcmp(t[0], "serve") == 0) {
+        if (n < 3) {
+            buf_puts(out, "serve <tenant> <box> [cat5e|cat6|fibre|cat5]\n");
+            return true;
+        }
+        int d;
+        if (!need_here(ses, t[2], &d, out)) return true;
+        site_cmd(&ses->s, raw, out);
+        return true;
+    }
+
     /* Reading the state costs nothing and needs no legs: it is a clipboard. */
     if (strcmp(t[0], "links") == 0 || strcmp(t[0], "money") == 0 ||
         strcmp(t[0], "demand") == 0 || strcmp(t[0], "frames") == 0 ||
         strcmp(t[0], "rooms") == 0 || strcmp(t[0], "uncable") == 0 ||
-        strcmp(t[0], "credit") == 0 ||
+        strcmp(t[0], "credit") == 0 || strcmp(t[0], "status") == 0 ||
+        strcmp(t[0], "service") == 0 || strcmp(t[0], "load") == 0 ||
         (strcmp(t[0], "show") == 0)) {
         site_cmd(&ses->s, raw, out);
         return true;

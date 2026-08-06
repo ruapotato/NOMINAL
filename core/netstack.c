@@ -3075,6 +3075,18 @@ void net_httpd(Net *n, int node, uint16_t port)
     if (!h) return;
     h->httpd = true;
     h->http_port = port ? port : 80;
+    /* SOMETHING MAY ALREADY BE LISTENING ON IT -- the machine's own httpd
+     * service, opened when it applied its configuration from its disk. Take
+     * that socket over rather than fail to bind beside it and leave a port
+     * that accepts connections and answers nothing. */
+    for (int i = 0; i < NET_SOCK_MAX; i++) {
+        Sock *k = &n->sock[i];
+        if (k->used && k->proto == IP_PROTO_TCP && k->state == TCP_LISTEN &&
+            k->node == node && k->lport == h->http_port) {
+            k->service = SVC_HTTPD;
+            return;
+        }
+    }
     int s = net_tcp_listen(n, node, h->http_port);
     if (s >= 0) n->sock[s].service = SVC_HTTPD;
 }
