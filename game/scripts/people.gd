@@ -66,6 +66,42 @@
 # PART OF A PERSON each vertex belongs to (u) and WHAT MOVES IT (v), which is
 # what lets one shared mesh be recoloured and animated per instance.
 #
+# ---------------------------------------------------------------------------
+# AND THEY ARE NOT MADE OF BOXES ANY MORE, at the three places where being
+# made of boxes was the whole of what you saw. The owner: "I'd like round
+# heads not squares as that makes this look a bit too minecrafty."
+#
+# A HEAD, THE SHOULDERS AND THE HANDS, and nothing else. Everything below the
+# collar is still a box, on purpose: what already works about these people is
+# that a floor's mood is legible from the doorway, where a person is forty
+# pixels tall, and detail nobody stands close enough to see is triangles spent
+# against the thing that does work. The three that changed are the three that
+# carry the silhouette -- the head is the shape the eye names first, the
+# shoulders are the widest thing in it, and a raised hand is the top of it and
+# the one gesture a doorway reads.
+#
+# WHAT IT COST, counted rather than estimated (game/tests has no gate for this;
+# the meshes were loaded headless and their surfaces measured):
+#
+#     working  252 -> 296     waiting  252 -> 308     slumped  240 -> 320
+#     the desk is unchanged at 120, so a working seat is 372 -> 416
+#
+# and the frame is unchanged where it counts: the same five meshes, the same
+# five draw calls a floor, 331 draw calls in the doorway view before and 331
+# after, ~62 ms of process both. Nothing new is allocated, nothing is animated
+# on the CPU, and the appearance still comes out of the hash of the person's
+# name.
+#
+# HALF OF THE ROUNDNESS IS NOT GEOMETRY AT ALL, and that is the part worth
+# keeping. vgeo.shade() answers one of four numbers, which is right for a box
+# and wrong for a curve: eight facets shaded off it come back as four flat
+# bands and read as a faceted box. vgeo.smooth_shade() is the same four
+# numbers interpolated over the sphere of directions -- identical on all six
+# axis normals, so no box in the building changed -- and it is what puts a
+# gradient across a head instead of a seam. An eight-sided head with a
+# gradient reads round; an eight-sided head with the step table does not, and
+# no number of extra facets would have fixed it as cheaply.
+#
 # THE MOTION IS THE PLAYTESTER'S OWN BAR AND NOT A FRAME MORE. Heads turn --
 # each person on their own phase, once every twenty seconds or so, hold, and
 # back -- shoulders breathe a centimetre, a raised hand drifts, and the
@@ -133,6 +169,14 @@ const G_ARM := 2.0          # the raised hand, which drifts
 
 # Where the head turns about: the neck, in the person's own frame.
 const NECK_Z := 0.36
+
+# WHERE THE HAIR STARTS ON THE SKULL, as a fraction from the chin to the
+# crown. The head is ONE solid and this is the line the two calls meet on, so
+# hair is the top of the skull rather than a slab balanced on it -- which is
+# what a hat looks like, and is what the box version was. 0.66 puts it a
+# little above the ears, which is where a hairline is on everybody who has
+# one.
+const HAIRLINE := 0.66
 
 # One shader for the crowd and the furniture both. It is UNSHADED like
 # everything else in this building, so ALBEDO is the vertex colour with the
@@ -456,40 +500,57 @@ func _person_mesh(mood: int) -> ArrayMesh:
 		# HEAD IN HANDS, ELBOWS ON THE DESK. Nothing floats above this office
 		# and no icon says so: the room is bent over its desks, and that is
 		# what a bad week looks like from the doorway.
-		_box(g, s - 0.17, s + 0.17, 0.16, 0.44, 0.46, 0.90, WHITE, P_SHIRT)
-		_box(g, s - 0.05, s + 0.05, 0.10, 0.20, 0.86, 0.94, WHITE, P_SKIN, G_HEAD)
-		_box(g, s - 0.10, s + 0.10, -0.02, 0.16, 0.88, 1.08, WHITE, P_SKIN, G_HEAD)
-		_box(g, s - 0.105, s + 0.105, -0.025, 0.165, 1.03, 1.11, WHITE, P_HAIR, G_HEAD)
+		_box(g, s - 0.17, s + 0.17, 0.16, 0.44, 0.46, 0.86, WHITE, P_SHIRT)
+		_orb(g, s - 0.22, s + 0.22, 0.16, 0.42, 0.80, 0.95, WHITE, P_SHIRT)
+		_box(g, s - 0.05, s + 0.05, 0.10, 0.20, 0.86, 0.96, WHITE, P_SKIN, G_HEAD)
+		_orb(g, s - 0.100, s + 0.100, -0.030, 0.170, 0.87, 1.11, WHITE, P_SKIN,
+			G_HEAD, 8, 2, 0.0, HAIRLINE)
+		_orb(g, s - 0.100, s + 0.100, -0.030, 0.170, 0.87, 1.11, WHITE, P_HAIR,
+			G_HEAD, 8, 2, HAIRLINE, 1.0)
 		for x0 in [s - 0.26, s + 0.16]:
 			# upper arm forward along the desk, forearm up to the head
 			_box(g, x0, x0 + 0.10, 0.10, 0.40, H + 0.02, H + 0.10, WHITE, P_SHIRT)
 			_box(g, x0 + 0.01, x0 + 0.09, 0.06, 0.16, H + 0.02, 0.98, WHITE, P_SHIRT)
-			_box(g, x0 + 0.01, x0 + 0.09, 0.02, 0.14, 0.98, 1.10, WHITE, P_SKIN)
+			# THREE BANDS, BECAUSE THESE TWO ARE UP BESIDE THE FACE. A
+			# two-band blob is a bipyramid: it has a point on the top and a
+			# point on the bottom, which is fine for a hand half under a desk
+			# and reads as a shard when it is held up at head height.
+			# Photographed, that.
+			_orb(g, x0 + 0.01, x0 + 0.09, 0.02, 0.14, 0.98, 1.10, WHITE, P_SKIN,
+				G_STILL, 6, 3)
 		return _dressed(g, mood)
 
 	# upright: torso, neck, head, hair. The neck goes with the head, so a head
 	# that turns or sits a centimetre higher takes its neck with it and never
 	# opens a gap at the collar.
-	_box(g, s - 0.17, s + 0.17, 0.24, 0.46, 0.46, 1.02, WHITE, P_SHIRT)
-	_box(g, s - 0.05, s + 0.05, 0.32, 0.40, 1.00, 1.09, WHITE, P_SKIN, G_HEAD)
-	_box(g, s - 0.10, s + 0.10, 0.26, 0.45, 1.09, 1.31, WHITE, P_SKIN, G_HEAD)
-	_box(g, s - 0.105, s + 0.105, 0.255, 0.455, 1.25, 1.33, WHITE, P_HAIR, G_HEAD)
+	_box(g, s - 0.17, s + 0.17, 0.24, 0.46, 0.46, 0.96, WHITE, P_SHIRT)
+	_box(g, s - 0.05, s + 0.05, 0.32, 0.40, 0.98, 1.12, WHITE, P_SKIN, G_HEAD)
+	_orb(g, s - 0.100, s + 0.100, 0.257, 0.457, 1.06, 1.32, WHITE, P_SKIN,
+		G_HEAD, 8, 2, 0.0, HAIRLINE)
+	_orb(g, s - 0.100, s + 0.100, 0.257, 0.457, 1.06, 1.32, WHITE, P_HAIR,
+		G_HEAD, 8, 2, HAIRLINE, 1.0)
 	# left arm on the keyboard in every upright pose
-	_box(g, s - 0.25, s + 0.25, 0.30, 0.42, 0.86, 0.98, WHITE, P_SHIRT)  # shoulders
-	_box(g, s - 0.25, s - 0.17, 0.30, 0.42, 0.74, 0.90, WHITE, P_SHIRT)
+	_orb(g, s - 0.25, s + 0.25, 0.28, 0.44, 0.86, 1.04, WHITE, P_SHIRT)  # shoulders
+	_box(g, s - 0.25, s - 0.17, 0.30, 0.42, 0.74, 0.93, WHITE, P_SHIRT)
 	_box(g, s - 0.24, s - 0.16, -0.04, 0.34, H + 0.02, H + 0.10, WHITE, P_SHIRT)
-	_box(g, s - 0.23, s - 0.15, -0.10, -0.02, H + 0.02, H + 0.09, WHITE, P_SKIN)
+	_orb(g, s - 0.23, s - 0.15, -0.10, -0.02, H + 0.02, H + 0.09, WHITE, P_SKIN,
+		G_STILL, 6, 2)
 	if mood == M_WORKING:
-		_box(g, s + 0.17, s + 0.25, 0.30, 0.42, 0.74, 0.90, WHITE, P_SHIRT)
+		_box(g, s + 0.17, s + 0.25, 0.30, 0.42, 0.74, 0.93, WHITE, P_SHIRT)
 		_box(g, s + 0.16, s + 0.24, -0.04, 0.34, H + 0.02, H + 0.10, WHITE, P_SHIRT)
-		_box(g, s + 0.15, s + 0.23, -0.10, -0.02, H + 0.02, H + 0.09, WHITE, P_SKIN)
+		_orb(g, s + 0.15, s + 0.23, -0.10, -0.02, H + 0.02, H + 0.09, WHITE,
+			P_SKIN, G_STILL, 6, 2)
 		return _dressed(g, mood)
 	# A HAND UP. The one gesture that is legible across a room and in a
 	# screenshot, and it means exactly what it means: this desk cannot work
 	# and somebody is waiting for the IT department.
 	_box(g, s + 0.17, s + 0.25, 0.30, 0.42, 0.78, 1.00, WHITE, P_SHIRT, G_ARM)
 	_box(g, s + 0.17, s + 0.25, 0.30, 0.40, 1.00, 1.58, WHITE, P_SHIRT, G_ARM)
-	_box(g, s + 0.16, s + 0.26, 0.29, 0.41, 1.58, 1.76, WHITE, P_SKIN, G_ARM)
+	# AND THE HAND ON THE END OF IT IS THE TOP OF THE SILHOUETTE. It is the
+	# highest thing in the room and the one shape a doorway reads as a gesture,
+	# so it is the one hand worth a third band -- 24 triangles rather than 12.
+	_orb(g, s + 0.16, s + 0.26, 0.29, 0.41, 1.58, 1.76, WHITE, P_SKIN, G_ARM,
+		6, 3)
 	return _dressed(g, mood)
 
 
@@ -521,3 +582,18 @@ func _box(g, x0: float, x1: float, z0: float, z1: float, y0: float, y1: float,
 		col: Color, part := P_FIXED, grp := G_STILL) -> void:
 	g.tag = Vector2(part, grp)
 	g.box(Vector3(x0, y0, z0), Vector3(x1 - x0, y1 - y0, z1 - z0), col, false)
+
+
+# THE ROUND ONES, in the same box-shaped words as _box so the two read
+# together: the extents of the thing rather than a centre and a radius,
+# because every other line in this file says where a part starts and stops and
+# a head measured differently from a shoulder is a head nobody can move by a
+# centimetre. `u0`/`u1` slice the solid so a crown of hair is the top of the
+# same skull and not a second one.
+func _orb(g, x0: float, x1: float, z0: float, z1: float, y0: float, y1: float,
+		col: Color, part := P_FIXED, grp := G_STILL, lon := 8, bands := 3,
+		u0 := 0.0, u1 := 1.0) -> void:
+	g.tag = Vector2(part, grp)
+	g.orb(Vector3((x0 + x1) * 0.5, (y0 + y1) * 0.5, (z0 + z1) * 0.5),
+		Vector3((x1 - x0) * 0.5, (y1 - y0) * 0.5, (z1 - z0) * 0.5),
+		col, lon, bands, u0, u1)

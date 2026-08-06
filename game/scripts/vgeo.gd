@@ -36,6 +36,29 @@ static func shade(n: Vector3) -> float:
 	return 0.90
 
 
+# THE SAME FOUR NUMBERS, WITHOUT THE STEPS BETWEEN THEM.
+#
+# shade() answers one of four values, which is exactly what a box wants: a
+# face has one normal, and the step from 0.90 to 0.80 at a corner is what
+# makes the corner read. Run a curved surface through it and the curve comes
+# back as four flat bands -- a faceted box, which is the thing round geometry
+# was bought to stop being.
+#
+# This is that table interpolated over the sphere of directions. It returns
+# shade()'s own number for all six axis normals, so a box shaded through this
+# is the same box; everything between them is continuous, and a head lit by
+# it has a gradient across it rather than a seam. THAT is what makes eight
+# facets read as round -- the silhouette alone would not.
+static func smooth_shade(n: Vector3) -> float:
+	var hl := Vector2(n.x, n.z).length()
+	var side := 0.90
+	if hl > 0.0001:
+		side = 0.90 - 0.10 * absf(n.x) / hl
+	if n.y >= 0.0:
+		return lerpf(side, 1.0, n.y)
+	return lerpf(side, 0.62, -n.y)
+
+
 func quad(a: Vector3, b: Vector3, d: Vector3, e: Vector3, col: Color, collide := true) -> void:
 	var n := (b - a).cross(d - a).normalized()
 	var lit := col * shade(n)
@@ -91,6 +114,99 @@ func tube(a: Vector3, b: Vector3, r: float, col: Color) -> void:
 		# on half the bends. A cable is 6 mm thick: there is no inside.
 		quad(a + p0, a + p1, b + p1, b + p0, col, false)
 		quad(a + p0, b + p0, b + p1, a + p1, col, false)
+
+
+# ---------------------------------------------------------------- a ROUND one
+#
+# THE ONE THING IN THIS BUILDING THAT IS NOT A BOX. The owner, on the people:
+# "I'd like round heads not squares as that makes this look a bit too
+# minecrafty." A head is the one piece of a person that a cuboid cannot stand
+# in for, because a square head is the whole of that look.
+#
+# It is a lathe, not a UV sphere library call, and every parameter of it is
+# there to be spent carefully: `lon` facets round, `bands` steps up, and `u0`
+# to `u1` is a SLICE of it -- 0 the bottom pole, 1 the top -- so a head's skin
+# and the hair over its crown are two calls on the same solid rather than a
+# ball with a lid balanced on it. A slice that reaches a pole closes with a
+# fan and one that does not is left open, because the geometry inside a head
+# is geometry nobody sees.
+#
+# The cost is countable before it is spent: a band of quads is 2*lon
+# triangles and a pole fan is lon, so the eight-sided, three-band head below
+# is 32 triangles against the 24 the box-and-hair-slab it replaced. Round is
+# not automatically expensive; a round head at the resolution a Bezier patch
+# would give you is, and none of that would survive being seen from a
+# doorway.
+#
+# EVERY VERTEX CARRIES ITS OWN SHADE, off the true ellipsoid normal and
+# through smooth_shade() -- see the note there. That is the half of this that
+# does the work: the facets are what the silhouette needs and the gradient is
+# what the face needs, and the second one is free.
+#
+# No collision faces, ever: the only caller is the crowd, and a person is
+# deliberately not a wall. See the note at the top of people.gd.
+func orb(mid: Vector3, r: Vector3, col: Color, lon := 8, bands := 3,
+		u0 := 0.0, u1 := 1.0) -> void:
+	lon = maxi(3, lon)
+	bands = maxi(1, bands)
+	for bi in range(bands):
+		var ua := lerpf(u0, u1, float(bi) / float(bands))
+		var ub := lerpf(u0, u1, float(bi + 1) / float(bands))
+		for k in range(lon):
+			var k1: int = (k + 1) % lon
+			var pts: Array = []
+			if ua <= 0.0005:                        # closed on the bottom pole
+				pts = [_orb_p(mid, r, ua, 0, lon), _orb_p(mid, r, ub, k, lon),
+					_orb_p(mid, r, ub, k1, lon)]
+			elif ub >= 0.9995:                      # closed on the top pole
+				pts = [_orb_p(mid, r, ua, k, lon), _orb_p(mid, r, ua, k1, lon),
+					_orb_p(mid, r, ub, 0, lon)]
+			else:
+				pts = [_orb_p(mid, r, ua, k, lon), _orb_p(mid, r, ua, k1, lon),
+					_orb_p(mid, r, ub, k1, lon), _orb_p(mid, r, ub, k, lon)]
+			_orb_face(pts, mid, r, col)
+
+
+# A point on the lathe. `u` runs 0 at the bottom pole to 1 at the top, which
+# is the way round a head is built -- from the chin up.
+func _orb_p(mid: Vector3, r: Vector3, u: float, k: int, lon: int) -> Vector3:
+	var th := PI * u
+	var a := TAU * float(k) / float(lon)
+	return mid + Vector3(r.x * sin(th) * cos(a), -r.y * cos(th),
+		r.z * sin(th) * sin(a))
+
+
+# One face of it, shaded per vertex and wound to face OUTWARDS -- which is
+# checked against the centre rather than trusted to the loop order, because a
+# ring that runs the other way round is a head that is inside out and back-face
+# culled to nothing, and that is not a mistake worth making twice.
+func _orb_face(pts: Array, mid: Vector3, r: Vector3, col: Color) -> void:
+	var cols: Array = []
+	var ctr := Vector3.ZERO
+	for p in pts:
+		var d: Vector3 = p - mid
+		var n := Vector3(d.x / (r.x * r.x), d.y / (r.y * r.y),
+			d.z / (r.z * r.z)).normalized()
+		var lit := col * smooth_shade(n)
+		lit.a = 1.0
+		cols.append(lit)
+		ctr += p
+	ctr /= float(pts.size())
+	var flip: bool = (pts[1] - pts[0]).cross(pts[2] - pts[0]).dot(ctr - mid) < 0.0
+	for i in range(1, pts.size() - 1):
+		_orb_tri(pts[0], pts[i], pts[i + 1], cols[0], cols[i], cols[i + 1], flip)
+
+
+func _orb_tri(p0: Vector3, p1: Vector3, p2: Vector3, c0: Color, c1: Color,
+		c2: Color, flip: bool) -> void:
+	# Reversed winding, the same reversal quad() makes and for the same reason.
+	var ps := [p0, p2, p1] if not flip else [p0, p1, p2]
+	var cs := [c0, c2, c1] if not flip else [c0, c1, c2]
+	for i in range(3):
+		v.append(ps[i])
+		c.append(cs[i])
+		if tagging:
+			t.append(tag)
 
 
 func empty() -> bool:
