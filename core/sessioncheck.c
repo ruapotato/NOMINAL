@@ -104,6 +104,27 @@ static void check_verbs(int *passed, int *total)
        has(say(&ses, "demand", &o), "drops in all") &&
        has(o.p, "twenty-four port switches"));
 
+    /* AND THE ARITHMETIC USES THE PORTS A SWITCH REALLY SEATS DESKS ON.
+     *
+     * It divided by 23 -- every port but one, kept for the riser -- and since
+     * D27 ports 22 and 23 of a switch24 are its SFP+ pair, the only ten
+     * gigabit holes in the building and where the riser and the floor's
+     * server want to be. A playtester trusted the footer, bought two
+     * switches for a floor that needed three, and found out when `serve`
+     * stopped halfway. The number is derived from site_kind_ports() here so
+     * that a change to the catalogue cannot leave the planning advice behind.
+     */
+    {
+        char want[80];
+        snprintf(want, sizeof want, "a switch24 seats %d desks",
+                 site_kind_ports(SDEV_SWITCH24) - 2);
+        const char *d = say(&ses, "demand", &o);
+        ck("and says how many desks a switch really seats, from the catalogue",
+           has(d, want));
+        ck("and warns that `serve` will spend the SFP+ pair on desks",
+           has(d, "fills from port 0 up"));
+    }
+
     /* ============================== THE HELP HAS TO BE TRUE OF THE MACHINE
      *
      * A blind playtester's verdict on this build was "three of the game's

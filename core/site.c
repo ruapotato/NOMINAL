@@ -941,9 +941,29 @@ void site_dump_demand(const Site *s, Buf *out)
     }
     buf_printf(out, "\n%d drops in all, %d of them wanting a segment of their "
                     "own, %d wanting a server\n", drops, seg, srv);
+    /* HOW MANY SWITCHES THAT REALLY IS, which is not drops divided by the
+     * number in the product name.
+     *
+     * This said 23 desks to a switch24 -- every port but one, kept for the
+     * riser. But since D27 a switch24 is twenty-two gigabit access ports and
+     * an SFP+ PAIR on 22 and 23, and those two are where the riser and the
+     * floor's own server go, because they are the only ten gigabit holes in
+     * the building. So a switch24 seats twenty-two desks, not twenty-three,
+     * and a player who trusted this footer bought two switches for a floor
+     * that needed three and found out when `serve` stopped halfway.
+     *
+     * A playtester put it plainly: "switch24 sounds like 24 desks. It is
+     * 20-21 once you have used 23 for the riser and 22 for the server." */
     buf_printf(out, "which is %d twenty-four port switches, or %d eight port "
                     "ones, and %d a month of rent to pay for them\n",
-               (drops + 22) / 23, (drops + 6) / 7, rent);
+               (drops + 21) / 22, (drops + 6) / 7, rent);
+    buf_printf(out, "  a switch24 seats %d desks, not 24: ports 22 and 23 are "
+                    "its SFP+ pair,\n  which is where the riser and the floor's "
+                    "server want to be. A switch8\n  seats %d, keeping one for "
+                    "the run back. `serve` fills from port 0 up,\n  so it will "
+                    "spend the pair on desks if you let it.\n",
+               site_kind_ports(SDEV_SWITCH24) - 2,
+               site_kind_ports(SDEV_SWITCH8) - 1);
 }
 
 /* ------------------------------------------------------------ inspection */
