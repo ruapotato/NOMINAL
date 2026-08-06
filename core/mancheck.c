@@ -337,6 +337,28 @@ static void check_docs(Machine *m, int *ran, int *skipped)
                 snprintf(path, sizeof path, "/usr/share/doc/%s/%s", name, FILES[i]);
                 Buf body = {0};
                 if (vfs_read(&m->disk, path, &body) == IO_OK && body.p) {
+                    /* THE MACHINE HAS TO BE ABLE TO READ IT TOO. This gate
+                     * reads a doc through the host's vfs, and a file whose
+                     * parent directory was never created is readable that way
+                     * and not from a shell: `ls` lists it, `stat` prints its
+                     * mode and size, and cat, head, man and pkg diff all
+                     * answer "cannot read". Both tools you would reach for to
+                     * find out whether it is there say it is. Shipped one
+                     * this way an hour ago and only noticed by opening it. */
+                    Buf o = {0};
+                    char cmd[200];
+                    snprintf(cmd, sizeof cmd, "head %.150s", path);
+                    kernel_run(m, cmd, &o);
+                    if (o.p && strstr(o.p, "cannot read")) {
+                        char why[220];
+                        snprintf(why, sizeof why, "the machine cannot read it -- "
+                                 "is %.60s in the DIRS list in core/image.c?", name);
+                        ck(path, false, why);
+                        buf_free(&o);
+                        buf_free(&body);
+                        continue;
+                    }
+                    buf_free(&o);
                     Scan r = scan_text(m, body.p);
                     *ran += r.tried; *skipped += r.skipped;
                     if (r.tried) {

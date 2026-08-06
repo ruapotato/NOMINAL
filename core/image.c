@@ -840,7 +840,65 @@ static const Package PKG_NET = {
       { "/etc/networks", "default 0.0.0.0\n", 0644, NULL },
       { "/etc/protocols", "ip 0 IP\ntcp 6 TCP\nudp 17 UDP\n", 0644, NULL },
       { "/etc/services", "ssh 22/tcp\nhttp 80/tcp\n", 0644, NULL },
-    }, 9
+      /* NOBODY DOCUMENTED THE FORMAT OF THE FILE EVERY ADDRESS COMES OUT OF.
+       *
+       * `man ip` tells you to edit /etc/net/interfaces and reload; nothing
+       * anywhere said what to write in it. That was survivable while every
+       * machine had one card and one stanza, and it stopped being when the
+       * file grew a stanza per interface so a floor server's tagged
+       * subinterfaces would come back after a power cut. The format changed
+       * and its documentation did not exist to change.
+       *
+       * Every line below was read off read_ifaces() and cfg_field() in
+       * core/netsite.c. */
+      { "/usr/share/doc/netcfg/README",
+        "netcfg 11.6 -- the addresses, and the daemon that applies them.\n"
+        "\n"
+        "  /usr/sbin/netd          reads the file and makes the cards agree\n"
+        "  /etc/net/interfaces     what the cards are supposed to be\n"
+        "  svc reload net          re-read it after editing\n"
+        "\n"
+        "THE FILE IS A LIST OF STANZAS, ONE PER INTERFACE. A stanza opens\n"
+        "with `iface` and a card name, and the lines under it belong to that\n"
+        "card until the next `iface`:\n"
+        "\n"
+        "  iface eth0\n"
+        "    address 10.0.1.10\n"
+        "    netmask 24\n"
+        "    gateway 10.0.1.1\n"
+        "  iface eth1.13\n"
+        "    address 10.13.0.10\n"
+        "    netmask 24\n"
+        "\n"
+        "  iface <name>     eth0, eth1, or a tagged subinterface eth1.13.\n"
+        "                   NAMING ONE IS WHAT CREATES IT: a subinterface\n"
+        "                   this file mentions exists after a reboot, which\n"
+        "                   is how a floor server's vlans and the dhcp pools\n"
+        "                   riding on them survive a power cut.\n"
+        "  address <ip>     a dotted address, or the word `dhcp` to ask for\n"
+        "                   one. `dhcp` really sends a DISCOVER; if nothing\n"
+        "                   answers, the card comes up with no address and\n"
+        "                   `ip addr` says so.\n"
+        "  netmask <n>      24, or the dotted 255.255.255.0. Both are read.\n"
+        "                   A stanza with no netmask gets the site default.\n"
+        "  gateway <ip>     the DEFAULT ROUTE, which belongs to the machine\n"
+        "                   and not to a card -- so it is read once and the\n"
+        "                   FIRST one in the file wins, wherever it sits.\n"
+        "  # ...            a comment. Blank lines are ignored.\n"
+        "\n"
+        "The same card named twice is one card: the second stanza adds to the\n"
+        "first rather than replacing it.\n"
+        "\n"
+        "WHAT SERVICES A BOX RUNS IS A DIFFERENT FILE -- /etc/net/services,\n"
+        "one line each: `dhcpd <first> <count> <bits> <gw> <dns>`, `dnsd`,\n"
+        "and `record <name> <ip>` for a name that server answers for. A\n"
+        "`record` with no `dnsd` before it starts nothing, which is the\n"
+        "honest reading of a zone with no server behind it.\n"
+        "\n"
+        "The editor is ed(1). `ed /etc/net/interfaces ,n` numbers the lines.\n"
+        "See also ip(8), which SHOWS what the cards really hold and cannot\n"
+        "change it, and netstat(8).\n", 0644, NULL },
+    }, 10
 };
 
 static const Package PKG_SYSLOG = {
@@ -4437,6 +4495,12 @@ void machine_install(Machine *m, uint64_t seed)
         "/usr/share/doc/pkg-config-data", "/usr/share/doc/sysinit",
         "/usr/share/doc/shadow", "/usr/share/doc/nomsh",
         "/usr/share/doc/nomfun", "/usr/share/doc/zbl",
+        /* A doc file whose directory is not on this list HALF EXISTS: `ls`
+         * lists it and `stat` reports its mode and its size, and every
+         * reader -- cat, head, man, pkg diff -- answers "cannot read". That
+         * is a worse failure than a missing file, because the two tools you
+         * reach for to find out whether it is there both say it is. */
+        "/usr/share/doc/netcfg",
         "/usr/share/terminfo", "/var", "/var/log", "/var/lib", "/var/lib/ntp",
         "/var/lib/pkg", "/var/cache", "/var/spool", "/var/spool/cron",
         "/etc/audit", "/etc/default", "/etc/httpd", "/etc/logrotate.d",
