@@ -297,7 +297,13 @@ typedef struct {
     Duplex   duplex;
     PortMode mode;
     int      vlan;         /* access: the vlan; trunk: the native vlan      */
-    uint32_t allow;        /* trunk: bitmask of vlans 1..32 permitted       */
+    /* WHICH VLANS THIS TRUNK MAY CARRY. This was one uint32_t -- vlans 1..32
+     * and nothing else -- while site_subif() has always accepted 1..4094 and
+     * an access port takes any number at all. So `trunk core 22 100` was
+     * accepted, answered "set", and carried nothing, which is the same lie
+     * the token cap told one layer up. A bit per vlan id costs 512 bytes a
+     * port and makes the trunk's range the same range as everything else's. */
+    uint32_t allow[VLAN_WORDS];
     uint64_t tx, rx, drops;
     /* SERIALISATION. `busy_us` is the absolute microsecond at which the last
      * frame this port accepted will have finished clocking out. Anything
@@ -590,7 +596,7 @@ static int add_node(Net *n, NodeKind k, const char *name, int nports)
         p->duplex = DUPLEX_FULL;
         p->mode = PORT_ACCESS;
         p->vlan = VLAN_DEFAULT;
-        p->allow = 0;
+        memset(p->allow, 0, sizeof p->allow);
     }
     n->nport += nports;
     return id;
@@ -1181,10 +1187,55 @@ void net_port_mode(Net *n, int node, int port, PortMode m)
     int p = pid_of(n, node, port);
     if (p >= 0) n->port[p].mode = m;
 }
-void net_trunk_allow(Net *n, int node, int port, int vlan)
+static bool vlan_id_ok(int vlan) { return vlan >= 1 && vlan <= VLAN_ID_MAX; }
+
+bool net_trunk_allow(Net *n, int node, int port, int vlan)
 {
     int p = pid_of(n, node, port);
-    if (p >= 0 && vlan >= 1 && vlan <= 32) n->port[p].allow |= 1u << (vlan - 1);
+    if (p < 0 || !vlan_id_ok(vlan)) return false;
+    n->port[p].allow[vlan / 32] |= 1u << (vlan % 32);
+    return true;
+}
+/* AND THE WAY BACK OFF. A trunk that could only ever be added to is a trunk
+ * whose mistakes are permanent: the player who put vlan 21 on the wrong
+ * uplink had no line to type that took it off again, so the only repair was
+ * to add the right one beside the wrong one and leave the wrong one
+ * flooding. Removing a vlan from a trunk is one write on a real switch and
+ * it is one here. */
+bool net_trunk_deny(Net *n, int node, int port, int vlan)
+{
+    int p = pid_of(n, node, port);
+    if (p < 0 || !vlan_id_ok(vlan)) return false;
+    n->port[p].allow[vlan / 32] &= ~(1u << (vlan % 32));
+    return true;
+}
+void net_trunk_clear(Net *n, int node, int port)
+{
+    int p = pid_of(n, node, port);
+    if (p >= 0) memset(n->port[p].allow, 0, sizeof n->port[p].allow);
+}
+/* WHAT IT IS CARRYING, READ BACK. Nothing anywhere printed a trunk's allowed
+ * list, so a player could set it and never see it -- which is how a trunk
+ * missing four vlans went eight in-game days without being noticed. This is
+ * the allowed set only: the native vlan crosses an 802.1Q trunk untagged
+ * whether or not it is in the set, and port_carries() is where that lives. */
+bool net_trunk_allows(const Net *n, int node, int port, int vlan)
+{
+    int p = pid_of(n, node, port);
+    if (p < 0 || !vlan_id_ok(vlan)) return false;
+    return (n->port[p].allow[vlan / 32] & (1u << (vlan % 32))) != 0;
+}
+int net_trunk_allowed(const Net *n, int node, int port, int *out, int cap)
+{
+    int p = pid_of(n, node, port);
+    if (p < 0) return 0;
+    int total = 0;
+    for (int v = 1; v <= VLAN_ID_MAX; v++) {
+        if (!(n->port[p].allow[v / 32] & (1u << (v % 32)))) continue;
+        if (out && total < cap) out[total] = v;
+        total++;
+    }
+    return total;
 }
 /* SPANNING TREE, as the thing that is ABSENT by default.
  *
@@ -1279,8 +1330,8 @@ static bool port_carries(const Net *n, int p, int vlan)
     const Port *pt = &n->port[p];
     if (pt->mode == PORT_ACCESS) return pt->vlan == vlan;
     if (pt->vlan == vlan) return true;                 /* the native vlan */
-    if (vlan < 1 || vlan > 32) return false;
-    return (pt->allow & (1u << (vlan - 1))) != 0;
+    if (!vlan_id_ok(vlan)) return false;
+    return (pt->allow[vlan / 32] & (1u << (vlan % 32))) != 0;
 }
 
 static void fdb_learn(Net *n, Switch *s, const uint8_t mac[6], int port, int vlan)
@@ -4384,6 +4435,48 @@ void net_dump_fw(const Net *n, int node, Buf *out)
  * and it was printed in full every time somebody put a lead in a switch --
  * which buries the two ports that matter under the twenty-two that do not.
  * `empties` says whether they are worth the paper. */
+/* WHAT THIS TRUNK MAY CARRY, in the notation a switch prints it in: ids in
+ * ascending order, runs collapsed to `11-16`. Until this existed there was
+ * no line anywhere in the game that printed a trunk's allowed list, so
+ * `trunk core 22 ...` was a setting that could be written and never read --
+ * and a player whose line had been truncated had no way to see it. */
+static void dump_allowed(const Net *n, int p, Buf *out)
+{
+    int total = 0;
+    for (int v = 1; v <= VLAN_ID_MAX; v++)
+        if (n->port[p].allow[v / 32] & (1u << (v % 32))) total++;
+    if (!total) {
+        buf_puts(out, " carries nothing but the native vlan");
+        return;
+    }
+    buf_puts(out, " allows ");
+    int shown = 0;
+    for (int v = 1; v <= VLAN_ID_MAX; v++) {
+        if (!(n->port[p].allow[v / 32] & (1u << (v % 32)))) continue;
+        int end = v;
+        while (end < VLAN_ID_MAX &&
+               (n->port[p].allow[(end + 1) / 32] & (1u << ((end + 1) % 32)))) end++;
+        if (shown) buf_putc(out, ',');
+        if (end > v + 1) buf_printf(out, "%d-%d", v, end);
+        else if (end > v) buf_printf(out, "%d,%d", v, end);
+        else              buf_printf(out, "%d", v);
+        shown++;
+        v = end;
+    }
+    buf_printf(out, " (%d vlan%s)", total, total == 1 ? "" : "s");
+}
+
+/* ONE PRINTER FOR ONE FACT. `show <box>` and the `trunk` verb's own answer
+ * both say what a trunk carries, and two printers of the same fact drift --
+ * so there is one, and both call it. */
+void net_dump_trunk(const Net *n, int node, int port, Buf *out)
+{
+    int p = pid_of(n, node, port);
+    if (p < 0) return;
+    buf_printf(out, "native %d", n->port[p].vlan);
+    dump_allowed(n, p, out);
+}
+
 static void dump_ports(const Net *n, int node, Buf *out, bool empties)
 {
     if (node < 0 || node >= n->nnode || !n->node[node].used) return;
@@ -4391,7 +4484,16 @@ static void dump_ports(const Net *n, int node, Buf *out, bool empties)
     for (int i = 0; i < n->node[node].nports; i++) {
         int p = first + i;
         PortState st = port_state(n, p);
-        if (!empties && st == PORT_NOCABLE && n->port[p].cable < 0) { quiet++; continue; }
+        /* A SOCKET WITH NOTHING IN IT IS STILL WORTH A LINE IF IT HOLDS
+         * CONFIGURATION. Empty ports are hidden because twenty-two of them
+         * bury the two that matter -- but a port somebody made a trunk is
+         * not a default, and hiding it hides the only place the allowed
+         * vlan list is written down. Trunks show whether or not there is a
+         * lead in them; empty access ports still do not. */
+        if (!empties && st == PORT_NOCABLE && n->port[p].cable < 0 &&
+            !(n->node[node].kind == NODE_SWITCH && n->port[p].mode == PORT_TRUNK)) {
+            quiet++; continue;
+        }
         const char *w = st == PORT_UP ? "up" :
                         st == PORT_DOWN_ADMIN ? "admin down" :
                         st == PORT_TOOLONG ? "no link (run too long)" : "no link";
@@ -4431,7 +4533,10 @@ static void dump_ports(const Net *n, int node, Buf *out, bool empties)
         }
         if (n->port[p].blocked) buf_puts(out, " STP-BLOCKING");
         if (n->node[node].kind == NODE_SWITCH) {
-            if (n->port[p].mode == PORT_TRUNK) buf_printf(out, " trunk native %d", n->port[p].vlan);
+            if (n->port[p].mode == PORT_TRUNK) {
+                buf_puts(out, " trunk ");
+                net_dump_trunk(n, node, i, out);
+            }
             else buf_printf(out, " access vlan %d", n->port[p].vlan);
         }
         buf_printf(out, " tx %llu rx %llu drop %llu",

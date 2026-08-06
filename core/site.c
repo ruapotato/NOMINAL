@@ -867,15 +867,50 @@ bool site_port_vlan(Site *s, int dev, int port, int vlan)
     net_port_vlan(s->net, s->dev[dev].node, port, vlan);
     return true;
 }
-bool site_port_trunk(Site *s, int dev, int port, int vlan)
+/* A TRUNK PORT, AND WHAT IT MAY CARRY. `vlan` of 0 makes the port a trunk
+ * and adds nothing, which is the state a real trunk starts in.
+ *
+ * A vlan outside 1..4094 is REFUSED. It used to be accepted and dropped by
+ * netstack, which had room for 32 vlans in a word while `subif` has always
+ * taken 4094 -- so `trunk core 22 100` answered "set" about a trunk that
+ * carried no vlan 100 and never would. */
+static bool trunk_port_ok(Site *s, int dev, int port)
 {
     s->err = SITE_OK;
     if (dev < 0 || dev >= s->ndev) { s->err = SITE_ENODEV; return false; }
     if (!site_kind_is_switch(s->dev[dev].kind)) { s->err = SITE_ENOTSW; return false; }
     if (port < 0 || port >= s->dev[dev].nports) { s->err = SITE_ENOPORT; return false; }
-    net_port_mode(s->net, s->dev[dev].node, port, PORT_TRUNK);
-    if (vlan > 0) net_trunk_allow(s->net, s->dev[dev].node, port, vlan);
     return true;
+}
+bool site_port_trunk(Site *s, int dev, int port, int vlan)
+{
+    if (!trunk_port_ok(s, dev, port)) return false;
+    if (vlan < 0 || vlan > VLAN_ID_MAX) { s->err = SITE_EVLAN; return false; }
+    net_port_mode(s->net, s->dev[dev].node, port, PORT_TRUNK);
+    if (vlan > 0 && !net_trunk_allow(s->net, s->dev[dev].node, port, vlan)) {
+        s->err = SITE_EVLAN; return false;
+    }
+    return true;
+}
+/* THE WAY BACK OFF. `vlan` of 0 empties the allowed set; the port stays a
+ * trunk, because taking every vlan off a trunk is not the same operation as
+ * turning it back into an access port and a player who meant the second one
+ * has `vlan <sw> <port> <n>` for it. */
+bool site_port_trunk_off(Site *s, int dev, int port, int vlan)
+{
+    if (!trunk_port_ok(s, dev, port)) return false;
+    if (vlan < 0 || vlan > VLAN_ID_MAX) { s->err = SITE_EVLAN; return false; }
+    if (vlan == 0) { net_trunk_clear(s->net, s->dev[dev].node, port); return true; }
+    if (!net_trunk_deny(s->net, s->dev[dev].node, port, vlan)) {
+        s->err = SITE_EVLAN; return false;
+    }
+    return true;
+}
+/* What it carries now, for anything that wants to print it back. */
+int site_port_trunk_list(Site *s, int dev, int port, int *out, int cap)
+{
+    if (!trunk_port_ok(s, dev, port)) return 0;
+    return net_trunk_allowed(s->net, s->dev[dev].node, port, out, cap);
 }
 /* WHICH LEG OF THE BOX A POOL LANDS ON, and the refusal when there is none.
  *
@@ -1513,13 +1548,37 @@ void site_dump_dev_brief(Site *s, int dev, Buf *out) { dump_dev(s, dev, out, fal
 /* ------------------------------------------------------------- the shell */
 /* One line, one operation. Deliberately dull to parse: a blind playtester
  * writing a script should never have to think about quoting. */
-#define MAXTOK 12
+/* HOW MANY WORDS FIT ON ONE LINE, and what happens to the ones that do not.
+ *
+ * This was twelve, silently. `trunk core 22 11 12 ... 23` is sixteen words,
+ * so the last four vlans were dropped on the floor and the verb answered
+ * "set" -- and since nothing printed a trunk's allowed list either, the
+ * floor those four vlans belonged to was quietly dead for eight in-game
+ * days. Two things were wrong and only one of them was the number.
+ *
+ * The number is now sixty-four, which is past anything the game asks for: a
+ * vlan per tenancy is the build D27 recommends and the fullest seed's demand
+ * table asks for thirty-six tenancies, so `trunk core 22` plus thirty-six
+ * vlans is thirty-nine words. And split() now REFUSES a line it cannot hold
+ * rather than truncating it, so if this number is ever passed again the
+ * player is told, at the line they typed, instead of finding out a week
+ * later on a floor that does not work. */
+#define MAXTOK 64
 
+/* Returns the token count, or -1 for a line with more words than MAXTOK. */
 static int split(char *line, char *tok[MAXTOK])
 {
     int n = 0;
     char *p = line;
-    while (*p && n < MAXTOK) {
+    while (*p) {
+        if (n == MAXTOK) {
+            /* Is there another word out there, or just trailing space? Only
+             * a real word past the end is a truncation. (A '#' this far in
+             * is not a comment: a comment is only a comment at the start of
+             * a line, where nobody means a room.) */
+            while (*p == ' ' || *p == '\t') p++;
+            return *p ? -1 : n;
+        }
         while (*p == ' ' || *p == '\t') p++;
         /* '#' STARTS A COMMENT, AND '#41' IS A ROOM.
          *
@@ -1647,7 +1706,11 @@ static const struct { const char *verb; int need; const char *usage; } VERB[] = 
     { "subif",    5, "subif <box> <nic> <vlan> <ip>/<bits>   add one\n"
                      "subif <box> <nic> <vlan> off           take it away again" },
     { "vlan",     4, "vlan <switch> <port> <n>" },
-    { "trunk",    3, "trunk <switch> <port> <vlan>..." },
+    { "trunk",    3, "trunk <switch> <port> <vlan>...   let these across it\n"
+                     "trunk <switch> <port> -<vlan>     take that one back off\n"
+                     "trunk <switch> <port> none        take them all off\n"
+                     "It answers with the list the port carries afterwards, and\n"
+                     "`show <switch>` prints the same list." },
     { "dhcpd",    2, "dhcpd <box> <first> <count> <bits> <gw> <dns>   start a pool\n"
                      "dhcpd <box> off                                stop them all\n"
                      "dhcpd <box>                                    what it serves" },
@@ -1675,10 +1738,35 @@ int site_verb_arity(int i)
 
 bool site_cmd(Site *s, const char *line, Buf *out)
 {
-    char buf[512];
+    /* THE LINE ITSELF HAS A CAP TOO, and it used to truncate in silence in
+     * exactly the same way the token count did -- snprintf() copies what
+     * fits and says nothing. Sixty-four vlans of four digits plus a verb is
+     * under 400 characters, so 1024 holds anything MAXTOK will take; a line
+     * past it is refused rather than half-obeyed. */
+    char buf[1024];
+    if (line && strlen(line) >= sizeof buf) {
+        buf_printf(out, "that line is %zu characters and I can only take %zu. "
+                        "Nothing was done --\n  split it into two lines.\n",
+                   strlen(line), sizeof buf - 1);
+        return true;
+    }
     snprintf(buf, sizeof buf, "%s", line);
     char *t[MAXTOK];
     int n = split(buf, t);
+    /* A PARSER THAT DROPS INPUT MUST SAY SO. It answered "set" to a `trunk`
+     * line whose last four vlans it had thrown away; now the line does
+     * nothing at all and says why. Refusing the whole line rather than
+     * obeying the front of it is the point: half a trunk that looks like a
+     * whole one is what cost the playtester eight days. */
+    if (n < 0) {
+        buf_printf(out, "that line has more than %d words in it. Nothing was "
+                        "done -- no part of it\n  was run.\n", MAXTOK);
+        if (strcmp(t[0], "trunk") == 0)
+            buf_puts(out, "  Split it: `trunk <sw> <port> ...` may be typed "
+                          "again and again, and each\n  line adds to what that "
+                          "trunk already carries.\n");
+        return true;
+    }
     if (!n) return true;
 
     for (int i = 0; VERB[i].verb; i++) {
@@ -1721,7 +1809,13 @@ bool site_cmd(Site *s, const char *line, Buf *out)
             "subif <dev> <nic> <vlan> off   take that subinterface away, with any\n"
             "                               pool that was answering on it\n"
             "vlan <dev> <port> <n>          a switch's access port, in a vlan\n"
-            "trunk <dev> <port> <vlan>...   a trunk, and what it may carry\n"
+            "trunk <dev> <port> <vlan>...   a trunk, and what it may carry. It\n"
+            "                               ADDS, so a trunk can be built a line\n"
+            "                               at a time; `-<vlan>` takes one back\n"
+            "                               off and `none` takes them all off.\n"
+            "                               It answers with the list the port\n"
+            "                               carries afterwards, and `show <dev>`\n"
+            "                               prints that list beside the port\n"
             "dhcpd <dev> <first> <count> <bits> <gw> <dns>\n"
             "                               a pool, on the interface of that box\n"
             "                               whose own address is in it -- so a\n"
@@ -2158,13 +2252,65 @@ bool site_cmd(Site *s, const char *line, Buf *out)
                    ? "set" : site_err_text(s->err));
         return true;
     }
+    /* THE TRUNK LINE, AND EVERY WAY IT USED TO LIE.
+     *
+     *   trunk <sw> <port> 11 12 13      add these to what it carries
+     *   trunk <sw> <port> -13           take that one back off
+     *   trunk <sw> <port> none          take them all off
+     *
+     * `-13` is the spelling because it is the same word with a minus in
+     * front of it: a player correcting a typo edits the line they already
+     * typed instead of learning a second verb, and add and remove sit side
+     * by side in one line so the whole edit is one operation. A new verb
+     * (`untrunk`) would need its own arity, its own usage line and its own
+     * help entry, and would still not compose with the list.
+     *
+     * NOTHING IS APPLIED UNTIL EVERY WORD PARSES. A line with a typo in the
+     * middle used to set the vlans before it and refuse afterwards, so the
+     * switch was left in a state the player had not asked for and the error
+     * did not describe. And the answer is no longer the word "set": it is
+     * the allowed list read back off the port, which is the only way to see
+     * that the line did what it said. */
     if (strcmp(t[0], "trunk") == 0 && n >= 3) {
         int d = dev_arg(s, t[1]);
         if (d < 0) { buf_puts(out, "?\n"); return true; }
-        bool ok = site_port_trunk(s, d, atoi(t[2]), 0);
-        for (int i = 3; i < n; i++)
-            ok = site_port_trunk(s, d, atoi(t[2]), atoi(t[i])) && ok;
-        buf_printf(out, "%s\n", ok ? "set" : site_err_text(s->err));
+        int port;
+        if (!small_number(t[2], &port)) {
+            buf_printf(out, "%s is not a port number\n", t[2]);
+            return true;
+        }
+        /* Pass one: parse. `+v` and a bare number add, `-v` removes, `none`
+         * empties the set. */
+        int op[MAXTOK], vl[MAXTOK], nops = 0;
+        for (int i = 3; i < n; i++) {
+            const char *a = t[i];
+            int sign = 1, v = 0;
+            if (strcmp(a, "none") == 0 || strcmp(a, "clear") == 0) {
+                op[nops] = -1; vl[nops++] = 0; continue;
+            }
+            if (*a == '-') { sign = -1; a++; }
+            else if (*a == '+') a++;
+            if (!small_number(a, &v) || v < 1 || v > VLAN_ID_MAX) {
+                buf_printf(out, "%s: %s\n  Nothing was done -- the whole line "
+                                "is refused, so the port is as it was.\n",
+                           t[i], site_err_text(SITE_EVLAN));
+                return true;
+            }
+            op[nops] = sign; vl[nops++] = v;
+        }
+        /* Pass two: do it. Only the port itself can fail now. */
+        if (!site_port_trunk(s, d, port, 0)) {
+            buf_printf(out, "%s\n", site_err_text(s->err));
+            return true;
+        }
+        for (int i = 0; i < nops; i++) {
+            if (op[i] > 0) site_port_trunk(s, d, port, vl[i]);
+            else           site_port_trunk_off(s, d, port, vl[i]);
+        }
+        /* READ IT BACK, off the port, every time. */
+        buf_printf(out, "%s:%d trunk ", s->dev[d].name, port);
+        net_dump_trunk(s->net, s->dev[d].node, port, out);
+        buf_putc(out, '\n');
         return true;
     }
     if (strcmp(t[0], "dhcpd") == 0) {

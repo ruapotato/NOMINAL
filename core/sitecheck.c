@@ -1234,6 +1234,156 @@ static void check_dhcp_scope(const Building *b)
  * got, and the last round was spent eliminating that one -- so every verb is
  * swept here rather than the one that was reported.
  */
+/* ------------------------------------------- the trunk line, word for word
+ *
+ * A PLAYTESTER ON DAY 62 TYPED THIS:
+ *
+ *     trunk core 22 11 12 13 14 15 16 17 18 19 20 21 22 23
+ *     set
+ *
+ * Sixteen words into a parser that held twelve. Vlans 20 to 23 were dropped
+ * on the floor, the verb answered "set", and nothing anywhere printed a
+ * trunk's allowed list -- so the only symptom was two tenancies on floor 5
+ * whose transfers stopped finishing, eight in-game days and two complaints
+ * later.
+ *
+ * These checks are DATA PLANE wherever they can be: they do not count
+ * tokens, they put a machine in the last vlan of a long line and ping across
+ * the trunk. Counting tokens would pass on a parser that read all fourteen
+ * numbers and then dropped them somewhere else -- which is exactly what the
+ * 32-bit allowed mask did to every vlan above 32.
+ */
+static void check_trunk_line(const Building *b)
+{
+    printf("\nthe trunk line: every word of it, or none of it\n");
+    Site s;
+    site_new(&s, b, GATE_SEED, 100000);
+    site_credit(&s, 400000);
+
+    int mdf = bld_find(b, 0, RM_MDF);
+    int comms = bld_find(b, 2, RM_COMMS);
+    int room = a_room(b, 2);
+    int csw = site_install(&s, SDEV_SWITCH24, mdf, "core");
+    int fsw = site_install(&s, SDEV_SWITCH24, comms, "fsw");
+    site_cable(&s, csw, 0, fsw, 0, CAB_FIBRE);
+
+    /* Two machines in the FOURTEENTH vlan of the line below, one each side
+     * of the trunk. Nothing else joins them. */
+    int a = site_install(&s, SDEV_PC, mdf, "a24");
+    int c = site_install(&s, SDEV_PC, room, "c24");
+    site_power(&s, a, true);
+    site_power(&s, c, true);
+    site_cable(&s, a, 0, csw, 1, CAB_CAT6);
+    site_cable(&s, c, 0, fsw, 1, CAB_CAT6);
+    site_port_vlan(&s, csw, 1, 24);
+    site_port_vlan(&s, fsw, 1, 24);
+    site_addr(&s, a, 0, net_ip(10, 0, 24, 10), net_mask_bits(24));
+    site_addr(&s, c, 0, net_ip(10, 0, 24, 11), net_mask_bits(24));
+
+    Buf o = {0};
+    const char *LINE = "trunk %s 0 11 12 13 14 15 16 17 18 19 20 21 22 23 24";
+    char line[160];
+    snprintf(line, sizeof line, LINE, "core");
+    site_cmd(&s, line, &o);
+    buf_clear(&o);
+    snprintf(line, sizeof line, LINE, "fsw");
+    site_cmd(&s, line, &o);
+
+    int rtt = 0;
+    ck("a fourteen-vlan trunk line really carries the fourteenth",
+       net_ping(s.net, s.dev[a].node, net_ip(10, 0, 24, 11), &rtt) == PING_OK);
+    ck("and the line answers with the list, not the word `set`",
+       has(o.p, "allows 11-24") && !has(o.p, "set"));
+
+    /* READ IT BACK OFF THE BOX. The setting the player could not see is the
+     * reason eight days passed: `show core` said `trunk native 1` and
+     * stopped, on a port whose allowed list was the whole fault. */
+    buf_clear(&o);
+    site_cmd(&s, "show core", &o);
+    ck("`show <box>` prints what the trunk carries, on a port with no cable",
+       has(o.p, "allows 11-24 (14 vlans)"));
+
+    /* AND THE WAY BACK OFF. site_port_trunk only ever ORed, so a vlan put on
+     * the wrong uplink could not be removed, only added to. */
+    buf_clear(&o);
+    site_cmd(&s, "trunk core 0 -24", &o);
+    ck("`-<vlan>` takes one back off, and says what is left",
+       has(o.p, "allows 11-23") && !has(o.p, "24"));
+    ck("and the frames really stop crossing",
+       net_ping(s.net, s.dev[a].node, net_ip(10, 0, 24, 11), &rtt) != PING_OK);
+    buf_clear(&o);
+    site_cmd(&s, "trunk core 0 24", &o);
+    ck("put it back and they cross again",
+       net_ping(s.net, s.dev[a].node, net_ip(10, 0, 24, 11), &rtt) == PING_OK);
+    buf_clear(&o);
+    site_cmd(&s, "trunk core 0 none", &o);
+    ck("`none` empties the whole set",
+       has(o.p, "carries nothing but the native vlan") &&
+       net_ping(s.net, s.dev[a].node, net_ip(10, 0, 24, 11), &rtt) != PING_OK);
+    buf_clear(&o);
+    snprintf(line, sizeof line, LINE, "core");
+    site_cmd(&s, line, &o);
+
+    /* A VLAN ABOVE 32. `subif` has always taken 1..4094 and an access port
+     * takes any number, but the trunk's allowed set was one uint32_t -- so
+     * `trunk core 0 100` answered "set" about a trunk that could not carry
+     * vlan 100 and never would. Same lie, one layer down. */
+    {
+        int a2 = site_install(&s, SDEV_PC, mdf, "a100");
+        int c2 = site_install(&s, SDEV_PC, room, "c100");
+        site_power(&s, a2, true);
+        site_power(&s, c2, true);
+        site_cable(&s, a2, 0, csw, 2, CAB_CAT6);
+        site_cable(&s, c2, 0, fsw, 2, CAB_CAT6);
+        site_port_vlan(&s, csw, 2, 100);
+        site_port_vlan(&s, fsw, 2, 100);
+        site_addr(&s, a2, 0, net_ip(10, 0, 100, 10), net_mask_bits(24));
+        site_addr(&s, c2, 0, net_ip(10, 0, 100, 11), net_mask_bits(24));
+        buf_clear(&o);
+        site_cmd(&s, "trunk core 0 100", &o);
+        buf_clear(&o);
+        site_cmd(&s, "trunk fsw 0 100", &o);
+        ck("a vlan above 32 crosses a trunk, the way `subif` always allowed",
+           net_ping(s.net, s.dev[a2].node, net_ip(10, 0, 100, 11), &rtt) == PING_OK);
+    }
+
+    /* A LINE THAT DOES NOT FIT IS REFUSED WHOLE. Not obeyed as far as it
+     * goes, and never answered "set". */
+    {
+        char big[1024];
+        int l = snprintf(big, sizeof big, "trunk core 3");
+        for (int v = 200; v < 280; v++)
+            l += snprintf(big + l, sizeof big - (size_t)l, " %d", v);
+        buf_clear(&o);
+        site_cmd(&s, big, &o);
+        ck("a line with more words than the parser holds says so",
+           has(o.p, "more than") && has(o.p, "Nothing was done") &&
+           !has(o.p, "allows") && !has(o.p, "set"));
+        buf_clear(&o);
+        site_cmd(&s, "show core", &o);
+        ck("and no part of it was run: port 3 is not a trunk at all",
+           !has(o.p, "port 3 "));
+    }
+
+    /* AND A TYPO IN THE MIDDLE TAKES THE WHOLE LINE WITH IT, rather than
+     * setting the words before it and refusing at the word after. */
+    buf_clear(&o);
+    site_cmd(&s, "trunk core 0 30 wombat 31", &o);
+    ck("a word that is not a vlan refuses the line and changes nothing",
+       has(o.p, "wombat") && has(o.p, "Nothing was done"));
+    buf_clear(&o);
+    site_cmd(&s, "show core", &o);
+    ck("neither the vlan before the typo nor the one after it was applied",
+       !has(o.p, ",30") && !has(o.p, ",31") && has(o.p, "allows 11-24"));
+    buf_clear(&o);
+    site_cmd(&s, "trunk core 0 4095", &o);
+    ck("and 4095 is refused, because 1..4094 is what a vlan id is",
+       has(o.p, "1 to 4094") && has(o.p, "Nothing was done"));
+
+    buf_free(&o);
+    site_free(&s);
+}
+
 static void check_arity(const Building *b)
 {
     printf("\nevery verb, handed too few words\n");
@@ -1667,6 +1817,7 @@ int site_selfcheck(void)
     check_dhcp_scope(&b);
     check_dns_verbs(&b);
     check_ping_blames_the_filter(&b);
+    check_trunk_line(&b);
     check_arity(&b);
     check_reports(&b);
     check_tolerance(&b);

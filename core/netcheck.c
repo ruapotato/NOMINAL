@@ -232,6 +232,57 @@ static void check_vlans(void)
     net_arp_flush(m, x);
     ck("allowing vlan 30 across the trunk fixes it",
        net_ping(m, x, net_ip(10, 0, 0, 2), NULL) == PING_OK);
+
+    /* THE ALLOWED SET IS A SET, AND IT CAN BE READ AND UNSET.
+     *
+     * It was one uint32_t: vlans 1..32 and silence for everything else,
+     * while a subinterface has always been allowed to wear 1..4094. So a
+     * trunk told to carry vlan 300 said nothing and carried nothing. And
+     * there was no way to read it back and no way to take a vlan off. */
+    net_port_vlan(m, s1, 0, 300);
+    net_port_vlan(m, s2, 0, 300);
+    net_arp_flush(m, x);
+    ck("vlan 300 does not cross a trunk that was not told about it",
+       net_ping(m, x, net_ip(10, 0, 0, 2), NULL) != PING_OK);
+    ck("and telling it about 300 is accepted, not swallowed",
+       net_trunk_allow(m, s1, 7, 300) && net_trunk_allow(m, s2, 7, 300));
+    net_arp_flush(m, x);
+    ck("a vlan above 32 crosses the trunk like any other",
+       net_ping(m, x, net_ip(10, 0, 0, 2), NULL) == PING_OK);
+    ck("4094 is a vlan and 4095 is not",
+       net_trunk_allow(m, s1, 7, 4094) && !net_trunk_allow(m, s1, 7, 4095) &&
+       !net_trunk_allow(m, s1, 7, 0));
+    ck("the trunk reads back the ids it was given, in order",
+       net_trunk_allows(m, s1, 7, 30) && net_trunk_allows(m, s1, 7, 300) &&
+       !net_trunk_allows(m, s1, 7, 31));
+    {
+        int got[8], k = net_trunk_allowed(m, s1, 7, got, 8);
+        ck("and counts them: three vlans, ascending",
+           k == 3 && got[0] == 30 && got[1] == 300 && got[2] == 4094);
+        k = net_trunk_allowed(m, s1, 7, got, 1);
+        ck("a caller with room for one is told there are three",
+           k == 3 && got[0] == 30);
+    }
+    ck("denying one takes it back off, and the frames stop",
+       net_trunk_deny(m, s1, 7, 300) && !net_trunk_allows(m, s1, 7, 300) &&
+       net_ping(m, x, net_ip(10, 0, 0, 2), NULL) != PING_OK);
+    ck("and the vlans beside it are untouched",
+       net_trunk_allows(m, s1, 7, 30) && net_trunk_allows(m, s1, 7, 4094));
+    net_trunk_clear(m, s1, 7);
+    ck("clearing empties the set without changing the native vlan",
+       net_trunk_allowed(m, s1, 7, NULL, 0) == 0 &&
+       net_port_state(m, s1, 7) == PORT_UP);
+    {
+        Buf o = {0};
+        net_trunk_allow(m, s1, 7, 11);
+        net_trunk_allow(m, s1, 7, 12);
+        net_trunk_allow(m, s1, 7, 13);
+        net_trunk_allow(m, s1, 7, 20);
+        net_dump_trunk(m, s1, 7, &o);
+        ck("and it prints as a switch prints it: runs collapsed, ids in order",
+           o.p && strstr(o.p, "native 1 allows 11-13,20 (4 vlans)") != NULL);
+        buf_free(&o);
+    }
     net_free(m);
 }
 

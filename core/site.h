@@ -472,7 +472,19 @@ bool site_forwarding(Site *s, int dev, bool on);
  * address of zero removes it. */
 bool site_subif(Site *s, int dev, int nic, int vlan, uint32_t ip, uint32_t mask);
 bool site_port_vlan(Site *s, int dev, int port, int vlan);
+/* Make a switch port a trunk, and let one vlan across it. A `vlan` of 0
+ * makes the trunk and allows nothing, which is where a real trunk starts.
+ * It ADDS -- so a trunk may be built a line at a time -- and 1..4094 is the
+ * range, the same range `subif` takes. Anything else is refused rather than
+ * accepted and dropped. */
 bool site_port_trunk(Site *s, int dev, int port, int vlan);
+/* Take a vlan back off a trunk, or all of them with a `vlan` of 0. Without
+ * this a trunk could only ever be added to, so a vlan put on the wrong
+ * uplink stayed there for the rest of the run. */
+bool site_port_trunk_off(Site *s, int dev, int port, int vlan);
+/* What that trunk carries now, ascending. Returns how many there are, which
+ * may exceed `cap`; `out` may be NULL to just count. */
+int  site_port_trunk_list(Site *s, int dev, int port, int *out, int cap);
 /* A DHCP POOL, AND THE SEGMENT IT SERVES. There is no vlan argument: the
  * segment is the interface of that box whose own address is inside the
  * pool's subnet, so a router with three subinterfaces runs three pools by

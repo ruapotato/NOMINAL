@@ -166,6 +166,12 @@ typedef enum {
 #define ETH_P_8021Q   0x8100
 #define VLAN_NONE     0       /* an access port with no vlan set is vlan 1  */
 #define VLAN_DEFAULT  1
+/* THE RANGE OF A VLAN ID, in one place. 802.1Q spends twelve bits on it and
+ * reserves 0 and 4095, so 1..4094 is what a real switch takes -- and it is
+ * what site_subif() has always taken. A trunk's allowed set is a bit per id
+ * so that a trunk can carry any vlan a subinterface can wear. */
+#define VLAN_ID_MAX   4094
+#define VLAN_WORDS    (((VLAN_ID_MAX + 1) + 31) / 32)
 
 typedef enum { PORT_ACCESS = 0, PORT_TRUNK = 1 } PortMode;
 
@@ -308,8 +314,25 @@ void  net_if_port(Net *n, int node, int ifx, int port);
 void  net_if_up(Net *n, int node, int ifx, bool up);
 void  net_port_vlan(Net *n, int node, int port, int vlan);
 void  net_port_mode(Net *n, int node, int port, PortMode m);
-/* Let a vlan across a trunk. A trunk carries nothing until told to. */
-void  net_trunk_allow(Net *n, int node, int port, int vlan);
+/* Let a vlan across a trunk. A trunk carries nothing until told to. Returns
+ * false for a vlan outside 1..4094 or a port that is not there, so a caller
+ * can refuse the line instead of answering "set" to nothing -- which is what
+ * it did for every vlan above 32 until the allowed set became a bitmap. */
+bool  net_trunk_allow(Net *n, int node, int port, int vlan);
+/* Take one back off, and take them all off. A setting that can only be added
+ * to cannot be corrected, only added to. */
+bool  net_trunk_deny(Net *n, int node, int port, int vlan);
+void  net_trunk_clear(Net *n, int node, int port);
+/* READ IT BACK. net_trunk_allows() is one vlan; net_trunk_allowed() fills
+ * `out` with the ids in ascending order and returns HOW MANY THERE ARE,
+ * which may be more than `cap` -- so a caller that wants to know it did not
+ * get all of them can. Both report the allowed set only: the native vlan
+ * crosses a trunk untagged whether or not it is in that set. */
+bool  net_trunk_allows(const Net *n, int node, int port, int vlan);
+int   net_trunk_allowed(const Net *n, int node, int port, int *out, int cap);
+/* "native 1 allows 11-23 (13 vlans)" -- the one printer for that fact, so
+ * `show <box>` and the verb that sets it cannot say different things. */
+void  net_dump_trunk(const Net *n, int node, int port, Buf *out);
 /* Tag frames leaving a host interface, for a machine plugged into a trunk. */
 void  net_if_vlan(Net *n, int node, int ifx, int vlan);
 /* A TAGGED SUBINTERFACE ON A CARD. Returns the interface index, existing or
