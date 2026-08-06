@@ -151,6 +151,13 @@ typedef struct {
     int      wear;             /* disk wear, in days-of-average-use         */
     uint8_t  warned;           /* its disk has started complaining in syslog*/
     uint8_t  hot_warned;       /* the room it is in has started cooking     */
+    /* HOW MANY SECTORS THIS DISK HAS ALREADY LOST, and it is not a
+     * statistic. The first one is kept away from the files the boot chain
+     * reads, so the box comes up and can be worked on. The second one is
+     * not: by then the player has had a fortnight of SMART warnings, a
+     * lost file and an entry in `events`, and `disk <box>` has been a
+     * hundred and forty pounds away the whole time. See core/siteday.c. */
+    uint8_t  lost;
 } SiteDev;
 
 typedef struct {
@@ -160,6 +167,16 @@ typedef struct {
     int      cost;
     uint8_t  kind;             /* CableKind                                 */
     int      cable;            /* netstack cable id; -1 once pulled out     */
+    /* A RUN WITH NO MARGIN LEFT IN IT. Copper carries a hundred metres and
+     * the last ten of them are the ones the standard spends on margin: a
+     * run that long works, and works less well every day it is asked to
+     * carry a floor. `errs` is measured off how hard the port really
+     * worked, so a marginal run nobody uses never degrades and a marginal
+     * riser under a floor of desks does. Once `slow` is set the link
+     * negotiates a hundred megabits, which `load` and `show` both print.
+     * See core/siteday.c. */
+    int      errs;
+    uint8_t  slow;
 } SiteLink;
 
 /* A tenancy, and what it wants. Derived from the building's own Room.tenant
@@ -236,6 +253,13 @@ typedef enum {
     SEV_DISK_FAIL,   /* and has now lost one                                */
     SEV_HEAT_WARN,   /* a room has more kit in it than it can shed heat for */
     SEV_HEAT_TRIP,   /* and a box in it has shut itself down                */
+    /* ---------------------------------------------------------------- D28
+     * A blackout used to damage every box it took down the same way, so
+     * three servers down was one puzzle three times. It is not one cause
+     * any more, and these are the causes that were added to it. */
+    SEV_DISK_BOOT,   /* a disk nobody replaced took a file the boot reads   */
+    SEV_LINK_WARN,   /* a marginal copper run is taking errors under load   */
+    SEV_LINK_SLOW,   /* and has retrained down to a hundred megabits        */
     SEV_KIND_COUNT
 } SiteEventKind;
 

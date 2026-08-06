@@ -2772,13 +2772,95 @@ void breaker_syslog(Machine *m, const char *line)
  * --solve. */
 void breaker_powerfail(Machine *m, Rng *r, bool writing, char *d, size_t ds)
 {
-    if (writing) {
-        fault_unclean_shutdown(m, r, d, ds);
-        if (d[0]) return;
+    breaker_powerfail_as(m, r, writing ? PF_TRUNC : PF_CLEAN, d, ds);
+}
+
+/* AND THE SAME EVENT, DEALT A DIFFERENT CASUALTY.
+ *
+ * D28, and the sentence this exists for -- a playtester, on the mains failure
+ * that took three of their servers down at once:
+ *
+ *   "Three servers down from one cause was three instances of the same
+ *   puzzle. Three servers down where one is a heat trip, one is a worn disk
+ *   and one is a truncated fstab would have been the game this engine is
+ *   obviously capable of."
+ *
+ * Everything below already existed in this file and was reachable only by
+ * generating a ticket. What a machine loses when the plug comes out depends on
+ * what that machine had open at 04:12, and four different things are honest:
+ *
+ *   PF_CLEAN  it was idle. The journal replays, `fsck` is clean, `pkg verify`
+ *             is clean, and the box comes back up. This is the machine that
+ *             makes the other three worth diagnosing, because it proves the
+ *             player's move is READING rather than reinstalling everything.
+ *   PF_TRUNC  it was writing a packaged file. Half of it is there, `pkg
+ *             verify` says TRUNCATED and `pkg diff` says SHORT rather than
+ *             edited. The original behaviour, kept exactly.
+ *   PF_CONF   a daemon was rewriting its own configuration -- a log rotation,
+ *             a reload, a cron edit -- and the file stops mid-way. The box
+ *             boots; the service reads its config and gives up. Diagnosed
+ *             from the service, not from the boot chain.
+ *   PF_SVC    a file that had been created seconds earlier was in the journal
+ *             and not on the platter, so after the replay it is not there at
+ *             all. That is an ordinary writeback loss on a real filesystem,
+ *             and the symptom is a daemon that will not start with nothing
+ *             wrong with anything that IS there.
+ *
+ * Every one of them marks the filesystem dirty, because every one of them is
+ * the same machine stopping dead. So the first move is the same on all four
+ * boxes -- fsck -- and the second move is different on each, which is the
+ * difference between three puzzles and one puzzle three times.
+ *
+ * NOTHING HERE NAMES THE ANSWER. The site's event log says the lights went
+ * out and which boxes went down with them. Which of these four it dealt to
+ * which box is not written down anywhere the player can read: it is found
+ * with fsck, svc, pkg verify and pkg diff, exactly as a generated ticket is.
+ */
+int breaker_powerfail_kinds(void) { return PF_KIND_COUNT; }
+
+const char *breaker_powerfail_kind_name(int k)
+{
+    switch (k) {
+    case PF_CLEAN: return "clean";
+    case PF_TRUNC: return "truncated";
+    case PF_CONF:  return "conf-cut";
+    case PF_SVC:   return "conf-gone";
+    default:       return "?";
     }
+}
+
+void breaker_powerfail_as(Machine *m, Rng *r, int kind, char *d, size_t ds)
+{
+    d[0] = 0;
+    switch (kind) {
+    case PF_TRUNC:
+        /* This one keeps its own book on fs_lost: it sets 1 when it really
+         * did cut a file in half and 0 when the file it drew was not there. */
+        fault_unclean_shutdown(m, r, d, ds);
+        m->fs_dirty = true;
+        if (!d[0]) snprintf(d, ds, "unclean shutdown: filesystem marked dirty");
+        return;
+    case PF_CONF:
+        fault_conf_truncated(m, r, d, ds);
+        break;
+    case PF_SVC:
+        fault_daemon_config(m, r, d, ds);
+        break;
+    default:
+        break;
+    }
+    /* The machine stopped dead whatever it was holding, so the filesystem is
+     * dirty in every case and the initrd will say so. fs_lost is what fsck
+     * reports it could not save, and a casualty that DECLINED -- the file was
+     * not there, the config had already been edited away -- leaves a box that
+     * lost nothing rather than a box that pretends it did. */
     m->fs_dirty = true;
-    m->fs_lost = 0;
-    snprintf(d, ds, "unclean shutdown: filesystem marked dirty");
+    if (kind != PF_CLEAN && d[0]) {
+        m->fs_lost = 1;
+    } else {
+        m->fs_lost = 0;
+        snprintf(d, ds, "unclean shutdown: filesystem marked dirty");
+    }
 }
 
 /* A SECTOR THAT WILL NOT READ BACK.
@@ -2814,6 +2896,24 @@ static bool boot_critical(const char *p)
 
 bool breaker_bad_sector(Machine *m, Rng *r, char *d, size_t ds)
 {
+    return breaker_bad_sector_any(m, r, false, d, ds);
+}
+
+/* AND THE SECOND ONE, ON A DISK NOBODY REPLACED.
+ *
+ * D28. The fairness rule above -- keep the boot chain's own files out of
+ * reach -- is right the first time a disk loses a sector, because the player
+ * has to be able to get a shell on the box to find out what happened. It is
+ * wrong the second time. By then the disk has logged reallocated sectors for
+ * a fortnight, lost a file, said so in `events`, and `disk <box>` has been a
+ * hundred and forty pounds away the whole while. A disk that has been ignored
+ * that thoroughly is allowed to take /etc/fstab, and the boot chain stops at
+ * the stage that is actually wrong, which is what the boot chain is for.
+ *
+ * This is the escalation D23 asked for in as many words: *a disk nobody
+ * replaced -> the truncated file the boot log names.* */
+bool breaker_bad_sector_any(Machine *m, Rng *r, bool boot_too, char *d, size_t ds)
+{
     const char *cand[128];
     int nc = 0;
     for (int i = 0; i < m->npkg && nc < 128; i++) {
@@ -2823,11 +2923,15 @@ bool breaker_bad_sector(Machine *m, Rng *r, char *d, size_t ds)
             const PkgFile *f = &p->file[j];
             if (f->isdir || f->link || !f->content) continue;
             if (strncmp(f->path, "/etc/", 5) != 0) continue;
-            if (boot_critical(f->path)) continue;
+            if (boot_critical(f->path) != boot_too) continue;
             if (strlen(f->content) < 48) continue;
             cand[nc++] = f->path;
         }
     }
+    /* A machine with no boot-critical file long enough to hold a sector is
+     * dealt an ordinary one rather than nothing: the disk really did lose a
+     * block and has to lose it somewhere. */
+    if (!nc && boot_too) return breaker_bad_sector_any(m, r, false, d, ds);
     if (!nc) return false;
     const char *path = cand[rng_next(r) % (uint64_t)nc];
     VNode *n = vfs_lookup(&m->disk, path);

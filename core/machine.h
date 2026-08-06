@@ -451,6 +451,34 @@ void breaker_syslog(Machine *m, const char *line);
 void breaker_powerfail(Machine *m, Rng *r, bool writing, char *d, size_t ds);
 bool breaker_bad_sector(Machine *m, Rng *r, char *d, size_t ds);
 
+/* WHAT ONE MACHINE LOST WHEN THE PLUG CAME OUT, and it is deliberately not
+ * the same thing on every box in the building.
+ *
+ * D28. A playtester met a mains failure that took three servers down and
+ * said: *"Three servers down from one cause was three instances of the same
+ * puzzle."* They were right -- breaker_powerfail() dealt every downed box the
+ * same fault_unclean_shutdown. These are the casualties an unclean stop can
+ * really leave, one per machine, and core/siteday.c deals them round-robin so
+ * that a blackout across a floor of servers is a floor of different mornings.
+ * PF_CLEAN is the box that was idle: dirty, and nothing lost. */
+typedef enum {
+    PF_CLEAN = 0,  /* the journal replays and nothing is missing            */
+    PF_TRUNC,      /* the file it was writing is half there                 */
+    PF_CONF,       /* a daemon's config stops mid-file                      */
+    PF_SVC,        /* a file created just before the stop is gone entirely  */
+    PF_KIND_COUNT
+} PowerfailKind;
+int  breaker_powerfail_kinds(void);
+const char *breaker_powerfail_kind_name(int k);
+void breaker_powerfail_as(Machine *m, Rng *r, int kind, char *d, size_t ds);
+
+/* A SECTOR THAT WILL NOT READ BACK, with the fairness rule made an argument.
+ * breaker_bad_sector() keeps the boot chain's own files out of reach so the
+ * box still comes up and can be worked on. A disk that has already lost one
+ * sector and was not replaced has no such courtesy left, and `boot_too`
+ * says so. */
+bool breaker_bad_sector_any(Machine *m, Rng *r, bool boot_too, char *d, size_t ds);
+
 const char *breaker_dealt(void);
 int         breaker_fault_count(void);
 const char *breaker_fault_name(int i);

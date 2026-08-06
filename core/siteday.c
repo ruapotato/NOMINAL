@@ -499,6 +499,12 @@ bool site_disk(Site *s, int dev)
     s->spent += site_disk_price();
     s->dev[dev].wear = 0;
     s->dev[dev].warned = 0;
+    /* A NEW DISK HAS LOST NOTHING, so the escalation starts again from the
+     * courtesy the first loss gets. What it does NOT reset is the damage
+     * already on the old one: `disk` clones what is there, so a file the last
+     * sector took is still wrong on the new platter and `pkg verify` still
+     * says so. Swapping the disk stops the bleeding; it does not undo it. */
+    s->dev[dev].lost = 0;
     Machine *m = box_of_dev(s, dev);
     if (m) breaker_syslog(m, "kernel: sd 0:0:0:0: [sda] new medium, "
                              "0 reallocated sectors, 0 power-on days");
@@ -602,6 +608,22 @@ static int used_pct(const Site *s, int dev)
     return (int)((busy * 100) / window);
 }
 
+/* AND HEAT IS THE THIRD TERM, added in D28.
+ *
+ * A disk in a cupboard that is over what it can shed is a disk running above
+ * its rated ambient, and the one thing every field study of the things agrees
+ * on is that heat is what kills them. So a box in a hot room ages faster:
+ * one extra point at the warning line, and another for every forty per cent
+ * over it.
+ *
+ * This is here for a reason beyond realism. The same playtester who wanted
+ * the blackout to be several diagnoses also said days 0 to 25 were "admin" --
+ * and the world's only early lever was the heat warning, which said a thing
+ * and then did nothing for three days and often nothing ever, because a room
+ * at 110% warns and never trips. Now it costs something from the first day it
+ * is over: not a machine down, but a disk that will reach its warning weeks
+ * early and start naming itself in `events`. A small consequence, soon, out
+ * of a decision the player made when they chose which room to put it in. */
 static void age_the_kit(Site *s)
 {
     for (int i = 0; i < s->ndev; i++) {
@@ -609,6 +631,8 @@ static void age_the_kit(Site *s)
         if (!site_kind_has_os(d->kind) || !d->powered) continue;
         d->run_days++;
         d->wear += 1 + used_pct(s, i) / 25;      /* one to five             */
+        int heat = site_room_heat(s, d->room);
+        if (heat >= HEAT_WARN) d->wear += 1 + (heat - HEAT_WARN) / 40;
     }
 }
 
@@ -624,10 +648,51 @@ int site_complaints_allowed(const Site *s)
 }
 
 /* ------------------------------------------------------------ a blackout */
+/* HOW THE CASUALTIES ARE DEALT, and this is the whole of D28.
+ *
+ * A playtester met a mains failure on day 30 that took three servers down and
+ * called it *"the single event worth the preceding twenty-five days"* -- and
+ * then said exactly what was wrong with it:
+ *
+ *   "Three servers down from one cause was three instances of the same
+ *   puzzle. Three servers down where one is a heat trip, one is a worn disk
+ *   and one is a truncated fstab would have been the game this engine is
+ *   obviously capable of."
+ *
+ * They were right. Every box the mains took down was handed the same
+ * fault_unclean_shutdown, so the second and third repair were the first one
+ * typed again with a different hostname.
+ *
+ * WHY ROUND-ROBIN AND NOT A DIE PER BOX. A die is what produced the complaint
+ * in the first place: three independent draws out of three casualties deal the
+ * same one to all three boxes about one morning in nine, and two the same
+ * about half the time. What is physically true is not that each machine rolls
+ * -- it is that different machines were doing different things at 04:12 -- so
+ * the deal guarantees the difference and the SEED decides where the deal
+ * starts and which file inside each casualty goes. A blackout across three
+ * working servers is three different mornings, always; which server gets which
+ * morning is the seed's business and is written down nowhere the player can
+ * read it.
+ *
+ * A BOX THAT DID NO WORK YESTERDAY IS NOT DEALT ONE. It had nothing in flight,
+ * so it comes back dirty and complete: fsck, clean, up. That is not a gap in
+ * the model, it is the control -- the machine that proves the player's move is
+ * to READ the tools rather than reinstall everything on every box. */
+static int pf_deal(Site *s, Rng *rng, int *seq)
+{
+    int nk = breaker_powerfail_kinds();      /* PF_CLEAN and the casualties  */
+    if (nk < 2) return PF_CLEAN;
+    if (*seq < 0) *seq = (int)rng_range(rng, 0, (unsigned)(nk - 2));
+    int k = PF_CLEAN + 1 + (*seq % (nk - 1));
+    (*seq)++;
+    return k;
+}
+
 static void the_mains_fails(Site *s, Rng *rng)
 {
     ev_add(s, SEV_POWERCUT, -1,
            "the building lost mains power at 04:12 and had it back by 04:31.");
+    int seq = -1;
     for (int i = 0; i < s->ndev; i++) {
         SiteDev *d = &s->dev[i];
         if (!site_kind_has_os(d->kind) || !d->powered) continue;
@@ -649,8 +714,9 @@ static void the_mains_fails(Site *s, Rng *rng)
          * "was it writing" is not a die roll: it is whether this box moved
          * frames in the busy period that has just finished. */
         bool writing = used_pct(s, i) > 0;
+        int kind = writing ? pf_deal(s, rng, &seq) : PF_CLEAN;
         char note[200] = "";
-        if (m) breaker_powerfail(m, rng, writing, note, sizeof note);
+        if (m) breaker_powerfail_as(m, rng, kind, note, sizeof note);
         site_power(s, i, false);
         ev_add(s, SEV_DOWN_DIRTY, i,
                "%s went down with the power and has not been switched back on.",
@@ -668,7 +734,21 @@ static void the_disks(Site *s, Rng *rng)
         Machine *m = box_of_dev(s, i);
         if (d->wear >= WEAR_FAIL) {
             char note[200] = "";
-            if (m && breaker_bad_sector(m, rng, note, sizeof note)) {
+            /* THE SECOND SECTOR IS ALLOWED WHAT THE FIRST WAS NOT.
+             *
+             * The first loss is kept off the files the boot chain reads, so
+             * the box comes up and the player can get a shell on it and work
+             * out what happened. By the time a disk loses a SECOND one it has
+             * logged SMART warnings for a fortnight, taken a file, been named
+             * in `events`, and `disk <box>` has cost a hundred and forty
+             * pounds the whole while. So it takes /etc/fstab this time, the
+             * boot stops at the stage that is really wrong, and the repair is
+             * the one the boot log names. That is D23's *a disk nobody
+             * replaced -> the truncated file the boot log names*, and the
+             * warning it escalates from is fifteen days long. */
+            bool boot_too = d->lost > 0;
+            if (m && breaker_bad_sector_any(m, rng, boot_too, note, sizeof note)) {
+                d->lost = d->lost < 255 ? d->lost + 1 : 255;
                 breaker_syslog(m, "kernel: sd 0:0:0:0: [sda] "
                                   "UNRECOVERED READ ERROR - auto reallocate failed");
                 breaker_syslog(m, "kernel: end_request: critical medium error, "
@@ -676,6 +756,13 @@ static void the_disks(Site *s, Rng *rng)
                 breaker_syslog(m, "kernel: sd 0:0:0:0: [sda] "
                                   "SMART attribute 5 (reallocated) at threshold; "
                                   "no spare sectors left");
+                if (boot_too)
+                    ev_add(s, SEV_DISK_BOOT, i,
+                           "the disk in %s has lost another sector, its %d"
+                           "%s, and it was under something the boot reads.",
+                           d->name, d->lost,
+                           d->lost == 2 ? "nd" : d->lost == 3 ? "rd" : "th");
+                else
                 ev_add(s, SEV_DISK_FAIL, i,
                        "the disk in %s lost a sector after %d days. It had been "
                        "warning.", d->name, d->run_days);
@@ -708,7 +795,7 @@ static void the_disks(Site *s, Rng *rng)
 /* ------------------------------------------------------------- a cupboard */
 static void the_heat(Site *s, Rng *rng)
 {
-    (void)rng;
+    int seq = -1;
     for (int i = 0; i < s->ndev; i++) {
         SiteDev *d = &s->dev[i];
         if (!site_kind_has_os(d->kind) || !d->powered) continue;
@@ -732,10 +819,15 @@ static void the_heat(Site *s, Rng *rng)
              * and a machine that stops dead mid-write is the same unclean
              * shutdown a blackout leaves, because it is the same event. */
             char note[200] = "";
+            /* AND IT IS DEALT A CASUALTY LIKE ANY OTHER MACHINE THAT STOPS
+             * DEAD. Two boxes in the same cupboard tripping on the same
+             * afternoon used to come back with the same fault for the same
+             * reason the blackout did; they do not now. */
+            int kind = used_pct(s, i) > 0 ? pf_deal(s, rng, &seq) : PF_CLEAN;
             if (m) {
                 breaker_syslog(m, "kernel: thermal: CRITICAL trip point reached, "
                                   "shutting down");
-                breaker_powerfail(m, rng, used_pct(s, i) > 0, note, sizeof note);
+                breaker_powerfail_as(m, rng, kind, note, sizeof note);
             }
             site_power(s, i, false);
             d->hot_warned = 0;
@@ -747,14 +839,143 @@ static void the_heat(Site *s, Rng *rng)
     }
 }
 
+/* ------------------------------------------------------- a marginal run */
+/* D23, in its own words: *a cable run past interference -> errors that only
+ * appear under traffic.* This is that, and it is the one cause in this file
+ * whose evidence is not on a disk.
+ *
+ * WHERE THE NUMBER COMES FROM. Copper of every grade in this game carries a
+ * hundred metres, and the netstack stops carrying anything at all past it. The
+ * last ten of those metres are what the standard spends on margin -- a channel
+ * that long meets its loss and crosstalk budget with nothing left over, and
+ * what it does when it runs out of budget is not fail: it takes CRC errors,
+ * retrains, and settles at the next speed down. Every network cupboard in the
+ * world has one of these in it.
+ *
+ * WHY IT ONLY BITES UNDER TRAFFIC, and this is the part that makes it a
+ * decision rather than a tax. `errs` is the share of the busy period the port
+ * really spent clocking bits -- the same counter `load` prints -- multiplied
+ * by how far past the margin the run is. Both terms matter and the numbers
+ * say why:
+ *
+ *   a 95 m drop to ONE desk       ~2% busy   x6   =   12 a day: 50 days to a
+ *                                                     word, 150 to a retrain.
+ *                                                     A desk pulls ten
+ *                                                     megabits and a long run
+ *                                                     to one is a bad idea
+ *                                                     that takes half a year
+ *                                                     to become a problem,
+ *                                                     which is honest.
+ *   a 95 m uplink under a FLOOR   ~30% busy  x6   =  180 a day: a word on the
+ *                                                     fourth day, a hundred
+ *                                                     megabits on the tenth.
+ *
+ * The second one is the shape of a real mistake -- the switch put in the
+ * office with the desks rather than in the comms cupboard, home-run to the
+ * basement in copper -- and in this tower it measures 95 m, which is a number
+ * out of the building generator and not one anybody chose. The tenancies
+ * behind it are then on a hundred megabits, which --loadcheck has asserted
+ * since D25 is not enough for two floors of desks.
+ *
+ * FOUND WITH: `events` names the day and both ends. `load` prints the port at
+ * 100Mb where it used to print 1000Mb, `show <box>` prints the same beside
+ * the drops, and on a box with an operating system in it `netstat -P` reads
+ * the CRC counter off its own kernel. The machines at each end log the errors
+ * in their own /var/log/messages for days before anything changes speed.
+ *
+ * AVOIDED BY: not running ninety metres of copper under a floor. The game
+ * charges by the metre and prints the length at the moment the money leaves,
+ * so the player was told. Fibre runs two kilometres and has no such budget.
+ *
+ * FIXED BY: `uncable` and pull it again -- shorter, or in fibre. The rates are
+ * reapplied from the catalogue every day for every live run, so a fresh run
+ * comes up at the speed the kit at each end can do, and a run that is still
+ * the marginal one is still slow. Nothing is remembered about a port; the
+ * memory is in the run. */
+#define COPPER_MARGIN_M   90   /* metres, of a hundred the copper will carry  */
+#define LINK_ERR_WARN    600   /* busy-per-cent x metres over, before a word  */
+#define LINK_ERR_SLOW   1800   /* and before the phy gives up and retrains    */
+#define LINK_SLOW_MB     100
+
+static int link_port_rate(const Site *s, int dev, int port, bool slow)
+{
+    /* The handoff's port 0 is the circuit and its rate is what the landlord
+     * bought, not what the socket can do. Everything else is the catalogue. */
+    if (dev == s->uplink && port == 0) return s->isp_mb;
+    int mb = site_kind_port_mb(s->dev[dev].kind, port);
+    return (slow && mb > LINK_SLOW_MB) ? LINK_SLOW_MB : mb;
+}
+
+static int link_used_pct(const Site *s, const SiteLink *l)
+{
+    uint64_t window = SITE_BUSY_MS * 1000ull;
+    uint64_t a = net_port_busy_us(s->net, s->dev[l->a].node, l->aport);
+    uint64_t b = net_port_busy_us(s->net, s->dev[l->b].node, l->bport);
+    uint64_t busy = a > b ? a : b;
+    return (int)((busy * 100) / window);
+}
+
+static void the_copper(Site *s)
+{
+    for (int i = 0; i < s->nlink; i++) {
+        SiteLink *l = &s->link[i];
+        if (l->cable < 0) continue;
+        net_port_rate(s->net, s->dev[l->a].node, l->aport,
+                      link_port_rate(s, l->a, l->aport, l->slow));
+        net_port_rate(s->net, s->dev[l->b].node, l->bport,
+                      link_port_rate(s, l->b, l->bport, l->slow));
+        if (l->kind == CAB_FIBRE || l->metres < COPPER_MARGIN_M) continue;
+        if (l->slow) continue;
+        int used = link_used_pct(s, l);
+        if (used <= 0) continue;
+        /* How far past the margin, in metres, one for one -- and capped, so
+         * that a run at the very edge of what copper carries is ten times as
+         * bad as one a metre over and not a hundred times. */
+        int over = l->metres - (COPPER_MARGIN_M - 1);
+        if (over < 1) over = 1;
+        if (over > 10) over = 10;
+        int was = l->errs;
+        l->errs += used * over;
+        char line[180];
+        snprintf(line, sizeof line,
+                 "kernel: eth: %d CRC errors and %d symbol errors in 24h -- "
+                 "the link partner retrained twice", l->errs * 7, l->errs);
+        for (int e = 0; e < 2; e++) {
+            int dv = e ? l->b : l->a;
+            if (!site_kind_has_os(s->dev[dv].kind) || !s->dev[dv].powered) continue;
+            Machine *m = box_of_dev(s, dv);
+            if (m) breaker_syslog(m, line);
+        }
+        if (was < LINK_ERR_WARN && l->errs >= LINK_ERR_WARN)
+            ev_add(s, SEV_LINK_WARN, l->a,
+                   "the %d m %s run from %s:%d to %s:%d is taking errors "
+                   "under load.", l->metres, site_cable_name((CableKind)l->kind),
+                   s->dev[l->a].name, l->aport, s->dev[l->b].name, l->bport);
+        if (l->errs >= LINK_ERR_SLOW) {
+            l->slow = 1;
+            net_port_rate(s->net, s->dev[l->a].node, l->aport,
+                          link_port_rate(s, l->a, l->aport, true));
+            net_port_rate(s->net, s->dev[l->b].node, l->bport,
+                          link_port_rate(s, l->b, l->bport, true));
+            ev_add(s, SEV_LINK_SLOW, l->a,
+                   "run %d, %s:%d to %s:%d, has retrained to %d Mb: %d m is "
+                   "too far for %s.", i, s->dev[l->a].name, l->aport,
+                   s->dev[l->b].name, l->bport, LINK_SLOW_MB, l->metres,
+                   site_cable_name((CableKind)l->kind));
+        }
+    }
+}
+
 /* Everything the world did today, in the order it would have happened: the
- * kit ages on the day's own traffic, the heat builds through the working day,
- * the disks fail when they fail, and the mains goes in the small hours. */
+ * kit ages on the day's own traffic, the copper takes its errors while the
+ * traffic is on it, the heat builds through the working day, the disks fail
+ * when they fail, and the mains goes in the small hours. */
 static void the_weather(Site *s)
 {
     Rng rng;
     rng_seed(&rng, s->seed ^ (0x77e47ull * (uint64_t)s->day) ^ 0xbeef01ull);
     age_the_kit(s);
+    the_copper(s);
     the_heat(s, &rng);
     the_disks(s, &rng);
     if (site_mains_fails_on(s->seed, s->day)) the_mains_fails(s, &rng);
@@ -798,17 +1019,28 @@ void site_dump_events(const Site *s, Buf *out)
         "  ages every day it is SWITCHED ON, and faster on the days it works\n"
         "  hard: a box at full load wears about five times as fast as one\n"
         "  that is merely powered. Kit you have built ahead of the tenants is\n"
-        "  ageing in the cupboard. Past about three\n"
+        "  ageing in the cupboard. It also ages faster in a room that is over\n"
+        "  what it can shed, which is the heat column below. Past about three\n"
         "  quarters it starts saying so in its own /var/log/messages, and a\n"
         "  new one is `disk <box>`. `ups <box>` fits a battery: a box on one\n"
         "  rides a mains failure out instead of coming back with a filesystem\n"
         "  to check.\n"
+        "  A DISK THAT LOSES A SECTOR AND IS NOT REPLACED LOSES ANOTHER. The\n"
+        "  first one is kept off the files the boot chain reads, so the box\n"
+        "  still comes up and can be worked on. The second one is not.\n"
         "\n"
         "  heat is the watts of kit in that box's room against what the room\n"
         "  can shed -- a cupboard sheds what its walls and its door will take\n"
         "  and no more, and a server room has cooling in it. Past a hundred\n"
-        "  per cent the kit starts saying so; the fix is to carry some of it\n"
-        "  somewhere with more air in it.\n");
+        "  per cent the kit starts saying so, and its disk starts ageing\n"
+        "  faster; the fix is to carry some of it somewhere with more air in\n"
+        "  it.\n"
+        "\n"
+        "  AND THE COPPER. A run over ninety metres is inside what the cable\n"
+        "  carries and outside what it carries with any margin: under real\n"
+        "  traffic it takes errors, says so here for days, and then retrains\n"
+        "  itself down to a hundred megabits. `load` prints the speed the port\n"
+        "  really clocks. The fix is `uncable` and a shorter run, or fibre.\n");
 }
 
 /* ================================================================== a day */
