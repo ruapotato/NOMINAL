@@ -216,6 +216,10 @@ func build(s: int) -> bool:
 		_hud()
 		_bag()
 	_light()
+	_dev_sig = _site_sig()
+	if with_player:
+		_snapshot()
+		_wire()
 	return true
 
 
@@ -880,6 +884,39 @@ func _floor_slot(room: int, k: int, nu: int) -> Dictionary:
 			"size": Vector3(0.62, h, 0.62), "face": b.face}
 
 
+# A TENANT'S COMPUTER, standing on the floor of the room they rent.
+#
+# One per square metre on a chequerboard, in reading order, skipping the clear
+# floor every doorway needs -- so twenty desks read as a room somebody works
+# in and there is a way between them. `k` is the desk's number in that room,
+# which is the order site_devs() lists them and therefore the order they were
+# installed: t3d0 is always in the same place.
+func _tenant_desk_slot(room: int, k: int) -> Dictionary:
+	var r: Dictionary = rooms[room]
+	var clear: Array = []
+	for dd in room_doors(room):
+		clear.append(dd.clear)
+	var spots: Array = []
+	for z in range(int(r.y0), int(r.y1)):
+		for x in range(int(r.x0), int(r.x1)):
+			if (x + z) % 2 != 0:
+				continue
+			if room_of(int(r.floor), x, z) != room:
+				continue
+			var cell := Rect2(x, z, 1, 1)
+			var blocked := false
+			for c in clear:
+				if cell.intersects(c):
+					blocked = true
+			if not blocked:
+				spots.append(Vector2(x, z))
+	if spots.is_empty():
+		return {}
+	var p: Vector2 = spots[k % spots.size()]
+	return {"mn": Vector3(p.x + 0.30, float(r.floor) * fheight + 0.02, p.y + 0.30),
+		"size": Vector3(0.40, 0.42, 0.40), "face": Vector3(0, 0, 1)}
+
+
 func racks_in(room: int) -> Array:
 	var out: Array = []
 	for i in range(racks.size()):
@@ -1283,6 +1320,11 @@ func _ses_start() -> void:
 	site_up = true
 	for line in ["order router edge", "order switch24 core", "order server files"]:
 		machine.ses_cmd(line)
+	# HOW MUCH OF THE TOWER IS OPEN IS THE SESSION'S NUMBER. It used to be a 2
+	# written in this file, which was right on day one and a second source of
+	# truth for every day after it -- a socket client that typed `open` moved
+	# core's count and left the lift's lit buttons behind.
+	floors_in_service = int(ses_state().get("floors", floors_in_service))
 
 
 # What the session says about the player: where they are, what is in their
@@ -1323,6 +1365,12 @@ func site(line: String) -> String:
 	_st_frame = -1
 	var out := str(machine.ses_cmd(line))
 	_st_frame = -1
+	# SOMETHING HAPPENED, so the clipboard is stale. Every line that reaches
+	# here can move money, a box or a tenancy, and the day/service/load panels
+	# are a READ of those verbs rather than a copy -- so the only thing kept
+	# here is "go and ask again", once, on the next frame.
+	if not _snapping:
+		_snap_dirty = true
 	return out
 
 
@@ -1358,8 +1406,23 @@ func site_links() -> Array:
 # The cables that are really there, drawn from the site's own link list, up
 # into the tray and along it. The LENGTH and the PRICE are the site model's,
 # off the building's cable graph; this line is only how it looks.
+# HOW MUCH COPPER IS ACTUALLY DRAWN, in vertices. A link the site model holds
+# and the world does not show is the exact failure the reconcile exists to
+# stop, and counting the node by name cannot see it: a queue_free()d node keeps
+# its name until the end of the frame, so the replacement is renamed and a
+# lookup finds the corpse.
+func cables_drawn() -> int:
+	if _cable_node == null or not is_instance_valid(_cable_node):
+		return 0
+	var m: Mesh = _cable_node.mesh
+	if m == null or m.get_surface_count() == 0:
+		return 0
+	return m.surface_get_array_len(0)
+
+
 func _draw_cables() -> void:
 	if _cable_node:
+		_cable_node.name = "CablesGone"     # see cables_drawn()
 		_cable_node.queue_free()
 		_cable_node = null
 	var links := site_links()
@@ -1785,7 +1848,16 @@ func _place_devices() -> void:
 		if slot.is_empty():
 			var k: int = int(on_floor.get(room, 0))
 			on_floor[room] = k + 1
-			slot = _floor_slot(room, k, nu)
+			# A TENANT'S DESKS ARE NOT A DELIVERY. Twenty of them arrive in one
+			# room the day a tenancy moves in, and the delivery row puts a row
+			# of boxes along one wall and piles the rest at the end of it.
+			# These are people's computers: they stand where desks stand,
+			# spread over the floor of the room the tenancy rents.
+			slot = {}
+			if str(d.kindname) == "desk":
+				slot = _tenant_desk_slot(room, k)
+			if slot.is_empty():
+				slot = _floor_slot(room, k, nu)
 		# A managed box has a management line and no picture on the back of it.
 		_add_device(d.name, -2, false, true, slot.mn, slot.size,
 			DEV_COL.get(d.kindname, Color("#2f343a")), slot.face, d.nports, d.i)
@@ -1863,6 +1935,8 @@ const DESK_W := 1.60
 const DESK_D := 0.75
 const DESK_H := 0.74
 
+var _ws_node: Node3D = null
+
 func _workstation(room: int) -> void:
 	var taken: Array = []
 	for i in racks_in(room):
@@ -1919,7 +1993,13 @@ func _workstation(room: int) -> void:
 		_ubox(g, fr, mid + sin(a) * 0.02 - 0.02, mid + sin(a) * 0.24 + 0.02,
 			1.09 + cos(a) * 0.02 - 0.02, 1.09 + cos(a) * 0.24 + 0.02,
 			0.02, 0.05, Color("#2b2f35"), false)
-	add_child(g.node("Workstation"))
+	# HELD BY REFERENCE, not by name. The furniture is rebuilt whenever the
+	# site's device list changes -- a delivery moved, a tenancy moved in -- and
+	# a queue_free()d node is still under its old name for the rest of the
+	# frame, so looking it up by name the next time finds nothing and the desk
+	# gets built twice.
+	_ws_node = g.node("Workstation")
+	add_child(_ws_node)
 
 	# --- AND THE DESKTOP IS ON IT, from across the room and before you sit.
 	#
@@ -2656,7 +2736,73 @@ func _hud() -> void:
 	hud.add_theme_constant_override("shadow_offset_y", 1)
 	hud.position = Vector2(14, 12)
 	layer.add_child(hud)
+	# THE DATE AND THE MONEY, always up and never shouting. Top right, out of
+	# the way of the crosshair and of the location line, in `status`'s own
+	# sentences: "day 49. 58460 in hand, 1540 spent, 0 taken in rent."
+	ledger = Label.new()
+	ledger.add_theme_font_override("font", preload("res://scripts/uifont.gd").mono())
+	ledger.add_theme_font_size_override("font_size", 15)
+	ledger.add_theme_color_override("font_color", Color("#d8e2ea"))
+	ledger.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.85))
+	ledger.add_theme_constant_override("shadow_offset_x", 1)
+	ledger.add_theme_constant_override("shadow_offset_y", 1)
+	ledger.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	ledger.anchor_left = 1.0
+	ledger.anchor_right = 1.0
+	ledger.offset_left = -680.0
+	ledger.offset_right = -14.0
+	ledger.offset_top = 12.0
+	ledger.offset_bottom = 120.0
+	layer.add_child(ledger)
 	add_child(layer)
+
+
+# Everything under the location line: what is in your hands, what the tower is
+# waiting for, what is struggling, and what the next key would need. It is a
+# function rather than a block inside _process so that `hud` over the socket
+# reads exactly what the window is showing.
+func hud_lines() -> String:
+	var s := ""
+	if phone and str(phone.status) != "unplugged":
+		s += "phone: " + str(phone.status) + "\n"
+	if _cable_from >= 0:
+		s += "cable in hand from %s port %d   walk to the other end\n" \
+			% [_cable_name(_cable_from), _cable_port]
+	if carrying >= 0:
+		s += "carrying kit in both hands   [G] put it down here\n"
+	var car: Object = lift_in()
+	if car != null:
+		s += "in the lift: press a floor number.  in service: %s\n" % str(car.serviced())
+	if bag:
+		s += "hands: %s / %s   [I] inventory\n" % [_hand_name(0), _hand_name(1)]
+	# WHO IS WAITING. A tenancy with the keys and no ports is the job, and it
+	# is `service`'s own columns rather than a sentence invented here.
+	for row in service_rows():
+		if int(row.up) >= int(row.desks):
+			continue
+		s += "tenant %d on floor %d: %d desks, %d up, %d addr%s\n" \
+			% [int(row.tenant), int(row.floor), int(row.desks), int(row.up),
+				int(row.addr), "   *complaint filed" if bool(row.complained) else ""]
+	# WHAT IS STRUGGLING, pointed at with the tool that can be pointed. `load`
+	# names the port and prints the drops beside it; `show <box>` is where the
+	# reason is, and neither is netstat, because a switch has no shell in it.
+	if load_drops() > 0:
+		var worst := load_worst()
+		s += "load: %s   `show %s`\n" % [worst, worst.split(":")[0]]
+	# A KEY THAT REFUSES IS WORSE THAN A KEY THAT IS NOT OFFERED. Signing a
+	# floor off means standing on it and paying the landlord's fit-out, and
+	# both of those sentences are core's, printed by `open` when it refuses.
+	s += "%d of %d floors in service" % [floors_in_service, nfloors]
+	if floors_in_service < nfloors:
+		if ses_floor() == floors_in_service:
+			s += "   [O] sign floor %d off and put it into service" % floors_in_service
+		else:
+			s += "\n" + str(_snap.open).strip_edges()
+	if not run_over:
+		s += "\n[N] the next day"
+	else:
+		s += "\nTHE RUN IS OVER"
+	return s
 
 
 func where_am_i() -> String:
@@ -2909,6 +3055,464 @@ func _free_port(s: int) -> int:
 	return 0
 
 
+# ==================================================== THE LOOP, IN THE WORLD
+#
+# core/siteday.c has had a clock, tenants who move in on their day, desks that
+# generate real traffic, rent for the work that finished, complaints after
+# three bad days and a run that ends -- and none of it was reachable from
+# inside the building. You could walk a tower for an hour and never learn the
+# date, the balance, or that somebody on floor three had moved in and was
+# sitting in a room full of computers with no ports.
+#
+# Everything below is a VIEW OF `status`, `service`, `load` and `day`. There is
+# no second copy of the clock, the money or the tenancies here: the panels hold
+# the TEXT those verbs printed, parsed only far enough to know which line to
+# put where, and every number a player reads is the number core printed.
+
+var ledger: Label = null            # the date and the money, top right
+var _snap := {"status": "", "service": "", "load": "", "open": ""}
+var _snap_dirty := true
+var _snapping := false
+var _waiting: Node3D = null         # the beacons over tenancies with no ports
+var _dev_sig := ""
+var run_over := false
+
+
+# WHERE THE SESSION THINKS YOU ARE STANDING, which is not always where the view
+# does: a socket client can walk the body across the building. Anything that
+# depends on the floor -- and `open` charges money on it -- asks this one.
+func ses_floor() -> int:
+	var r := int(ses_state().get("room", -1))
+	if r < 0 or r >= rooms.size():
+		return -1
+	return int(rooms[r].floor)
+
+
+func ses_where() -> int:
+	return int(ses_state().get("where", 1))     # SES_BODY == 1, from session.h
+
+
+# Go and read the clipboard: four verbs, no more often than something happens.
+func _snapshot() -> void:
+	if not site_up or _snapping:
+		return
+	_snap_dirty = false
+	# A LEAD IS IN A CONSOLE AND THE KEYBOARD BELONGS TO IT. `status` typed at
+	# a shell is a line typed at somebody's machine, not a question for the
+	# landlord, so the clipboard waits until the lead comes out.
+	if ses_where() != 1:
+		return
+	_snapping = true
+	_snap.status = site("status")
+	_snap.service = site("service")
+	_snap.load = site("load")
+	# WHAT THE NEXT FLOOR NEEDS, IN CORE'S WORDS, BEFORE THE KEY IS PRESSED.
+	# `open` refuses from anywhere but the floor itself and says what it wants
+	# and what it costs while refusing -- so asking it from the wrong floor is
+	# free, and it is the only way to print the fit-out without a second copy
+	# of the price. The condition is core's own (`here_floor(ses) != f`), read
+	# off the session rather than off the body, so this can never be the call
+	# that spends the money.
+	if floors_in_service < nfloors and ses_floor() != floors_in_service:
+		_snap.open = site("open")
+	_snapping = false
+	_beacons()
+
+
+# The rows of `service`, as the columns it printed them in. Nothing is computed
+# here: the header is "floor tenant desks up addr done worst strikes rent/day"
+# and this is that line, split.
+func service_rows() -> Array:
+	var out: Array = []
+	for line in str(_snap.service).split("\n", false):
+		var f: PackedStringArray = line.split(" ", false)
+		if f.size() < 9 or not f[0].is_valid_int():
+			continue
+		out.append({"floor": int(f[0]), "tenant": int(f[1]), "desks": int(f[2]),
+			"up": int(f[3]), "addr": int(f[4]), "done": str(f[5]),
+			"worst": str(f[6]), "strikes": int(str(f[7]).replace("*", "")),
+			"complained": str(f[7]).find("*") >= 0, "rent": int(f[8])})
+	return out
+
+
+# The busiest port `load` named, and its drops -- as its own row, so what a
+# player reads in a corridor is the line the tool prints.
+func load_worst() -> String:
+	for line in str(_snap.load).split("\n", false):
+		var f: PackedStringArray = line.split(" ", false)
+		if f.size() < 5 or f[0].find(":") < 0:
+			continue
+		return line.strip_edges()
+	return ""
+
+
+func load_drops() -> int:
+	var f: PackedStringArray = load_worst().split(" ", false)
+	if f.size() < 5:
+		return 0
+	return int(f[4])
+
+
+# The first two lines of `status`: the date, the balance, and when the circuit
+# is next billed. Core's sentences, not a second rendering of the same numbers.
+func ledger_text() -> String:
+	var out: Array = []
+	for line in str(_snap.status).split("\n", false):
+		out.append(line.strip_edges())
+		if out.size() == 2:
+			break
+	if out.is_empty():
+		var st := ses_state()
+		return "day %d.  %d in hand." % [int(st.get("day", 0)), int(st.get("money", 0))]
+	return "\n".join(out)
+
+
+# The room a tenancy holds, so a beacon can hang over their door.
+func tenant_room(t: int) -> int:
+	for r in rooms:
+		if int(r.tenant) == t:
+			return int(r.i)
+	return -1
+
+
+# WHO IS WAITING, WITHOUT TYPING A VERB.
+#
+# A tenancy that has moved in and has no ports is the player's whole job, and
+# until now the building said nothing about it: the desks appeared in a room
+# upstairs and the only way to find out was `service`. So the rooms they are in
+# say so over their own doors, in `service`'s own columns -- and the sign goes
+# when the ports do, because it is rebuilt from the table every time.
+func _beacons() -> void:
+	if _waiting:
+		_waiting.queue_free()
+	_waiting = Node3D.new()
+	_waiting.name = "Waiting"
+	add_child(_waiting)
+	for row in service_rows():
+		if int(row.up) >= int(row.desks):
+			continue
+		var ri := tenant_room(int(row.tenant))
+		if ri < 0:
+			continue
+		var txt := "TENANT %d WAITING\n%d desks, %d up, %d addr" \
+			% [int(row.tenant), int(row.desks), int(row.up), int(row.addr)]
+		var col := Color("#e0b040") if int(row.up) > 0 else Color("#e07a5a")
+		var placed := 0
+		for dd in room_doors(ri):
+			var g: Vector2 = dd.gate
+			var o: Vector2 = dd.out
+			var p := Vector3(g.x, float(rooms[ri].floor) * fheight + DOOR_H + 0.30,
+				g.y) + Vector3(o.x, 0, o.y) * (WALL_T * 0.5 + 0.06)
+			var l := Label3D.new()
+			l.font = preload("res://scripts/uifont.gd").mono()
+			l.font_size = 20
+			l.pixel_size = 0.0035
+			l.text = txt
+			l.modulate = col
+			l.outline_size = 0
+			l.billboard = BaseMaterial3D.BILLBOARD_DISABLED
+			l.double_sided = false
+			l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+			l.position = p
+			l.rotation = Vector3(0, atan2(o.x, o.y), 0)
+			_waiting.add_child(l)
+			placed += 1
+		if placed == 0:
+			var c := room_centre(ri)
+			c.y += 2.4
+			var l2 := Label3D.new()
+			l2.font = preload("res://scripts/uifont.gd").mono()
+			l2.font_size = 20
+			l2.pixel_size = 0.0035
+			l2.text = txt
+			l2.modulate = col
+			l2.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+			l2.position = c
+			_waiting.add_child(l2)
+
+
+func waiting_signs() -> int:
+	return 0 if _waiting == null else _waiting.get_child_count()
+
+
+# ---------------------------------------------------------- a day passes
+#
+# A deliberate act with its consequences shown. `day` is the session's verb and
+# the prose it prints is already the right report -- who moved in, what got
+# served, what rent arrived, which port was busiest, what the building did to
+# your kit overnight -- so this shows THAT, rather than a second summary of the
+# same day written in GDScript.
+
+var _report: CanvasLayer = null
+var report_text := ""
+const REPORT_LINES := 16     # of the day's report, at most, on the screen at once
+
+func advance_day(line := "day") -> String:
+	if not site_up:
+		return ""
+	var said: String = site(line).strip_edges()
+	_reconcile()
+	_snapshot()
+	_show_report(said)
+	return said
+
+
+func _show_report(said: String) -> void:
+	report_text = said
+	if said.find("THE RUN IS OVER") >= 0 or said.find("the run ended") >= 0:
+		run_over = true
+	if not with_player or hud == null:
+		return
+	_dismiss_report()
+	_report = CanvasLayer.new()
+	_report.name = "DayReport"
+	_report.layer = 8
+	var pad := ColorRect.new()
+	pad.color = Color(0.04, 0.06, 0.08, 0.92)
+	var lab := Label.new()
+	lab.add_theme_font_override("font", preload("res://scripts/uifont.gd").mono())
+	lab.add_theme_font_size_override("font_size", 17)
+	lab.add_theme_color_override("font_color",
+		Color("#e07a5a") if run_over else Color("#e8eef4"))
+	# A REPORT HAS TO FIT ON THE SCREEN. One day is a line or four; `day 49`
+	# over the socket is forty-nine of them, and a panel the height of seven
+	# hundred lines covers the HUD, the ledger and the building behind it. The
+	# tail is the part that matters -- the days you are about to live in -- and
+	# it says how many went past rather than pretending they did not.
+	var all := said.split("\n")
+	var shown := said
+	if all.size() > REPORT_LINES:
+		var keep: Array = []
+		for i in range(all.size() - REPORT_LINES, all.size()):
+			keep.append(all[i])
+		shown = "... %d earlier days went past\n" % (all.size() - REPORT_LINES) \
+			+ "\n".join(keep)
+	lab.text = shown + ("\n\n" if shown != "" else "") \
+		+ ("the run is over." if run_over else "[Esc] back to the building   [N] the next day")
+	pad.add_child(lab)
+	# The panel is the size of what core wrote: a fixed box would either crop
+	# a mains failure or leave a hole under a quiet day.
+	var f: Font = preload("res://scripts/uifont.gd").mono()
+	var w := 0.0
+	var lines := lab.text.split("\n")
+	for line in lines:
+		w = max(w, f.get_string_size(line, HORIZONTAL_ALIGNMENT_LEFT, -1, 17).x)
+	var view := get_viewport().get_visible_rect().size
+	pad.size = Vector2(min(w + 48.0, view.x - 120.0),
+		min(float(lines.size()) * 22.0 + 36.0, view.y - 180.0))
+	# CLEAR OF THE HUD. The location, the tenancies and what the next floor
+	# needs are all top left, and a report sitting on top of them is a report
+	# that costs you the thing it is telling you about.
+	pad.position = Vector2(60, 250)
+	lab.set_anchors_preset(Control.PRESET_FULL_RECT)
+	lab.offset_left = 24.0
+	lab.offset_top = 18.0
+	lab.offset_right = -24.0
+	lab.offset_bottom = -18.0
+	_report.add_child(pad)
+	add_child(_report)
+
+
+func report_open() -> bool:
+	return _report != null
+
+
+func _dismiss_report() -> void:
+	if _report:
+		_report.queue_free()
+		_report = null
+
+
+# ------------------------------------------------------- keeping up with it
+#
+# The view reconciles off the session: what boxes exist and where they are is
+# read back out of site_devs() after anything that could have moved one, and
+# the world is rebuilt from that read. A tenancy moving in is twenty new
+# devices in a room upstairs and nothing here has to be told about it.
+
+func _site_sig() -> String:
+	var s := ""
+	for d in site_devs():
+		s += "%d:%d:%d," % [int(d.i), int(d.room), int(d.nports)]
+	return s + "|%d" % carrying
+
+
+func _reconcile() -> void:
+	if not site_up:
+		return
+	# A FLOOR OPENED IS A FLOOR OPENED WHOEVER TYPED IT. `open` over the socket
+	# moves core's count, and the lit buttons in the lift and the NOT IN
+	# SERVICE on the lobby wall are a picture of that count.
+	var now := int(ses_state().get("floors", floors_in_service))
+	if now != floors_in_service:
+		floors_in_service = now
+		for l in lifts:
+			l.rebuild_panels()
+		_signage()
+	var sig := _site_sig()
+	if sig != _dev_sig:
+		_dev_sig = sig
+		_rebuild_devices()
+	_draw_cables()
+	_snap_dirty = true
+
+
+func _rebuild_devices() -> void:
+	for d in devices:
+		var n: Node = d.get("node", null)
+		if n and is_instance_valid(n):
+			n.queue_free()
+	devices.clear()
+	if _ws_node and is_instance_valid(_ws_node):
+		_ws_node.queue_free()
+		_ws_node = null
+	_place_devices()
+
+
+# ------------------------------------------------------ the line from outside
+#
+# EVERY VERB THE 3D PERFORMS IS THE SOCKET'S VERB, and this is that sentence
+# read the other way: a line arriving from outside drives the window. It is the
+# same session_line() the keys call, so there is no command an agent can type
+# that a player cannot do and none a player can do that an agent cannot type.
+#
+# The body follows. `go f3.comms` is core's walk -- it charges the metres and
+# refuses a floor that is not in service -- and afterwards the view puts the
+# player where the session says they now are, because the session is the
+# authority on where the legs went and the view is a picture of it.
+
+func command(line: String) -> String:
+	line = line.strip_edges()
+	if line == "":
+		return ""
+	if not site_up:
+		return "there is no session yet\n"
+	# THE WINDOW'S OWN STATE, for a client that cannot see it. Not a verb of
+	# the game: a way of asking what is on the screen, which is the one thing a
+	# socket client genuinely cannot read off the session.
+	if line == "hud":
+		var s := ledger_text() + "\n" + where_am_i() + "\n" + hud_lines()
+		if report_open():
+			s += "\n--- the day's report is up ---\n" + report_text
+		return s + "\n"
+	var out := ""
+	if line == "day" or line.begins_with("day "):
+		out = advance_day(line)
+	else:
+		out = site(line)
+	var st := ses_state()
+	var r := int(st.get("room", -1))
+	if r >= 0 and r < rooms.size() and r != player_room():
+		stand_in(r)
+	_reconcile()
+	_snapshot()
+	# AND THE HEAD TURNS TO THE HOLE THE LINE NAMED. The owner: "if you give a
+	# command to cable a particular port, the mouse automatically aligns to
+	# that port." A command that puts an end in `core:6` and leaves the player
+	# looking at a wall is a window that is not keeping up with the game.
+	if line.begins_with("plug ") and line.find(":") > 0:
+		_face_port(line.substr(5).strip_edges())
+	return out
+
+
+func _face_port(spec: String) -> void:
+	var f := spec.split(":", false)
+	if f.size() < 2 or player == null:
+		return
+	var want := -1
+	for d in site_devs():
+		if str(d.name) == str(f[0]):
+			want = int(d.i)
+	if want < 0:
+		return
+	var p := _dev_point(want, int(f[1]))
+	if p == Vector3.INF:
+		return
+	# AND YOU ARE STANDING AT IT. Somebody putting a lead in a socket is at
+	# arm's length from that socket, not across the room -- and a step inside
+	# the room you are already in is free, because the session prices a walk by
+	# the rooms between here and there.
+	var here := int(ses_state().get("room", -1))
+	if here >= 0 and here < rooms.size():
+		var n := _dev_face(want)
+		var stand := p + n * 1.1
+		var fl := int(rooms[here].floor)
+		if room_of(fl, int(floor(stand.x)), int(floor(stand.z))) == here:
+			stand.y = float(fl) * fheight + 0.25
+			teleport(stand)
+	aim_at(p)
+
+
+# PUT THE BODY WHERE THE SESSION SAYS IT IS. The metres were charged by the
+# session's own walk, so this is not a shortcut around the building -- it is
+# the view catching up with a walk that has already happened and been paid for.
+# Somewhere in the room a person could actually stand: not inside a rack, not
+# in a delivery, and not in the doorway.
+func stand_in(room: int) -> void:
+	if player == null or room < 0 or room >= rooms.size():
+		return
+	_here_room = room                 # already walked: do not charge it twice
+	var p := standing_point(room)
+	teleport(p)
+	# AND YOU LOOK INTO THE ROOM YOU JUST WALKED INTO, because a person does.
+	# Landing in a comms cupboard facing the wall you came through is a
+	# screenshot of brickwork and a crosshair on nothing.
+	var mid := room_centre(room)
+	mid.y = p.y + player.EYE
+	if Vector2(mid.x - p.x, mid.z - p.z).length() > 0.6:
+		aim_at(mid)
+
+
+func standing_point(room: int) -> Vector3:
+	var r: Dictionary = rooms[room]
+	var y: float = float(r.floor) * fheight + 0.25
+	var mid := room_centre(room)
+	var best := Vector3(mid.x, y, mid.z)
+	var bestscore := -1.0e9
+	var boxes: Array = []
+	for d in devices:
+		if absf(float(d.mn.y) - float(r.floor) * fheight) > fheight:
+			continue
+		boxes.append(Rect2(d.mn.x, d.mn.z, d.size.x, d.size.z))
+	for k in racks:
+		if int(k.floor) != int(r.floor):
+			continue
+		var w: float = RACK_W if k.along_x else RACK_D
+		var dd: float = RACK_D if k.along_x else RACK_W
+		boxes.append(Rect2(k.x, k.z, w, dd))
+	for x in range(int(r.x0), int(r.x1)):
+		for z in range(int(r.y0), int(r.y1)):
+			if room_of(int(r.floor), x, z) != room:
+				continue
+			var c := Vector2(float(x) + 0.5, float(z) + 0.5)
+			var clear := 9.0
+			for b in boxes:
+				clear = min(clear, _point_gap(b, c))
+			var score: float = min(clear, 1.2) * 4.0 - c.distance_to(Vector2(mid.x, mid.z)) * 0.2
+			if score > bestscore:
+				bestscore = score
+				best = Vector3(c.x, y, c.y)
+	return best
+
+
+static func _point_gap(b: Rect2, p: Vector2) -> float:
+	var dx: float = max(0.0, max(b.position.x - p.x, p.x - b.end.x))
+	var dy: float = max(0.0, max(b.position.y - p.y, p.y - b.end.y))
+	return sqrt(dx * dx + dy * dy)
+
+
+func _wire() -> void:
+	var w := preload("res://scripts/wire.gd").new()
+	w.name = "Wire"
+	w.tower = self
+	add_child(w)
+
+
+func wire_port() -> int:
+	var w := get_node_or_null("Wire")
+	return 0 if w == null else int(w.port)
+
+
 # ------------------------------------------------------------------ THE KEYS
 #
 # "esc should exit the debugger/de use mode, tab may be overload for terminal."
@@ -2930,7 +3534,9 @@ func _input(event: InputEvent) -> void:
 		return
 	if (event as InputEventKey).keycode != KEY_ESCAPE:
 		return
-	if bag and bag.visible:
+	if report_open() and not run_over:
+		_dismiss_report()
+	elif bag and bag.visible:
 		bag.toggle()
 	elif desk_open():
 		print(stand_up())
@@ -2994,6 +3600,14 @@ func _unhandled_input(event: InputEvent) -> void:
 			said2 = carry_here(dev)
 		KEY_O:
 			said2 = open_next_floor()
+		KEY_N:
+			# THE DAY IS A DELIBERATE ACT. Nothing advances the clock but this,
+			# and what it does is shown rather than summarised: `day`'s own
+			# report, up on the screen until you have read it.
+			if report_open():
+				_dismiss_report()
+			elif not run_over:
+				said2 = advance_day()
 		_:
 			var car: Object = lift_in()
 			if car != null and k.keycode >= KEY_0 and k.keycode <= KEY_9:
@@ -3017,6 +3631,10 @@ func _process(_dt: float) -> void:
 		return
 	if desk_open():
 		return                 # the world waits while you are sitting at it
+	# THE CLIPBOARD, RE-READ WHEN SOMETHING HAPPENED AND NOT OTHERWISE. Four
+	# session verbs is nothing once, and a great deal sixty times a second.
+	if _snap_dirty:
+		_snapshot()
 	# IT IS IN YOUR HAND WHEN IT IS THE EQUIPPED ITEM, and nowhere otherwise.
 	# The crash cart appeared out of the air the moment a lead went in; a
 	# handset you have dragged into a slot is a handset you are holding, and it
@@ -3045,29 +3663,9 @@ func _process(_dt: float) -> void:
 		reticle.show_target(nm[0], nm[1], on,
 			t.get("kind", "") == "port" and spool_in_hand())
 	if hud:
-		var s := where_am_i()
-		if phone and str(phone.status) != "unplugged":
-			s += "\nphone: " + str(phone.status)
-		if _cable_from >= 0:
-			s += "\ncable in hand from %s port %d   walk to the other end"  \
-				% [_cable_name(_cable_from), _cable_port]
-		if carrying >= 0:
-			s += "\ncarrying kit in both hands   [G] put it down here"
-		if car != null:
-			s += "\nin the lift: press a floor number.  in service: %s" % str(car.serviced())
-		if bag:
-			s += "\nhands: %s / %s   [I] inventory" % [_hand_name(0), _hand_name(1)]
-		# A KEY THAT REFUSES IS WORSE THAN A KEY THAT IS NOT OFFERED. Signing
-		# a floor off means standing on it, and the lift will not take you to a
-		# floor that is not in service, so it is the stairs -- which is
-		# core/session.c's rule and its words, not a second copy of either.
-		s += "\n%d of %d floors in service" % [floors_in_service, nfloors]
-		if floors_in_service < nfloors:
-			if player_floor() == floors_in_service:
-				s += "   [O] sign floor %d off and put it into service" % floors_in_service
-			else:
-				s += "   floor %d needs somebody standing on it: the lift button is not lit, so it is the stairs" % floors_in_service
-		hud.text = s
+		hud.text = where_am_i() + "\n" + hud_lines()
+	if ledger:
+		ledger.text = ledger_text()
 	# WHAT YOU ARE CARRYING IS IN THE ROOM YOU ARE IN, at every step of the
 	# walk -- not in an inventory that resolves when you put it down. The
 	# site is told the moment you cross the threshold, so `show` from a
