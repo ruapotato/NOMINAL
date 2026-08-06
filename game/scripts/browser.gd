@@ -30,6 +30,27 @@
 #
 # `links` on the terminal renders the same page, so a player with no desktop
 # is never locked out of anything on this network.
+#
+# ORDERING. halbert.co.uk sells hardware, and an <a href="order:switch8"> on
+# its catalogue is what a mailto: is in a real browser: a link the CLIENT
+# handles rather than fetches. This window handles it by asking you to
+# confirm and then calling `order switch8` -- session_line(), the identical
+# call the socket makes when a player types it in the building. There is no
+# second way to buy anything and no basket: what the player owns is the site's
+# device table, and a shop that added a box by any other path would be a
+# second opinion about what is in the building.
+#
+# It knows NOTHING about what it is ordering. The kind comes off the page, the
+# price is never seen by this file, and the answer printed on the receipt is
+# core's own sentence. If the catalogue gains a product tomorrow, the shop page
+# grows a section and this window sells it without being touched.
+#
+# AND IF THE PAGE WILL NOT LOAD, YOU CANNOT BUY ANYTHING. That is the design,
+# not an oversight: the supplier is on the internet and the internet is
+# reachable when the network works. So the one thing this window owes the
+# player is a failure they can READ -- what could not be reached, and the
+# machine's own resolver, address and route printed underneath it, which is
+# the difference between "the shop is down" and "I have broken my gateway".
 
 extends Control
 
@@ -85,6 +106,7 @@ const BOOKMARKS := [
 	["oldwiki.internal",      "Project HALYARD (archived)"],
 	["support.internal",      "the support desk"],
 	["coffee.internal",       "the kitchen camera"],
+	["halbert.co.uk",         "hardware -- the trade counter"],
 	["nomnix.org",            "the operating system's own site"],
 	["forums.nomnix.org",     "the forums"],
 	["bugs.nomnix.org",       "the bug tracker"],
@@ -152,10 +174,102 @@ func _fetch(u: String) -> void:
 	# --raw hands back the markup; the rendering below is this window's only
 	# contribution, and it is a rendering, not a source.
 	raw = machine.sh_on(0, "links --raw " + u)
+	# A BLANK PAGE IS THE ONE ANSWER THAT TEACHES NOTHING. `links` says why it
+	# failed in two ways and a machine with no shell on it says nothing at
+	# all; all three are the same thing to look at, and none of them may be an
+	# empty window.
+	if raw.strip_edges() == "" or raw.find("cannot resolve") >= 0 \
+			or raw.find("nothing responded") >= 0 or raw.find("no route") >= 0:
+		_unreachable(u, raw)
+		return
 	_relayout()
 	status = "%s -- %d lines" % [u, rows.size()]
-	if raw.find("cannot resolve") >= 0 or raw.find("nothing responded") >= 0:
-		status = "failed: " + u
+	queue_redraw()
+
+
+# WHAT A BROWSER OWES YOU WHEN IT CANNOT GET THERE.
+#
+# The old behaviour was the raw one-line complaint from `links` in the page
+# area and the word "failed" in the status bar. That is true and it is not
+# enough: "cannot resolve halbert.co.uk" is four different faults wearing one
+# sentence, and the player whose shop has just gone away is exactly the player
+# who most needs to know which.
+#
+# So this prints the machine's OWN state underneath the failure -- resolv.conf,
+# the interface, the routing table -- by running the same commands a person
+# would run at the prompt, on the same machine, through sh_on(). Nothing here
+# is diagnosed and nothing is guessed: every line below the rule is output, and
+# the last paragraph names the next three things to type rather than telling
+# the player what is wrong with their network. This window does not know.
+func _unreachable(u: String, err: String) -> void:
+	var m := "<h1>cannot reach %s</h1>" % u
+	m += "<pre>%s</pre>" % _esc(err.strip_edges())
+	m += "<p>This is what the machine you are sitting at says about its own "
+	m += "networking, right now:</p>"
+	for c in ["cat /etc/resolv.conf", "ip addr", "ip route"]:
+		m += "<pre>$ %s\n%s</pre>" % [_esc(c), _esc(String(machine.sh_on(0, c)).strip_edges())]
+	m += "<p>A name that will not resolve when the address works is the "
+	m += "resolver. No address is the interface, or <b>svc status net</b>. No "
+	m += "default route is the gateway. If all three look right, the fault is "
+	m += "further out than this machine: <b>ping</b> the gateway and "
+	m += "<b>traceroute</b> the host.</p>"
+	raw = m
+	_relayout()
+	scroll = 0
+	status = "failed: " + u
+	queue_redraw()
+
+
+# Markup is markup even when this file wrote it, so anything coming back off
+# the machine is escaped before it goes into a page.
+func _esc(s: String) -> String:
+	return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+# --- ordering ---------------------------------------------------------
+#
+# An href of "order:switch8" is not an address and is never fetched. It is
+# handled here, the way a browser handles mailto:, and it goes exactly one
+# place: session_line(), which is the verb.
+
+# THE CONFIRM STEP EXISTS BECAUSE THE MONEY DOES NOT COME BACK. There is no
+# `sell` in this game and no refund anywhere in it, so a mis-click on a link
+# would be a box in goods in and a hole in the budget with no undo. It shows
+# no price, because this window has never been told one.
+func _confirm(kind: String) -> void:
+	url = "order:" + kind
+	addr = url
+	scroll = 0
+	raw = "<h1>Order one %s?</h1>" % kind \
+		+ "<p>This places the order with the supplier and spends the money. " \
+		+ "There are no returns, in this game or at that counter, and the " \
+		+ "price is whatever the catalogue says it is.</p>" \
+		+ "<ul><li><a href=\"orderyes:%s\">yes -- order a %s</a></li>" % [kind, kind] \
+		+ "<li><a href=\"halbert.co.uk/catalogue\">no -- back to the catalogue</a></li></ul>" \
+		+ "<p>It will be delivered to goods in, on the ground floor, in its " \
+		+ "box. Somebody still has to carry it.</p>"
+	_relayout()
+	status = "confirm: order " + kind
+	queue_redraw()
+
+
+# AND THE ORDER ITSELF, WHICH IS ONE LINE OF TEXT SENT TO CORE. The receipt is
+# whatever core answered, verbatim and unparsed: the name it gave the box, the
+# price it charged, what is left, and where the van put it. This file does not
+# know any of that and must not learn it.
+func _place(kind: String) -> void:
+	url = "orderyes:" + kind
+	addr = url
+	scroll = 0
+	var reply := ""
+	if machine != null and machine.has_method("ses_cmd"):
+		reply = String(machine.ses_cmd("order " + kind))
+	else:
+		reply = "there is no building to deliver to from here."
+	raw = "<h1>Your order</h1><pre>%s</pre>" % _esc(reply.strip_edges()) \
+		+ "<p><a href=\"halbert.co.uk/catalogue\">back to the catalogue</a></p>"
+	_relayout()
+	status = "order " + kind
 	queue_redraw()
 
 
@@ -163,7 +277,15 @@ func _go(u: String) -> void:
 	history.append(url)
 	if history.size() > 64:
 		history.remove_at(0)
-	_fetch(u)
+	# An order link is handled, not fetched: there is nothing at that address
+	# and there was never meant to be. Everything else is a fetch.
+	u = u.strip_edges()
+	if u.begins_with("orderyes:"):
+		_place(u.substr(9))
+	elif u.begins_with("order:"):
+		_confirm(u.substr(6))
+	else:
+		_fetch(u)
 
 
 func _back() -> void:

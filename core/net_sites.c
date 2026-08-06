@@ -39,13 +39,41 @@
 #include <stdio.h>
 #include "nom.h"
 #include "machine.h"
+#include "site.h"
 
+/* A PAGE THAT IS COMPUTED RATHER THAN TYPED.
+ *
+ * Every page below is a string literal, and that is right for a page that is
+ * somebody's opinion. It is wrong for a page that is a fact the game already
+ * holds somewhere else -- a price list is the catalogue in core/site.c, and
+ * this project has shipped the same fact from two places five times in one
+ * day (a footer dividing by the wrong port count, a boot menu counting
+ * differently from its loader, prose quoting a constant it sat beside). A
+ * supplier's price list typed in here is that bug with a delivery date on it:
+ * it would be correct this afternoon and wrong the moment somebody adds a
+ * product.
+ *
+ * So a page may have NO BODY. A NULL body means the page is COMPUTED, and
+ * gen_page() below says by what. The Page struct is untouched, which is not
+ * squeamishness: a fifth member would have to be initialised in all four
+ * hundred entries or -Wextra would warn about every one of them, and four
+ * hundred `, NULL`s to serve two pages is a worse trade than one branch in
+ * net_fetch.
+ *
+ * The list of pages stays in one place either way -- a generated page is a
+ * PAGES entry like any other, so it is in the zone, in the 404 index, and in
+ * the enumeration `--mancheck` walks. A computed page is held to exactly the
+ * same standard as a written one, which is the entire reason it is in the
+ * same table. */
 typedef struct {
     const char *host;
     const char *ip;
     const char *path;
-    const char *body;
+    const char *body;      /* NULL: computed -- see gen_page() */
 } Page;
+
+static void shop_catalogue(Buf *out);
+static void shop_discontinued(Buf *out);
 
 /* Anything reachable. The addresses matter: they are what /etc/hosts maps to
  * and what the resolver returns, so a corrupted hosts file sends the browser
@@ -459,6 +487,8 @@ static const Page PAGES[] = {
 "<li><a href=\"wiki.nomnix.org\">wiki.nomnix.org</a> -- NomnixOS documentation</li>"
 "<li><a href=\"support.internal\">support.internal</a> -- the bench you are sitting at</li>"
 "<li><a href=\"bofh.nomnix.org\">bofh.nomnix.org</a> -- do not forward this one to customers</li>"
+"<li><a href=\"halbert.co.uk\">halbert.co.uk</a> -- hardware. We have an account "
+"with them and everything on the floor came off their van</li>"
 "</ul>"
 "<p><b>A NEW INTRANET IS COMING.</b> Preview it at\n"
 "<a href=\"/new\">intranet.internal/new</a>.</p>"
@@ -2486,8 +2516,354 @@ static const Page PAGES[] = {
 "<a href=\"wiki.nomnix.org/boot\">wiki.nomnix.org/boot</a>, which is checked\n"
 "against a machine.</p>"
 },
+
+/* ------------------------------------------------------------------ *
+ * The supplier. Where the kit comes from, and where the decision about
+ * WHICH kit gets made.
+ *
+ * Two of these four pages are generated (see shop_catalogue and
+ * shop_discontinued at the foot of this file). The prose here contains no
+ * price, no port count and no speed -- not one number about a product
+ * anywhere on this host that was not read out of the catalogue at the moment
+ * the page was fetched. That is a rule, not a habit: the moment a sentence
+ * here says "four hundred" it is a second copy of site.c's KIT table and it
+ * will be wrong within the week.
+ * ------------------------------------------------------------------ */
+
+{ "halbert.co.uk", "10.0.2.73", "/",
+"<h1>HALBERT &amp; VANCE LTD</h1>"
+"<img src=\"hv_van.jpg\" alt=\"A white van with HALBERT AND VANCE -- NETWORK "
+"HARDWARE -- TRADE ONLY down the side of it\">"
+"<p>Network hardware, trade only, since 1994. We are two units off the ring "
+"road and one van, and we would rather sell you the right thing once than the "
+"wrong thing twice.</p>"
+"<ul>"
+"<li><a href=\"/catalogue\">/catalogue</a> -- everything we stock, with prices</li>"
+"<li><a href=\"/delivery\">/delivery</a> -- how it gets to you, and what happens "
+"if you change your mind</li>"
+"<li><a href=\"/discontinued\">/discontinued</a> -- what we used to sell and "
+"will not be selling again</li>"
+"</ul>"
+"<h2>Ordering</h2>"
+"<p>Off this website, and there is no other way in. We closed the counter to "
+"walk-ins in the spring and the phone is an answering machine that says to use "
+"the website, which is a decision our sales manager is very pleased with and "
+"nobody else is.</p>"
+"<p>There is a link beside every product on the "
+"<a href=\"/catalogue\">catalogue</a>. A browser that can place orders -- the "
+"one on a workstation can -- will ask you to confirm before it spends "
+"anything.</p>"
+"<p><b>Which does mean that if you cannot reach this page, you cannot buy "
+"anything.</b> We are aware. Several of our customers have pointed out, at "
+"length, that the one thing you might urgently need a switch for is a network "
+"that is too broken to order a switch over. Our position is that we are a "
+"hardware supplier and not a telephone exchange.</p>"
+"<h2>If this page will not load</h2>"
+"<p>It is almost never us -- see the ping at the bottom -- and the machine you "
+"are sitting at will tell you which of the four usual things it is, in this "
+"order, cheapest first:</p>"
+"<pre>"
+"cat /etc/resolv.conf\n"
+"ip addr\n"
+"ip route\n"
+"traceroute 10.0.2.73"
+"</pre>"
+"<p>A name that will not resolve when the address works is your resolver. An "
+"address you have not got is your interface, or the daemon that configures it. "
+"A route you have not got is your gateway. And a traceroute that stops "
+"somewhere out in the middle is the bit neither of us owns.</p>"
+"<h2>Where it turns up</h2>"
+"<p>Goods in, on the ground floor, on a pallet, in the box. Not in your hands "
+"and not in the room you are standing in. Our driver is not carrying it up "
+"five flights and neither, in his opinion, should you, but that is between you "
+"and your knees.</p>"
+"<hr>"
+"<p>Trade counter open, and the kettle is on. If this page is loading, our web "
+"server is up: it is on 10.0.2.73 and it answers a ping.</p>"
+"<pre>"
+"ping -c 1 10.0.2.73"
+"</pre>"
+},
+
+{ "halbert.co.uk", "10.0.2.73", "/delivery",
+"<h1>Delivery, and returns</h1>"
+"<h2>Delivery</h2>"
+"<p>Everything on the <a href=\"/catalogue\">catalogue</a> is stock. That is "
+"what the catalogue IS -- if we have not got it, it is not on the page, and if "
+"it is on the page the van has it on board. Order it and it is in your goods "
+"in, in its box, unplugged and switched off, by the time you have walked down "
+"there.</p>"
+"<p>Switched off matters and people forget it. A switch or a router wakes up "
+"when it has a socket; a computer has a button on the front of it and somebody "
+"has to press it. If you cannot find a live socket in the room you have carried "
+"it to, the button will not do anything, and that is the socket's fault rather "
+"than ours.</p>"
+"<h2>Returns</h2>"
+"<p>There are none. We are not being difficult: money that leaves does not come "
+"back, there is nobody here to take a pallet in off you, and a box you have "
+"ordered twice is a box you have paid for twice. <b>Look in goods in before you "
+"order.</b> Half the calls we get are somebody buying a second switch that was "
+"already sitting under the roller door in the dark.</p>"
+"<hr>"
+"<p><a href=\"/\">halbert.co.uk</a></p>"
+},
+
+/* Both of these are printed off core/site.c's catalogue when you ask for
+ * them. NULL body, see gen_page(). */
+{ "halbert.co.uk", "10.0.2.73", "/catalogue", NULL },
+{ "halbert.co.uk", "10.0.2.73", "/discontinued", NULL },
 };
 #define NPAGES ((int)(sizeof PAGES / sizeof PAGES[0]))
+
+/* ======================================================================= *
+ * THE SHOP, PRINTED OFF THE CATALOGUE
+ *
+ * The rule for these two functions: every FACT about a product is read from
+ * core/site.c through site_kind_*() at the moment the page is fetched, and
+ * every OPINION about it is typed below. A product appears in this shop
+ * because it exists, not because somebody remembered to add it -- the loop
+ * is over SDEV_KIND_COUNT and it does not know what is in the catalogue.
+ *
+ * WHAT IS FOR SALE is the one thing that had to be inferred, because nothing
+ * in site.h says so. It is `price > 0`: the ISP's handoff is the landlord's
+ * and the tenant's desk is the tenant's, both cost the player nothing, and
+ * neither is the landlord's to buy. A shop sells what it can charge for. If
+ * a priced product is ever added it turns up on this page, in the table and
+ * in the order links, with no shop copy and an honest line saying so -- see
+ * the fallback in HAVE below.
+ * ======================================================================= */
+
+/* What the trade counter thinks of each product. NO NUMBERS: the moment a
+ * sentence here says "four hundred" or "eight ports" it is a second copy of
+ * KIT[] and it will be wrong the week somebody retunes it. Keyed by the
+ * catalogue's own name so that renumbering the enum cannot silently move a
+ * paragraph onto a different box. */
+static const struct { const char *kind; const char *says; } HAVE[] = {
+{ "switch8",
+"<p>Our biggest seller, and the one we would rather you thought about for a "
+"minute. All the sockets are the same and none of them is an uplink, so "
+"everything on it -- including the lead going back to the riser -- is fighting "
+"over the same kind of hole.</p>"
+"<p>It is the cheapest way to get a floor on the network and the cheapest way "
+"to regret it. When the floor fills up you will hang a second one off the "
+"first, and then everything on both of them is queueing through the one lead "
+"between them. Right in a cupboard that will never hold more than a handful of "
+"things. Wrong as the box a whole floor's traffic leaves the floor through.</p>"
+},
+{ "switch24",
+"<p>The one we sell to people who have already owned the cheap one. Enough "
+"sockets that you will not be back this year, and -- the actual reason to buy "
+"it -- the top ones are faster than the rest. The table says which.</p>"
+"<p>Those holes are what you are paying for. Land the riser on one of them and "
+"the floor stops queueing behind its own way out. Land the riser on any of the "
+"others and you have bought a big switch for the size of it, which is money "
+"spent on ports you are not using yet.</p>"
+},
+{ "router",
+"<p>Every socket fast, and as many vlans on them as you have the patience to "
+"configure. This is what you buy when \"everything on one flat network\" has "
+"stopped being a simplification and started being the fault -- when one "
+"tenant's broadcast is in another tenant's day.</p>"
+"<p>It will also happily be the most expensive way to join two things "
+"together. If nothing needs separating yet, nothing needs this yet.</p>"
+},
+{ "pc",
+"<p>An ordinary desktop, and an ordinary card in it. People buy them to have "
+"something on a floor that can hold a shell, a browser and a set of eyes -- "
+"and to find out whether a port and a run of copper really work, without "
+"standing a server on the floor to do it.</p>"
+},
+{ "server",
+"<p>A rack machine. What you are really buying is the card in it, and there is "
+"one card.</p>"
+"<p>Everybody's files behind that one card is a ceiling, and no amount of "
+"copper will lift it, because the copper is not the thing that is full. People "
+"find that out on their third floor at about nine in the morning. If a floor's "
+"people spend the day pulling files, the cheap answer is not a fatter riser, "
+"it is a box on that floor so their files never come down it.</p>"
+},
+};
+#define NHAVE ((int)(sizeof HAVE / sizeof HAVE[0]))
+
+/* Is this something the shop sells? See the note above: price is the test,
+ * and it is the catalogue's own number rather than a list kept here. */
+static bool for_sale(int kind)
+{
+    return site_kind_price(kind) > 0;
+}
+
+/* The ports that are not like the others, read off the catalogue. Returns
+ * the speed of the odd ones and fills lo/hi, or 0 if every socket on the box
+ * clocks the same. */
+static int odd_ports(int kind, int *lo, int *hi)
+{
+    int n = site_kind_ports(kind), base = site_kind_port_mb(kind, 0), odd = 0;
+    *lo = *hi = -1;
+    for (int p = 1; p < n; p++) {
+        int mb = site_kind_port_mb(kind, p);
+        if (mb == base) continue;
+        if (*lo < 0) *lo = p;
+        *hi = p;
+        odd = mb;
+    }
+    return odd;
+}
+
+static void shop_catalogue(Buf *out)
+{
+    buf_puts(out,
+"<h1>Catalogue</h1>"
+"<p>Everything on this page is stock. That is what being on this page MEANS: "
+"if the van has not got it we take it off, which is why there is no column "
+"here for lead time and no such thing as a back order. Ordered is delivered.</p>"
+"<p>This table is printed out of the stock system when you ask for the page, "
+"so it cannot disagree with what we charge you at the counter. Prices in "
+"pounds. \"Each socket\" is what one hole on the back of it will clock, which "
+"is not the same as what your cable will carry -- that is your problem and "
+"there is a note about it at the bottom.</p>"
+"<pre>\n");
+    buf_printf(out, "  %-10s %8s %13s %8s\n",
+               "what", "sockets", "each socket", "price");
+    for (int k = 0; k < SDEV_KIND_COUNT; k++) {
+        if (!for_sale(k)) continue;
+        int lo, hi, odd = odd_ports(k, &lo, &hi);
+        buf_printf(out, "  %-10s %8d %10d Mb %8d",
+                   site_kind_name(k), site_kind_ports(k),
+                   site_kind_port_mb(k, 0), site_kind_price(k));
+        if (odd) {
+            if (lo == hi) buf_printf(out, "   port %d at %d Mb", lo, odd);
+            else          buf_printf(out, "   ports %d-%d at %d Mb", lo, hi, odd);
+        }
+        buf_putc(out, '\n');
+    }
+    buf_puts(out, "</pre>");
+
+    for (int k = 0; k < SDEV_KIND_COUNT; k++) {
+        if (!for_sale(k)) continue;
+        const char *name = site_kind_name(k);
+        buf_printf(out, "<h2>%s</h2>", name);
+        const char *says = NULL;
+        for (int i = 0; i < NHAVE; i++)
+            if (strcmp(HAVE[i].kind, name) == 0) { says = HAVE[i].says; break; }
+        /* A NEW LINE THE COUNTER HAS NOT WRITTEN UP. It is still for sale,
+         * it is still in the table with its real numbers, and this says so
+         * rather than pretending we have an opinion about it. */
+        if (says) buf_puts(out, says);
+        else buf_puts(out,
+"<p>New line, and we have not had one long enough to have an opinion about it. "
+"The numbers in the table are the manufacturer's and they are what you will "
+"be charged.</p>");
+        /* And the facts, generated: how many holes, how fast, and whether
+         * anybody has to press anything. */
+        int lo, hi, odd = odd_ports(k, &lo, &hi);
+        buf_printf(out, "<p>%d socket%s, ", site_kind_ports(k),
+                   site_kind_ports(k) == 1 ? "" : "s");
+        if (odd) {
+            buf_printf(out, "%d Mb each except ", site_kind_port_mb(k, 0));
+            if (lo == hi) buf_printf(out, "port %d, which is %d Mb. ", lo, odd);
+            else          buf_printf(out, "ports %d to %d, which are %d Mb. ",
+                                     lo, hi, odd);
+        } else {
+            buf_printf(out, "%d Mb%s. ", site_kind_port_mb(k, 0),
+                       site_kind_ports(k) == 1 ? "" : " each");
+        }
+        if (site_kind_has_os(k))
+            buf_puts(out, "It is a computer: it comes switched off, it needs a "
+                          "socket on the wall of whatever room you carry it to, "
+                          "and somebody has to press the button on the front.</p>");
+        else
+            buf_puts(out, "It is an appliance. There is no shell on it and no "
+                          "button: give it a socket and it comes up, and you "
+                          "talk to it over its management line rather than by "
+                          "logging in.</p>");
+        buf_printf(out, "<p><a href=\"order:%s\">order a %s</a> "
+                        "-- to your goods in, in the box.</p>", name, name);
+    }
+
+    buf_puts(out,
+"<hr>"
+"<h2>What we would tell you if you rang up and asked</h2>"
+"<p>The cheap box and the dear box do the same job on the day you plug them "
+"in. They stop doing the same job the day the floor above yours signs a lease. "
+"Everything on this page is a bet on how big you are going to be, and the only "
+"one of those bets you can unmake is the one you have not placed yet -- see "
+"<a href=\"/delivery\">/delivery</a> on returns, of which there are none.</p>"
+"<p>Nobody has ever rung this counter to say the switch they bought was too "
+"big. We get the other call most weeks.</p>"
+"<p>And the speed on a socket is the top of what that hole will do, not a "
+"promise. Put a long enough run of the wrong copper on it and the two ends "
+"will settle on something slower between themselves, and neither we nor the "
+"box will apologise. Ask the building what a run would come up at before you "
+"pay for it.</p>"
+"<hr>"
+"<p><a href=\"/\">halbert.co.uk</a> -- "
+"<a href=\"/discontinued\">what we no longer sell</a></p>");
+}
+
+/* WHAT WE NO LONGER SELL, and the filter that keeps it honest.
+ *
+ * A page listing products that do not exist is a page that becomes a lie the
+ * day one of those names is added to the catalogue. So every name below is
+ * checked against site_kind_by_name() as the page is printed, and a name the
+ * building now understands is dropped from the list rather than advertised
+ * as unavailable. */
+static const struct { const char *name; const char *why; } GONE[] = {
+{ "hub",
+"Everything plugged into one of these shared a single conversation and talked "
+"over the top of each other. They were cheap and they were a false economy the "
+"day the second person on the floor started work." },
+{ "switch16",
+"Sat between the small one and the big one and did neither job. No fast ports "
+"on it, and if you had outgrown the small one you had outgrown this too. The "
+"manufacturer stopped making them and we did not chase anybody about it." },
+{ "printserver",
+"A box whose entire purpose was to put a printer on the network. Printers "
+"grew their own cards and this became a thing you found behind a filing "
+"cabinet with a light on." },
+};
+#define NGONE ((int)(sizeof GONE / sizeof GONE[0]))
+
+/* WHICH FUNCTION PRINTS A PAGE THAT HAS NO BODY. Host and path both, because
+ * "/catalogue" is not a name any one host owns. */
+static void gen_page(const Page *p, Buf *out)
+{
+    if (strcmp(p->host, "halbert.co.uk") == 0) {
+        if (strcmp(p->path, "/catalogue") == 0)    { shop_catalogue(out); return; }
+        if (strcmp(p->path, "/discontinued") == 0) { shop_discontinued(out); return; }
+    }
+    /* Unreachable, and it says so rather than serving nothing: a page in the
+     * table with no body and no generator is a bug in this file, and an
+     * empty page is the hardest kind of bug to see. */
+    buf_printf(out, "<h1>%s%s</h1><p>This page is generated and its generator "
+                    "is missing. That is a fault in net_sites.c.</p>",
+               p->host, p->path);
+}
+
+static void shop_discontinued(Buf *out)
+{
+    buf_puts(out,
+"<h1>Discontinued</h1>"
+"<p>We do not stock these, we cannot get them, and we would not sell you one "
+"if we could. They are here because people still ring up and ask, and because "
+"one of them was on the wall of this building when we took the account "
+"over.</p>"
+"<p>The building will tell you the same thing we would: ask for one of these "
+"by name and there is no such kit.</p>"
+"<ul>");
+    int listed = 0;
+    for (int i = 0; i < NGONE; i++) {
+        if (site_kind_by_name(GONE[i].name) >= 0) continue;   /* it is back */
+        buf_printf(out, "<li><b>%s</b> -- %s</li>", GONE[i].name, GONE[i].why);
+        listed++;
+    }
+    if (!listed)
+        buf_puts(out, "<li>Nothing, as it happens. Everything we ever sold, we "
+                      "are selling again. It happens about once a decade.</li>");
+    buf_puts(out,
+"</ul>"
+"<p>What we do have is on the <a href=\"/catalogue\">catalogue</a>, and it is "
+"there because it is on the van.</p>");
+}
 
 /* Resolve a hostname the way a nameserver would. Returns NULL if the name is
  * not known -- which is a real answer, not an error.
@@ -2547,7 +2923,8 @@ bool net_fetch(const char *ip, const char *path, Buf *out)
     for (int i = 0; i < NPAGES; i++) {
         if (strcmp(PAGES[i].ip, ip) != 0) continue;
         if (strcmp(PAGES[i].path, path) != 0) continue;
-        buf_puts(out, PAGES[i].body);
+        if (PAGES[i].body) buf_puts(out, PAGES[i].body);
+        else               gen_page(&PAGES[i], out);
         return true;
     }
     /* The host is there but the page is not. Generated in the same markup as

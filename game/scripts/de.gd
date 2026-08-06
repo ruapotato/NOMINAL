@@ -1578,6 +1578,17 @@ func _parse_args() -> void:
 			var t2 := _find("terminal - your")
 			if t2:
 				(t2.get_meta("content") as Control).call("feed", a.substr(6) + "\n")
+		# A PAGE, THE SAME WAY `--run=` IS A COMMAND. The browser is the one
+		# app whose interesting states are several clicks deep -- a page, the
+		# confirm, the receipt -- and a screenshot of them cannot be taken by
+		# a client with no mouse. It goes through _go(), so it is exactly what
+		# clicking the link does and cannot photograph anything a player
+		# cannot reach.
+		elif a.begins_with("--browse="):
+			_launch("browser")
+			var bw := _find(str(TITLES.get("browser", "browser")))
+			if bw:
+				(bw.get_meta("content") as Control).call("_go", a.substr(9))
 		elif a.begins_with("--tile"):
 			# A SCREENSHOT FLAG, not a behaviour. Windows never tile
 			# themselves: they open where they open, and the only thing that

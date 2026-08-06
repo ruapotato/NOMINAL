@@ -29,6 +29,7 @@
 #include "nom.h"
 #include "machine.h"
 #include "kernel.h"
+#include "site.h"
 
 static int passed, total;
 
@@ -456,6 +457,172 @@ static void check_web(Machine *m, int *ran, int *skipped)
     }
 }
 
+/* ------------------------------------------------- the shop and the catalogue
+ *
+ * A PRICE LIST ON A WEB PAGE IS THE CATALOGUE WRITTEN DOWN TWICE, and this
+ * project has shipped one fact from two places five times in a day. The
+ * supplier's page at halbert.co.uk/catalogue is generated from KIT[] in
+ * core/site.c so that it cannot drift, and this is the gate that proves the
+ * generation is really doing that: every number on the page is READ BACK OFF
+ * THE PAGE and compared with what site_kind_*() answers, product by product.
+ *
+ * It is deliberately a parser and not a second copy of the generator. Asking
+ * the generator to build the expected line and comparing it with itself
+ * would pass whatever either of them did.
+ *
+ * What it catches, and what nothing else would: a product added to the
+ * catalogue that the shop does not sell, a price that has been retuned in
+ * site.c, a port count or a port speed that has moved, and a page that has
+ * gone back to being typed by hand. */
+extern const char *site_kind_name(int kind);
+extern int   site_kind_by_name(const char *name);
+extern int   site_kind_ports(int kind);
+extern int   site_kind_price(int kind);
+extern int   site_kind_port_mb(int kind, int port);
+
+/* The `n`th whole number on a line, or -1. */
+static long nth_num(const char *line, int n)
+{
+    const char *p = line;
+    for (int i = 0; ; ) {
+        while (*p && !isdigit((unsigned char)*p)) p++;
+        if (!*p) return -1;
+        long v = 0;
+        while (isdigit((unsigned char)*p)) v = v * 10 + (*p++ - '0');
+        if (i++ == n) return v;
+    }
+}
+
+/* The row of the catalogue table for that product, into `out` -- WITHOUT the
+ * product's own name, because `switch8` and `switch24` have digits in them
+ * and the numbers this gate reads are the ones the page printed, not the
+ * ones in the spelling. The rows are indented two spaces. */
+static bool kit_row(const char *page, const char *name, char *out, size_t cap)
+{
+    char want[64];
+    snprintf(want, sizeof want, "\n  %s ", name);
+    const char *at = strstr(page, want);
+    if (!at) return false;
+    at += strlen(want);
+    const char *nl = strchr(at, '\n');
+    size_t l = nl ? (size_t)(nl - at) : strlen(at);
+    if (l >= cap) l = cap - 1;
+    memcpy(out, at, l);
+    out[l] = 0;
+    return true;
+}
+
+static void check_shop(void)
+{
+    printf("\nand the supplier's catalogue against the catalogue itself\n");
+    Buf page = {0};
+    if (!net_fetch("10.0.2.73", "/catalogue", &page) || !page.p) {
+        ck("halbert.co.uk/catalogue is on the network", false,
+           "net_fetch returned nothing for 10.0.2.73/catalogue");
+        buf_free(&page);
+        return;
+    }
+    ck("halbert.co.uk/catalogue is on the network", true, NULL);
+
+    int sold = 0;
+    for (int k = 0; k < SDEV_KIND_COUNT; k++) {
+        const char *name = site_kind_name(k);
+        int price = site_kind_price(k);
+        char row[200], what[160], why[320];
+        bool listed = kit_row(page.p, name, row, sizeof row);
+
+        /* Not for sale, and the shop must not be selling it. The handoff and
+         * the tenant's own desk cost nothing and are nobody's to buy. */
+        if (price <= 0) {
+            snprintf(what, sizeof what, "%s is not for sale and is not on the page", name);
+            snprintf(why, sizeof why, "the shop lists `%s`, which costs nothing", name);
+            ck(what, !listed, why);
+            continue;
+        }
+        sold++;
+        snprintf(what, sizeof what, "%s is in the shop at all", name);
+        snprintf(why, sizeof why, "the catalogue sells `%s` and the page has no "
+                 "row for it -- the page is not being generated", name);
+        ck(what, listed, why);
+        if (!listed) continue;
+
+        long ports = nth_num(row, 0), mb = nth_num(row, 1), shown = nth_num(row, 2);
+        snprintf(what, sizeof what, "%s: %d sockets, %d Mb, %d", name,
+                 site_kind_ports(k), site_kind_port_mb(k, 0), price);
+        snprintf(why, sizeof why, "the page row says `%s`", row);
+        ck(what, ports == site_kind_ports(k) &&
+                 mb    == site_kind_port_mb(k, 0) &&
+                 shown == price, why);
+
+        /* And the odd ports, where a box has any: the number has to be on
+         * the row, because it is the whole reason to buy that box. */
+        int top = site_kind_port_mb(k, site_kind_ports(k) - 1);
+        if (top != site_kind_port_mb(k, 0)) {
+            char fast[32];
+            snprintf(fast, sizeof fast, "%d Mb", top);
+            snprintf(what, sizeof what, "%s: its fast ports say %s", name, fast);
+            ck(what, strstr(row, fast) != NULL, why);
+        }
+    }
+    ck("the shop sells something", sold > 0, "nothing in the catalogue is priced");
+
+    /* AND NOTHING IT SELLS IS INVENTED. Every order link on the page has to
+     * name a kind the building will actually accept, or the shop is selling
+     * something that cannot be delivered. */
+    int links = 0, bad = 0;
+    char firstbad[120] = {0};
+    for (const char *p = page.p; (p = strstr(p, "\"order:")) != NULL; ) {
+        p += 7;
+        char kind[40];
+        size_t w = 0;
+        while (p[w] && p[w] != '"' && w < sizeof kind - 1) { kind[w] = p[w]; w++; }
+        kind[w] = 0;
+        links++;
+        if (site_kind_by_name(kind) < 0) {
+            bad++;
+            if (!firstbad[0])
+                snprintf(firstbad, sizeof firstbad,
+                         "`order %s` -- there is no such kit", kind);
+        }
+    }
+    ck("every order link names a real kind", links == sold && bad == 0,
+       firstbad[0] ? firstbad :
+       "the page offers a different number of order links than it has products");
+
+    buf_free(&page);
+
+    /* THE DISCONTINUED PAGE IS ONLY HONEST WHILE IT IS TRUE. It lists things
+     * the building does not sell; the day one of those names is added to the
+     * catalogue the page has to stop claiming it. It filters itself, and
+     * this is the proof. */
+    Buf gone = {0};
+    if (!net_fetch("10.0.2.73", "/discontinued", &gone) || !gone.p) {
+        ck("halbert.co.uk/discontinued is on the network", false, "net_fetch returned nothing");
+        buf_free(&gone);
+        return;
+    }
+    int named = 0, alive = 0;
+    char firstalive[120] = {0};
+    for (const char *p = gone.p; (p = strstr(p, "<li><b>")) != NULL; ) {
+        p += 7;
+        char kind[40];
+        size_t w = 0;
+        while (p[w] && p[w] != '<' && w < sizeof kind - 1) { kind[w] = p[w]; w++; }
+        kind[w] = 0;
+        named++;
+        if (site_kind_by_name(kind) >= 0) {
+            alive++;
+            if (!firstalive[0])
+                snprintf(firstalive, sizeof firstalive,
+                         "the page says `%s` cannot be had, and the catalogue sells it",
+                         kind);
+        }
+    }
+    ck("nothing on the discontinued page can be ordered", alive == 0 && named > 0,
+       firstalive[0] ? firstalive : "the page named nothing at all");
+    buf_free(&gone);
+}
+
 int man_check(void)
 {
     passed = total = 0;
@@ -545,6 +712,7 @@ int man_check(void)
     buf_free(&names);
     check_docs(&m, &ran, &skipped);
     check_web(&m, &ran, &skipped);
+    check_shop();
     machine_free(&m);
 
     printf("\n%d page(s), %d example(s) run, %d skipped as not read-only\n",
