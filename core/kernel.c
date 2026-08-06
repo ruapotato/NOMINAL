@@ -403,6 +403,28 @@ static int64_t sys_open(Proc *p, Cpu *c, uint64_t pathp, int64_t flags)
      * failure is a cascade -- each daemon fails at the moment it first tries
      * to write its state -- and the cause is one word in one line of fstab. */
     if (want_write && !p->m->on_rescue && p->m->root_ro && fs == &p->m->disk) return -1;
+    /* AND THE RESCUE MEDIUM REALLY IS READ-ONLY, which its own banner has
+     * been claiming while accepting writes.
+     *
+     *   rescue: live system, read-only medium
+     *   rescue# ed /etc/hostname 1c "WROTE-TO-READONLY" . w
+     *   ed: /etc/hostname: 1 line(s), 18 bytes written.
+     *
+     * That is the founding rule broken at the worst moment: a player
+     * repairing a machine edits what they think is the customer's file,
+     * is told it was written, and has changed a live image that vanishes on
+     * the next boot. The medium is a stamped disc; it does not take writes,
+     * and being refused is what sends somebody to `mount /dev/sda1 /mnt` --
+     * the procedure the banner already prints and which really works, since
+     * a mounted path resolves to the customer's filesystem and not to this
+     * one.
+     *
+     * /tmp and /run stay writable because a live system carries a tmpfs for
+     * exactly them, and the rescue boot's own services write their state
+     * there. */
+    if (want_write && p->m->on_rescue && fs == &p->m->rescue &&
+        strncmp(path, "/tmp", 4) != 0 && strncmp(path, "/run", 4) != 0)
+        return -1;
     if (!want_write && !(n->mode & 0444)) return -1;
     if (want_write  && !(n->mode & 0222) && !(flags & O_CREAT)) return -1;
 
@@ -748,6 +770,11 @@ static int64_t kernel_syscall(Cpu *c, int64_t n, int64_t a0, int64_t a1,
          * error, which is what makes mkdir usable as a lock. */
         if (there) return (a1 && there->kind == VN_DIR) ? 0 : -1;
         if (!p->m->on_rescue && p->m->root_ro && fs == &p->m->disk) return -1;
+        /* The medium is stamped: no new directories on it either. See the
+         * note beside the same test in sys_open. */
+        if (p->m->on_rescue && fs == &p->m->rescue &&
+            strncmp(path, "/tmp", 4) != 0 && strncmp(path, "/run", 4) != 0)
+            return -1;
 
         const char *slash = strrchr(path, '/');
         if (slash && slash != path) {

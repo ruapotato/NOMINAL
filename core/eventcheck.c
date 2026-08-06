@@ -452,6 +452,24 @@ static void check_blackout(void)
         const char *f = say(&ses, "fsck /dev/sda1", &o);
         ck("`fsck /dev/sda1` recovers the journal and says what it could not save",
            has(f, "FILE SYSTEM WAS MODIFIED") && has(f, "inode(s) with bad content"));
+
+        /* THE MEDIUM IS READ-ONLY AND SAYS SO, AND USED TO ACCEPT WRITES.
+         * A player repairing a box edits what they believe is the customer's
+         * file, is told it was written, and has changed a live image that
+         * vanishes at the next boot. Being refused is what sends them to the
+         * mount the banner already prints -- so both halves are asserted
+         * here: the disc turns a write down, and the mounted disk takes it. */
+        say(&ses, "ed /etc/hostname 1c \"scribble\" . w", &o);
+        ck("a write to the disc's own /etc is refused, and says nothing was written",
+           has(o.p, "cannot write") && has(o.p, "NOTHING was written"));
+        say(&ses, "mount /dev/sda1 /mnt", &o);
+        const char *w = say(&ses, "ed /mnt/etc/hostname 1c \"reached-the-disk\" . w",
+                            &o);
+        ck("but the customer's disk, mounted at /mnt, takes one",
+           has(w, "bytes written"));
+        ck("and reading it back off the disk gives what was written",
+           has(say(&ses, "cat /mnt/etc/hostname", &o), "reached-the-disk"));
+        say(&ses, "umount /mnt", &o);
         say(&ses, "unplug", &o);
         snprintf(bx[0].boot, sizeof bx[0].boot, "%s", say(&ses, "eject srv1", &o));
         say(&ses, "plug srv1", &o);

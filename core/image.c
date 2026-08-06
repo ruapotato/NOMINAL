@@ -3945,6 +3945,16 @@ static const Package PKG_RESCUE_BASE = {
         "echo rescue: live system, read-only medium\n"
         "echo rescue: the customer disk is /dev/sda1 and is NOT mounted\n"
         "echo\n"
+        /* AND SAY WHAT THAT MEANS FOR THE THING YOU CAME HERE TO DO. The
+         * medium refuses writes now -- it always claimed to and used to
+         * accept them -- so the next thing a player tries after reading this
+         * banner is an edit that gets turned down. Naming the trap here is
+         * cheaper than leaving them to work out that /etc on this shell is
+         * the disc's /etc and not the customer's. */
+        "echo   NOTHING HERE TAKES WRITES. /etc on this shell is the disc's\n"
+        "echo   own, not the customer's, and editing it is refused. The disk\n"
+        "echo   is reached by mounting it, and /mnt/etc IS the customer's:\n"
+        "echo\n"
         "echo   mount /dev/sda1 /mnt\n"
         "echo   for i in dev sys proc; do mount /$i /mnt/$i; done\n"
         "echo   chroot /mnt\n"
