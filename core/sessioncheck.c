@@ -19,6 +19,9 @@
 #include <string.h>
 #include "nom.h"
 #include "session.h"
+/* For the one check that has to damage a real machine to see what `look`
+ * says about it: powered on is not the same as booted. */
+#include "machine.h"
 
 static int *P, *T;
 
@@ -542,6 +545,60 @@ static void check_build(int *passed, int *total)
     session_end(&ses);
 }
 
+/* --------------------------------------------- powered on is not booted */
+/* A playtester switched five servers back on the morning after a mains
+ * failure, read "[an OS is running on it]" on every one from `look`, and
+ * found out only from `plug` that all five had stopped at the initrd unable
+ * to mount a dirty root. That is exactly the morning you are triaging, so it
+ * is the worst possible moment for the line to be generous. */
+static void check_booted(int *passed, int *total)
+{
+    P = passed; T = total;
+    printf("\npowered on is not the same as booted\n");
+    Session ses;
+    if (!session_start(&ses, GATE_SEED, 100000)) { ck("a session starts", false); return; }
+    Buf o = {0};
+    static const char *SCRIPT[] = {
+        "buy server files", "go goods", "carry files", "go mdf", "drop",
+        "power files on", NULL
+    };
+    for (int i = 0; SCRIPT[i]; i++) say(&ses, SCRIPT[i], &o);
+
+    int d = -1;
+    for (int i = 0; i < ses.s.ndev; i++)
+        if (strcmp(ses.s.dev[i].name, "files") == 0) { d = i; break; }
+    if (d < 0 || !ses.mach[d]) { ck("a server powers on and gets a machine", false); goto done; }
+
+    ck("a healthy box that is on says an OS is running on it",
+       ses.mach[d]->boot.running &&
+       has(say(&ses, "look", &o), "[an OS is running on it]"));
+
+    /* Break its disk the way the world does, and boot it again. Nothing
+     * about the site changes -- still switched on, still in the room. Only
+     * the boot fails. */
+    {
+        char what[512];
+        machine_break(ses.mach[d], 99, 1, what, sizeof what);
+        machine_boot(ses.mach[d]);
+    }
+    if (ses.mach[d]->boot.running) {
+        ck("the damage stopped the boot", false);
+        goto done;
+    }
+    {
+        const char *r = say(&ses, "look", &o);
+        ck("a box whose boot failed does NOT claim an OS is running on it",
+           !has(r, "[an OS is running on it]"));
+        ck("it says it is on and where the boot stopped instead",
+           has(r, "switched on, but its boot stopped at"));
+        ck("and the site still says it is powered, because it is",
+           ses.s.dev[d].powered != 0);
+    }
+done:
+    buf_free(&o);
+    session_end(&ses);
+}
+
 /* ----------------------------------------- whose computer that is */
 /* `carry t3d0` used to work. The model had no objection -- a desk is not
  * cabled and not bolted to a wall -- and site_move() reassigns ownership to
@@ -555,6 +612,26 @@ static void check_tenant_kit(int *passed, int *total)
     Session ses;
     if (!session_start(&ses, GATE_SEED, 100000)) { ck("a session starts", false); return; }
     Buf o = {0};
+
+    /* BEFORE THE CLOCK RUNS, nobody is in. `serve` answered a tenancy that
+     * had not moved in with "refused: no such device", and a playtester spent
+     * several minutes looking for a typo in a box name that was correct and
+     * standing in the room with them. */
+    {
+        int early = -1;
+        for (int i = 0; i < ses.s.ntenant; i++)
+            if (!ses.s.tenant[i].moved) { early = i; break; }
+        if (early >= 0) {
+            char line[64];
+            snprintf(line, sizeof line, "serve %d uplink cat6",
+                     ses.s.tenant[early].tenant);
+            const char *r = say(&ses, line, &o);
+            ck("a tenancy that has not moved in is told so, not called a missing box",
+               has(r, "does not move in until day") && !has(r, "no such device"));
+            ck("and it says which day, and where the list of days is",
+               has(r, "`demand`"));
+        }
+    }
 
     /* Run the clock until somebody has moved in and put desks in a room. */
     int ti = -1;
@@ -1335,6 +1412,7 @@ int session_selfcheck(int *passed, int *total)
     check_build(passed, total);
     check_dangling(passed, total);
     check_tenant_kit(passed, total);
+    check_booted(passed, total);
     check_power(passed, total);
     check_services(passed, total);
     check_refusals(passed, total);

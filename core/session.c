@@ -386,8 +386,20 @@ static void dev_line(const Session *ses, int i, Buf *out)
          * of it is running"), and a playtester who read the first one would
          * have walked away believing the box was up. The machine's own answer
          * is the power state, so ask it. */
-        if (ses->mach[i] && d->powered)
-            buf_puts(out, "  [an OS is running on it]");
+        /* AND ONLY IF THAT OS GOT ANYWHERE. Powered on is not booted. A
+         * playtester switched five servers back on the morning after a mains
+         * failure, read "[an OS is running on it]" on every one, and only
+         * found out from `plug` that all five had stopped at the initrd
+         * unable to mount a dirty root. That is the exact morning you are
+         * triaging, so it is the worst possible moment for this line to be
+         * generous. m->boot.running is the machine's own answer. */
+        if (ses->mach[i] && d->powered) {
+            if (ses->mach[i]->boot.running)
+                buf_puts(out, "  [an OS is running on it]");
+            else
+                buf_printf(out, "  [switched on, but its boot stopped at %s]",
+                           boot_stage_name(ses->mach[i]->boot.failed_at));
+        }
         else if (ses->mach[i])
             buf_puts(out, "  [SWITCHED OFF -- nothing of it is running]");
     }
@@ -1816,6 +1828,23 @@ bool session_line(Session *ses, const char *line, Buf *out)
         }
         int d;
         if (!need_here(ses, t[2], &d, out)) return true;
+        /* A TENANCY THAT HAS NOT MOVED IN YET HAS NO DESKS TO CABLE TO, and
+         * saying so as "refused: no such device" sent a playtester hunting a
+         * typo in a box name that was correct and in the room with them.
+         * There is nothing to run copper to until their keys turn, and the
+         * day that happens is already in `demand`. */
+        int want = atoi(t[1]);
+        for (int i = 0; i < ses->s.ntenant; i++) {
+            const SiteTenant *tn = &ses->s.tenant[i];
+            if (tn->tenant != want || tn->moved) continue;
+            buf_printf(out, "tenancy %d does not move in until day %d, and their "
+                            "desks arrive with\n  them -- there is nothing on that "
+                            "floor to run copper to yet. It is day %d.\n"
+                            "  `demand` lists who is coming and when. The switch "
+                            "can go in early; the\n  drops cannot.\n",
+                       want, tn->day, ses->s.day);
+            return true;
+        }
         site_cmd(&ses->s, raw, out);
         return true;
     }
