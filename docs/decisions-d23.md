@@ -32,7 +32,8 @@ The game becomes an IT-infrastructure game set in a growing building, in the
 lineage of Tower Networking Inc. -- with the difference that their command line
 is a prop and ours is an emulated operating system. You order hardware, take
 delivery, carry it where it goes, run cable from a spool priced by the metre or
-pay for a permanent jack priced by distance, and configure the same OS on the
+pay for a permanent jack priced by distance (INTENDED, NOT YET BUILT -- see the
+note at the end of this record), and configure the same OS on the
 other end of every cable. Floors fill with tenants, tenants pay, demand outgrows
 the infrastructure, and you build more.
 
@@ -103,3 +104,24 @@ administrator, on a page of the in-game internet, in a source comment -- must be
 true of this machine, verified by running it. Real networking is that rule
 applied to the network, which is exactly why the shortcut version was never going
 to survive.
+
+
+## Addendum, 2026-08-05: the jack does not exist
+
+This record and the README both described a permanent jack, priced by distance to
+install, as the tidy counterpart to the spool. The first blind playtester of the
+tower went looking for it: *"What a 'permanent jack' is. The README and D23 both
+sell it as the counterpart to the spool. It is not in `help` and no verb I tried
+creates one."*
+
+They were right. The README has been corrected to describe the spool, which is
+real, and this note exists so the idea is not quietly lost. It is still the right
+mechanic and worth building, because it is a genuine trade-off with no correct
+answer: a run off the spool is cheap and immediate and leaves copper lying where
+you walked it, and a jack costs more, takes a trade, and is there for good. Cheap
+now against tidy later is exactly the kind of decision that comes back for you six
+floors up, which is what this whole pivot was for.
+
+Recording it as unbuilt rather than deleting it, because the reasoning survives the
+absence of the feature -- and because a design document that describes things the
+machine does not do is the same failure as a man page that does.

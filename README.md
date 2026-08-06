@@ -26,8 +26,11 @@ That is the whole idea. Everything else follows from it.
    copper afterwards is measured from there, and a box with a cable in it
    will not be picked up again until you unplug it.
 4. **You make it physical.** Rack it, power it, run copper to the switch. You
-   have a spool: cable costs by the metre and you choose the route. A permanent
-   jack is tidier and costs by distance to install.
+   have a spool: you plug one end in, walk to the other end, and the metres come
+   off the drum and out of the budget as you go. Walking distance and cable
+   distance are different numbers -- you take the corridor and the stairs, the
+   copper goes up the riser -- so a run can cost 78 m of your legs and 33 m of
+   cat6.
 5. **You make it work.** The box boots the same OS everything else runs. Give it
    an address, a route, a resolver, a firewall rule, a service. Get it wrong and
    it fails the way a real machine fails, and says so.
