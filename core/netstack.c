@@ -331,7 +331,7 @@ typedef struct {
     uint32_t laddr, raddr;
     TcpState state;
     uint32_t snd_nxt, snd_una, snd_isn;
-    uint32_t rcv_nxt;
+    uint32_t rcv_nxt, rcv_isn;
     uint16_t rwnd;            /* what the peer told us it can take         */
     uint8_t  rx[NET_RXBUF];
     int      rxlen;
@@ -340,6 +340,17 @@ typedef struct {
     int      txsent;          /* of those, how many are on the wire        */
     bool     fin_queued;      /* close() was called; send FIN after data   */
     bool     fin_sent;
+    /* CONGESTION CONTROL, which is a different window from rwnd above. The
+     * peer's window says what it can HOLD; this one says what the network
+     * between us has shown it can CARRY, and a sender may only have the
+     * smaller of the two outstanding. Without it a sender puts its whole
+     * buffer into one egress queue in one tick, the queue drops the back
+     * half of it, and there is nothing behind the hole to notice with. */
+    int      cwnd;            /* bytes we may have unacknowledged          */
+    int      ssthresh;        /* above this, grow by one segment per rtt   */
+    int      dupacks;         /* ACKs for snd_una seen since it last moved */
+    uint32_t recover;         /* highest byte sent when the loss was found */
+    bool     recovering;      /* in fast recovery: do not halve again      */
     uint64_t last_tx;         /* for the retransmission timer              */
     uint64_t timer;           /* TIME_WAIT / connection timeout            */
     int      listener;        /* a child socket remembers its parent       */
@@ -837,6 +848,29 @@ static void port_tx(Net *n, int p, const uint8_t *data, int len)
     int mb = port_rate_mb(n, p);
     uint64_t now_us = n->now * 1000ull;
     uint64_t serial_us = ((uint64_t)len * 8 + (uint64_t)mb - 1) / (uint64_t)mb;
+    /* THE CEILING THIS MODEL HAS, MEASURED AND WRITTEN DOWN, because the
+     * number it produces gets read as utilisation and acted on.
+     *
+     * Every frame handed to a port during one millisecond is offered at the
+     * same instant: `now_us` does not move inside a tick. So a port can only
+     * ever accept one bufferful per tick, whatever is offered to it -- 48 KB,
+     * which is 393us of a gigabit -- and can therefore never read above about
+     * 39% busy however hard it is pushed. In practice it reads far less,
+     * because whatever is handed over last in a tick is what gets dropped:
+     * eighty transfers through one gigabit port measure 8% busy and 75Mb
+     * carried, and adding more transfers moves neither number. A real port
+     * under that load runs at 100%.
+     *
+     * Letting the arrival instant advance with the wire time already offered
+     * this tick -- a sender paced at line rate rather than one dumping a
+     * buffer at a single instant -- was tried and it works: those same eighty
+     * transfers then measure 32% busy and 296Mb carried, and --loadcheck's
+     * hottest port went from 35% busy with 8,929 frames lost to 60% with
+     * 3,479. It also took the game's difficulty curve with it -- the naive
+     * tower stopped falling over at all and --loadcheck failed three of its
+     * own checks saying so. Which of the two an application really behaves
+     * like is a modelling decision with the whole load calibration hanging
+     * off it, so it is not made quietly in here. */
     uint64_t start = pt->busy_us > now_us ? pt->busy_us : now_us;
     uint64_t wait  = start - now_us;
     uint64_t buf_us = ((uint64_t)NET_PORT_BUFFER * 8 + (uint64_t)mb - 1) / (uint64_t)mb;
@@ -2343,10 +2377,29 @@ int net_traceroute(Net *n, int node, uint32_t dst, uint32_t *hops, int maxhops)
  * is the size of the buffer we actually have, retransmission on a timer, and
  * a four-way teardown with a TIME_WAIT at the end of it.
  *
- * It is not congestion-controlled and it does not reassemble out-of-order
- * segments -- on a switched LAN with a deterministic queue nothing arrives
- * out of order, and pretending otherwise would be code no test could reach.
- * Everything it DOES claim, it does.
+ * It IS congestion-controlled -- Reno, one scheme and not two: slow start, a
+ * congestion window that halves on loss, duplicate ACKs from the receiver
+ * and a fast retransmit on the third of them. That paragraph used to say the
+ * opposite, and the sentence it said it with ("nothing arrives out of order
+ * on a switched LAN") was wrong in the one case that matters: a port whose
+ * egress buffer overflows drops frames out of the middle of a stream, and
+ * everything behind the hole arrives out of order.
+ *
+ * What that cost was measured, on eight desks pulling files through one
+ * gigabit port for 600ms of wire time: 5% busy, 49Mb carried, 99 frames
+ * lost, and the middle transfer's longest silence 201ms -- the timer, to the
+ * millisecond, because a sender that lost a segment had no other way to hear
+ * about it. The same run now: 8% busy, 81Mb carried, 13 frames lost, longest
+ * silence 3ms. --netcheck's `a congested port` section is that measurement.
+ *
+ * The busy figure is still small and that part is not TCP's: see the note in
+ * port_tx() for the millisecond-granularity ceiling that keeps any port in
+ * this world under about 39% however hard it is pushed.
+ *
+ * It still does not REASSEMBLE out of order data: the receiver acknowledges
+ * what it has and drops what it cannot use, so a retransmission is go-back-N
+ * from the first byte the peer is missing. That is what a stack with no
+ * selective acknowledgement really does, and it is honest about the cost.
  */
 
 static int sock_alloc(Net *n, int node, uint8_t proto)
@@ -2577,6 +2630,11 @@ static void udp_input(Net *n, int node, int ifx, uint32_t src, uint32_t dst,
 #define TCP_RTO    200      /* ms before we resend                          */
 #define TCP_MSL     30      /* TIME_WAIT is twice this                      */
 #define TCP_MSS   1400
+/* The initial window is four segments, which is what RFC 3390 allowed and
+ * small enough that a first burst cannot on its own fill a 48 KB egress
+ * buffer eight ways over. */
+#define TCP_IW    (4 * TCP_MSS)
+#define TCP_DUPACK  3       /* the third duplicate is the loss signal       */
 
 static uint16_t tcp_window(Sock *s)
 {
@@ -2615,11 +2673,17 @@ static void tcp_send(Net *n, Sock *s, uint8_t flags, uint32_t seq,
               n->node[s->node].name, a, s->lport, b, s->rport,
               "S", (flags & TCP_ACK) ? "." : "", (unsigned)seq);
     else
-        trace(n, "%s tcp %s:%u > %s:%u [%s%s%s] seq %u len %d",
+        /* THE ACKNOWLEDGEMENT NUMBER IS PART OF THE LINE, because without it
+         * a capture cannot show the one thing a stalled transfer is made of:
+         * the same byte being asked for over and over. Three lines with the
+         * same `ack` are three duplicate ACKs, and they are what a reader --
+         * and the sender -- is supposed to act on. */
+        trace(n, "%s tcp %s:%u > %s:%u [%s%s%s] seq %u len %d ack %u",
               n->node[s->node].name, a, s->lport, b, s->rport,
               (flags & TCP_ACK) ? "." : "",
               (flags & TCP_FIN) ? "F" : "", (flags & TCP_RST) ? "R" : "",
-              (unsigned)(seq - s->snd_isn), dlen);
+              (unsigned)(seq - s->snd_isn), dlen,
+              (unsigned)(s->rcv_nxt - s->rcv_isn));
     ip_output(n, s->node, s->raddr, IP_PROTO_TCP, seg, TCP_HLEN + dlen, 64,
               s->laddr, false);
     s->last_tx = n->now;
@@ -2631,8 +2695,12 @@ static void tcp_pump(Net *n, Sock *s)
 {
     if (s->state != TCP_ESTABLISHED && s->state != TCP_CLOSE_WAIT) return;
     while (s->txsent < s->txlen) {
-        int win = s->rwnd - s->txsent;
-        if (win <= 0) break;              /* the peer's window is shut */
+        /* THE SMALLER OF THE TWO WINDOWS. The peer's says what it can hold;
+         * cwnd says what the wire between us has been shown to carry. */
+        int allow = s->rwnd < s->cwnd ? s->rwnd : s->cwnd;
+        int win = allow - s->txsent;
+        if (win <= 0) break;              /* the peer's window is shut, or
+                                           * the network's is */
         int m = s->txlen - s->txsent;
         if (m > TCP_MSS) m = TCP_MSS;
         if (m > win) m = win;
@@ -2646,6 +2714,50 @@ static void tcp_pump(Net *n, Sock *s)
         s->state = (s->state == TCP_CLOSE_WAIT) ? TCP_LAST_ACK : TCP_FIN_WAIT_1;
         s->timer = n->now + 4000;
     }
+}
+
+/* ---------------------------------------------------------- the window
+ * Three things move cwnd and they are the only three: an acknowledgement of
+ * new data opens it, three duplicate acknowledgements halve it, and the
+ * retransmission timer -- which means a whole window went missing and there
+ * was nothing left to hear a duplicate from -- puts it back to one segment.
+ */
+static void tcp_cwnd_open(Sock *s, int acked)
+{
+    s->dupacks = 0;
+    /* Recovery ends when the peer has acknowledged everything that was on
+     * the wire when the loss was found. Serial arithmetic, because sequence
+     * numbers start wherever the world seed put them and do wrap. */
+    if (s->recovering && (int32_t)(s->snd_una - s->recover) >= 0)
+        s->recovering = false;
+    if (s->recovering) return;            /* the window stays where it is */
+    if (s->cwnd < s->ssthresh)            /* slow start: one more per ack */
+        s->cwnd += acked > TCP_MSS ? TCP_MSS : acked;
+    else                                  /* avoidance: one more per rtt  */
+        s->cwnd += TCP_MSS * TCP_MSS / s->cwnd;
+    /* Past the send buffer is a window we could never fill. */
+    if (s->cwnd > NET_TXBUF) s->cwnd = NET_TXBUF;
+}
+
+static void tcp_cwnd_halve(Sock *s)
+{
+    s->ssthresh = s->cwnd / 2;
+    if (s->ssthresh < 2 * TCP_MSS) s->ssthresh = 2 * TCP_MSS;
+}
+
+/* FAST RETRANSMIT. The peer has asked three times for the same byte, so that
+ * byte is gone -- and the two after it that made the duplicates arrived, so
+ * the wire is fine and there is nothing to wait 200ms for. Resend from what
+ * it is asking for, at half the window, and do not halve again for anything
+ * that was already in flight when we noticed. */
+static void tcp_fast_retransmit(Net *n, Sock *s)
+{
+    tcp_cwnd_halve(s);
+    s->cwnd = s->ssthresh;
+    s->recover = s->snd_una + (uint32_t)s->txsent;
+    s->recovering = true;
+    s->txsent = 0;               /* go-back-N: nothing here reassembles */
+    tcp_pump(n, s);
 }
 
 int net_tcp_listen(Net *n, int node, uint16_t port)
@@ -2685,6 +2797,8 @@ int net_tcp_connect(Net *n, int node, uint32_t dst, uint16_t dport)
     s->snd_una = s->snd_isn;
     s->snd_nxt = s->snd_isn + 1;
     s->rwnd = NET_TXBUF;
+    s->cwnd = TCP_IW;
+    s->ssthresh = NET_TXBUF;
     s->state = TCP_SYN_SENT;
     s->timer = n->now + 6000;
     tcp_send(n, s, TCP_SYN, s->snd_isn, NULL, 0);
@@ -2818,11 +2932,13 @@ static void tcp_input(Net *n, int node, int ifx, uint32_t src, uint32_t dst,
             c->listener = i;
             c->accepted = -1;
             c->service = l->service;
-            c->rcv_nxt = seq + 1;
+            c->rcv_nxt = c->rcv_isn = seq + 1;
             c->snd_isn = (uint32_t)(rng_next(&n->rng) & 0xffffffffu);
             c->snd_una = c->snd_isn;
             c->snd_nxt = c->snd_isn + 1;
             c->rwnd = win ? win : 1;
+            c->cwnd = TCP_IW;
+            c->ssthresh = NET_TXBUF;
             c->state = TCP_SYN_RCVD;
             c->timer = n->now + 6000;
             tcp_send(n, c, TCP_SYN | TCP_ACK, c->snd_isn, NULL, 0);
@@ -2840,7 +2956,7 @@ static void tcp_input(Net *n, int node, int ifx, uint32_t src, uint32_t dst,
     case TCP_SYN_SENT:
         if ((flags & (TCP_SYN | TCP_ACK)) == (TCP_SYN | TCP_ACK) &&
             ack == s->snd_isn + 1) {
-            s->rcv_nxt = seq + 1;
+            s->rcv_nxt = s->rcv_isn = seq + 1;
             s->snd_una = ack;
             s->state = TCP_ESTABLISHED;
             tcp_send(n, s, TCP_ACK, s->snd_una, NULL, 0);
@@ -2870,6 +2986,17 @@ static void tcp_input(Net *n, int node, int ifx, uint32_t src, uint32_t dst,
                 if (s->txsent < 0) s->txsent = 0;
             }
             s->snd_una = ack;
+            tcp_cwnd_open(s, (int)acked);
+        } else if (acked == 0 && dlen == 0 && s->txsent > 0 &&
+                   !(flags & (TCP_SYN | TCP_FIN))) {
+            /* A DUPLICATE ACKNOWLEDGEMENT: the peer is asking again for the
+             * byte it already asked for, and it only says so because
+             * something ARRIVED that it could not use. Two of those can be
+             * reordering. Three is a lost segment, and it is the whole
+             * reason a congested link does not have to go quiet for a
+             * retransmission timer to notice. */
+            if (++s->dupacks == TCP_DUPACK && !s->recovering)
+                tcp_fast_retransmit(n, s);
         }
         if (s->state == TCP_FIN_WAIT_1 && s->fin_sent && ack == s->snd_una &&
             s->txlen == 0) s->state = TCP_FIN_WAIT_2;
@@ -2881,8 +3008,11 @@ static void tcp_input(Net *n, int node, int ifx, uint32_t src, uint32_t dst,
         if (s->state == TCP_CLOSING) { s->state = TCP_TIME_WAIT; s->timer = n->now + 2 * TCP_MSL; }
     }
 
-    /* Data, in order only. Anything else is dropped and the sender's timer
-     * will bring it back, which is what a real receiver does. */
+    /* Data, in order only -- and an acknowledgement either way, which is
+     * where duplicate ACKs come from. Something that is not the next byte
+     * cannot be kept, because nothing here reassembles; but it PROVES the
+     * path is still carrying frames, so we say again what we are waiting
+     * for. That repeated ack number is the whole loss signal. */
     bool need_ack = false;
     if (dlen > 0) {
         if (seq == s->rcv_nxt) {
@@ -2946,7 +3076,20 @@ static void tcp_timers(Net *n)
         case TCP_CLOSE_WAIT:
             if (s->txsent > 0 && n->now - s->last_tx >= TCP_RTO) {
                 /* Everything from snd_una again. Go-back-N, which is what a
-                 * stack with no selective acknowledgement really does. */
+                 * stack with no selective acknowledgement really does.
+                 *
+                 * THE TIMER STILL EARNS ITS KEEP. Fast retransmit needs a
+                 * segment to arrive AFTER the lost one to make a duplicate
+                 * ack out of; when a whole window is dropped -- which is
+                 * exactly what an overflowing egress buffer does to the
+                 * sender at the back of the queue -- there is nothing left
+                 * to hear from and this is the only way back. It is also the
+                 * worse signal of the two, so the window goes to one
+                 * segment and slow-starts again rather than halving. */
+                tcp_cwnd_halve(s);
+                s->cwnd = TCP_MSS;
+                s->dupacks = 0;
+                s->recovering = false;
                 s->txsent = 0;
                 tcp_pump(n, s);
             }

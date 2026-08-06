@@ -20,6 +20,7 @@
  */
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #include "nom.h"
 #include "netstack.h"
 /* The last two checks boot a REAL machine and type at it, because the filter
@@ -548,6 +549,249 @@ static void check_tcp(void)
     int bad = net_tcp_connect_wait(n, l.a, net_ip(10, 0, 0, 2), 9999);
     ck("a closed port refuses at once", bad < 0);
     net_free(n);
+}
+
+/* ------------------------------------------- TCP when the port is full
+ *
+ * WHAT A PORT THAT IS DROPPING FRAMES DOES TO THE TRANSFERS ACROSS IT. Eight
+ * desks pulling files off one server share one gigabit port, and its 48 KB
+ * egress buffer cannot hold what will not fit on the wire, so frames are
+ * lost. That much was always true here. What happened next was not: a sender
+ * that lost a segment had no way to find out except the retransmission
+ * timer, so it went silent for 200ms per loss while the wire in front of it
+ * sat idle. Measured on this scenario before the stack could do anything
+ * else: 5% busy, 49Mb carried, 99 frames lost, and the middle transfer's
+ * longest silence was 201ms -- the timer, to the millisecond.
+ *
+ * Now the receiver says again what it is waiting for, the sender resends on
+ * the third of those without waiting for anything, and the window it may
+ * have on the wire answers to the loss instead of being whatever the peer's
+ * buffer happened to be: 8% busy, 81Mb carried, 13 frames lost, longest
+ * silence 3ms.
+ *
+ * The busy figure is still small, and it is not TCP's doing: see the note in
+ * port_tx() in netstack.c for the millisecond-granularity ceiling that keeps
+ * any port in this world under about 39% however hard it is pushed. What
+ * these checks assert is what TCP is responsible for -- the loss signal, the
+ * resend that answers it, and the transfers that are no longer silent for a
+ * fifth of a second at a time.
+ *
+ * Everything below is read off the outside of the stack: bytes that really
+ * arrived at a desk, a port counter, and the capture a person would take. */
+#define CONG_DESKS 16     /* the busiest run below; the other uses eight   */
+#define CONG_MS    600
+
+/* READING THE CAPTURE THE WAY A PERSON DOES. One row per direction of one
+ * connection, built from the trace lines themselves: what it has sent up to,
+ * what it last acknowledged, and how many times in a row it acknowledged the
+ * same byte. Three of those in a row IS the duplicate-ACK signal. */
+#define CONG_FLOWROWS 64
+typedef struct {
+    char     key[56];        /* "10.0.0.1:8080 > 10.0.0.11:49152"           */
+    uint32_t lastack;        /* the byte it last said it was waiting for    */
+    int      duprun;         /* times in a row it repeated lastack          */
+    bool     seen;
+} Flow;
+
+static unsigned tail_num(const char *ln, const char *tag, bool *ok)
+{
+    const char *p = strstr(ln, tag);
+    *ok = p != NULL;
+    return p ? (unsigned)strtoul(p + strlen(tag), NULL, 10) : 0;
+}
+
+/* Fold one capture line into the rows, and answer how many times in a row
+ * this sender has now asked for the same byte. 0 if the line was not a bare
+ * acknowledgement. */
+static int flow_line(Flow *fl, int *nfl, const char *ln)
+{
+    if (!ln) return 0;
+    const char *a = strstr(ln, " tcp ");
+    const char *b = strstr(ln, " [");
+    if (!a || !b || b < a) return 0;
+    a += 5;
+    char key[56];
+    size_t k = (size_t)(b - a);
+    if (k >= sizeof key) k = sizeof key - 1;
+    memcpy(key, a, k);
+    key[k] = 0;
+
+    Flow *f = NULL;
+    for (int i = 0; i < *nfl; i++) if (strcmp(fl[i].key, key) == 0) { f = &fl[i]; break; }
+    if (!f) {
+        if (*nfl >= CONG_FLOWROWS) return 0;
+        f = &fl[(*nfl)++];
+        memset(f, 0, sizeof *f);
+        snprintf(f->key, sizeof f->key, "%s", key);
+    }
+
+    bool has_len, has_ack;
+    unsigned len = tail_num(ln, " len ", &has_len);
+    unsigned ack = tail_num(ln, " ack ", &has_ack);
+    if (!has_len) return 0;
+    if (len > 0) return 0;      /* data, not an acknowledgement on its own */
+    if (!has_ack) return 0;
+    if (f->seen && ack == f->lastack) f->duprun++;
+    else                              f->duprun = 1;
+    f->lastack = ack;
+    f->seen = true;
+    return f->duprun;
+}
+
+/* What one run of the scenario measured. */
+typedef struct {
+    int  connected;
+    int  dupack;             /* longest run of "the same byte again"        */
+    int  asked, answered;    /* desks that asked three times; that got it   */
+    int  slowest;            /* ms from the third ask to the bytes landing  */
+    int  median_stall;       /* the middle desk's longest silence, ms       */
+    int  util, mbit;
+    unsigned long long drops;
+} Cong;
+
+/* N desks pulling files off one server, all through the server's one
+ * gigabit port, for 600ms of wire time. */
+static void cong_run(int desks, Cong *r)
+{
+    memset(r, 0, sizeof *r);
+    Net *n = net_new(77);
+    int sw  = net_add_switch(n, "sw1", 24);
+    int srv = net_add_host(n, "files");
+    net_cable(n, srv, 0, sw, 0, 10, CAB_CAT5E);
+    net_if_addr(n, srv, 0, net_ip(10, 0, 0, 1), net_mask_bits(24));
+    int lsock = net_tcp_listen(n, srv, 8080);
+
+    int cs[CONG_DESKS], ss[CONG_DESKS];
+    long long got[CONG_DESKS];
+    int idle[CONG_DESKS], stall[CONG_DESKS], asked3[CONG_DESKS], waited[CONG_DESKS];
+    for (int i = 0; i < desks; i++) {
+        char nm[NET_NAME_MAX];
+        snprintf(nm, sizeof nm, "desk%d", i);
+        int c = net_add_host(n, nm);
+        net_cable(n, c, 0, sw, i + 1, 10, CAB_CAT5E);
+        net_if_addr(n, c, 0, net_ip(10, 0, 0, 11 + i), net_mask_bits(24));
+        cs[i] = net_tcp_connect(n, c, net_ip(10, 0, 0, 1), 8080);
+        ss[i] = -1; got[i] = 0; idle[i] = 0; stall[i] = 0;
+        asked3[i] = -1; waited[i] = -1;
+    }
+    int nacc = 0;
+    for (int t = 0; t < 2000 && nacc < desks; t++) {
+        net_step(n, 1);
+        int a;
+        while (nacc < desks && (a = net_tcp_accept(n, lsock)) >= 0) ss[nacc++] = a;
+    }
+    r->connected = nacc;
+
+    /* The stopwatch on the server's port starts here; the lifetime drop
+     * counter does not, because a port's drops are its whole life and a real
+     * switch prints them that way. */
+    uint8_t page[4096];
+    memset(page, 'x', sizeof page);
+    net_port_busy_reset(n, srv, 0);
+    uint64_t drops0 = net_port_drops(n, srv, 0);
+    Flow fl[CONG_FLOWROWS];
+    int nfl = 0;
+    net_trace_clear(n);
+    net_trace(n, true);
+    for (int t = 0; t < CONG_MS; t++) {
+        /* The server pushes whatever each send buffer will take, every tick,
+         * which is what a file server serving a floor does. */
+        for (int i = 0; i < nacc; i++)
+            while (net_tcp_send(n, ss[i], page, (int)sizeof page) > 0) { }
+        net_step(n, 1);
+        for (int i = 0; i < desks; i++) {
+            char sink[4096];
+            int k, moved = 0;
+            while ((k = net_tcp_recv(n, cs[i], sink, (int)sizeof sink)) > 0) {
+                got[i] += k;
+                moved += k;
+            }
+            /* HOW LONG A TRANSFER GOES QUIET FOR is the number this is all
+             * about: a lost segment used to cost the retransmission timer,
+             * every single time. And how long after asking three times the
+             * bytes turned up -- under 200ms, the timer cannot be what
+             * fetched them, because the timer had not run out. */
+            if (moved) {
+                if (idle[i] > stall[i]) stall[i] = idle[i];
+                idle[i] = 0;
+                if (asked3[i] >= 0 && waited[i] < 0) waited[i] = t - asked3[i];
+            } else idle[i]++;
+        }
+        for (int i = 0; i < net_trace_count(n); i++) {
+            const char *ln = net_trace_line(n, i);
+            int run = flow_line(fl, &nfl, ln);
+            if (run > r->dupack) r->dupack = run;
+            /* Whose duplicates they are: a trace line starts with the name
+             * of the machine that sent it. */
+            if (run == 3 && strncmp(ln, "desk", 4) == 0) {
+                int d = atoi(ln + 4);
+                if (d >= 0 && d < desks && asked3[d] < 0) asked3[d] = t;
+            }
+        }
+        net_trace_clear(n);
+    }
+    net_trace(n, false);
+
+    long long total = 0;
+    int stalls[CONG_DESKS];
+    for (int i = 0; i < desks; i++) {
+        total += got[i];
+        if (idle[i] > stall[i]) stall[i] = idle[i];
+        stalls[i] = stall[i];
+        if (asked3[i] < 0) continue;
+        r->asked++;
+        if (waited[i] < 0) continue;
+        r->answered++;
+        if (waited[i] > r->slowest) r->slowest = waited[i];
+    }
+    for (int a = 0; a < desks; a++)              /* the middle desk's wait */
+        for (int b = a + 1; b < desks; b++)
+            if (stalls[b] < stalls[a]) { int q = stalls[a]; stalls[a] = stalls[b]; stalls[b] = q; }
+    r->median_stall = stalls[desks / 2];
+    r->util = (int)((net_port_busy_us(n, srv, 0) * 100) / ((uint64_t)CONG_MS * 1000));
+    r->drops = (unsigned long long)(net_port_drops(n, srv, 0) - drops0);
+    r->mbit = (int)((total * 8) / ((long long)CONG_MS * 1000));
+    net_free(n);
+}
+
+static void check_congestion(void)
+{
+    printf("\na congested port, and the loss it really causes\n");
+    char what[128];
+
+    /* EIGHT DESKS. Enough to overflow the port's buffer in bursts, which is
+     * the ordinary case: the numbers in the comment above are this run. */
+    Cong a;
+    cong_run(8, &a);
+    ck("eight desks all have a transfer running off the one file server",
+       a.connected == 8);
+    snprintf(what, sizeof what,
+             "the port really is dropping frames (%llu of them, %d%% busy)",
+             a.drops, a.util);
+    ck(what, a.drops > 0);
+    snprintf(what, sizeof what,
+             "and a transfer is not silent for a timer at a time (%dms, was 201ms)",
+             a.median_stall);
+    ck(what, a.median_stall < 50);
+    snprintf(what, sizeof what,
+             "so the same eight desks get more for it (%dMb carried, was 49Mb)",
+             a.mbit);
+    ck(what, a.mbit >= 65);
+
+    /* SIXTEEN DESKS, which is where segments are lost out of the MIDDLE of a
+     * stream often enough to watch the whole signal work end to end: the
+     * receiver asks again, and again, and again, and the missing bytes turn
+     * up milliseconds later rather than when the timer runs out. */
+    Cong b;
+    cong_run(16, &b);
+    snprintf(what, sizeof what,
+             "a receiver that cannot use what arrived asks again (%d times over)",
+             b.dupack);
+    ck(what, b.dupack >= 3);
+    snprintf(what, sizeof what,
+             "and asking three times fetches it in %dms, not on the 200ms timer (%d of %d)",
+             b.slowest, b.answered, b.asked);
+    ck(what, b.asked > 0 && b.answered > 0 && b.slowest < 200);
 }
 
 static void check_firewall(void)
@@ -1314,6 +1558,7 @@ int net_selfcheck(void)
     check_routing();
     check_nics();
     check_tcp();
+    check_congestion();
     check_firewall();
     check_drop_reasons();
     check_dhcp();
