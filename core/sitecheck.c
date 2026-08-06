@@ -449,6 +449,210 @@ static void check_power(const Building *b)
     site_free(&s);
 }
 
+/* ==================================================== D37. THE WALL ========
+ * The owner, playing his own game: *"The server in the default rack isn't
+ * booting, but it's also not plugged into any power... Each room should have
+ * at least one power outlet. We also need power logic, so you plug in servers
+ * into the actual wall."*
+ *
+ * Until this, `powered` was a flag a box carried around with it and pressing
+ * the button always worked, wherever the box was standing and whatever was
+ * or was not behind it. So a server that would not start had exactly one
+ * possible cause and a serial lead into a dead box could never be a
+ * diagnosis. This is the model that makes it one. */
+static void check_mains(const Building *b)
+{
+    printf("\npower comes out of a wall, and the wall has so many holes in it\n");
+    Site s;
+    site_new(&s, b, GATE_SEED, 400000);
+    int mdf   = bld_find(b, 0, RM_MDF);
+    int comms = bld_find(b, 2, RM_COMMS);
+    int off   = a_room(b, 2);
+    int wc    = bld_find(b, 2, RM_TOILET);
+
+    /* ------------------------------------- 1. THE ROOM DECIDES, NOT THE KIT */
+    ck("every room a person can walk into has at least one outlet in it, "
+       "as asked",
+       site_room_outlets_built(&s, comms) >= 1 &&
+       site_room_outlets_built(&s, off) >= 1 &&
+       (wc < 0 || site_room_outlets_built(&s, wc) >= 1) &&
+       site_room_outlets_built(&s, mdf) >= 1);
+    /* THE ASYMMETRY IS THE DESIGN. A cupboard is wired for a cupboard and a
+     * let floor is wired for people, so the decision lands where the
+     * equipment is and never on a floor of desks -- and the cupboard here is
+     * the same size as the office, so it is the KIND doing the work. */
+    printf("    comms #%d %.0f m2: %d outlets;  office #%d %.0f m2: %d\n",
+           comms, bld_room_area(&b->rooms[comms]),
+           site_room_outlets_built(&s, comms), off,
+           bld_room_area(&b->rooms[off]), site_room_outlets_built(&s, off));
+    ck("a comms cupboard has fewer than a let office, because of what it is",
+       site_room_outlets_built(&s, comms) < site_room_outlets_built(&s, off));
+
+    /* ---------------------------- 2. A BOX PUT IN A ROOM IS PLUGGED IN ---- */
+    int have = site_room_outlets(&s, comms);
+    int dev[8];
+    for (int i = 0; i < have; i++) {
+        char nm[NET_NAME_MAX];
+        snprintf(nm, sizeof nm, "sw%d", i);
+        dev[i] = site_install(&s, SDEV_SWITCH8, comms, nm);
+    }
+    ck("putting a box down in a room with a socket free plugs it in",
+       s.dev[dev[0]].mains && s.dev[dev[0]].powered);
+    ck("and the room fills up: every socket in it has a lead in it now",
+       site_room_outlets_used(&s, comms) == have &&
+       site_room_outlets_free(&s, comms) == 0);
+
+    /* ---------------------------------- 3. AND THE NEXT ONE IS NOT -------- */
+    int dead = site_install(&s, SDEV_SERVER, comms, "dead");
+    ck("the next box into a full room is NOT plugged in, and is not powered",
+       dead >= 0 && !s.dev[dead].mains && !s.dev[dead].powered);
+    ck("its power button does nothing, and says which of the two things "
+       "is wrong",
+       !site_power(&s, dead, true) && s.err == SITE_ENOMAINS &&
+       !s.dev[dead].powered);
+    ck("`mains` on it is refused for the same reason, so nothing is "
+       "one keystroke away",
+       !site_mains(&s, dead, true) && s.err == SITE_ENOMAINS);
+    /* AND IT MAKES NO HEAT EITHER, which is the same fact read by the other
+     * model in this file: a box with nothing feeding it dissipates nothing. */
+    int w_before = site_room_watts(&s, comms);
+    ck("a box nothing is feeding puts no watts into the room",
+       w_before == site_room_watts(&s, comms) &&
+       w_before < site_room_watts(&s, comms) + 320);
+
+    /* ----------------------------------------- 4. MONEY BUYS ANOTHER ONE -- */
+    long price = site_outlet_price(&s, comms);
+    long money = s.money;
+    ck("an outlet is priced on the run back to the riser, not out of a table",
+       price > 0 && price != site_outlet_price(&s, off));
+    printf("    another socket: %ld in the cupboard against the riser, "
+           "%ld in the office\n", price, site_outlet_price(&s, off));
+    ck("ordering one charges for it and the room has one more",
+       site_outlet(&s, comms) >= 0 && s.money == money - price &&
+       site_room_outlets(&s, comms) == have + 1 &&
+       site_room_outlets_free(&s, comms) == 1);
+    ck("and now the plug goes in and the button works",
+       site_mains(&s, dead, true) && s.dev[dead].mains &&
+       site_power(&s, dead, true) && s.dev[dead].powered);
+    ck("and NOW it is making heat, because now something is feeding it",
+       site_room_watts(&s, comms) > w_before);
+
+    /* ------------------------------- 5. AND THE CIRCUIT IS FINITE TOO ----- */
+    int guard = 0;
+    while (site_room_outlets(&s, comms) < site_room_outlets_max(&s, comms) &&
+           guard++ < 64)
+        site_outlet(&s, comms);
+    ck("a room takes as many again as it was built with and then stops",
+       site_room_outlets(&s, comms) == site_room_outlets_built(&s, comms) * 2 &&
+       site_outlet(&s, comms) < 0 && s.err == SITE_ECIRCUIT);
+    printf("    #%d: built with %d, bought up to %d, and that is the circuit\n",
+           comms, site_room_outlets_built(&s, comms),
+           site_room_outlets(&s, comms));
+
+    /* ------------------------------------- 6. AN APPLIANCE'S PLUG IS ITS
+     * BUTTON, which site.h has said about a switch since the pivot and which
+     * nothing could act on until there was a plug. A switch with no power in
+     * it has no link lights, and the box at the far end of every one of its
+     * ports sees that -- which is what makes an unplugged switch diagnosable
+     * from somewhere other than the cupboard it is in. */
+    int up = site_install(&s, SDEV_SWITCH8, mdf, "core2");
+    int host = site_install(&s, SDEV_PC, mdf, "peer");
+    site_power(&s, host, true);
+    int lk = site_cable(&s, host, 0, up, 1, CAB_CAT6);
+    ck("a link into a powered switch comes up", site_link_state(&s, lk) == PORT_UP);
+    ck("pulling the switch's plug is what switches it off -- it has no button",
+       site_mains(&s, up, false) && !s.dev[up].powered);
+    ck("and the box at the far end sees the link go down",
+       site_link_state(&s, lk) != PORT_UP);
+    ck("and the cable is still in it, so it cannot be carried off",
+       site_dev_cabled(&s, up));
+    ck("plugging it back in brings the link back up, with nothing retyped",
+       site_mains(&s, up, true) && s.dev[up].powered &&
+       site_link_state(&s, lk) == PORT_UP);
+
+    /* --------------------------------- 7. ORDERED KIT IS STILL IN ITS BOX */
+    int ord = site_order(&s, SDEV_SERVER, "crated");
+    ck("an order lands in goods in unplugged, because it is on a pallet",
+       ord >= 0 && !s.dev[ord].mains && !s.dev[ord].powered);
+    ck("and moving it into a room with a socket free is what plugs it in",
+       site_move(&s, ord, mdf) && s.dev[ord].mains);
+    /* AND CARRYING IT SOMEWHERE WITH NO SOCKET LEFT TAKES THE PLUG WITH IT.
+     * A toilet has the shaver socket and that is all it has, so one box
+     * fills it -- which is the point of the table: some rooms are places
+     * kit lives and some are not, and the count is what says so. */
+    if (wc >= 0) {
+        site_install(&s, SDEV_SWITCH8, wc, "loo");
+        ck("one box fills a room that was wired with one socket",
+           site_room_outlets_free(&s, wc) == 0);
+        site_power(&s, ord, true);
+        ck("and a box carried into it comes out of the wall and stops",
+           site_move(&s, ord, wc) && !s.dev[ord].mains && !s.dev[ord].powered);
+    }
+    site_free(&s);
+}
+
+/* PULLING THE PLUG ON A RUNNING MACHINE. It is the blackout with one machine
+ * in it, and the whole claim is that the box cannot tell the difference --
+ * so this asks the BOX, through the same fs_dirty the mains failure sets and
+ * the same site event the morning after reads. */
+static void check_plug_pulled(const Building *b)
+{
+    printf("\nthe plug, pulled by hand, on something that was running\n");
+    Session ses;
+    if (!session_start(&ses, GATE_SEED, 200000)) { ck("a session starts", false); return; }
+    Buf o = {0};
+    static const char *BUILD[] = {
+        "buy server one", "buy server two",
+        "go goods", "carry one", "go mdf", "drop", "power one on",
+        "go goods", "carry two", "go mdf", "drop", "power two on",
+        "ups two", NULL
+    };
+    for (int i = 0; BUILD[i]; i++) session_line(&ses, BUILD[i], &o);
+    int a = site_dev_by_name(&ses.s, "one");
+    int c = site_dev_by_name(&ses.s, "two");
+    if (a < 0 || c < 0 || !ses.mach[a] || !ses.mach[c]) {
+        ck("two servers boot in the MDF", false);
+        goto done;
+    }
+    ck("two servers are up, one of them on a battery",
+       ses.mach[a]->boot.running && ses.mach[c]->boot.running &&
+       !ses.mach[a]->fs_dirty && !ses.mach[c]->fs_dirty && ses.s.dev[c].ups);
+
+    buf_clear(&o);
+    session_line(&ses, "mains one off", &o);
+    ck("pulling the plug on a running machine stops it",
+       !ses.s.dev[a].powered && !ses.s.dev[a].mains);
+    ck("and it went down the way a blackout takes one down: unclean",
+       ses.mach[a]->fs_dirty);
+    ck("and the player is told, at the moment it happens, what they just did",
+       has(o.p, "blackout with one machine in it"));
+    buf_clear(&o);
+    session_line(&ses, "events", &o);
+    ck("and it is in `events` beside the weather, because it is the same event",
+       has(o.p, "unplugged while it was running"));
+
+    buf_clear(&o);
+    session_line(&ses, "mains two off", &o);
+    ck("the one on a battery is stopped too -- the load has nowhere to go",
+       !ses.s.dev[c].powered);
+    ck("but the battery shut it down in an orderly way, so there is nothing "
+       "to check",
+       !ses.mach[c]->fs_dirty);
+    buf_clear(&o);
+    session_line(&ses, "events", &o);
+    ck("and the battery is what `events` says saved it",
+       has(o.p, "battery shut it down cleanly"));
+
+    /* AND THE SOCKETS ARE FREE AGAIN, which is the only reason a player
+     * would ever pull one on purpose. */
+    ck("both sockets are back on the wall for something else",
+       site_room_outlets_used(&ses.s, ses.room) <
+       site_room_outlets(&ses.s, ses.room));
+done:
+    buf_free(&o);
+    session_end(&ses);
+}
+
 /* --------------------------------------------------------- the tenants */
 static void check_tenants(const Building *b)
 {
@@ -1951,8 +2155,14 @@ static void check_shell(const Building *b)
         "order router rt",
         "move rt f0.mdf",
         "order pc pc1",
-        "power pc1 on",
+        /* AND THE BUTTON COMES AFTER THE WALK, since D37. This line used to
+         * sit above the `move` and switch a machine on while it was still
+         * on a pallet under the roller door -- which worked, because until
+         * there was a plug nothing in this game drew power from anywhere.
+         * A pc in goods in is in its box; it is switched on in the room it
+         * is carried to, out of a socket on that room's wall. */
         "move pc1 f2.office",
+        "power pc1 on",
         "cable rt:0 uplink:0 cat6",
         "cable rt:1 sw2:0 cat6",
         "cable pc1:0 sw2:1 cat6",
@@ -2596,6 +2806,8 @@ int site_selfcheck(void)
     check_port_speed(&b);
     check_boxes(&b);
     check_power(&b);
+    check_mains(&b);
+    check_plug_pulled(&b);
     check_tenants(&b);
     check_bills(&b);
     check_agreement(&b);

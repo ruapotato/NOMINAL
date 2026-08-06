@@ -723,6 +723,11 @@ int site_room_watts(const Site *s, int room)
     for (int i = 0; i < s->ndev; i++) {
         const SiteDev *d = &s->dev[i];
         if (d->room != room || d->kind == SDEV_DESK) continue;
+        /* AND A BOX THAT IS NOT PLUGGED IN MAKES NO HEAT. Obvious once there
+         * is a plug, and it was not expressible before D37: a switch in a
+         * cupboard dissipated sixty watts whether or not anything was
+         * feeding it, because nothing was. */
+        if (!d->mains) continue;
         if (site_kind_has_os(d->kind) && !d->powered) continue;
         w += watts_of(d->kind);
     }
@@ -874,6 +879,63 @@ static int pf_deal(Site *s, Rng *rng, int *seq)
     int k = PF_CLEAN + 1 + (*seq % (nk - 1));
     (*seq)++;
     return k;
+}
+
+/* ------------------------------------------- and one plug, pulled by hand
+ * THE SAME EVENT, WITH THE PLAYER AS THE WEATHER. D37 gave a box a plug and
+ * a wall to put it in, and the moment there is a plug there is somebody
+ * pulling it out of a running server. That has to be the blackout the
+ * building has at 04:12 and not a softer relative of it, because the machine
+ * on the end of it cannot tell the difference and this project's whole claim
+ * is that it never has to: the damage is dealt by the same pf_deal, written
+ * by the same breaker_powerfail_as, and read afterwards by the same fsck.
+ *
+ * A BATTERY IS THE DIFFERENCE, and this is where the second half of what a
+ * ups is for finally shows up. In a blackout nomups sees the utility come
+ * back in nineteen minutes and the machine never notices. Here it does not
+ * come back, so the battery does the other thing it is bought for: it holds
+ * the load long enough to shut the machine down in an orderly way. Clean
+ * stop, nothing to check in the morning, and the player CHOSE the moment --
+ * which is the first time in this game the two hundred and twenty pounds
+ * pays for something the world did not do to them.
+ *
+ * The rng is seeded off the site, the day and the device rather than off the
+ * day's own stream, because pulling a plug is not part of the day: two
+ * players who pull the same plug on the same morning of the same seed get
+ * the same morning after, and a player who pulls one does not shift the
+ * weather of every box behind them. */
+bool site_unclean_stop(Site *s, int dev)
+{
+    if (dev < 0 || dev >= s->ndev) return false;
+    SiteDev *d = &s->dev[dev];
+    if (!site_kind_has_os(d->kind) || !d->powered) return false;
+    Machine *m = box_of_dev(s, dev);
+    if (d->ups) {
+        if (m) {
+            breaker_syslog(m, "nomups: utility power lost -- load transferred to battery");
+            breaker_syslog(m, "nomups: on battery, 19 min runtime remaining");
+            breaker_syslog(m, "nomups: no utility power -- commanding an orderly shutdown");
+        }
+        ev_add(s, SEV_UPS_HELD, dev,
+               "%s had its plug pulled and the battery shut it down cleanly.",
+               d->name);
+        site_power(s, dev, false);
+        return false;
+    }
+    Rng rng;
+    rng_seed(&rng, s->seed ^ 0x9e3779b97f4a7c15ull ^
+                   ((uint64_t)s->day << 12) ^ (uint64_t)dev);
+    int seq = -1;
+    bool writing = used_pct(s, dev) > 0;
+    int kind = writing ? pf_deal(s, &rng, &seq) : PF_CLEAN;
+    char note[200] = "";
+    if (m) breaker_powerfail_as(m, &rng, kind, note, sizeof note);
+    site_power(s, dev, false);
+    ev_add(s, SEV_DOWN_DIRTY, dev,
+           "%s was unplugged while it was running and went down unclean.",
+           d->name);
+    (void)note;
+    return true;
 }
 
 static void the_mains_fails(Site *s, Rng *rng)

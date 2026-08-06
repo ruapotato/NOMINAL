@@ -93,7 +93,10 @@ static void check_verbs(int *passed, int *total)
          * looking for the verb and there was none. */
         "jack", "patch", "jacks",
         /* D31: the people at the desks, and the chair you can sit in. */
-        "desks", "sit", "stand", NULL
+        "desks", "sit", "stand",
+        /* D37: the plug, the socket and the power map. Every action the 3D
+         * window can offer over a faceplate has to have a word here. */
+        "mains", "outlet", "outlets", NULL
     };
     bool all = true;
     for (int i = 0; VERB[i]; i++)
@@ -167,7 +170,11 @@ static void check_verbs(int *passed, int *total)
          * problem. It is in this list rather than the one above because both
          * halves matter: the tower help has to NAME it, and it has to answer
          * where the help says it does. */
-        "desks", "sit", "stand", NULL
+        "desks", "sit", "stand",
+        /* D37. The wall. Same two directions and the same reason: a player
+         * standing over a box that will not switch on has to be able to find
+         * the words for the plug in the page they are already reading. */
+        "mains", "outlet", "outlets", NULL
     };
     const char *h = say(&ses, "help", &o);
     Buf help = {0};
@@ -906,9 +913,21 @@ static void check_power(int *passed, int *total)
        has(say(&ses, "show probe", &o), "SWITCHED OFF"));
     ck("an off box will not take an address",
        has(say(&ses, "addr probe 10.0.1.30/24", &o), "switched off"));
-    ck("and a serial lead does not press the button for you",
-       has(say(&ses, "plug probe", &o), "power probe on") &&
-       ses.where == SES_BODY && ses.mach[pc] == NULL);
+    /* AND A SERIAL LEAD DOES NOT PRESS THE BUTTON FOR YOU -- nor does it
+     * hand over a prompt on a machine that is not running. The lead goes in;
+     * what comes back is nothing, and no Machine is installed, because
+     * nothing has booted. */
+    {
+        const char *r = say(&ses, "plug probe", &o);
+        char pr[64];
+        session_prompt(&ses, pr, sizeof pr);
+        ck("and a serial lead does not press the button for you",
+           has(r, "nothing comes back") && has(r, "power probe on") &&
+           ses.mach[pc] == NULL);
+        ck("and it does not offer a prompt on a machine that is not running",
+           !has(pr, "root@") && !has(pr, "#") && has(pr, "no console"));
+        say(&ses, "unplug", &o);
+    }
 
     const char *on = say(&ses, "power probe on", &o);
     ck("powering it on is what boots the operating system in it",
@@ -2316,8 +2335,22 @@ static void check_vlan_only_server(int *passed, int *total)
     ck("but a card the machine does not have still stops the boot, loudly",
        has(b4, "DOWN at services") && has(b4, "eth9") &&
        has(b4, "there is no such interface"));
-    ck("and the box is really down, not down only in the boot log",
-       has(say(&ses, "plug srv7", &o), "DOWN at services"));
+    /* AND THE BOX IS REALLY DOWN, NOT DOWN ONLY IN THE BOOT LOG -- and it is
+     * down at SERVICES, which since D37 is the one failed stage that still
+     * has a login behind it. The root filesystem mounted, init came up, and a
+     * unit did not, so there is a getty on this line and `pkg reinstall` is a
+     * repair a person can perform on it. `plug` says both facts, because a
+     * player who reads only the prompt would think the box was fine. */
+    {
+        const char *r = say(&ses, "plug srv7", &o);
+        char pr[64];
+        session_prompt(&ses, pr, sizeof pr);
+        ck("and the box is really down, not down only in the boot log",
+           has(r, "DOWN at services"));
+        ck("and the lead says why there is a prompt on a box that is down",
+           has(r, "there IS a login on this line") &&
+           has(r, "What did not is a service") && has(pr, "root@srv7"));
+    }
     say(&ses, "unplug", &o);
 
     buf_free(&o);
@@ -2702,6 +2735,148 @@ done:
     session_end(&ses);
 }
 
+/* ================================ D37. THE FIRST FIVE MINUTES, AS A GATE ==
+ *
+ * The owner walked into his own tower and hit both halves of this within
+ * minutes: *"The server in the default rack isn't booting, but it's also not
+ * plugged into any power"*, and on the crash cart *"if the thing's not
+ * powered on, it shouldn't offer a prompt at all... Potentially maybe a
+ * no-connection prompt that gives you the option to attempt to power cycle
+ * whatever you're attached to. That way you can watch boot up messages."*
+ *
+ * They are one job. A box with no power gives you nothing down a serial
+ * lead, and that nothing is the diagnosis. This plays the whole of it in the
+ * order a person hits it, over the same session a socket gets. */
+static void check_dead_console(int *passed, int *total)
+{
+    P = passed; T = total;
+    printf("\na serial lead into a box with no power in it\n");
+    Session ses;
+    if (!session_start(&ses, GATE_SEED, 200000)) { ck("a session starts", false); return; }
+    Buf o = {0};
+
+    /* FILL A CUPBOARD, which is the owner's own example of the decision --
+     * "a cupboard with three switches and a server in it". The room is
+     * found by walking to it, so the fill is a build and not a fixture. */
+    int comms = -1;
+    for (int i = 0; i < ses.b.nrooms; i++)
+        if (ses.b.rooms[i].kind == RM_COMMS && ses.b.rooms[i].floor == 1) comms = i;
+    if (comms < 0) { ck("the tower has a comms cupboard on floor 1", false); goto done; }
+    char room[24];
+    snprintf(room, sizeof room, "#%d", comms);
+    /* FILLED BY PLAYING, AND READ OUT OF `look`. Nothing here knows how many
+     * sockets a cupboard has: it carries switches in until the room says it
+     * has none left, which is the only way a player can know either -- and
+     * it is why this whole check builds against a tree that has no power
+     * model in it, and fails there, rather than failing to compile. */
+    for (int i = 0; i < 12; i++) {
+        char line[64];
+        snprintf(line, sizeof line, "buy switch8 fill%d", i);
+        say(&ses, line, &o);
+        snprintf(line, sizeof line, "deliver fill%d %s", i, room);
+        say(&ses, line, &o);
+        if (has(say(&ses, "look", &o), "0 free")) break;
+    }
+    say(&ses, "buy server srv1", &o);
+    char dl[64];
+    snprintf(dl, sizeof dl, "deliver srv1 %s", room);
+    const char *dropped = say(&ses, dl, &o);
+    int d = site_dev_by_name(&ses.s, "srv1");
+    if (d < 0) { ck("a server is delivered into the cupboard", false); goto done; }
+
+    ck("putting a box down in a full room says so, where the player is standing",
+       has(dropped, "NOWHERE TO PLUG IT IN"));
+    ck("and `look` in that room says the same about the box on the floor",
+       has(say(&ses, "look", &o), "NOT PLUGGED IN"));
+
+    /* THE OWNER'S EXACT MOMENT: a server that will not start. */
+    const char *btn = say(&ses, "power srv1 on", &o);
+    ck("pressing the button does nothing, and the game says nothing happened",
+       has(btn, "nothing happens") && !ses.s.dev[d].powered);
+    ck("and it says WHICH of the two reasons a box does not start it is",
+       has(btn, "NOT PLUGGED INTO ANYTHING"));
+
+    /* AND THE LEAD. No prompt, no history, and the way out of it. */
+    const char *lead = say(&ses, "plug srv1", &o);
+    char pr[64];
+    session_prompt(&ses, pr, sizeof pr);
+    ck("a serial lead into it offers no prompt at all",
+       !has(pr, "root@") && !has(pr, "#") && has(pr, "no console"));
+    ck("what it offers instead is the silence that is really on the wire",
+       has(lead, "nothing comes back") &&
+       has(lead, "A serial line carries what the far end sends"));
+    ck("and no machine was installed, because nothing booted",
+       ses.mach[d] == NULL);
+    ck("typing a command at it is not refused -- it is unheard",
+       has(say(&ses, "uname -a", &o), "not running anything that could read"));
+    ck("and the button still does nothing from the console line either",
+       has(say(&ses, "power on", &o), "nothing happens"));
+
+    /* THE POWER MAP, and buying a way out of it. */
+    ck("`outlets` names the room and the box standing in it with no socket",
+       has(say(&ses, "outlets", &o), "srv1 is NOT plugged in"));
+    long money = ses.s.money;
+    const char *bought = say(&ses, "outlet", &o);
+    ck("`outlet` has one put in, today, and takes the money for it",
+       has(bought, "sparky") && ses.s.money < money);
+    ck("and the room says it has one free now",
+       has(say(&ses, "look", &o), "1 free"));
+    ck("and the plug goes in",
+       has(say(&ses, "mains srv1 on", &o), "wall socket"));
+
+    /* AND NOW THE BOOT MESSAGES COME UP THE LINE, which is what the owner
+     * asked the no-connection prompt to be for. */
+    const char *boot = say(&ses, "power on", &o);
+    session_prompt(&ses, pr, sizeof pr);
+    ck("the button works now, and the boot comes up the lead as it happens",
+       has(boot, "zbios") && has(boot, "UP at target") && ses.s.dev[d].powered);
+    ck("and only THEN does the line become a shell, with a prompt on it",
+       has(pr, "root@srv1") && ses.mach[d] && ses.mach[d]->boot.running);
+    ck("and it is the real machine, answering off its own disk",
+       has(say(&ses, "cat /etc/hostname", &o), "srv1"));
+    say(&ses, "unplug", &o);
+
+    /* AND THE OTHER HALF OF THE SAME RULE: A BOX THAT IS POWERED AND DID NOT
+     * BOOT. Break the bootloader's kernel from the box's own shell, cycle it,
+     * and there is nothing on the wire again -- because no root filesystem
+     * was ever mounted, so there is no userspace to have a getty in. This is
+     * the case the owner meant by *"if it's not booting, it shouldn't offer a
+     * prompt at all"*, and it is different from a box whose netd would not
+     * stay up, which does have a login on it. */
+    say(&ses, "plug srv1", &o);
+    say(&ses, "rm /boot/vmnomuz", &o);
+    say(&ses, "unplug", &o);
+    say(&ses, "power srv1 off", &o);
+    const char *again = say(&ses, "power srv1 on", &o);
+    ck("a box whose kernel is gone comes up and stops, with the reason on "
+       "the line",
+       has(again, "/boot/vmnomuz: not found") && has(again, "DOWN at kernel"));
+    {
+        const char *r = say(&ses, "plug srv1", &o);
+        session_prompt(&ses, pr, sizeof pr);
+        ck("and a lead into it offers no login, because there is nowhere for "
+           "one to be",
+           has(r, "no login on the other end") && !has(pr, "root@") &&
+           has(pr, "no console"));
+        ck("and it does not replay the boot log, which the wire has no "
+           "memory of",
+           !has(r, "zbios") && has(r, "no memory of what it carried"));
+        ck("and it points at the two things that are left: boot it again, or "
+           "the medium",
+           has(r, "power srv1 off") && has(r, "rescue srv1"));
+        say(&ses, "unplug", &o);
+    }
+
+    /* AND YOU DO NOT WALK OFF WITH A RUNNING SERVER. Picking a machine up
+     * starts with pulling its plug out, and that is a verb of its own. */
+    ck("`carry` on a running machine is refused, and names the shutdown",
+       has(say(&ses, "carry srv1", &o), "power srv1 off") &&
+       ses.carrying < 0);
+done:
+    buf_free(&o);
+    session_end(&ses);
+}
+
 int session_selfcheck(int *passed, int *total)
 {
     check_verbs(passed, total);
@@ -2715,6 +2890,7 @@ int session_selfcheck(int *passed, int *total)
     check_desk_complaint(passed, total);
     check_booted(passed, total);
     check_power(passed, total);
+    check_dead_console(passed, total);
     check_services(passed, total);
     check_refusals(passed, total);
     check_prompt(passed, total);

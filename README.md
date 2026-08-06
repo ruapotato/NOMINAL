@@ -203,6 +203,16 @@ guessing into deciding:
     load                    the busiest ports, and which is dropping
     sit <desk>              their machine, their problem, their tools
     events                  what the world did to your kit overnight
+    outlets                 the power map: what every room was wired with, what
+                            is plugged into it and what is free. A comms
+                            cupboard has four sockets and a let office has
+                            plenty, so the fifth box into a cupboard is a
+                            decision -- `outlet` buys another socket for that
+                            room, and a box with no lead to the wall cannot be
+                            switched on at all. Plug a serial lead into one and
+                            you get exactly what a serial lead into a dead
+                            machine gives you: nothing, and that nothing is the
+                            diagnosis
 
 ## The rule
 

@@ -52,6 +52,8 @@
 #define SITE_MAX_LINK    600
 #define SITE_MAX_TENANT  200
 #define SITE_MAX_JACK    200
+#define SITE_MAX_SOCKET  240     /* outlets ORDERED. The built-in ones are  */
+                                 /* a function of the room, not a table.    */
 #define SITE_PATCH_M       3     /* a patch lead at each end of every run   */
 
 /* ---------------------------------------------------------- the catalogue */
@@ -159,6 +161,8 @@ typedef enum {
     SITE_EZONE,       /* that name server's zone is full                     */
     SITE_EEARLY,      /* the trade has not been yet: the jack is not a socket */
     SITE_EJACK,       /* that port is punched down to a jack, for good        */
+    SITE_ENOMAINS,    /* nothing to plug it into, or it is not plugged in     */
+    SITE_ECIRCUIT,    /* the room is on one circuit and it is full            */
     SITE_ERR_COUNT
 } SiteErr;
 const char *site_err_text(int e);
@@ -179,6 +183,12 @@ typedef struct {
     int      nports;
     int      node;             /* the netstack node                         */
     uint8_t  powered;          /* an OS box arrives switched off            */
+    /* THE PLUG, AND IT IS A DIFFERENT FACT FROM THE BUTTON. `powered` is
+     * whether the button has been pressed; this is whether there is a wall
+     * socket on the other end of the lead. A box that is not in one cannot
+     * be switched on at all -- the button does nothing, which is what a
+     * button on an unplugged machine does. See site_mains() below. */
+    uint8_t  mains;
     char     name[NET_NAME_MAX];
     /* ------------------------------------------- how it has been treated
      * The world breaks machines out of THESE, not out of a timer. A disk
@@ -254,6 +264,47 @@ typedef struct {
     int      leads;            /* leads bought for it over the whole run    */
     int      lead_spend;       /* and what they came to                     */
 } SiteJack;
+
+/* ============================================================ POWER =======
+ *
+ * The owner, walking into his own tower for the first time in a while:
+ *
+ *   "The server in the default rack isn't booting, but it's also not plugged
+ *    into any power... Each room should have at least one power outlet. We
+ *    also need power logic, so you plug in servers into the actual wall.
+ *    Potentially have a way to view the mini map for the entire area and
+ *    request/order additional power for a fee. That then installs the power
+ *    outlet into that room."
+ *
+ * A ROOM HAS SOCKETS AND THEY RUN OUT. Not a resource bar: a count of holes
+ * in a wall, decided by what kind of space the building generator made and
+ * how big it is. A comms cupboard is a cupboard with a spur off the
+ * landlord's board in it; an office is wired for people, so it has a socket
+ * every few metres; a toilet has the shaver socket and nothing else. So
+ * putting a fourth box in a floor's cupboard is a decision with a bill
+ * attached, and putting one in a corridor is not a plan.
+ *
+ * PER ROOM, NOT PER WALL, and the reason is D23's rule rather than
+ * simplicity. The Building gives a room a kind and an area and no wall
+ * geometry any of this code can address; a socket with a position would be a
+ * coordinate the MODEL had to invent and the WINDOW had to be the authority
+ * on, which is the inversion this project exists to avoid. It is also not a
+ * decision: a lead reaches any wall of one room, so which wall it is on
+ * changes nothing a player chooses. The count is the decision. Where the
+ * faceplate is drawn is the window's business and it may put it anywhere.
+ *
+ * AND THE CIRCUIT IS FINITE TOO. You may have as many again put in as the
+ * room was built with -- site_room_outlets_max() -- and after that the room
+ * is on one final circuit and there is no more power to bring into it. That
+ * is the limit that cannot be bought out of, and it is what stops the floor
+ * plan being scenery: some rooms are places you put equipment and some are
+ * not.
+ */
+typedef struct {
+    uint16_t room;             /* the wall it went on                       */
+    int      day;              /* the day the sparky came                   */
+    int      cost;             /* what it cost. Never refunded.             */
+} SiteSocket;
 
 /* ================================================= WHAT KIND OF BUSINESS
  *
@@ -442,10 +493,11 @@ typedef struct {
     const Building *b;         /* borrowed: the caller owns the tower       */
     Net     *net;
     uint64_t seed;
-    int      ndev, nlink, njack;
+    int      ndev, nlink, njack, nsock;
     SiteDev  dev[SITE_MAX_DEV];
     SiteLink link[SITE_MAX_LINK];
     SiteJack jack[SITE_MAX_JACK];
+    SiteSocket sock[SITE_MAX_SOCKET];
     int      uplink;           /* the device that exists on day one         */
     uint32_t wan_isp, wan_you, wan_mask;
     long     money, spent;
@@ -583,6 +635,64 @@ void site_dump_jacks(const Site *s, int room, Buf *out);
  * addresses, the routes, the sockets and the filter with it -- they were
  * never on the box, they were in its memory. */
 bool site_power(Site *s, int dev, bool on);
+
+/* ------------------------------------------------------- AND THE WALL ----
+ * THE OTHER HALF OF THE BUTTON, and until D37 it did not exist: every box
+ * ever installed drew power from nowhere, so `power srv on` on a machine
+ * standing in an empty cupboard with no lead in the back of it worked. See
+ * the note above SiteSocket.
+ *
+ * A box is on mains or it is not, and a box that is not cannot be switched
+ * on -- site_power() refuses with SITE_ENOMAINS and the refusal is the
+ * diagnosis. An appliance has no button, so for a switch and a router the
+ * plug IS the button and site_mains() is what turns it on and off.
+ */
+/* The sockets the building was wired with, what the room has now (that plus
+ * the ones bought), the most its circuit will ever carry, and how many of
+ * them have a plug in them. Every one is a pure reading of the room and the
+ * device table. */
+int  site_room_outlets_built(const Site *s, int room);
+int  site_room_outlets(const Site *s, int room);
+int  site_room_outlets_max(const Site *s, int room);
+int  site_room_outlets_used(const Site *s, int room);
+int  site_room_outlets_free(const Site *s, int room);
+/* Which box is in the nth used socket of a room, or -1. This is the surface
+ * the 3D window reads to draw a faceplate with a lead in it. */
+int  site_room_outlet_dev(const Site *s, int room, int nth);
+
+/* Put the plug in, or pull it out.
+ *
+ * PULLING IT OUT OF A RUNNING MACHINE IS A BLACKOUT WITH ONE MACHINE IN IT,
+ * and it is not softened: the box goes down the way core/siteday.c takes a
+ * box down when the building loses the mains, with the same damage, in the
+ * same words, in `events`. A box on a battery gets what a battery is for --
+ * the load transfers, nomups sees no utility power coming back, and it shuts
+ * the machine down in an orderly way, so it comes up in the morning with
+ * nothing to check. That is the second place the two hundred and twenty
+ * pounds pays for itself, and the first one the player chose. */
+bool site_mains(Site *s, int dev, bool on);
+
+/* HAVE ANOTHER SOCKET PUT IN. Charged now and in for good -- there is no
+ * verb that takes one out and nothing is refunded, the same as a jack.
+ *
+ * It is NOT days. A jack already owns "a trade has to come and that is the
+ * clock", and D23's own record says why a second copy would be worth
+ * nothing: with nothing else different, waiting is free once the player
+ * learns to order early. Power is also the one thing that must never be a
+ * maze in the first five minutes -- a player who has just carried a server
+ * up eight floors into a full cupboard needs a way out of it today. So an
+ * outlet is money, now, and the price is the run: a flat fit-out plus the
+ * tray metres from that room back to the riser the power comes up, which is
+ * geometry the building already knows and which makes a socket in a far
+ * corner of a floor dearer than one in the cupboard against the shaft. */
+long site_outlet_price(const Site *s, int room);
+int  site_outlet(Site *s, int room);          /* the socket, or -1 + s->err */
+/* THE POWER MAP. Every room on a floor that has sockets or kit in it: what
+ * it was wired with, what has been added, what is plugged in, what is free
+ * and what another one would cost. `floor` of -1 is the whole building. This
+ * is the "mini map for the entire area" the request asked for, and it is the
+ * model's answer rather than the window's. */
+void site_dump_outlets(const Site *s, int floor, Buf *out);
 
 /* Configuration, one line of a real config file at a time. `ifx` is the card:
  * 0 is the first socket on the back, 1 the second, and an index above the
@@ -853,6 +963,13 @@ bool site_mains_fails_on(uint64_t seed, int day);
  * what makes buying one a decision rather than a purchase. */
 long site_ups_price(void);
 bool site_ups(Site *s, int dev);
+/* TAKE ONE BOX DOWN THE WAY THE MAINS TAKES THEM ALL DOWN. The blackout path
+ * in core/siteday.c, for one machine, because a player who pulls a plug out
+ * of a running server has done exactly what the building does at 04:12 and
+ * the machine must not be able to tell the difference. Returns true if it
+ * went down dirty; false if a battery let it stop cleanly, or if it was not
+ * running in the first place. */
+bool site_unclean_stop(Site *s, int dev);
 /* Swap the disk in a box and copy what was on it across. Resets the wear, so
  * the box stops being days away from losing a sector -- and copies whatever
  * damage is already there, because that is what a clone does. */

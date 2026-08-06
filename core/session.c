@@ -368,6 +368,10 @@ static Machine *box_of(Session *ses, int dev, Buf *out)
     return m;
 }
 
+/* Why a box is dead, and what to do about it from where you are standing.
+ * Defined with the crash cart, because that is where a player meets it. */
+static void dead_box_why(Session *ses, int dev, Buf *out);
+
 /* The power button on the front of a box that has an operating system in it.
  * The site takes the addresses away and the machine's own kernel is what
  * puts them back. */
@@ -375,6 +379,17 @@ static void do_power(Session *ses, int dev, bool on, Buf *out)
 {
     const SiteDev *d = &ses->s.dev[dev];
     if (!site_power(&ses->s, dev, on)) {
+        /* AND THE MOST IMPORTANT REFUSAL IN THE GAME IS THIS ONE, because it
+         * is the moment the owner walked into: a server that will not start.
+         * Pressing the button on a box with no lead in the back of it does
+         * nothing, and saying "nothing happened" without saying why is the
+         * complaint that produced D37. */
+        if (ses->s.err == SITE_ENOMAINS) {
+            buf_printf(out, "you press the button on %s and nothing happens. No "
+                            "fans, no lights.\n", d->name);
+            dead_box_why(ses, dev, out);
+            return;
+        }
         buf_printf(out, "%s: %s\n", d->name, site_err_text(ses->s.err));
         return;
     }
@@ -400,10 +415,26 @@ static void do_power(Session *ses, int dev, bool on, Buf *out)
      * while `cat /etc/net/interfaces` on its own console named one. */
     netsite_stale(ses->mach[dev]);
     Machine *m = box_of(ses, dev, out);
-    if (!m->boot.running)
-        buf_puts(out, "it did not finish booting, so nothing of it is on the "
-                      "network: no card was\n  configured, because no kernel got "
-                      "far enough to configure one.\n");
+    if (!m->boot.running) {
+        /* AND WHICH KIND OF NOT-BOOTED IT IS, because the next move differs.
+         * A box stopped at services has a root filesystem and a login on it;
+         * a box stopped before that has neither, and the live medium on the
+         * cart is the only way in. Saying "no kernel got far enough" about a
+         * machine sitting at a login prompt was the wrong sentence for half
+         * the cases it was printed for. */
+        if (m->boot.failed_at >= BOOT_SERVICES)
+            buf_printf(out, "it came up and a service did not: nothing of it is "
+                            "on the network, because\n  the service that "
+                            "configures the card is one of the ones that is not "
+                            "running.\n  `plug %s` -- there is a login on it, and "
+                            "the repair is done from there.\n", d->name);
+        else
+            buf_puts(out, "it did not finish booting, so nothing of it is on the "
+                          "network: no card was\n  configured, because nothing on "
+                          "it got far enough to configure one.\n  There is no "
+                          "login on it either -- `rescue` is the medium on the "
+                          "cart.\n");
+    }
 }
 
 /* ====================================================== somebody else's desk
@@ -863,6 +894,12 @@ static void dev_line(const Session *ses, int i, Buf *out)
         else if (ses->mach[i])
             buf_puts(out, "  [SWITCHED OFF -- nothing of it is running]");
     }
+    /* AND WHETHER THERE IS A LEAD FROM IT TO THE WALL. This is the line the
+     * owner went looking for and could not find: he stood in a room with a
+     * server that would not boot and nothing anywhere said it was not
+     * plugged into anything, because until D37 nothing was. */
+    if (i != ses->s.uplink && d->kind != SDEV_DESK && !d->mains)
+        buf_puts(out, "  [NOT PLUGGED IN -- no lead to the wall]");
     /* A PORT AN AGENT CAN NAME WITHOUT SEEING IT. `plug core:2` is only
      * usable if something printed which sockets are empty. */
     int free = site_free_port(&ses->s, i);
@@ -921,7 +958,22 @@ static void do_look(Session *ses, Buf *out)
                    bld_kind_name(ses->b.rooms[other].kind));
     }
     if (!doors) buf_puts(out, " none");
-    buf_puts(out, "\n  (`go #<n>` by number, `go <kind>` for one on this floor,\n"
+    buf_putc(out, '\n');
+    /* WHAT IS ON THE WALL AND NOT ON THE FLOOR. A socket count is a fact
+     * about the room in exactly the way a jack is, and it decides whether
+     * the next box you carry in here will do anything at all. */
+    {
+        int have = site_room_outlets(&ses->s, ses->room);
+        int free = site_room_outlets_free(&ses->s, ses->room);
+        if (have > 0)
+            buf_printf(out, "  power: %d outlet%s on the wall, %d free%s\n",
+                       have, have == 1 ? "" : "s", free,
+                       free ? "" : " -- nothing else in here will run");
+        else
+            buf_puts(out, "  power: no outlet in here at all. Nothing put in "
+                          "this room will run.\n");
+    }
+    buf_puts(out, "  (`go #<n>` by number, `go <kind>` for one on this floor,\n"
                   "   `go <box>` for the room a box is in)\n");
 }
 
@@ -941,6 +993,12 @@ static void do_where(Session *ses, Buf *out)
     if (ses->plugged >= 0)
         buf_printf(out, "the cart's %s lead is in %s\n", ses->hdmi ? "hdmi" : "serial",
                    ses->s.dev[ses->plugged].name);
+    {
+        int have = site_room_outlets(&ses->s, ses->room);
+        buf_printf(out, "%d outlet%s on this wall, %d free\n", have,
+                   have == 1 ? "" : "s",
+                   site_room_outlets_free(&ses->s, ses->room));
+    }
     /* THE COPPER THAT IS ALREADY HERE. Counted off the jack table, in the
      * room you are standing in, because a jack is a fact about this wall. */
     {
@@ -1011,6 +1069,40 @@ static void inventory(const Session *ses, Buf *out)
 
 static void do_help(const Session *ses, Buf *out)
 {
+    /* THE PAGE FOR A LINE WITH NOTHING ON THE OTHER END OF IT. Short,
+     * because there are four things to do and inventing a fifth would be
+     * inventing a terminal. */
+    if (ses->where == SES_NOCON && ses->plugged >= 0) {
+        const SiteDev *d = &ses->s.dev[ses->plugged];
+        buf_printf(out,
+            "the cart's serial lead is in %s and nothing is coming up it.\n"
+            "\n"
+            "THIS IS NOT A SHELL AND THERE IS NOT ONE BEHIND IT. A serial line\n"
+            "carries what the far end sends; %s is sending nothing, because it\n"
+            "is %s. Anything you type here goes into a wire\n"
+            "nothing is listening to, and that is what will happen to it.\n"
+            "\n"
+            "WHAT YOU CAN DO STANDING HERE, with the box assumed:\n"
+            "  power on / power off   the button. If it comes up, the boot\n"
+            "                         messages come up THIS LINE as they happen\n"
+            "                         -- which is the only way to see them,\n"
+            "                         because a wire has no history\n"
+            "  mains on / mains off   the plug. A box with no lead to the wall\n"
+            "                         cannot be switched on at all\n"
+            "  outlet                 another socket in this room, if the wall\n"
+            "                         has none free.  `outlets` is the map\n"
+            "  rescue / eject         the live medium on the cart, for a box\n"
+            "                         whose own root will not mount\n"
+            "  show                   what the site knows about it\n"
+            "  where                  which room you and it are in\n"
+            "  unplug                 lead back on the cart\n",
+            d->name, d->name,
+            !d->mains ? "not plugged into anything"
+                      : site_kind_has_os(d->kind) && !d->powered
+                        ? "switched off"
+                        : "not running an operating system");
+        return;
+    }
     if (ses->where == SES_SEAT && ses->seat >= 0) {
         buf_printf(out,
             "you are sat at %s, which belongs to %s and not to you. It is a\n"
@@ -1226,12 +1318,35 @@ static void do_help(const Session *ses, Buf *out)
         "                     so a tenancy already striking is not one you can\n"
         "                     jack your way out of. `links` prints both\n"
         "\n"
+        "POWER, WHICH IS A PLUG AND A WALL AND NOT A PROPERTY OF OWNING A BOX.\n"
+        "Every room has sockets and they run out. A comms cupboard has four; a\n"
+        "let office is wired for people and has plenty; a corridor has the\n"
+        "cleaner's one. Kit is plugged in when you put it down, IF there is a\n"
+        "socket free, and a box that is not in one cannot be switched on at all.\n"
+        "  outlets            this floor: what every room was wired with, what is\n"
+        "                     plugged in, what is free, what another would cost.\n"
+        "                     `outlets all` is the building, `outlets <n>` a floor\n"
+        "  outlet [<room>]    have another socket put into this room. A sparky\n"
+        "                     comes today -- it is money, not days -- priced on the\n"
+        "                     run back to the riser, and it does not come out again\n"
+        "                     and is not refunded. A room takes as many again as it\n"
+        "                     was built with and then its circuit is full, and that\n"
+        "                     is the limit money cannot move\n"
+        "  mains <box> on|off the plug itself: put a box into a free socket in this\n"
+        "                     room, or pull it out. A SWITCH AND A ROUTER HAVE NO\n"
+        "                     BUTTON, so this is theirs. PULLING THE PLUG ON A\n"
+        "                     RUNNING MACHINE is a blackout with one machine in it,\n"
+        "                     and it damages the filesystem exactly as one does --\n"
+        "                     unless there is a `ups` under it, which is the second\n"
+        "                     thing a battery is for\n"
+        "\n"
         "CONFIGURING. You must be in the room with the box.\n"
         "  power <box> on|off        a pc and a server arrive switched off, in a\n"
         "                            box, on a pallet. Powering one on is what boots\n"
         "                            the operating system in it and what puts it on\n"
         "                            the network -- and nothing of an off box\n"
-        "                            answers anything\n"
+        "                            answers anything. The button does nothing at\n"
+        "                            all on a box with no lead to the wall: `mains`\n"
         "  addr <box>[:<nic>] <ip>/<bits>   gw <box> <ip>   resolver <box> <ip>\n"
         "                            `addr edge:1` is the SECOND socket on the back,\n"
         "                            which is how a router gets a LAN side as well as\n"
@@ -1375,6 +1490,15 @@ static void do_help(const Session *ses, Buf *out)
         "                     you its MANAGEMENT LINE; a pc or a server gives\n"
         "                     you a SHELL on the real operating system in it\n"
         "  plug hdmi <box>    the display lead\n"
+        "                     AND A LEAD INTO A BOX THAT IS NOT RUNNING GIVES YOU\n"
+        "                     NOTHING, because that is what a serial line into a\n"
+        "                     dead machine gives you. No prompt, no history -- a\n"
+        "                     wire has no memory of what it carried before the\n"
+        "                     lead went in. What it does have is the four things\n"
+        "                     you can do standing there: `power on` (and the boot\n"
+        "                     comes up the line, live), `mains on` if it is not\n"
+        "                     plugged in, `rescue` for the medium on the cart,\n"
+        "                     and `unplug`\n"
         "  unplug             lead back on the cart, and you can walk again\n"
         "\n"
         "READING THE STATE\n"
@@ -1502,6 +1626,50 @@ static void do_open(Session *ses, Buf *out)
 }
 
 /* ------------------------------------------------------------- the cart */
+/* WHY THERE IS NOTHING ON THE WIRE, and the one thing a person standing in
+ * this room can do about it. There are exactly two reasons a box is not
+ * running, they are different problems with different fixes, and a serial
+ * lead that just says "it is off" tells the player which of them it is not.
+ *
+ * This is the sentence the whole of D37 exists to make sayable. Before it
+ * there was no such thing as a box with no power in it, so `power on` always
+ * worked, so the console could always be got at, so nothing a serial lead
+ * ever said could be a diagnosis. */
+static void dead_box_why(Session *ses, int d, Buf *out)
+{
+    const SiteDev *dev = &ses->s.dev[d];
+    char w[48];
+    room_label(ses, dev->room, w, sizeof w);
+    if (!dev->mains) {
+        int have = site_room_outlets(&ses->s, dev->room);
+        int free = site_room_outlets_free(&ses->s, dev->room);
+        buf_printf(out, "  IT IS NOT PLUGGED INTO ANYTHING. There is no lead "
+                        "from %s to a wall\n  socket, so its power button does "
+                        "nothing at all.\n", dev->name);
+        buf_printf(out, "  %s has %d outlet%s and %d free.\n", w, have,
+                   have == 1 ? "" : "s", free);
+        if (free > 0)
+            buf_printf(out, "  from here: `mains %s on`, then `power %s on` "
+                            "and watch it come up.\n", dev->name, dev->name);
+        else if (site_room_outlets(&ses->s, dev->room) <
+                 site_room_outlets_max(&ses->s, dev->room))
+            buf_printf(out, "  from here: `outlet` puts another socket in this "
+                            "room for %ld, then\n  `mains %s on`. `outlets` is "
+                            "every room in the building and what is free.\n",
+                       site_outlet_price(&ses->s, dev->room), dev->name);
+        else
+            buf_printf(out, "  this room is on one circuit and it is full. "
+                            "Something has to come out\n  of a socket, or %s has "
+                            "to stand somewhere else: `outlets`.\n", dev->name);
+    } else {
+        buf_printf(out, "  it is plugged in and switched off. From here: "
+                        "`power %s on`, and the boot\n  comes up this line, "
+                        "which is what the lead is for.\n", dev->name);
+    }
+    if (ses->plugged == d)
+        buf_printf(out, "  `unplug` puts the lead back on the cart.\n");
+}
+
 static void do_plug(Session *ses, const char *what, bool hdmi, Buf *out)
 {
     int d;
@@ -1527,27 +1695,122 @@ static void do_plug(Session *ses, const char *what, bool hdmi, Buf *out)
                             "serial lead.\n", dev->name);
         return;
     }
-    if (site_kind_has_os(dev->kind) && !dev->powered) {
-        /* A SERIAL LEAD IS NOT A POWER LEAD. It used to be: the first lead in
-         * the back of a box was what installed and booted it, so the crash
-         * cart was what put machines on the network. */
-        buf_printf(out, "refused: no lead went in -- %s is switched off. A serial "
-                        "lead reads a\n  console; it does not press the button. "
-                        "`power %s on`.\n",
-                   dev->name, dev->name);
-        return;
-    }
     ses->plugged = d;
     ses->hdmi = false;
     if (dev->kind == SDEV_PC || dev->kind == SDEV_SERVER) {
-        ses->where = SES_SHELL;
         Machine *m = ses->mach[d];
+        /* ============================ A SERIAL LEAD INTO A DEAD MACHINE ==
+         * IT DOES NOT OFFER A PROMPT, and that is the entire point. A serial
+         * console is a wire: it shows what the far end puts on it, and a box
+         * with no power in it puts nothing on it. Offering `root@srv1#` here
+         * would be the one lie this project cannot afford, because the
+         * console is the instrument every other claim is checked with.
+         *
+         * A SERIAL LEAD IS ALSO NOT A POWER LEAD, which is the older half of
+         * this and still true: it used to be, and plugging one in was what
+         * installed and booted a machine for the first time. */
+        if (!dev->powered) {
+            ses->where = SES_NOCON;
+            buf_printf(out, "the lead goes into the console port on %s and "
+                            "nothing comes back.\n  A serial line carries what "
+                            "the far end sends. %s is sending nothing.\n",
+                       dev->name, dev->name);
+            dead_box_why(ses, d, out);
+            return;
+        }
+        /* ================== AND WHERE THE BOOT STOPPED DECIDES WHETHER
+         * THERE IS A LOGIN, which is not the same question as whether the
+         * machine is up. The owner's rule -- *"if it's not booting, it
+         * shouldn't offer a prompt at all"* -- is about a machine that never
+         * got anywhere, and this is where the line honestly falls:
+         *
+         *   firmware, bootloader, kernel, initrd  no root filesystem was
+         *                                         ever mounted. There is no
+         *                                         userspace to have a getty
+         *                                         in. Nothing on the wire.
+         *   init                                  /sbin/init itself did not
+         *                                         start. Same answer.
+         *   services, login                       userspace came up. The root
+         *                                         filesystem is mounted and
+         *                                         init is running; what
+         *                                         failed is a unit, or the
+         *                                         getty's attempt to hand
+         *                                         the terminal to an
+         *                                         account. There is a live
+         *                                         system on the far end.
+         *
+         * Getting this wrong in either direction is expensive. Handing over a
+         * shell on a box stopped at the initrd is the lie D37 removes;
+         * refusing one on a box whose netd would not stay up would take away
+         * the console the break-fix half of this game is played through --
+         * `pkg verify`, `pkg diff`, `pkg reinstall --force` -- and send the
+         * player to the rescue medium for a machine sitting there with its
+         * root filesystem mounted.
+         *
+         * AND THE `login` STAGE IS WHERE THIS MODEL IS DELIBERATELY MORE
+         * GENEROUS THAN A BARE SERIAL TAIL. A box whose /etc/passwd lost
+         * root's shell field really cannot hand a terminal to anybody, and a
+         * person with nothing but a null-modem lead would get the getty error
+         * and no further. The cart is not nothing but a lead -- it is what
+         * `rescue` and `eject` drive, at the front of the machine, with the
+         * reset button under the technician's thumb -- and the line is drawn
+         * at whether a root filesystem was ever mounted, because that is the
+         * line every case the owner actually met falls on. It is named in
+         * docs/decisions-d37.md rather than hidden, along with the fact that
+         * kernel_console_dead() in core/kernel.c draws it at TARGET for the
+         * break-fix bench and the two therefore disagree. */
+        bool login = m && (m->boot.running || m->boot.failed_at >= BOOT_SERVICES);
+        if (!login) {
+            /* POWERED, AND STILL NO LOGIN. Something ran and stopped, so the
+             * far end is a machine with no getty on it -- which is a
+             * different fault from no power and reads differently.
+             *
+             * WHAT IS NOT PRINTED IS THE BOOT LOG. The owner: *"it doesn't
+             * show you a past history"*. That log went up this wire before
+             * the lead was in it and a real line has no memory of what it
+             * carried, so the way to see the boot messages is to make some:
+             * power cycle it from here and watch. */
+            ses->where = SES_NOCON;
+            buf_printf(out, "the lead goes into the console port on %s and "
+                            "nothing comes back.\n  Its fans are turning, so it "
+                            "has power. There is no login on the other end\n"
+                            "  of this line: nothing on it got far enough to "
+                            "start one%s%s.\n", dev->name,
+                       m ? " -- it stopped at " : "",
+                       m ? boot_stage_name(m->boot.failed_at) : "");
+            buf_printf(out, "  a serial line has no memory of what it carried "
+                            "before the lead went in.\n  To watch it boot, boot "
+                            "it: `power %s off` then `power %s on`.\n"
+                            "  `rescue %s` boots the live medium on the cart "
+                            "instead, which is what the\n  initrd's own last "
+                            "line tells you to do.\n",
+                       dev->name, dev->name, dev->name);
+            return;
+        }
+        ses->where = SES_SHELL;
         buf_printf(out, "serial console on %s.\n", dev->name);
-        if (m)
-            buf_printf(out, "[%s at %s]\n", m->boot.running ? "UP" : "DOWN",
-                       boot_stage_name(m->boot.failed_at));
+        buf_printf(out, "[%s at %s]\n", m->boot.running ? "UP" : "DOWN",
+                   boot_stage_name(m->boot.failed_at));
+        if (!m->boot.running)
+            buf_printf(out, "there IS a login on this line: the root filesystem "
+                            "mounted and init came\n  up. What did not is %s, "
+                            "which is why you can log in and repair it.\n",
+                       m->boot.failed_at == BOOT_LOGIN
+                       ? "the getty's hand-over to an account"
+                       : "a service");
         buf_puts(out, "you are root on it. `help` for what this line is, "
                       "`unplug` to leave.\n");
+        return;
+    }
+    /* AND AN APPLIANCE WITH NO POWER IN IT HAS NO MANAGEMENT LINE EITHER.
+     * A switch's management line is a program running on the switch. */
+    if (!dev->powered) {
+        ses->where = SES_NOCON;
+        buf_printf(out, "the lead goes into the console port on %s and nothing "
+                        "comes back.\n  %s is not running: a management line is "
+                        "a program on the box, and\n  there is nothing on this "
+                        "one to run it.\n", dev->name, dev->name);
+        dead_box_why(ses, d, out);
         return;
     }
     ses->where = SES_MGMT;
@@ -2147,6 +2410,23 @@ static bool carry_box(Session *ses, int d, Buf *out)
                    ses->s.dev[d].name, ses->s.dev[d].floor);
         return false;
     }
+    /* AND YOU DO NOT PICK UP A RUNNING SERVER. Since D37 a box has a plug in
+     * it, and picking one up starts by pulling the plug out -- which on a
+     * machine that is running is the blackout `mains off` performs, with a
+     * filesystem to check in the morning. A player should have to say that
+     * they meant it, in the verb that means it. An appliance has no button,
+     * so for a switch the plug IS the power and picking it up is switching
+     * it off, which is what everybody already knows about a switch. */
+    if (site_kind_has_os(ses->s.dev[d].kind) && ses->s.dev[d].powered) {
+        buf_printf(out, "refused: %s is running, and you did not pick it up. "
+                        "Lifting a machine\n  starts with pulling its plug out, "
+                        "and pulling the plug on something that\n  is running is "
+                        "a blackout with one machine in it.\n"
+                        "  `power %s off` first -- that is the shutdown, and it "
+                        "costs nothing.\n",
+                   ses->s.dev[d].name, ses->s.dev[d].name);
+        return false;
+    }
     if (!site_move(&ses->s, d, ses->room)) {
         buf_printf(out, "refused: %s\n", site_err_text(ses->s.err));
         if (ses->s.err == SITE_ECABLED)
@@ -2182,6 +2462,33 @@ static void drop_box(Session *ses, Buf *out)
     buf_printf(out, "%s is in %s now. %d port%s, and nothing in any of them "
                     "yet.\n", ses->s.dev[d].name, w, ses->s.dev[d].nports,
                ses->s.dev[d].nports == 1 ? "" : "s");
+    /* AND WHETHER THE LEAD WENT IN THE WALL, said at the moment it does or
+     * does not, because this is where the player is standing and this is the
+     * last moment before they wonder why the button does nothing. */
+    if (ses->s.dev[d].kind == SDEV_DESK) return;
+    if (ses->s.dev[d].mains) {
+        buf_printf(out, "  the lead goes into a wall socket: %d of this room's "
+                        "%d left.\n",
+                   site_room_outlets_free(&ses->s, ses->room),
+                   site_room_outlets(&ses->s, ses->room));
+        return;
+    }
+    buf_printf(out, "  THERE IS NOWHERE TO PLUG IT IN. This room has %d outlet%s "
+                    "and every one of\n  them is in use, so %s is a box on a "
+                    "floor: its power button does nothing.\n",
+               site_room_outlets(&ses->s, ses->room),
+               site_room_outlets(&ses->s, ses->room) == 1 ? "" : "s",
+               ses->s.dev[d].name);
+    if (site_room_outlets(&ses->s, ses->room) <
+        site_room_outlets_max(&ses->s, ses->room))
+        buf_printf(out, "  `outlet` has another one put in for %ld, and then "
+                        "`mains %s on`.\n  `outlets` is every room in the "
+                        "building and what is free in each.\n",
+                   site_outlet_price(&ses->s, ses->room), ses->s.dev[d].name);
+    else
+        buf_puts(out, "  and this room is on one final circuit that is already "
+                      "full, so there is no\n  more power to bring into it. "
+                      "`outlets` says where there is.\n");
 }
 
 /* --------------------------------------------------------- getting there
@@ -2355,7 +2662,11 @@ static const char *DEVVERB[] = {
     "httpd", "dnsd", "dns",
     /* And so are a battery and a disk: both are something somebody carries
      * to the rack and fits, not something that happens from the MDF. */
-    "ups", "disk", NULL
+    "ups", "disk",
+    /* And so is the plug: it is a lead between that box and that wall, and
+     * you are the person holding it. On the management line the box is
+     * assumed, so `mains off` on `plug core` means core. */
+    "mains", NULL
 };
 
 static bool is_devverb(const char *v)
@@ -2603,6 +2914,12 @@ void session_prompt(const Session *ses, char *out, size_t cap)
 {
     switch (ses->where) {
     case SES_SHELL: snprintf(out, cap, "root@%s# ", ses->s.dev[ses->plugged].name); break;
+    /* NOT A SHELL PROMPT AND NOT PRETENDING TO BE ONE. There is no `#` and
+     * no `$` in it, because both of those are a claim that something on the
+     * other end of the wire is reading what you type. Nothing is. */
+    case SES_NOCON: snprintf(out, cap, "%s (no console)> ",
+                             ses->plugged >= 0 ? ses->s.dev[ses->plugged].name : "?");
+                    break;
     case SES_MGMT:  snprintf(out, cap, "mgmt@%s# ", ses->s.dev[ses->plugged].name); break;
     /* NOT `root@`, THOUGH THE ACCOUNT IS ROOT. There is one account on every
      * machine in this game and /bin/whoami says so, so a prompt claiming a
@@ -2740,6 +3057,75 @@ bool session_line(Session *ses, const char *line, Buf *out)
         return true;
     }
 
+    /* ================================ THE LEAD IS IN AND NOTHING ANSWERS ==
+     * See SES_NOCON in session.h. Four things a person standing at the rack
+     * with a cart can do, and then the silence -- which is not a refusal
+     * dressed up. There is no process on the far end reading these words,
+     * so what happens to them is what happens to anything you type at an
+     * unpowered serial port: nothing. */
+    if (ses->where == SES_NOCON) {
+        int d = ses->plugged;
+        if (n && (strcmp(t[0], "unplug") == 0 || strcmp(t[0], "eject") == 0)) {
+            /* `eject` is the medium, and it is only that when there is a box
+             * named after it -- bare, on this line, it is the lead. */
+            if (strcmp(t[0], "unplug") == 0 || n < 2) {
+                ses->where = SES_BODY; ses->plugged = -1;
+                buf_puts(out, "lead back on the cart.\n");
+                return true;
+            }
+        }
+        if (n && strcmp(t[0], "help") == 0) { do_help(ses, out); return true; }
+        if (n && strcmp(t[0], "where") == 0) { do_where(ses, out); return true; }
+        /* AND YOU CAN STILL SEE THE ROOM. A lead in your hand does not blind
+         * you, and the room is where the answer is: how many sockets are on
+         * that wall and what is already in them. */
+        if (n && strcmp(t[0], "look") == 0) { do_look(ses, out); return true; }
+        if (!n) return true;
+        /* THE BUTTON, THE PLUG AND THE LIVE MEDIUM, all of them with the box
+         * assumed the way the management line assumes it -- the player is
+         * standing in front of exactly one machine and has said so by
+         * plugging into it. `power on` from here is the power cycle the
+         * request asked for, and the boot messages come up this line
+         * because they are being made now rather than remembered. */
+        if (strcmp(t[0], "power") == 0 || strcmp(t[0], "mains") == 0 ||
+            strcmp(t[0], "rescue") == 0 || strcmp(t[0], "eject") == 0 ||
+            strcmp(t[0], "outlet") == 0 || strcmp(t[0], "outlets") == 0 ||
+            strcmp(t[0], "show") == 0) {
+            char cmd[NOM_ARG_MAX];
+            if (n < 2 || dev_arg(ses, t[1]) != d) {
+                snprintf(cmd, sizeof cmd, "%s %s", t[0], ses->s.dev[d].name);
+                for (int i = 1; i < n; i++) {
+                    size_t l = strlen(cmd);
+                    snprintf(cmd + l, sizeof cmd - l, " %s", t[i]);
+                }
+            } else snprintf(cmd, sizeof cmd, "%s", raw);
+            /* `outlet` and `outlets` are about the ROOM, not the box. */
+            if (strcmp(t[0], "outlet") == 0 || strcmp(t[0], "outlets") == 0)
+                snprintf(cmd, sizeof cmd, "%s", raw);
+            int was = ses->where;
+            ses->where = SES_BODY;
+            session_line(ses, cmd, out);
+            if (ses->where == SES_BODY) ses->where = was;
+            /* AND IF THAT WOKE IT UP, THE LINE COMES ALIVE, because that is
+             * what a serial console does when the machine on the far end
+             * starts printing: the same lead, the same port, and now there
+             * is a login on it. */
+            if (ses->where == SES_NOCON && ses->s.dev[d].powered &&
+                ses->mach[d] && ses->mach[d]->boot.running) {
+                ses->where = SES_SHELL;
+                buf_printf(out, "\na login prompt comes up the line. You are root "
+                                "on %s. `unplug` to leave.\n", ses->s.dev[d].name);
+            }
+            return true;
+        }
+        /* AND EVERYTHING ELSE IS THE SILENCE THAT IS REALLY THERE. Not "no
+         * such command" -- the command may well exist, on a machine that is
+         * not running it. Nothing is reading this wire. */
+        buf_printf(out, "(nothing. %s is not running anything that could read "
+                        "that.)\n", ses->s.dev[d].name);
+        return true;
+    }
+
     /* AND THE SAME THING IN SOMEBODY ELSE'S CHAIR. One word gets you out of
      * it, and it is `stand` because that is what you do; `unplug` is taken
      * too, because it is the word this game has already taught for "put the
@@ -2845,6 +3231,57 @@ bool session_line(Session *ses, const char *line, Buf *out)
             return true;
         }
         do_power(ses, d, strcmp(t[2], "on") == 0, out);
+        return true;
+    }
+    /* ------------------------------------------------------------ the wall */
+    if (strcmp(t[0], "mains") == 0) {
+        if (n < 2) {
+            buf_puts(out, "mains <box> on|off\n"
+                          "  THE PLUG, WHICH IS NOT THE BUTTON. `power` presses "
+                          "the button; this is\n  whether there is a wall socket "
+                          "on the other end of the lead. A box that\n  is not in "
+                          "one cannot be switched on at all, and a switch has no "
+                          "button,\n  so for a switch and a router this IS the "
+                          "button.\n  `outlets` is every room and what is free in "
+                          "it.\n");
+            return true;
+        }
+        int d;
+        if (!need_here(ses, t[1], &d, out)) return true;
+        bool was_shell = (ses->plugged == d);
+        site_cmd(&ses->s, raw, out);
+        /* THE LEAD IS STILL IN A BOX THAT IS NOT RUNNING ANY MORE. Whatever
+         * `mains off` just did to it, the console on the far end went with
+         * the power, and a prompt that stayed would be the exact lie this
+         * work exists to remove. */
+        if (was_shell && !ses->s.dev[d].powered &&
+            (ses->where == SES_SHELL || ses->where == SES_MGMT)) {
+            ses->where = SES_NOCON;
+            buf_puts(out, "the console goes dead. The lead is still in it.\n");
+        }
+        return true;
+    }
+    if (strcmp(t[0], "outlets") == 0) {
+        /* This floor by default -- the whole tower is `outlets -1`, and a
+         * player standing on floor three wanting the tower's power map is
+         * rarer than one wanting the floor they are on. */
+        char cmd[64];
+        if (n < 2) snprintf(cmd, sizeof cmd, "outlets %d", here_floor(ses));
+        else if (strcmp(t[1], "all") == 0) snprintf(cmd, sizeof cmd, "outlets -1");
+        else snprintf(cmd, sizeof cmd, "outlets %s", t[1]);
+        site_cmd(&ses->s, cmd, out);
+        if (n < 2) buf_puts(out, "  (`outlets all` is the whole building; "
+                                 "`outlets <floor>` is one)\n");
+        return true;
+    }
+    if (strcmp(t[0], "outlet") == 0) {
+        /* THE ROOM YOU ARE STANDING IN, because that is where the sparky is
+         * being asked to come and it is the only room you can see. Naming
+         * another one still works: the money goes the same way. */
+        char cmd[96];
+        if (n >= 2) snprintf(cmd, sizeof cmd, "outlet %s", t[1]);
+        else snprintf(cmd, sizeof cmd, "outlet #%d", ses->room);
+        site_cmd(&ses->s, cmd, out);
         return true;
     }
     /* THE LIVE MEDIUM ON THE CRASH CART, and the tower had no way to reach it.

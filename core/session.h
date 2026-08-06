@@ -48,7 +48,25 @@ typedef enum {
      * the machine is built when you pull the chair out and freed when you
      * stand up, so the tower pays for ONE of them, ever, and only while
      * somebody is looking at it. */
-    SES_SEAT
+    SES_SEAT,
+    /* THE LEAD IS IN AND THERE IS NOTHING ON THE OTHER END OF IT.
+     *
+     * The owner, on the crash cart: *"if the thing's not powered on, it
+     * shouldn't offer a prompt at all. If it's not booting, it shouldn't
+     * offer a prompt at all. Potentially maybe a no-connection prompt that
+     * gives you the option to attempt to power cycle whatever you're
+     * attached to. That way you can watch boot up messages."*
+     *
+     * This is that state, and it is not a shell with the commands taken
+     * away. There IS no shell: a serial line carries what the far end sends
+     * and a machine with no power in it sends nothing, so the line takes the
+     * four things a person standing at the rack can actually do -- the
+     * button, the plug, the live medium on the cart, and putting the lead
+     * back -- and answers everything else with the silence that is really
+     * there. That silence IS the diagnosis, which is why it is a state and
+     * not a refusal: the player is attached to the box, watching, and one
+     * `power on` away from the boot messages. */
+    SES_NOCON
 } SesWhere;
 
 typedef struct {
