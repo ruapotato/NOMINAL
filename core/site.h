@@ -231,10 +231,63 @@ typedef struct {
     int      lead_spend;       /* and what they came to                     */
 } SiteJack;
 
+/* ================================================= WHAT KIND OF BUSINESS
+ *
+ * Until D30 every tenancy was the same business. They differed in how many
+ * desks they had, whether they wanted a segment, and whether they wanted a
+ * server -- and every desk did the identical thing: a page, three files,
+ * three concurrent, a couple of megabytes. So a floor only ever asked one
+ * question, "is there enough throughput", and a playtester who reached day
+ * 62 said what that costs: *"Cable is a bill I paid with a rule, not a bill
+ * I sweated. I made the riser decision on floor 1 and then repeated it on
+ * floors 2 and 3 without thinking."*
+ *
+ * These are four businesses whose demand is a different SHAPE, so the right
+ * build for one floor is the wrong build for another. Not flavour text: each
+ * one is measured on a different axis of the same netstack, and each one is
+ * unhappy for its own reason, in its own words, in `service`.
+ *
+ *   OFFICE   bursty, throughput-shaped, tolerant of latency. The baseline,
+ *            and what every tenancy used to be.
+ *   WEBHOST  their traffic arrives from OUTSIDE. It loads the circuit and
+ *            the path IN -- the one direction nothing in this game tested --
+ *            and what they are buying is uptime, not speed. A day their
+ *            origin was unreachable is a day you owe them money back.
+ *   VOICE    almost no bandwidth and no tolerance at all. Real UDP, 50
+ *            packets a second per call, out to the carrier and back; ruined
+ *            by loss, by jitter and by a queue somebody else filled.
+ *   STUDIO   a content creator: sustained heavy UPLOAD against a hard
+ *            deadline. A stream that arrives late is not a slow stream, it
+ *            is a dropped stream, and there is no partial credit.
+ *
+ * THE RENT FOLLOWS. A studio pays three times an office for the same square
+ * metres and will saturate an uplink nobody sized for it; a web host pays
+ * two and a bit and hands the money back on a day they were down. `demand`
+ * prints the kind, what they will want and the rent before the lease is
+ * signed, because a price you cannot see before you sign is not a decision.
+ */
+typedef enum {
+    TEN_OFFICE = 0,
+    TEN_WEBHOST,
+    TEN_VOICE,
+    TEN_STUDIO,
+    TEN_KIND_COUNT
+} SiteTenantKind;
+
+const char *site_tenant_kind_name(int k);      /* "office", "web host", ... */
+/* One line: what this industry will ask the network for. `demand` prints it
+ * per row, so the shape of the bill is legible before the lease is signed. */
+const char *site_tenant_kind_wants(int k);
+/* What they pay for the same square metres, as a percentage of an office.
+ * The premium is the trade: a studio is worth taking if you have built for
+ * it and ruinous if you have not. */
+int         site_tenant_rent_pct(int k);
+
 /* A tenancy, and what it wants. Derived from the building's own Room.tenant
  * and from the seed, so the same tower always fills the same way. */
 typedef struct {
     uint8_t  floor, tenant;
+    uint8_t  kind;             /* SiteTenantKind: what business they are in */
     uint16_t room;             /* the first room they hold                  */
     uint8_t  drops;            /* ports they need                           */
     uint8_t  own_segment;      /* they will not share a broadcast domain    */
@@ -247,10 +300,30 @@ typedef struct {
     uint8_t  complained;       /* they have filed one. It does not un-file. */
     int      desk0, ndesk;     /* their desks, as devices in dev[]          */
     /* What the last busy period actually did. Measured from the sessions
-     * that really ran, not predicted from anything. */
+     * that really ran, not predicted from anything.
+     *
+     * `tried` and `finished` are THE UNITS THIS TENANCY IS JUDGED ON, which
+     * is not the same thing for every industry: transfers for an office,
+     * calls for a voice business, visitor sessions for a web host, streams
+     * for a studio. That is the point -- a voice tenancy is not unhappy
+     * because a file transfer was slow, and `service` has to be able to say
+     * so. The site-wide totals in SiteDay count every unit of work the tower
+     * was asked for, whatever kind it was. */
     int      tried, finished;
     int      worst_ms;         /* the slowest desk's transfer               */
     long     bytes;            /* what their people pulled that day         */
+    /* ------------------------------------- and the industry's own numbers
+     * Only the ones their kind measures are filled in; the rest are zero.
+     * These exist so that `service` can say WHY in the tenant's own terms
+     * rather than printing "8/20" at a business that does not count
+     * transfers. Every one of them was counted off the netstack. */
+    int      conceal_ppm;      /* voice: audio frames with nothing to play  */
+    int      jitter_us;        /* voice: RFC 3550 interarrival jitter       */
+    int      delay_ms;         /* voice: worst one-way delay of any call    */
+    long     up_kb;            /* studio: what really went up               */
+    long     up_want_kb;       /* studio: what had to, to keep the streams  */
+    uint8_t  down;             /* webhost: nothing answered from outside    */
+    long     sla;              /* webhost: rent handed back for a day down  */
     /* WHICH SERVER TOOK THEIR FILES. A tenancy whose own machine is off, or
      * who never had one, is served by whatever else is powered -- their
      * floor's if there is one, otherwise anything at all, possibly six
@@ -272,6 +345,10 @@ typedef struct {
     long bytes;
     long rent;              /* taken today                                 */
     long bill;              /* the circuit, on the day of the month it lands*/
+    /* WHAT A WEB HOST'S OUTAGE COST YOU ON TOP OF THE RENT YOU DID NOT EARN.
+     * Their contract is uptime; a day their origin answered nothing is a day
+     * the landlord hands a day's rent back. Zero on every other kind. */
+    long sla;
     int  worst_ms;
     uint64_t frames, drops; /* frames the site handled; frames it lost     */
     /* The port that was asked for the most, and how hard. This is the
@@ -600,6 +677,78 @@ void site_dump_demand(const Site *s, Buf *out);
 /* What the landlord's circuit carries until somebody buys a bigger one. */
 #define SITE_ISP_MB_DEFAULT 500
 
+/* ================================ WHAT THE OTHER THREE INDUSTRIES ASK FOR
+ *
+ * The same status as the two numbers above: chosen, not derived, and chosen
+ * to be a defensible busy-period figure for that business and nothing else.
+ * Everything downstream of them is arithmetic the netstack does, and every
+ * byte of them goes through core/netstack.c as frames on ports.
+ *
+ * A VOICE CALL, and it is the netstack's own -- `net_voice_call`, two
+ * streams, one each way, real UDP at NET_VOICE_PAYLOAD every NET_VOICE_PTIME
+ * through the same ports, queues and drops as everything else. A G.711
+ * stream is 86 kb/s on the wire, so a twenty-seat call centre asks for a
+ * fiftieth of what ONE office desk pulls and no amount of bandwidth will
+ * help them.
+ *
+ * WHAT MAKES A CALL BAD IS CONCEALMENT, which is the stack's word and not a
+ * score anybody scaled: an audio frame with no sound to play, because the
+ * packet was lost or because it arrived after the de-jitter buffer had
+ * already played the silence where it should have gone. That is why loss
+ * AND jitter both land in one number, and it is counted in packets. Two per
+ * cent of the audio missing is where a call stops being a call, which is the
+ * figure the telephony industry uses; a hundred and fifty milliseconds of
+ * one-way delay is where two people start talking over each other, which is
+ * G.114's. Both directions have to be good, because a call is two streams
+ * and a floor's congestion is usually only in one of them. */
+#define SITE_VOICE_CONCEAL_PPM  20000   /* 2% of the audio frames          */
+#define SITE_VOICE_DELAY_MS       150   /* one way, G.114                  */
+/* A VOICE DESK STILL HAS A COMPUTER ON IT. One page and one file: the agent
+ * has a CRM open, and it is a quarter of what an office desk pulls. It is
+ * NOT what they are judged on. */
+#define SITE_VOICE_FILES       1
+
+/* A WEB HOST. Visitors, arriving from the internet in the busy period, each
+ * pulling a page and its images off the tenancy's origin server. Twenty-four
+ * concurrent visitors at a quarter of a megabyte is six megabytes INBOUND --
+ * small in bytes and it crosses the circuit, the router and the riser in the
+ * direction nothing else in this tower ever loads. What they buy is that it
+ * answers at all: nineteen of every twenty, or the day did not count. */
+#define SITE_WEB_HITS         24
+#define SITE_WEB_HIT_KB      256
+#define SITE_WEB_UP_NUM       19    /* served when hits_ok/hits >= 19/20    */
+#define SITE_WEB_UP_DEN       20
+/* And their own staff, who are a handful of people and not a floor of them. */
+#define SITE_WEB_FILES         1
+
+/* A STUDIO. One sustained upload per suite, for the whole busy period, to an
+ * ingest on the far side of the landlord's circuit. Three megabytes in four
+ * seconds is six megabits a second -- a 1080p stream with its audio -- and it
+ * is UP, which is the one direction nothing in this game has ever stressed.
+ *
+ * IT IS ALL OR NOTHING, and that is the whole difference between this and an
+ * office. A file that arrives late is a slow morning; a stream that arrives
+ * late is a stream that dropped, and the viewers have gone. So there is no
+ * partial credit: every kilobyte, inside the window, or it did not happen. */
+/* AND IT IS CONCURRENCY, NOT SIZE, for the reason SITE_DESK_FILES gives at
+ * length: one TCP flow across this stack carries about fifteen megabits and
+ * no more -- window over round trip -- so a single upload sized near that
+ * ceiling stops measuring the network and starts measuring the ceiling. It
+ * was tried at six megabits a second in one flow and every stream in a
+ * perfectly healthy tower landed a few kilobytes short, which is the same
+ * mistake in the other direction. A suite pushes the stream and the archive
+ * copy at once, which is what an edit suite really has open, and each of
+ * them is comfortably inside what one connection can carry. */
+#define SITE_STREAM_KB      2048
+#define SITE_STREAM_LEGS       2
+#define SITE_STREAM_PORT    1935
+/* AND A SUITE STILL OPENS THE PROJECT. An edit bay pulls its media off a
+ * server like everybody else -- it is where the footage is -- so a studio
+ * floor wants a file server AND a circuit, which is the point: they are the
+ * one trade whose demand pulls in both directions at once. It is not what
+ * they are judged on; the stream is. */
+#define SITE_STUDIO_FILES      1
+
 /* THE DESKS ARRIVE WITH THE TENANT. `serve` is the player's half: it runs
  * copper from a box they own to the tenancy's desks, as many as there are
  * free ports for, and charges for every metre. Returns how many desks got a
@@ -612,6 +761,15 @@ int  site_serve_vlan(Site *s, int tenant, int dev, CableKind k, int vlan);
  * card. Service is this, and then whether the work finishes. */
 int  site_tenant_connected(const Site *s, int tenant);
 int  site_tenant_addressed(const Site *s, int tenant);
+/* WHY THAT TENANCY IS UNHAPPY, IN ITS OWN TERMS, and empty when they are not.
+ * A voice tenancy is not unhappy because transfers did not finish -- they are
+ * unhappy because the calls broke up, and a web host is unhappy because they
+ * were down. One sentence, out of the numbers their own industry counts. */
+void site_tenant_why(const Site *s, int tenant, char *out, int cap);
+/* Whether four fifths -- or, for a web host, nineteen twentieths -- of what
+ * that tenancy was promised really happened yesterday. One place, because the
+ * rent, the strike and the `service` page all have to agree about it. */
+bool site_tenant_served(const Site *s, int tenant);
 
 /* ONE DAY. Moves people in, runs the busy period, takes the rent, counts the
  * strikes and files the complaints. Returns false once the run is over --

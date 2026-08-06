@@ -1790,6 +1790,387 @@ static void check_shell(const Building *b)
 }
 
 /* ------------------------------------------------------------------ main */
+/* ==================================================== THE FOUR INDUSTRIES
+ *
+ * Every tenancy in this game used to be the same business, so a floor only
+ * ever asked one question -- is there enough throughput -- and a playtester
+ * who reached day 62 said what that cost: *"I made the riser decision on
+ * floor 1 and then repeated it on floors 2 and 3 without thinking."*
+ *
+ * These checks are the answer, and the thing they have to prove is not that
+ * four words appear in `demand`. It is that THE RIGHT BUILD FOR ONE TENANCY
+ * IS THE WRONG BUILD FOR THE ONE BESIDE IT: the same building, the same
+ * copper, the same day, one of them perfectly served and the other one not,
+ * for a reason that belongs to their trade.
+ *
+ * WHY TWO MORE BUILDINGS. The gate's own tower (7008) lets to an office
+ * first and does not put a second trade on the ground for weeks, and a check
+ * that has to run forty days of busy period to reach its scenario is a check
+ * nobody runs. Seed 22 lets an office, a studio and a call centre onto ONE
+ * floor inside thirteen days; seed 23 lets an office and a web host onto one
+ * floor inside eight. Both are this generator's own letting queue -- nothing
+ * below places a tenancy, chooses its trade or sets its size.
+ */
+typedef struct {
+    Site s;
+    int  mdf, rt, core, srv, nsw;
+    int  sw[4];
+} Tower;
+
+/* THE FIRST TENANCY OF THAT TRADE ON THAT FLOOR, found rather than written
+ * down, so that a change to the generator makes this check move rather than
+ * lie. -1 when the seed has none. */
+static int trade_on(const Site *s, int kind, int floor)
+{
+    for (int i = 0; i < s->ntenant; i++)
+        if (s->tenant[i].kind == kind && s->tenant[i].floor == floor) return i;
+    return -1;
+}
+
+/* A tower with a routed edge, a core switch and a switch per tenancy on one
+ * floor, flat on 10.0.0.0/16 with the router serving addresses -- the build
+ * a player has by the end of their first hour. `riser` is the drum they put
+ * up the riser and `floor_files` decides whether the file server stands in
+ * the floor's own cupboard or in the basement. Every line is a line a player
+ * types, and the money is credited because this gate is about the network. */
+static void tower_up(Tower *w, const Building *b, uint64_t seed, int comms,
+                     CableKind riser, bool floor_files, int nsw)
+{
+    Site *s = &w->s;
+    site_new(s, b, seed, 100000);
+    site_credit(s, 900000);
+    w->mdf = bld_find(b, 0, RM_MDF);
+    w->rt = site_install(s, SDEV_ROUTER, w->mdf, "edge");
+    w->core = site_install(s, SDEV_SWITCH24, w->mdf, "core");
+    site_cable(s, w->rt, 0, s->uplink, 0, CAB_CAT6);
+    site_cable(s, w->rt, 1, w->core, 0, CAB_CAT6);
+    site_addr(s, w->rt, 0, s->wan_you, s->wan_mask);
+    site_addr(s, w->rt, 1, net_ip(10, 0, 0, 1), net_mask_bits(16));
+    site_gateway(s, w->rt, s->wan_isp);
+    site_forwarding(s, w->rt, true);
+    site_dhcpd(s, w->rt, net_ip(10, 0, 1, 1), 250, net_mask_bits(16),
+               net_ip(10, 0, 0, 1), s->wan_isp);
+    w->nsw = nsw;
+    for (int i = 0; i < nsw; i++) {
+        char nm[NET_NAME_MAX];
+        snprintf(nm, sizeof nm, "sw%d", i + 1);
+        w->sw[i] = site_install(s, SDEV_SWITCH24, comms, nm);
+        site_cable(s, w->core, 1 + i, w->sw[i], 0, riser);
+    }
+    w->srv = site_install(s, SDEV_SERVER, floor_files ? comms : w->mdf, "files");
+    site_power(s, w->srv, true);
+    if (floor_files) site_cable(s, w->sw[0], 22, w->srv, 0, CAB_CAT6);
+    else             site_cable(s, w->core, 22, w->srv, 0, CAB_CAT6);
+    site_addr(s, w->srv, 0, net_ip(10, 0, 0, 9), net_mask_bits(16));
+    site_gateway(s, w->srv, net_ip(10, 0, 0, 1));
+    site_httpd(s, w->srv, 80);
+}
+
+/* Run days until that tenancy is in, forgiving the ones this scenario never
+ * promised anything to -- the same thing --loadcheck's keep_measuring does,
+ * and for the same reason: a check that has to reach day thirteen cannot
+ * have its run ended on day six by a tenancy it is not about. */
+static void tower_until(Tower *w, int ti)
+{
+    for (int g = 0; g < 200 && !w->s.tenant[ti].moved; g++) {
+        w->s.over = 0;
+        w->s.complaints = 0;
+        for (int i = 0; i < w->s.ntenant; i++) {
+            w->s.tenant[i].strikes = 0;
+            w->s.tenant[i].complained = 0;
+        }
+        site_day(&w->s, NULL);
+    }
+}
+
+/* What share of what they were promised really happened. */
+static int got_pct(const Site *s, int ti)
+{
+    const SiteTenant *t = &s->tenant[ti];
+    return t->tried ? (t->finished * 100) / t->tried : 0;
+}
+
+/* ------------------------------------------------- an office and a studio
+ * The same floor, the same copper, the same day. The office's files come off
+ * a server ten metres away and never touch the landlord's circuit; the
+ * studio's day exists entirely ON that circuit, upwards, which is the one
+ * direction a riser sized for desks was never sized for. So the size of the
+ * circuit is a decision that does not touch one of them and decides the
+ * other -- a thing this game could not previously express at all, because
+ * every tenancy in it pulled the same bytes in the same direction. */
+static void check_industry_upload(void)
+{
+    printf("\nan office and a studio on one floor, wanting opposite things\n");
+    Building b;
+    if (!bld_generate(&b, 22ull)) { ck("seed 22 makes a building", false); return; }
+    int comms = bld_find(&b, 1, RM_COMMS);
+    if (comms < 0) comms = a_room(&b, 1);
+
+    Tower w;
+    tower_up(&w, &b, 22ull, comms, CAB_CAT5E, true, 3);
+    Site *s = &w.s;
+    int off = trade_on(s, TEN_OFFICE, 1), stu = trade_on(s, TEN_STUDIO, 1);
+    if (off < 0 || stu < 0) {
+        ck("seed 22 lets an office and a studio onto floor 1", false);
+        site_free(s); bld_free(&b); return;
+    }
+    tower_until(&w, stu);
+    site_serve(s, off, w.sw[0], CAB_CAT5E);
+    site_serve(s, stu, w.sw[1], CAB_CAT5E);
+    site_day(s, NULL);
+
+    char line[120];
+    snprintf(line, sizeof line, "on the 500 Mb circuit both trades are served "
+             "(office %d%%, studio %d%%)", got_pct(s, off), got_pct(s, stu));
+    ck(line, got_pct(s, off) >= 80 && got_pct(s, stu) >= 80);
+    ck("and the studio's work really went UP, off the handoff's own port",
+       s->tenant[stu].up_kb > 4096 &&
+       net_port_busy_us(s->net, s->dev[s->uplink].node, 0) > 0);
+
+    /* NOW BUY THE CHEAP CIRCUIT, which is the ordinary saving: the tower's
+     * files are on the floor, almost nothing crosses the handoff, and a
+     * hundred megabits looks like plenty. It is plenty -- for the office. */
+    int off_was = got_pct(s, off);
+    site_isp(s, 100);
+    site_day(s, NULL);
+    snprintf(line, sizeof line, "cut the circuit to 100 Mb and the studio is "
+             "ruined by it -- UPWARDS (%ld KB up of %ld, %d%%)",
+             s->tenant[stu].up_kb, s->tenant[stu].up_want_kb, got_pct(s, stu));
+    ck(line, got_pct(s, stu) < 80 && s->tenant[stu].up_want_kb > 0 &&
+             s->tenant[stu].up_kb < s->tenant[stu].up_want_kb);
+    /* AND IT TAKES THE FLOOR WITH IT, which is the owner's sentence in one
+     * measurement: *worth taking if you have built for it, ruinous if you
+     * have not.* The office's own files never leave the floor and their day
+     * still falls apart, because the suites next door are filling the only
+     * way out of the building with a stream that cannot be slowed down. */
+    snprintf(line, sizeof line, "and takes the OFFICE down with it, whose files "
+             "never leave the floor (%d%% from %d%%)", got_pct(s, off), off_was);
+    ck(line, got_pct(s, off) < off_was - 20);
+    /* AND THE FIX IS A MONTHLY BILL RATHER THAN A CABLE, which is the only
+     * recurring decision in this game and the one a studio makes expensive. */
+    site_isp(s, 500);
+    site_day(s, NULL);
+    snprintf(line, sizeof line, "buy the circuit back and both are served again "
+             "(office %d%%, studio %d%%)", got_pct(s, off), got_pct(s, stu));
+    ck(line, got_pct(s, off) >= 80 && got_pct(s, stu) >= 80);
+    site_isp(s, 100);
+    site_day(s, NULL);
+
+    Buf sv = {0};
+    site_dump_service(s, &sv);
+    ck("`service` says so in their own units -- streams, and the KB that went up",
+       has(sv.p, "streams dropped") && has(sv.p, "they had to have") &&
+       s->tenant[stu].up_want_kb == (long)SITE_STREAM_KB * SITE_STREAM_LEGS *
+                                    site_tenant_addressed(s, stu));
+    ck("and the trade is on the row, so it is not a mystery which is which",
+       has(sv.p, "studio") && has(sv.p, "office"));
+    buf_free(&sv);
+    site_free(s);
+    bld_free(&b);
+}
+
+/* ---------------------------------------------- an office and a web host
+ * A web host's traffic arrives from OUTSIDE, into a machine that is theirs.
+ * An office whose server is off is served by whatever else is powered, a
+ * little slower, and nobody notices. A web host whose server is off is not
+ * slower -- they are gone, and their lease says what that costs. */
+static void check_industry_uptime(void)
+{
+    printf("\nan office and a web host, and what 'down' means to each\n");
+    Building b;
+    if (!bld_generate(&b, 23ull)) { ck("seed 23 makes a building", false); return; }
+    int comms = bld_find(&b, 1, RM_COMMS);
+    if (comms < 0) comms = a_room(&b, 1);
+
+    Tower w;
+    tower_up(&w, &b, 23ull, comms, CAB_CAT5E, true, 2);
+    Site *s = &w.s;
+    int off = trade_on(s, TEN_OFFICE, 1), host = trade_on(s, TEN_WEBHOST, 1);
+    if (off < 0 || host < 0) {
+        ck("seed 23 lets an office and a web host onto floor 1", false);
+        site_free(s); bld_free(&b); return;
+    }
+    tower_until(&w, host);
+    /* Their own machine, in their own room, because that is what `demand`
+     * said they wanted and it is where their site lives. */
+    int wsrv = site_install(s, SDEV_SERVER, s->tenant[host].room, "wsrv");
+    site_power(s, wsrv, true);
+    site_cable(s, w.sw[1], 21, wsrv, 0, CAB_CAT6);
+    site_addr(s, wsrv, 0, net_ip(10, 0, 0, 20), net_mask_bits(16));
+    site_gateway(s, wsrv, net_ip(10, 0, 0, 1));
+    site_httpd(s, wsrv, 80);
+    site_serve(s, off, w.sw[0], CAB_CAT5E);
+    site_serve(s, host, w.sw[1], CAB_CAT5E);
+    /* Past the fit-out window, so that what follows is a service they have
+     * been getting rather than one they never started. */
+    for (int d = 0; d < 4; d++) site_day(s, NULL);
+
+    char line[120];
+    snprintf(line, sizeof line, "both are served while the path in works "
+             "(office %d%%, host %d%%)", got_pct(s, off), got_pct(s, host));
+    ck(line, got_pct(s, off) >= 80 && got_pct(s, host) >= 95);
+    /* AND IT REALLY CAME FROM OUTSIDE. The visitors are TCP connections
+     * opened BY the handoff, so they crossed the handoff's own card inwards
+     * -- which is a fact about a port and not about anything counted here. */
+    ck("what they are judged on is VISITORS -- exactly a day's worth of them, "
+       "not their staff's transfers",
+       s->tenant[host].tried == SITE_WEB_HITS &&
+       net_port_busy_us(s->net, s->dev[s->uplink].node, 0) > 0);
+    ck("and `service` names their own machine as the thing that answered",
+       s->tenant[host].files_dev == wsrv);
+
+    /* WHAT A BLACKOUT DOES TO EACH OF THEM. Their machine goes off; the
+     * office's file server is untouched. */
+    long before = s->money;
+    site_power(s, wsrv, false);
+    site_day(s, NULL);
+    snprintf(line, sizeof line, "their machine off: the OFFICE is still served "
+             "(%d%%)", got_pct(s, off));
+    ck(line, got_pct(s, off) >= 80);
+    snprintf(line, sizeof line, "and the web host is not slower, they are DOWN "
+             "(%d%%)", got_pct(s, host));
+    ck(line, got_pct(s, host) == 0 && s->tenant[host].down);
+    ck("no other server in the building will answer for their site",
+       s->tenant[host].files_dev < 0 && s->tenant[off].files_dev >= 0);
+    ck("and a day down costs the landlord a day's rent BACK, not just the rent",
+       s->last.sla == s->tenant[host].rent / 30 && s->last.sla > 0 &&
+       s->money < before);
+    Buf sv = {0};
+    site_dump_service(s, &sv);
+    ck("`service` says they answered nothing from the internet, in those words",
+       has(sv.p, "answered NOTHING from the internet"));
+    ck("and says what was handed back, and why", has(sv.p, "rent handed BACK"));
+    buf_free(&sv);
+
+    /* AND THE BATTERY IS THE DECISION. Switch it back on -- and address it
+     * again, because a box that was switched off lost the addresses, the
+     * routes and the sockets it was holding, which is what site_power says
+     * it does and is why a machine coming back from a blackout is work. */
+    site_power(s, wsrv, true);
+    site_addr(s, wsrv, 0, net_ip(10, 0, 0, 20), net_mask_bits(16));
+    site_gateway(s, wsrv, net_ip(10, 0, 0, 1));
+    site_httpd(s, wsrv, 80);
+    site_day(s, NULL);
+    ck("switch it back on and they are served again, and the credit stops",
+       got_pct(s, host) >= 95 && s->last.sla == 0);
+    site_free(s);
+    bld_free(&b);
+}
+
+/* ------------------------------------------------- an office and a voice
+ * The one that could not be said at all before: a wire that is fine for
+ * every transfer on it and unusable for the calls. A file transfer does not
+ * notice a lost packet -- TCP asks again -- and a call cannot ask again,
+ * because the moment that audio was for has gone. So the office behind a
+ * riser is paid and the call centre behind the SAME riser has no business,
+ * and no amount of bandwidth is the fix: it is where the bulk traffic goes.
+ */
+static void check_industry_voice(void)
+{
+    printf("\nan office and a call centre behind one riser\n");
+    Building b;
+    if (!bld_generate(&b, 22ull)) { ck("seed 22 makes a building", false); return; }
+    int comms = bld_find(&b, 1, RM_COMMS);
+    if (comms < 0) comms = a_room(&b, 1);
+
+    /* THE PLANNED ANSWER FIRST: the files on the floor, so a floor's day
+     * never crosses the riser at all. */
+    Tower w;
+    tower_up(&w, &b, 22ull, comms, CAB_CAT5E, true, 3);
+    Site *s = &w.s;
+    int off = trade_on(s, TEN_OFFICE, 1), voi = trade_on(s, TEN_VOICE, 1);
+    if (off < 0 || voi < 0) {
+        ck("seed 22 lets an office and a call centre onto floor 1", false);
+        site_free(s); bld_free(&b); return;
+    }
+    tower_until(&w, voi);
+    site_serve(s, off, w.sw[0], CAB_CAT5E);
+    site_serve(s, voi, w.sw[2], CAB_CAT5E);
+    site_day(s, NULL);
+    char line[120];
+    snprintf(line, sizeof line, "with the files on the floor both are served "
+             "(office %d%%, calls %d%%)", got_pct(s, off), got_pct(s, voi));
+    ck(line, got_pct(s, off) >= 80 && got_pct(s, voi) >= 80);
+    ck("and the calls were real UDP through the stack, not a number beside it",
+       s->tenant[voi].tried == site_tenant_addressed(s, voi) &&
+       s->tenant[voi].tried > 0 && s->tenant[voi].bytes > 0);
+    int good_conceal = s->tenant[voi].conceal_ppm;
+    site_free(s);
+
+    /* THE ORDINARY MISTAKE: the file server in the basement, so a floor's
+     * whole day comes down the riser, and the cheapest drum in the catalogue
+     * up it. The office survives it. The calls do not. */
+    tower_up(&w, &b, 22ull, comms, CAB_CAT5, false, 3);
+    s = &w.s;
+    tower_until(&w, voi);
+    site_serve(s, off, w.sw[0], CAB_CAT5E);
+    site_serve(s, voi, w.sw[2], CAB_CAT5E);
+    site_day(s, NULL);
+    snprintf(line, sizeof line, "a hundred megabit riser to the basement ruins "
+             "the CALLS (%d%% of %d of them)", got_pct(s, voi),
+             s->tenant[voi].tried);
+    ck(line, got_pct(s, voi) < 80 &&
+             s->tenant[voi].tried == site_tenant_addressed(s, voi));
+    snprintf(line, sizeof line, "and it is concealment that did it, measured on "
+             "the streams (%d ppm against %d)",
+             s->tenant[voi].conceal_ppm, good_conceal);
+    ck(line, s->tenant[voi].conceal_ppm > good_conceal &&
+             s->tenant[voi].conceal_ppm > 20000);
+    Buf sv = {0};
+    site_dump_service(s, &sv);
+    ck("`service` blames the calls, in concealment and delay, not transfers",
+       has(sv.p, "calls broke up") && has(sv.p, "concealed"));
+    buf_free(&sv);
+    site_free(s);
+    bld_free(&b);
+}
+
+/* --------------------------------------------------- and the price of it */
+static void check_industry_rent(const Building *b)
+{
+    printf("\nthe rent follows what they want, and says so before you sign\n");
+    Site s;
+    site_new(&s, b, GATE_SEED, 100000);
+    Buf d = {0};
+    site_dump_demand(&s, &d);
+    ck("`demand` names the trade of every tenancy, not just its drops",
+       has(d.p, "trade") && has(d.p, "web host") && has(d.p, "studio") &&
+       has(d.p, "voice") && has(d.p, "office"));
+    ck("and says what each one will ask the network for, before the lease",
+       has(d.p, "sustained UPLOAD") && has(d.p, "reachable INWARDS") &&
+       has(d.p, "no loss, no jitter"));
+    ck("and what each trade pays for the same square metres",
+       has(d.p, "(300%)") && has(d.p, "(240%)") && has(d.p, "(170%)"));
+    ck("and how a web host's outage is billed differently from a slow day",
+       has(d.p, "day's rent BACK"));
+    int nk[TEN_KIND_COUNT];
+    memset(nk, 0, sizeof nk);
+    for (int i = 0; i < s.ntenant; i++)
+        if (s.tenant[i].kind < TEN_KIND_COUNT) nk[s.tenant[i].kind]++;
+    ck("the tower lets to more than one trade, off its own seed",
+       nk[TEN_OFFICE] > 0 && (nk[TEN_STUDIO] + nk[TEN_VOICE] + nk[TEN_WEBHOST]) > 2);
+    ck("and the office is still the common case, which is what the curve is",
+       nk[TEN_OFFICE] * 2 > s.ntenant);
+    ck("a studio pays three times an office and a web host two and a bit",
+       site_tenant_rent_pct(TEN_STUDIO) == 300 &&
+       site_tenant_rent_pct(TEN_WEBHOST) == 240 &&
+       site_tenant_rent_pct(TEN_OFFICE) == 100);
+    /* THE PREMIUM IS REAL MONEY AND NOT A SENTENCE: two tenancies of the same
+     * size in the same building do not pay the same rent if their trades
+     * differ, and the ratio is the one printed above. */
+    bool priced = false;
+    for (int i = 0; i < s.ntenant && !priced; i++)
+        for (int j = 0; j < s.ntenant; j++) {
+            if (s.tenant[i].kind != TEN_OFFICE || s.tenant[j].kind != TEN_STUDIO) continue;
+            if (s.tenant[i].drops != s.tenant[j].drops) continue;
+            if (s.tenant[j].rent > s.tenant[i].rent * 2) { priced = true; break; }
+        }
+    ck("and two same-sized tenancies of different trades pay different rent",
+       priced);
+    buf_free(&d);
+    site_free(&s);
+}
+
 int site_selfcheck(void)
 {
     passed = total = 0;
@@ -1823,6 +2204,10 @@ int site_selfcheck(void)
     check_tolerance(&b);
     check_jack(&b);
     check_shell(&b);
+    check_industry_rent(&b);
+    check_industry_upload();
+    check_industry_uptime();
+    check_industry_voice();
     /* AND THAT A PERSON CAN PLAY ALL OF IT OVER A SOCKET, which is the
      * claim that had quietly stopped being true. See core/sessioncheck.c. */
     session_selfcheck(&passed, &total);

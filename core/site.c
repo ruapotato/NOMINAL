@@ -82,6 +82,38 @@ bool site_kind_is_switch(int kind)
 {
     return kind == SDEV_SWITCH8 || kind == SDEV_SWITCH24;
 }
+
+/* ------------------------------------------------------ the industries
+ * One table, because the name, the sentence a player reads before signing
+ * the lease, and the money they pay are three faces of one fact -- and this
+ * project has been bitten twice by the same fact living in two places (the
+ * `demand` footer that told a player a switch24 seats 23 desks, and the
+ * complaint threshold that read "Three" in `status` and a computed number in
+ * `service`). The rent premium is what that industry pays for the same
+ * square metres, as a percentage of an office. */
+static const struct {
+    const char *name;
+    const char *wants;
+    int         rent_pct;
+} TRADE[TEN_KIND_COUNT] = {
+    { "office",   "throughput at nine, and patient",   100 },
+    { "web host", "uptime, and reachable INWARDS",     240 },
+    { "voice",    "no loss, no jitter. Not bandwidth", 170 },
+    { "studio",   "sustained UPLOAD, all of it",       300 },
+};
+
+const char *site_tenant_kind_name(int k)
+{
+    return (k >= 0 && k < TEN_KIND_COUNT) ? TRADE[k].name : "?";
+}
+const char *site_tenant_kind_wants(int k)
+{
+    return (k >= 0 && k < TEN_KIND_COUNT) ? TRADE[k].wants : "?";
+}
+int site_tenant_rent_pct(int k)
+{
+    return (k >= 0 && k < TEN_KIND_COUNT) ? TRADE[k].rent_pct : 100;
+}
 bool site_kind_has_os(int kind)
 {
     return kind == SDEV_PC || kind == SDEV_SERVER;
@@ -324,6 +356,14 @@ bool site_new(Site *s, const Building *b, uint64_t seed, long budget)
      * the keys, and their arithmetic is the entire difficulty curve. */
     Rng r;
     rng_seed(&r, seed ^ 0xde4a5dull);
+    /* THE TRADE IS DRAWN FROM ITS OWN STREAM, and that is not fastidiousness.
+     * Taking it out of `r` would shift every draw after it -- the servers,
+     * the segments and, through the slippage term, the whole letting queue --
+     * so adding industries would silently re-schedule every tower in the
+     * project and move numbers in four other gates that have nothing to do
+     * with industries. A new fact about the world gets a new stream. */
+    Rng tr;
+    rng_seed(&tr, seed ^ 0x7ade9c0ffeeull);
     for (int i = 0; i < b->nrooms && s->ntenant < SITE_MAX_TENANT; i++) {
         const Room *rm = &b->rooms[i];
         if (!rm->tenant) continue;
@@ -351,7 +391,48 @@ bool site_new(Site *s, const Building *b, uint64_t seed, long budget)
         t->drops = (uint8_t)n;
         t->wants_server = (uint8_t)(rooms >= 3 && rng_range(&r, 0, 99) < 45);
         t->own_segment  = (uint8_t)(n >= 6 || rng_range(&r, 0, 99) < 25);
-        t->rent = (int)(area * (rm->kind == RM_RESIDENCE ? 14 : 26));
+        /* ------------------------------------------- WHAT BUSINESS THEY ARE IN
+         *
+         * The draw is off the same seed as everything else about them, so a
+         * tower always lets to the same industries in the same order, and it
+         * is weighted so that the OFFICE stays the common case: it is the
+         * baseline the whole difficulty curve was calibrated against, and a
+         * tower where every other floor is exotic would be a different game
+         * rather than a richer one.
+         *
+         * The weights are read off the room, not off nothing. A flat is let
+         * to a person, and the person who fills a flat with network is a
+         * content creator; a let floor is let to a company, and roughly a
+         * third of the companies who need a rack in a building like this are
+         * not offices. */
+        int roll = (int)rng_range(&tr, 0, 99);
+        if (rm->kind == RM_RESIDENCE)
+            t->kind = (uint8_t)(roll < 22 ? TEN_STUDIO : TEN_OFFICE);
+        else if (roll < 14) t->kind = TEN_VOICE;
+        else if (roll < 25) t->kind = TEN_WEBHOST;
+        else if (roll < 34) t->kind = TEN_STUDIO;
+        else                t->kind = TEN_OFFICE;
+        /* AND WHAT THE BUSINESS ASKS THE LANDLORD FOR, which is not the same
+         * as how much space it takes. THE DROPS ARE LEFT ALONE ON PURPOSE:
+         * ports come off floor area because desks come off floor area, and a
+         * hosting company with a big floor has a big floor. Making a trade
+         * change the desk count was tried and it was wrong twice over -- it
+         * moved every desk-count number in every other gate in the project
+         * for no gain, and the differences that matter here are what those
+         * desks ASK FOR and what the tenancy PAYS, not how many of them
+         * there are. */
+        if (t->kind == TEN_WEBHOST)
+            t->wants_server = 1;           /* the origin IS their business    */
+        else if (t->kind == TEN_VOICE)
+            t->own_segment = 1;            /* a voice vlan, for the reason    */
+                                           /* every voice engineer gives      */
+        /* THE RENT FOLLOWS WHAT THEY NEED. Square metres, at the rate for the
+         * kind of space, times what that industry pays for a network that
+         * does the thing they are buying. A studio pays triple; a web host
+         * pays for uptime and hands it back on a day they were down; a voice
+         * business pays for a network that does not drop their calls. */
+        long base = (long)(area * (rm->kind == RM_RESIDENCE ? 14 : 26));
+        t->rent = (int)(base * site_tenant_rent_pct(t->kind) / 100);
         t->day = 0;                        /* the queue below decides this   */
     }
 
@@ -1150,23 +1231,37 @@ int site_demand_upto(const Site *s, int day, int *out, int cap)
 void site_dump_demand(const Site *s, Buf *out)
 {
     int drops = 0, seg = 0, srv = 0, rent = 0;
+    int bykind[TEN_KIND_COUNT];
+    memset(bykind, 0, sizeof bykind);
     buf_printf(out, "%d tenancies want service in this tower\n\n", s->ntenant);
-    buf_puts(out, "  day  floor  tenant  drops  wants                             rent/mo\n");
+    /* THE PRICE HAS TO BE LEGIBLE BEFORE THE LEASE IS SIGNED. A studio pays
+     * three times an office for the same floor and will fill an uplink
+     * nobody sized for it; that is only a decision if the player can see
+     * both halves of it here, on the row, before the day arrives. */
+    buf_puts(out, "  day  floor  tenant  trade      drops  wants"
+                  "                                          rent/mo\n");
     for (int i = 0; i < s->ntenant; i++) {
         const SiteTenant *t = &s->tenant[i];
-        char want[48];
-        snprintf(want, sizeof want, "%s%s", t->own_segment
-                 ? "a segment of its own" : "a port on anything",
-                 t->wants_server ? " and a server" : "");
-        buf_printf(out, "  %3d  %5d  %6d  %5d  %-33s %6d\n",
-                   t->day, t->floor, t->tenant, t->drops, want, t->rent);
+        char want[72];
+        snprintf(want, sizeof want, "%s%s%s", site_tenant_kind_wants(t->kind),
+                 t->own_segment ? " +segment" : "",
+                 t->wants_server ? " +server" : "");
+        buf_printf(out, "  %3d  %5d  %6d  %-9s  %5d  %-46s %6d\n",
+                   t->day, t->floor, t->tenant, site_tenant_kind_name(t->kind),
+                   t->drops, want, t->rent);
         drops += t->drops;
         seg += t->own_segment;
         srv += t->wants_server;
         rent += t->rent;
+        if (t->kind < TEN_KIND_COUNT) bykind[t->kind]++;
     }
     buf_printf(out, "\n%d drops in all, %d of them wanting a segment of their "
                     "own, %d wanting a server\n", drops, seg, srv);
+    buf_puts(out, "by trade: ");
+    for (int k = 0; k < TEN_KIND_COUNT; k++)
+        buf_printf(out, "%s%d %s", k ? ", " : "", bykind[k],
+                   site_tenant_kind_name(k));
+    buf_puts(out, "\n");
     /* HOW MANY SWITCHES THAT REALLY IS, which is not drops divided by the
      * number in the product name.
      *
@@ -1190,6 +1285,46 @@ void site_dump_demand(const Site *s, Buf *out)
                     "spend the pair on desks if you let it.\n",
                site_kind_ports(SDEV_SWITCH24) - 2,
                site_kind_ports(SDEV_SWITCH8) - 1);
+    /* AND WHAT EACH TRADE WILL DO TO THE BUILDING, because the drops column
+     * is no longer the size of the bill. Every number here is the constant
+     * that enforces it, printed rather than spelled, so there is one place
+     * for the fact and no second place for it to drift from. */
+    buf_printf(out,
+        "\n  WHAT EACH TRADE ASKS THE NETWORK FOR, and they are not the same\n"
+        "  question. Rent is a percentage of what an office pays for the same\n"
+        "  square metres, and it is on the row above before you sign.\n"
+        "\n  office    (%3d%%) %d KB of page and %d x %d KB of files per desk, all\n"
+        "                   at once. Throughput at nine in the morning, and it\n"
+        "                   does not mind waiting. Served on four fifths done.\n"
+        "  voice     (%3d%%) %d bytes every %d ms per desk, EACH WAY, out to the\n"
+        "                   carrier -- a fiftieth of one office desk. No amount\n"
+        "                   of bandwidth will help them. A call breaks up past\n"
+        "                   %d%% of its audio concealed (lost, or so late the\n"
+        "                   buffer had already played silence) or %d ms of\n"
+        "                   one-way delay, and `service` says which it was.\n"
+        "  web host  (%3d%%) %d visitors a day arriving FROM THE INTERNET at %d KB\n"
+        "                   each, into their origin server. That crosses the\n"
+        "                   circuit, the router and the riser INWARDS, which\n"
+        "                   nothing else in this tower does. They need %d of\n"
+        "                   every %d served -- and a day their origin answered\n"
+        "                   nothing costs you a day's rent BACK, not just the\n"
+        "                   day's rent. THEIR SITE IS ON THE BOX IN THEIR OWN\n"
+        "                   ROOM: a server standing anywhere else is the\n"
+        "                   landlord's, and a host on the landlord's box is\n"
+        "                   hosted on somebody else's uptime.\n"
+        "  studio    (%3d%%) %d KB UP per suite, every day, inside the busy\n"
+        "                   period. Not a byte less: a stream that arrives late\n"
+        "                   is a dropped stream and there is no partial credit.\n"
+        "                   Upload is the one direction a riser sized for desks\n"
+        "                   was never sized for, and `isp <mb>` is the other\n"
+        "                   half of the answer.\n",
+        site_tenant_rent_pct(TEN_OFFICE), SITE_DESK_WEB_KB, SITE_DESK_FILES,
+        SITE_DESK_FILE_KB,
+        site_tenant_rent_pct(TEN_VOICE), NET_VOICE_PAYLOAD, NET_VOICE_PTIME,
+        SITE_VOICE_CONCEAL_PPM / 10000, SITE_VOICE_DELAY_MS,
+        site_tenant_rent_pct(TEN_WEBHOST), SITE_WEB_HITS, SITE_WEB_HIT_KB,
+        SITE_WEB_UP_NUM, SITE_WEB_UP_DEN,
+        site_tenant_rent_pct(TEN_STUDIO), SITE_STREAM_KB);
 }
 
 /* ------------------------------------------------------------ inspection */

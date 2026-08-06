@@ -222,17 +222,61 @@ typedef enum {
 } XState;
 
 typedef struct {
-    int      dev;          /* the desk                                      */
+    int      dev;          /* the desk -- or the handoff, for a visitor     */
     int      tenant;
     uint32_t dst;
-    int      leg;          /* 0 = the web fetch, 1 = the file               */
+    int      leg;          /* 0 = the web fetch, 1 = the file, 2 = a visitor*/
     int      kb;
     int      start;        /* the tick it begins                            */
     int      sock;
     uint8_t  state;
+    uint8_t  judged;       /* is this one of the units they are judged on?  */
     long     got, want;
     int      began, ended; /* ticks, for the latency the player feels       */
 } Xfer;
+
+/* ================================================ THE OTHER THREE INDUSTRIES
+ *
+ * Everything below is the same rule as the transfers above: it goes through
+ * core/netstack.c or it does not happen. A call is `net_voice_call`, which is
+ * real UDP at a real rate through the same ports and queues; a stream is an
+ * ordinary TCP connection carrying bytes UP to an ingest on the far side of
+ * the landlord's circuit; a visitor is an ordinary TCP connection opened
+ * FROM the handoff, which is the internet in this world, INTO a tenancy's
+ * origin server. Not one byte of any of it is a number added to a counter.
+ */
+
+/* A CALL, WHICH IS TWO STREAMS. One each way, because a call is two streams
+ * and a floor's congestion is almost always in only one of them: a naive
+ * tower's riser is full DOWNWARDS, with the files coming off the basement
+ * server, and a call measured only upwards would sail through it and report
+ * that everything was fine. The tenancy is judged on the call, and the call
+ * is as good as its worse half. */
+typedef struct {
+    int dev, tenant;
+    int up, down;          /* net_voice stream ids, or -1                   */
+} Call;
+
+/* A STREAM OUT OF A STUDIO. The desk opens one connection to the ingest and
+ * pushes for the whole busy period; the ingest reads it as fast as it
+ * arrives, which is what an ingest does, so nothing is throttled anywhere
+ * but on the wire. The first four bytes are the stream key, which is how the
+ * ingest knows whose stream it is -- the same reason a real one has one. */
+typedef struct {
+    int  dev, tenant;
+    int  sock;
+    long want;             /* bytes that have to arrive, or it dropped      */
+    long pushed, got;
+    uint8_t state;         /* X_*                                           */
+} Strm;
+
+/* And the ingest's side of one, before the key has arrived. */
+typedef struct {
+    int     sock;
+    int     strm;          /* -1 until the key is read                      */
+    int     keylen;
+    uint8_t key[4];
+} Ingest;
 
 /* WHO SERVES THE FILES, and it is the nearest one, which is why WHERE the
  * player puts a server is a decision rather than a purchase.
@@ -305,6 +349,45 @@ static int file_server_for(const Site *s, int tenant)
         if (any < 0) any = i;
     }
     return floor >= 0 ? floor : any;
+}
+
+/* WHERE A WEB HOST'S SITE ACTUALLY LIVES, and it is not the same question as
+ * where a tenancy's files come from.
+ *
+ * A file server is fungible: an office whose own machine is off is served,
+ * honestly and a little slower, off whatever else is powered, because a file
+ * is a file. A web host's site is not fungible. It is their software on
+ * their machine, and no amount of the landlord's kit will answer for it. So:
+ *
+ *   - if a server of THEIRS exists, that is the origin, and it being off is
+ *     them being DOWN. That is the whole of what they are buying and it is
+ *     what a battery under it is for.
+ *   - if they never had one -- the landlord never bought them a rack -- they
+ *     are hosted on whatever is powered, like everybody else. A shared box
+ *     is a real arrangement and its weakness is that it is somebody else's
+ *     uptime, which is exactly what this models.
+ *
+ * Returns the device, or -1 for "nothing of theirs is answering". */
+/* WHICH BOX IS "THEIRS" IS THE ROOM IT STANDS IN, not who paid for it.
+ * Everything a player can carry belongs to the player -- site_move says so at
+ * length, because a version that reassigned ownership by where a box was set
+ * down confiscated a switch a playtester carried into a let office. So the
+ * question this asks is the physical one: is there a server standing in a
+ * room this tenancy rents? That is a decision the player makes with their
+ * legs -- carry it into their office rather than into your comms cupboard --
+ * and it is the one that decides whose uptime the site is on. */
+static int web_origin_for(const Site *s, int tenant)
+{
+    uint8_t who = s->tenant[tenant].tenant;
+    bool theirs = false;
+    for (int i = 0; i < s->ndev; i++) {
+        const SiteDev *d = &s->dev[i];
+        if (d->kind != SDEV_SERVER) continue;
+        if (d->room >= s->b->nrooms || s->b->rooms[d->room].tenant != who) continue;
+        theirs = true;
+        if (d->powered && any_addr(s, d->node)) return i;
+    }
+    return theirs ? -1 : file_server_for(s, tenant);
 }
 
 static void xfer_begin(Site *s, Xfer *x, int tick)
@@ -1063,6 +1146,84 @@ void site_dump_events(const Site *s, Buf *out)
         COPPER_MARGIN_M);
 }
 
+/* ============================================= WAS THAT A DAY THEY PAY FOR
+ *
+ * Four fifths of what a tenancy was promised, which is the rule this game
+ * has always had -- except that what they were promised is not the same
+ * thing for every industry, and one of them buys something stricter.
+ *
+ * A WEB HOST IS BUYING UPTIME. Four fifths of your visitors served is not a
+ * slightly slow day for a hosting company, it is one visitor in five looking
+ * at a browser error, and no host would wear it. Nineteen of twenty, which
+ * is the ordinary shape of the thing they would have signed. It is the only
+ * per-kind number in the rule and it is here rather than in three places. */
+bool site_tenant_served(const Site *s, int ti)
+{
+    if (ti < 0 || ti >= s->ntenant) return false;
+    const SiteTenant *t = &s->tenant[ti];
+    if (t->tried <= 0) return false;
+    if (t->kind == TEN_WEBHOST)
+        return t->finished * SITE_WEB_UP_DEN >= t->tried * SITE_WEB_UP_NUM;
+    return t->finished * 5 >= t->tried * 4;
+}
+
+/* AND WHY NOT, IN THEIR OWN TERMS. A voice tenancy is not unhappy because
+ * transfers did not finish -- they are unhappy because the calls broke up,
+ * and this is the sentence that says which. Every number in it was measured
+ * during the busy period that has just ended. */
+void site_tenant_why(const Site *s, int ti, char *out, int cap)
+{
+    if (!out || cap <= 0) return;
+    out[0] = 0;
+    if (ti < 0 || ti >= s->ntenant) return;
+    const SiteTenant *t = &s->tenant[ti];
+    if (!t->moved) return;
+    if (t->tried == 0) {
+        if (site_tenant_connected(s, ti) == 0)
+            snprintf(out, (size_t)cap, "not one of their %d desks has a cable "
+                                       "in it.", t->ndesk);
+        else if (site_tenant_addressed(s, ti) == 0)
+            snprintf(out, (size_t)cap, "%d desks with link and no address: "
+                                       "nothing is serving dhcp on their segment.",
+                     site_tenant_connected(s, ti));
+        return;
+    }
+    if (site_tenant_served(s, ti)) return;
+    switch (t->kind) {
+    case TEN_VOICE:
+        snprintf(out, (size_t)cap,
+                 "%d of %d calls broke up: %d.%d%% of the audio concealed, "
+                 "%d ms one way, %u us of jitter.",
+                 t->tried - t->finished, t->tried,
+                 t->conceal_ppm / 10000, (t->conceal_ppm / 1000) % 10,
+                 t->delay_ms, (unsigned)t->jitter_us);
+        break;
+    case TEN_WEBHOST:
+        if (t->finished == 0)
+            snprintf(out, (size_t)cap,
+                     "their site answered NOTHING from the internet all day. "
+                     "%d visitors, %d served.", t->tried, t->finished);
+        else
+            snprintf(out, (size_t)cap,
+                     "%d of %d visitors got an error. They are paying for %d "
+                     "in %d.", t->tried - t->finished, t->tried,
+                     SITE_WEB_UP_NUM, SITE_WEB_UP_DEN);
+        break;
+    case TEN_STUDIO:
+        snprintf(out, (size_t)cap,
+                 "%d of %d streams dropped: %ld KB went up of the %ld KB they "
+                 "had to have. Upload.",
+                 t->tried - t->finished, t->tried, t->up_kb, t->up_want_kb);
+        break;
+    default:
+        snprintf(out, (size_t)cap,
+                 "%d of %d transfers did not finish inside the busy period; "
+                 "the slowest took %d ms.",
+                 t->tried - t->finished, t->tried, t->worst_ms);
+        break;
+    }
+}
+
 /* ================================================================== a day */
 bool site_day(Site *s, SiteDay *rep)
 {
@@ -1094,17 +1255,34 @@ bool site_day(Site *s, SiteDay *rep)
     }
 
     /* ------------------------------------------------- build the day's work */
-    int cap = 0;
-    for (int i = 0; i < s->ntenant; i++) if (s->tenant[i].moved) cap += s->tenant[i].ndesk;
-    /* The page and the files, all at the same time: see SITE_DESK_FILES. */
-    cap *= 1 + SITE_DESK_FILES;
+    /* AND IT IS NOT THE SAME WORK ON EVERY FLOOR ANY MORE. Four industries,
+     * four shapes: an office pulls, a studio pushes, a web host is pulled
+     * FROM outside, and a voice business hardly moves any bytes at all and
+     * is ruined by the ones everybody else moved. What each desk does is
+     * decided here; where the frames then go is the player's architecture,
+     * and nothing in this file has an opinion about how much that costs. */
+    int desks_in = 0;
+    for (int i = 0; i < s->ntenant; i++) if (s->tenant[i].moved) desks_in += s->tenant[i].ndesk;
+    /* The page and the files, all at the same time: see SITE_DESK_FILES --
+     * plus, per web host, a busy period's worth of visitors off the street. */
+    int cap = desks_in * (1 + SITE_DESK_FILES);
+    for (int i = 0; i < s->ntenant; i++)
+        if (s->tenant[i].moved && s->tenant[i].kind == TEN_WEBHOST)
+            cap += SITE_WEB_HITS;
     Xfer *xs = cap ? (Xfer *)nom_alloc(sizeof(Xfer) * (size_t)cap) : NULL;
     int nx = 0;
+    Call *cs = desks_in ? (Call *)nom_alloc(sizeof(Call) * (size_t)desks_in) : NULL;
+    int ncall = 0;
+    int strmcap = desks_in * SITE_STREAM_LEGS;
+    Strm *ss = strmcap ? (Strm *)nom_alloc(sizeof(Strm) * (size_t)strmcap) : NULL;
+    Ingest *ing = strmcap ? (Ingest *)nom_alloc(sizeof(Ingest) * (size_t)strmcap) : NULL;
+    int nstrm = 0, ning = 0, ingest = -1;
 
     Rng rng;
     rng_seed(&rng, s->seed ^ (0x0d0a17ull * (uint64_t)s->day));
 
-    uint32_t web = net_if_get_addr(s->net, s->dev[s->uplink].node, 0);
+    int upnode = s->dev[s->uplink].node;
+    uint32_t web = net_if_get_addr(s->net, upnode, 0);
     /* The internet's own web server answers on the handoff's address in this
      * world; net_sites.c is the content and site_new put it there. */
     for (int i = 0; i < s->ntenant; i++) {
@@ -1112,12 +1290,24 @@ bool site_day(Site *s, SiteDay *rep)
         t->tried = t->finished = t->worst_ms = 0;
         t->bytes = 0;
         t->files_dev = -1;
+        t->conceal_ppm = t->jitter_us = t->delay_ms = 0;
+        t->up_kb = t->up_want_kb = 0;
+        t->down = 0;
+        t->sla = 0;
         if (!t->moved) continue;
         r.tenants_in++;
         r.desks += t->ndesk;
         int fsd = file_server_for(s, i);
         t->files_dev = fsd;
-        for (int j = 0; j < t->ndesk && nx + SITE_DESK_FILES < cap; j++) {
+        /* HOW MANY FILES ONE OF THEIR PEOPLE OPENS, which is what makes an
+         * office an office. A call centre agent and a hosting company's three
+         * staff have a machine each and a normal amount of work on it; a
+         * studio suite is not opening documents at all, it is uploading. */
+        int nfile = SITE_DESK_FILES;
+        if (t->kind == TEN_VOICE)        nfile = SITE_VOICE_FILES;
+        else if (t->kind == TEN_WEBHOST) nfile = SITE_WEB_FILES;
+        else if (t->kind == TEN_STUDIO)  nfile = SITE_STUDIO_FILES;
+        for (int j = 0; j < t->ndesk && nx + nfile < cap; j++) {
             int d = t->desk0 + j;
             if (net_port_state(s->net, s->dev[d].node, 0) != PORT_UP) continue;
             if (!net_if_get_addr(s->net, s->dev[d].node, 0)) continue;
@@ -1132,6 +1322,52 @@ bool site_day(Site *s, SiteDay *rep)
              * transfers start together, because they are one person sitting
              * down and one machine waking up. */
             int begins = (int)rng_range(&rng, 0, SITE_BUSY_MS / 10);
+            /* A STUDIO SUITE HAS THE PROJECT OPEN AND THE STREAM RUNNING.
+             * The uploads are ordinary TCP connections to an ingest on the
+             * far side of the landlord's circuit, pushed as hard as the
+             * network will take them, and every kilobyte has to be there by
+             * the end or the stream dropped. */
+            if (t->kind == TEN_STUDIO) {
+                if (ingest < 0)  /* one ingest for the tower, as there is */
+                    ingest = net_tcp_listen(s->net, upnode, SITE_STREAM_PORT);
+                for (int k = 0; k < SITE_STREAM_LEGS; k++) {
+                    Strm *m = &ss[nstrm++];
+                    memset(m, 0, sizeof *m);
+                    m->dev = d; m->tenant = i; m->sock = -1;
+                    m->want = (long)SITE_STREAM_KB * 1024;
+                    t->up_want_kb += SITE_STREAM_KB;
+                }
+            }
+            /* AND A PHONE IS NOT A TRANSFER. Two streams, one each way, to
+             * the carrier on the far side of the handoff -- which is where a
+             * SIP trunk really is -- so a call crosses the desk's own port,
+             * the floor switch, the riser, the core, the router and the
+             * circuit, in both directions, exactly as everybody else's
+             * traffic does and at a fiftieth of the bytes. */
+            if (t->kind == TEN_VOICE) {
+                Call *c = &cs[ncall];
+                memset(c, 0, sizeof *c);
+                c->dev = d; c->tenant = i;
+                /* A PORT PAIR PER CALL, which is what RTP really does and
+                 * is not a detail: one carrier port for the whole building
+                 * would mean the second call could not open a socket, and
+                 * twenty agents would share one phone. */
+                uint16_t rtp = (uint16_t)(16384 + 2 * ncall);
+                c->up   = net_voice_start(s->net, s->dev[d].node, upnode, web,
+                                          rtp, NET_VOICE_PAYLOAD, NET_VOICE_PTIME);
+                c->down = net_voice_start(s->net, upnode, s->dev[d].node,
+                                          net_if_get_addr(s->net, s->dev[d].node, 0),
+                                          (uint16_t)(rtp + 1),
+                                          NET_VOICE_PAYLOAD, NET_VOICE_PTIME);
+                /* The world holds NET_VOICE_MAX calls. One it could not seat
+                 * is not a call that went badly, so it is not counted at all
+                 * -- the same treatment a socket the pool could not give out
+                 * gets, and for the same reason. */
+                if (c->up < 0 || c->down < 0) {
+                    if (c->up >= 0)   net_voice_stop(s->net, c->up);
+                    if (c->down >= 0) net_voice_stop(s->net, c->down);
+                } else ncall++;
+            }
             Xfer *x = &xs[nx++];            /* the page, off the internet    */
             memset(x, 0, sizeof *x);
             x->dev = d; x->tenant = i; x->sock = -1; x->leg = 0;
@@ -1139,11 +1375,12 @@ bool site_day(Site *s, SiteDay *rep)
             x->want = (long)SITE_DESK_WEB_KB * 1024;
             x->dst = web;
             x->start = begins;
+            x->judged = (uint8_t)(t->kind == TEN_OFFICE);
             /* The files, off the nearest server, all open together -- one
              * person with more than one thing on the go, which is what a
              * desk is. They start on the same millisecond as the page for
              * the same reason the page does: one person sitting down. */
-            for (int k = 0; k < SITE_DESK_FILES; k++) {
+            for (int k = 0; k < nfile; k++) {
                 Xfer *y = &xs[nx++];
                 memset(y, 0, sizeof *y);
                 y->dev = d; y->tenant = i; y->sock = -1; y->leg = 1;
@@ -1151,6 +1388,40 @@ bool site_day(Site *s, SiteDay *rep)
                 y->want = (long)SITE_DESK_FILE_KB * 1024;
                 y->dst = files ? files : web;
                 y->start = begins;
+                y->judged = (uint8_t)(t->kind == TEN_OFFICE);
+            }
+        }
+        /* ------------------------------------------- and the visitors
+         * A WEB HOST'S TRAFFIC ARRIVES FROM OUTSIDE, which is the direction
+         * nothing in this tower has ever been asked to carry. These are real
+         * TCP connections opened BY the handoff -- the internet, in this
+         * world -- to the tenancy's origin server, and they only arrive if
+         * the player's router really routes inbound: the handoff has had a
+         * route for 10/8 and 192.168/16 pointing at the far end of its own
+         * /30 since day one, and something has to be on the far end of it
+         * that knows the way to the tenancy's segment.
+         *
+         * The origin is their own server if they have one, and otherwise
+         * whatever else is powered -- the same fallback everybody's files
+         * get, because a host with no rack of their own is hosted on the
+         * landlord's box, and that is exactly the arrangement whose weakness
+         * is that it is somebody else's uptime. */
+        if (t->kind == TEN_WEBHOST && site_tenant_addressed(s, i) > 0) {
+            int od = web_origin_for(s, i);
+            t->files_dev = od;         /* `service` names what answered      */
+            uint32_t origin = od >= 0 ? any_addr(s, s->dev[od].node) : 0;
+            for (int k = 0; k < SITE_WEB_HITS && nx < cap; k++) {
+                Xfer *v = &xs[nx++];
+                memset(v, 0, sizeof *v);
+                v->dev = s->uplink; v->tenant = i; v->sock = -1; v->leg = 2;
+                v->kb = SITE_WEB_HIT_KB;
+                v->want = (long)SITE_WEB_HIT_KB * 1024;
+                v->dst = origin;
+                v->start = (int)rng_range(&rng, 0, SITE_BUSY_MS / 10);
+                v->judged = 1;
+                /* No origin at all is not a slow site, it is a site that is
+                 * not there. It fails at connect, on the wire, because there
+                 * is nothing at address zero to answer it. */
             }
         }
     }
@@ -1196,6 +1467,69 @@ bool site_day(Site *s, SiteDay *rep)
                 xfer_poll(s, x, tick);
             }
         }
+        /* THE STUDIOS PUSH. One connection per suite, opened on the first
+         * tick and then fed every millisecond with as much as the send
+         * buffer will take -- which is as much as the ACKs coming back allow,
+         * which is as much as the wire allows. Nothing here decides the rate;
+         * TCP and the ports do. */
+        for (int i = 0; i < nstrm; i++) {
+            Strm *m = &ss[i];
+            if (m->state == X_WAIT) {
+                m->sock = net_tcp_connect(s->net, s->dev[m->dev].node, web,
+                                          SITE_STREAM_PORT);
+                m->state = m->sock < 0 ? X_FAILED : X_CONNECT;
+                continue;
+            }
+            if (m->state != X_CONNECT && m->state != X_RECV) continue;
+            TcpState st = net_tcp_state(s->net, m->sock);
+            if (st == TCP_CLOSED) { m->state = X_FAILED; m->sock = -1; continue; }
+            if (st != TCP_ESTABLISHED) continue;
+            if (m->state == X_CONNECT) {
+                /* THE STREAM KEY, four bytes, first: it is how the ingest
+                 * knows whose stream this is, which is the same reason a real
+                 * one has one. */
+                uint8_t key[4];
+                key[0] = (uint8_t)(i >> 24); key[1] = (uint8_t)(i >> 16);
+                key[2] = (uint8_t)(i >> 8);  key[3] = (uint8_t)i;
+                if (net_tcp_send(s->net, m->sock, key, 4) != 4) continue;
+                m->state = X_RECV;
+            }
+            static const uint8_t frame[1400] = { 0 };
+            while (m->pushed < m->want) {
+                long left = m->want - m->pushed;
+                int wantb = left < (long)sizeof frame ? (int)left : (int)sizeof frame;
+                int k = net_tcp_send(s->net, m->sock, frame, wantb);
+                if (k <= 0) break;
+                m->pushed += k;
+            }
+        }
+        /* AND THE INGEST READS. A real one drains its socket as fast as the
+         * bytes arrive, so this does too -- otherwise the receive window
+         * would shut and the stream would be throttled by this file rather
+         * than by the network, which is the one thing this file may not do. */
+        if (ingest >= 0) {
+            int a;
+            while (ning < strmcap && (a = net_tcp_accept(s->net, ingest)) >= 0) {
+                Ingest *g = &ing[ning++];
+                memset(g, 0, sizeof *g);
+                g->sock = a; g->strm = -1;
+            }
+            uint8_t b[2048];
+            for (int i = 0; i < ning; i++) {
+                Ingest *g = &ing[i];
+                if (g->sock < 0) continue;
+                int k;
+                while ((k = net_tcp_recv(s->net, g->sock, b, sizeof b)) > 0) {
+                    int off = 0;
+                    while (g->keylen < 4 && off < k) g->key[g->keylen++] = b[off++];
+                    if (g->strm < 0 && g->keylen == 4)
+                        g->strm = (g->key[0] << 24) | (g->key[1] << 16) |
+                                  (g->key[2] << 8) | g->key[3];
+                    if (g->strm >= 0 && g->strm < nstrm)
+                        ss[g->strm].got += k - off;
+                }
+            }
+        }
         net_step(s->net, 1);
     }
 
@@ -1204,22 +1538,80 @@ bool site_day(Site *s, SiteDay *rep)
         Xfer *x = &xs[i];
         SiteTenant *t = &s->tenant[x->tenant];
         if (x->state == X_DONE) {
-            t->finished++;
             t->bytes += x->got;
             r.finished++;
             r.bytes += x->got;
             int ms = x->ended - x->began;
             if (ms > t->worst_ms) t->worst_ms = ms;
+            if (x->judged) t->finished++;
         } else if (x->sock >= 0) {
             net_tcp_close(s->net, x->sock);
             net_sock_free(s->net, x->sock);
         }
         /* Two things this person's machine was asked to do today, counted
          * whichever way they went. A page that never arrived used to take
-         * the file with it and be counted once; both are counted now. */
-        t->tried++; r.sessions++;
+         * the file with it and be counted once; both are counted now.
+         *
+         * `tried` is now what the TENANCY is judged on and r.sessions is what
+         * the TOWER was asked for, and they are different totals on purpose:
+         * a call centre agent's CRM is real traffic the building has to
+         * carry, and it is not what makes their day good or bad. */
+        if (x->judged) t->tried++;
+        r.sessions++;
         if (t->worst_ms > r.worst_ms) r.worst_ms = t->worst_ms;
     }
+    /* THE CALLS, read off the stack's own measurement of them and not off
+     * anything this file counted. A call is as good as its worse direction:
+     * concealment -- audio frames that had nothing to play, because the
+     * packet was lost or arrived after the buffer had played the silence --
+     * under two per cent, and one-way delay inside G.114's hundred and fifty
+     * milliseconds. */
+    for (int i = 0; i < ncall; i++) {
+        Call *c = &cs[i];
+        SiteTenant *t = &s->tenant[c->tenant];
+        VoiceStats a, b;
+        bool ok = net_voice_stats(s->net, c->up, &a) &&
+                  net_voice_stats(s->net, c->down, &b);
+        int conceal = 0, delay = 0;
+        uint32_t jit = 0;
+        if (ok) {
+            conceal = a.conceal_ppm > b.conceal_ppm ? a.conceal_ppm : b.conceal_ppm;
+            delay = (int)((a.delay_avg_us > b.delay_avg_us
+                           ? a.delay_avg_us : b.delay_avg_us) / 1000);
+            jit = a.jitter_us > b.jitter_us ? a.jitter_us : b.jitter_us;
+            t->bytes += (long)(a.received + b.received) * NET_VOICE_PAYLOAD;
+            r.bytes  += (long)(a.received + b.received) * NET_VOICE_PAYLOAD;
+        } else {
+            conceal = 1000000;          /* nothing came through at all       */
+        }
+        bool good = ok && conceal <= SITE_VOICE_CONCEAL_PPM &&
+                    delay <= SITE_VOICE_DELAY_MS;
+        if (conceal > t->conceal_ppm) t->conceal_ppm = conceal;
+        if ((int)jit > t->jitter_us)  t->jitter_us = (int)jit;
+        if (delay > t->delay_ms)      t->delay_ms = delay;
+        t->tried++; r.sessions++;
+        if (good) { t->finished++; r.finished++; }
+        net_voice_stop(s->net, c->up);
+        net_voice_stop(s->net, c->down);
+    }
+    /* THE STREAMS, and there is no partial credit. Every kilobyte, inside the
+     * window, or the stream dropped and the viewers have gone. */
+    for (int i = 0; i < nstrm; i++) {
+        Strm *m = &ss[i];
+        SiteTenant *t = &s->tenant[m->tenant];
+        t->up_kb += m->got / 1024;
+        t->bytes += m->got;
+        r.bytes  += m->got;
+        t->tried++; r.sessions++;
+        if (m->got >= m->want) { t->finished++; r.finished++; }
+        if (m->sock >= 0) { net_tcp_close(s->net, m->sock); net_sock_free(s->net, m->sock); }
+    }
+    for (int i = 0; i < ning; i++)
+        if (ing[i].sock >= 0) {
+            net_tcp_close(s->net, ing[i].sock);
+            net_sock_free(s->net, ing[i].sock);
+        }
+    if (ingest >= 0) net_sock_free(s->net, ingest);
     /* Anything still half open at the end of the day is closed, because the
      * next busy period is a different day and the sockets are a pool. */
     for (int i = 0; i < s->ndev; i++)
@@ -1233,6 +1625,9 @@ bool site_day(Site *s, SiteDay *rep)
      * looks like a network that has died and is only a leak. */
     net_tcp_reap(s->net, 1);
     nom_free(xs);
+    nom_free(cs);
+    nom_free(ss);
+    nom_free(ing);
 
     for (int i = 0; i < s->ndev; i++)
         for (int p = 0; p < s->dev[i].nports; p++) {
@@ -1275,9 +1670,27 @@ bool site_day(Site *s, SiteDay *rep)
     for (int i = 0; i < s->ntenant; i++) {
         SiteTenant *t = &s->tenant[i];
         if (!t->moved) continue;
-        bool served = t->tried > 0 && t->finished * 5 >= t->tried * 4;
+        bool served = site_tenant_served(s, i);
         bool ignored = t->tried == 0 && t->strikes == 0 &&
                        s->day - t->day > SITE_FITOUT_DAYS;
+        /* THEM BEING DOWN COSTS YOU DIFFERENTLY FROM A SLOW MORNING, and this
+         * is the difference. Everybody else's bad day costs the landlord the
+         * rent they did not earn. A web host's contract is uptime, and a day
+         * their origin answered nothing at all is a day the landlord hands a
+         * day's rent BACK -- so the same outage is twice the money it is for
+         * an office, and it is the one bill in this game that can be paid by
+         * a two hundred and twenty pound battery. It is only levied once the
+         * fit-out window has closed, because nobody credits a service they
+         * have not started yet. */
+        if (t->kind == TEN_WEBHOST && t->tried > 0 && t->finished == 0)
+            t->down = 1;
+        if (t->kind == TEN_WEBHOST && t->moved && t->finished == 0 &&
+            t->tried > 0 && s->day - t->day > SITE_FITOUT_DAYS) {
+            t->sla = t->rent / 30;
+            s->money -= t->sla;
+            s->spent += t->sla;
+            r.sla += t->sla;
+        }
         if (served) {
             r.tenants_served++;
             long day_rent = t->rent / 30;
@@ -1412,6 +1825,9 @@ bool site_advance(Site *s, int days, Buf *out)
                 buf_printf(out, "        the ISP bills the month: %ld for the "
                                 "%d Mb circuit. %ld in hand\n",
                            r.bill, s->isp_mb, s->money);
+            if (r.sla)
+                buf_printf(out, "        %ld handed BACK to web hosts whose sites "
+                                "were down: their lease is uptime\n", r.sla);
             if (r.complaints_today)
                 buf_printf(out, "        %d COMPLAINT%s filed today (%d in all)\n",
                            r.complaints_today, r.complaints_today == 1 ? "" : "S",
@@ -1476,8 +1892,10 @@ void site_dump_day(const Site *s, Buf *out)
 
 void site_dump_service(const Site *s, Buf *out)
 {
-    buf_puts(out, "  floor tenant  desks   up  addr   done  worst   strikes  rent/day  files\n");
+    buf_puts(out, "  floor tenant  trade      desks   up  addr   done  worst"
+                  "   strikes  rent/day  files\n");
     bool offfloor = false;
+    bool anywhy = false;
     for (int i = 0; i < s->ntenant; i++) {
         const SiteTenant *t = &s->tenant[i];
         if (!t->moved) continue;
@@ -1497,17 +1915,43 @@ void site_dump_service(const Site *s, Buf *out)
             snprintf(files, sizeof files, "%s%s", fd->name, away ? " <-" : "");
             if (away) offfloor = true;
         }
-        buf_printf(out, "  %5d %6d  %5d %4d %5d  %5s %5dms  %7d%s  %8d  %s\n",
-                   t->floor, t->tenant, t->ndesk, up, ad, done, t->worst_ms,
+        buf_printf(out, "  %5d %6d  %-9s %5d %4d %5d  %5s %5dms  %7d%s  %8d  %s\n",
+                   t->floor, t->tenant, site_tenant_kind_name(t->kind),
+                   t->ndesk, up, ad, done, t->worst_ms,
                    t->strikes, t->complained ? "*" : " ", t->rent / 30, files);
+        /* AND WHY, WHEN THERE IS A WHY, IN THEIR OWN TERMS. `done` reads
+         * 12/20 for everybody and means a different thing on every row: a
+         * transfer for an office, a call for a voice tenancy, a visitor for
+         * a web host, a stream for a studio. A number that means four things
+         * has to say which one it is on the day it matters. */
+        char why[192];
+        site_tenant_why(s, i, why, (int)sizeof why);
+        if (why[0]) {
+            buf_printf(out, "          %s\n", why);
+            anywhy = true;
+        }
+        if (t->sla)
+            buf_printf(out, "          and %ld of rent handed BACK: they were "
+                            "down, and their lease says what that costs.\n",
+                       t->sla);
     }
     buf_puts(out, "\n  up is desks whose port has LINK on it: copper in a socket at both\n"
                   "  ends, short enough to carry. addr is how many of those also got an\n"
                   "  ADDRESS, and only an addressed desk does any work -- which is the\n"
                   "  number `day` counts. up 20 addr 0 is twenty cables and no dhcp.\n"
-                  "\n  a tenancy is served on a day when four fifths of its people got\n"
-                  "  their work done. Three days in a row without that is a complaint,\n"
-                  "  and a * is one that has been filed. `load` says which port is full.\n");
+                  "\n  a tenancy is served on a day when four fifths of what it was\n"
+                  "  promised happened -- and WHAT it was promised depends on the\n"
+                  "  trade. done counts transfers for an office, CALLS for a voice\n"
+                  "  business, VISITORS off the internet for a web host and STREAMS\n"
+                  "  for a studio, and `demand` says what each of those is. A web\n"
+                  "  host is the one exception to the fraction: they are buying\n"
+                  "  uptime, so it is nineteen in twenty, and a day their origin\n"
+                  "  answered nothing costs you a day's rent back.\n"
+                  "  Three days in a row without that is a complaint, and a * is one\n"
+                  "  that has been filed. `load` says which port is full.\n");
+    if (anywhy)
+        buf_puts(out, "  The line under a row is that tenancy's own account of the day,\n"
+                      "  in the units their business counts.\n");
     /* AND HOW MANY OF THOSE ENDS IT, which was a constant three nobody could
      * read anywhere. It scales with the building now, so it has to be said
      * out loud and it has to be said as a number the player can count
