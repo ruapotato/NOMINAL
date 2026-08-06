@@ -566,6 +566,17 @@ static void age_the_kit(Site *s)
     }
 }
 
+/* HOW MANY COMPLAINTS THE LANDLORD WILL WEAR, in one place because two
+ * places is how the number a player reads stops being the number that ends
+ * their run. */
+int site_complaints_allowed(const Site *s)
+{
+    int in = 0;
+    for (int i = 0; i < s->ntenant; i++) if (s->tenant[i].moved) in++;
+    int bear = (in + 2) / 3;
+    return bear < 3 ? 3 : bear;
+}
+
 /* ------------------------------------------------------------ a blackout */
 static void the_mains_fails(Site *s, Rng *rng)
 {
@@ -1011,10 +1022,34 @@ bool site_day(Site *s, SiteDay *rep)
     r.events = s->ev_total - ev0;
 
     /* -------------------------------------------------------- and the end */
-    if (s->complaints >= 3) {
+    /* HOW MANY COMPLAINTS THE LANDLORD WILL WEAR, and it is not a constant.
+     *
+     * It was three, whatever the size of the building. That was right when a
+     * tower held three tenancies and it stopped being right the moment D27's
+     * letting queue started signing thirteen leases by day sixty: three of
+     * three is a building nobody can work in, and three of thirteen is
+     * seventy-seven per cent of your tenants perfectly happy. A landlord does
+     * not lose the freehold over that, and a game should not get more brittle
+     * the better you are doing at the thing it asked you to do.
+     *
+     * It also mattered more than it looks, because tenancies fail together.
+     * One overheated server takes a floor's worth of them out on the same
+     * morning, so a flat three meant a single event that a big tower ought to
+     * absorb ended the run in the three days it takes strikes to mature --
+     * measured on seed 42, where a competent build died on day 20 from one
+     * heat trip on day 17.
+     *
+     * A third of the building, rounded up, never fewer than three. Nine
+     * tenancies still ends at three, so nothing before that point moves and
+     * the difficulty curve --loadcheck asserts is untouched. */
+    int in = 0;
+    for (int i = 0; i < s->ntenant; i++) if (s->tenant[i].moved) in++;
+    int bear = site_complaints_allowed(s);
+    if (s->complaints >= bear) {
         s->over = 1;
         snprintf(s->over_why, sizeof s->over_why,
-                 "three tenancies have filed a complaint. The lease is not renewed.");
+                 "%d of your %d tenancies have filed a complaint. The lease is "
+                 "not renewed.", s->complaints, in);
     } else if (s->money < 0) {
         s->over = 1;
         snprintf(s->over_why, sizeof s->over_why,
@@ -1142,7 +1177,20 @@ void site_dump_service(const Site *s, Buf *out)
                   "  number `day` counts. up 20 addr 0 is twenty cables and no dhcp.\n"
                   "\n  a tenancy is served on a day when four fifths of its people got\n"
                   "  their work done. Three days in a row without that is a complaint,\n"
-                  "  and a * is one that has been filed. `load` says which port is full.\n"
+                  "  and a * is one that has been filed. `load` says which port is full.\n");
+    /* AND HOW MANY OF THOSE ENDS IT, which was a constant three nobody could
+     * read anywhere. It scales with the building now, so it has to be said
+     * out loud and it has to be said as a number the player can count
+     * against the stars in the column above. */
+    {
+        int in = 0;
+        for (int i = 0; i < s->ntenant; i++) if (s->tenant[i].moved) in++;
+        int bear = site_complaints_allowed(s);
+        buf_printf(out, "\n  %d filed complaints ends the run. That is a third of the %d\n"
+                        "  tenancies in the building, rounded up, and never fewer than\n"
+                        "  three -- so it grows as you let the floors.\n", bear, in);
+    }
+    buf_puts(out,
                   "\n  files is the server their people actually pulled off yesterday.\n"
                   "  Their own machine if they have one and it is on; otherwise one on\n"
                   "  their floor; otherwise anything powered in the building.\n");

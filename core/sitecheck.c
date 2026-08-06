@@ -1134,6 +1134,72 @@ static void check_arity(const Building *b)
  * These are two-line checks. They would have caught all of it years of
  * playtests ago, which is the reason they are here now.
  */
+/* -------------------------------- how much unhappiness ends a run */
+/* It was three, whatever the size of the building. That was right when a
+ * tower held three tenancies; D27's letting queue signs thirteen leases by
+ * day sixty, and three of thirteen is seventy-seven per cent of your tenants
+ * perfectly happy. It mattered more than it looks because tenancies fail
+ * TOGETHER -- one overheated server takes a floor out on the same morning --
+ * so an agent's competent build on seed 42 died on day 20 from a single heat
+ * trip on day 17. */
+static void check_tolerance(const Building *b)
+{
+    printf("\nhow many complaints the landlord will wear\n");
+    Site s;
+    site_new(&s, b, GATE_SEED, 100000);
+
+    /* Nobody in yet: the floor holds, because a building with three tenants
+     * in it that all hate you is over however you count it. */
+    ck("an empty building still ends at three", site_complaints_allowed(&s) == 3);
+
+    /* Move them in by hand, so this measures the arithmetic and not the
+     * letting schedule -- which is a different gate's business. */
+    struct { int in, want; } CASE[] = {
+        { 1, 3 }, { 3, 3 }, { 6, 3 }, { 9, 3 },
+        { 12, 4 }, { 15, 5 }, { 21, 7 }
+    };
+    bool all = true;
+    int most = 0;
+    for (size_t c = 0; c < sizeof CASE / sizeof CASE[0]; c++) {
+        if (CASE[c].in > s.ntenant) continue;
+        for (int i = 0; i < s.ntenant; i++) s.tenant[i].moved = i < CASE[c].in;
+        int got = site_complaints_allowed(&s);
+        if (got != CASE[c].want) {
+            printf("    %d tenancies in -> %d, wanted %d\n",
+                   CASE[c].in, got, CASE[c].want);
+            all = false;
+        }
+        most = CASE[c].in;
+    }
+    ck("a third of the building, rounded up, never fewer than three", all);
+    ck("and the gate had enough tenancies on this seed to mean it", most >= 12);
+
+    /* NOTHING BEFORE NINE MOVES, which is what keeps --loadcheck's curve --
+     * the owner's "slow at three floors, breaking at five" -- untouched by
+     * this change. */
+    bool early_same = true;
+    for (int n = 0; n <= 9 && n <= s.ntenant; n++) {
+        for (int i = 0; i < s.ntenant; i++) s.tenant[i].moved = i < n;
+        if (site_complaints_allowed(&s) != 3) early_same = false;
+    }
+    ck("nothing at nine tenancies or fewer moved, so the curve is untouched",
+       early_same);
+
+    /* AND THE PLAYER CAN READ IT. A hidden threshold is worse than a wrong
+     * one: the number that ends your run has to be countable against the
+     * stars in the column above it. */
+    for (int i = 0; i < s.ntenant; i++) s.tenant[i].moved = i < 12;
+    {
+        Buf sv = {0};
+        site_dump_service(&s, &sv);
+        ck("`service` prints the number, and it is the one that ends the run",
+           sv.p && strstr(sv.p, "4 filed complaints ends the run") != NULL &&
+           site_complaints_allowed(&s) == 4);
+        buf_free(&sv);
+    }
+    site_free(&s);
+}
+
 static void check_reports(const Building *b)
 {
     printf("\nwhat the game says about itself\n");
@@ -1308,6 +1374,7 @@ int site_selfcheck(void)
     check_ping_blames_the_filter(&b);
     check_arity(&b);
     check_reports(&b);
+    check_tolerance(&b);
     check_shell(&b);
     /* AND THAT A PERSON CAN PLAY ALL OF IT OVER A SOCKET, which is the
      * claim that had quietly stopped being true. See core/sessioncheck.c. */

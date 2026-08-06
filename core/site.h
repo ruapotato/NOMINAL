@@ -510,6 +510,10 @@ bool site_advance(Site *s, int days, Buf *out);
  * `isp` and `status` can say it rather than leave the player to count. */
 long site_isp_price(int mb);
 int  site_isp_days_to_bill(const Site *s);
+/* How many filed complaints end the run. A third of the tenancies that have
+ * moved in, rounded up, never fewer than three -- so the building gets more
+ * slack as you let it, rather than more brittle. `service` prints it. */
+int  site_complaints_allowed(const Site *s);
 bool site_isp(Site *s, int mb);
 
 /* ------------------------------------------------------------ the weather */
