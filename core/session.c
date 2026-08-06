@@ -1589,7 +1589,15 @@ bool session_line(Session *ses, const char *line, Buf *out)
 
     /* Everything else that names a box: you have to be in the room with it. */
     if (is_devverb(t[0])) {
-        if (n < 2) { buf_printf(out, "%s which box?\n", t[0]); return true; }
+        /* WHICH BOX -- AND WHAT THE VERB WANTS AFTER IT. Naming the missing
+         * box and stopping there left a player who typed `dhcpd` no better
+         * off than before; the spelling lives in one table in core/site.c
+         * and this is where it is asked for. */
+        if (n < 2) {
+            buf_printf(out, "%s which box?\n", t[0]);
+            site_cmd(&ses->s, raw, out);
+            return true;
+        }
         int d;
         if (!need_here(ses, t[1], &d, out)) return true;
         site_cmd(&ses->s, raw, out);

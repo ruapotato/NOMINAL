@@ -145,6 +145,25 @@ static void check_verbs(int *passed, int *total)
      * lives on a machine with an operating system in it; a switch, a router
      * and the handoff are appliances with a management line and no shell,
      * and the ports that drop are on those. */
+    /* A VERB HANDED NO BOX SAYS WHAT IT WANTS, not merely that it wanted
+     * something. `dhcpd` used to answer "no such command" at the tower
+     * prompt and "dhcpd which box?" once that was fixed, and neither of them
+     * tells somebody who cannot see the box what to type next. */
+    static const char *DEVV[] = { "dhcpd", "addr", "subif", "trunk", "gw",
+                                  "resolver", "httpd", "get", NULL };
+    bool spelled = true;
+    for (int i = 0; DEVV[i]; i++) {
+        const char *a = say(&ses, DEVV[i], &o);
+        char want[32];
+        snprintf(want, sizeof want, "%s <", DEVV[i]);
+        if (has(a, "no such command") || !has(a, want)) {
+            printf("    `%s` on its own does not say what it wants: %s", DEVV[i], a);
+            spelled = false;
+        }
+    }
+    ck("a verb handed no box says what the verb wants, in the verb's own "
+       "spelling", spelled);
+
     ck("the tower help does not name a program the tower prompt has not got",
        !has(help.p, "netstat") && has(say(&ses, "netstat -P", &o),
                                      "no such command"));
