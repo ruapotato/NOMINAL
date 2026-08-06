@@ -784,14 +784,17 @@ func _rack_slot(i: int, nu: int) -> Dictionary:
 	racks[i] = k
 	var y: float = k.floor * fheight + RACK_BASE + float(top - nu) * U
 	var h: float = float(nu) * U
+	# 6 mm SHY OF THE RAIL PLANE. A box whose front face landed on exactly the
+	# plane of the punched rail behind it is the same coplanar-surface flicker
+	# as the faceplate, one layer further back.
 	var f: Vector3 = k.get("face", Vector3(0, 0, 1))
 	if k.along_x:
-		var z: float = (k.z + RACK_D - 0.74) if f.z > 0.0 else (k.z + 0.06)
+		var z: float = (k.z + RACK_D - 0.74) if f.z > 0.0 else (k.z + 0.066)
 		return {"mn": Vector3(k.x + 0.06, y, z),
-				"size": Vector3(RACK_W - 0.12, h, 0.68), "face": f}
-	var x: float = (k.x + RACK_D - 0.74) if f.x > 0.0 else (k.x + 0.06)
+				"size": Vector3(RACK_W - 0.12, h, 0.674), "face": f}
+	var x: float = (k.x + RACK_D - 0.74) if f.x > 0.0 else (k.x + 0.066)
 	return {"mn": Vector3(x, y, k.z + 0.06),
-			"size": Vector3(0.68, h, RACK_W - 0.12), "face": f}
+			"size": Vector3(0.674, h, RACK_W - 0.12), "face": f}
 
 
 # A box standing on the floor of a room, in a row along the low wall, front
@@ -1306,13 +1309,7 @@ func _place_devices() -> void:
 			DEV_COL.get(d.kindname, Color("#2f343a")), slot.face, d.nports, d.i)
 
 	if mdf >= 0:
-		var r: Dictionary = rooms[mdf]
-		# your workstation: a desk machine, so it has a screen output. On a desk
-		# against the opposite wall from the racks, which is where it goes.
-		_add_device("workstation", 0, true, true,
-			Vector3(r.x1 - 1.9, 0.72, r.y1 - 1.5), Vector3(0.5, 0.42, 0.5),
-			Color("#3a3f46"), Vector3(0, 0, -1), 0, -1)
-		_desk(Vector3(r.x1 - 2.4, 0, r.y1 - 1.8), Vector3(1.6, 0.72, 0.8))
+		_workstation(mdf)
 		# the customer's machine, racked: 4U of it, and the crash cart's whole
 		# lesson lives on the back of it -- serial yes, display no.
 		var frames := racks_in_fill_order(mdf)
@@ -1343,15 +1340,125 @@ func _place_devices() -> void:
 			Color("#4a4033"), slot.face, 24, -1)
 
 
-# A desk to put the workstation on, because a computer floating at 720 mm is
-# the sort of thing that makes a room read as a diagram.
-func _desk(mn: Vector3, size: Vector3) -> void:
+# ------------------------------------------------------------ the workstation
+#
+# "The workstation doesn't really look like the workstation." It was a 500 mm
+# cube on a plank: a box among boxes in a room made of boxes, and nothing about
+# it said desk. A workstation is a piece of FURNITURE -- a desk against a wall,
+# a monitor on it at the height a monitor is at, a keyboard in front of the
+# monitor, a chair pushed in behind, and the tower unit on the floor under it
+# with the cables going into the back of it. That silhouette is the thing you
+# recognise from the doorway, so that is what this builds.
+#
+# Where it goes is the doors' decision, exactly as the rack rows are: the wall
+# the frames are against is taken, no wall with a door in it is available, and
+# whatever is left has to hold the desk, the chair, and somebody walking past.
+
+# A box given in the band's own frame: u runs along the wall, v out from it
+# into the room, y up. Saves this from being written out four times, once per
+# wall a desk can end up against.
+func _ubox(g, fr: Dictionary, u0: float, u1: float, v0: float, v1: float,
+		y0: float, y1: float, col: Color, collide := true) -> void:
+	var a: Vector3 = fr.org + fr.along * u0 + fr.out * v0 + Vector3(0, y0, 0)
+	var b: Vector3 = fr.org + fr.along * u1 + fr.out * v1 + Vector3(0, y1, 0)
+	var mn := Vector3(min(a.x, b.x), min(a.y, b.y), min(a.z, b.z))
+	var mx := Vector3(max(a.x, b.x), max(a.y, b.y), max(a.z, b.z))
+	g.box(mn, mx - mn, col, collide)
+
+
+func _band_frame(b: Dictionary) -> Dictionary:
+	var f: Vector3 = b.face
+	var org: Vector3
+	if b.along_x:
+		org = Vector3(0, 0, b.band.position.y if f.z > 0.0 else b.band.end.y)
+	else:
+		org = Vector3(b.band.position.x if f.x > 0.0 else b.band.end.x, 0, 0)
+	return {"along": Vector3(1, 0, 0) if b.along_x else Vector3(0, 0, 1),
+		"out": f, "org": org}
+
+
+const DESK_W := 1.60
+const DESK_D := 0.75
+const DESK_H := 0.74
+
+func _workstation(room: int) -> void:
+	var taken: Array = []
+	for i in racks_in(room):
+		var f: Vector3 = racks[i].get("face", Vector3(0, 0, 1))
+		if f.z > 0: taken.append(0)
+		elif f.z < 0: taken.append(1)
+		elif f.x > 0: taken.append(2)
+		else: taken.append(3)
+	# 0.05 off the wall, its own depth, and 1.15 in front of it for the chair
+	# and for getting past the back of it.
+	var b := _wall_band(room, DESK_D, 0.05, 1.15, DESK_W, taken)
+	if b.is_empty():
+		b = _wall_band(room, DESK_D, 0.05, 1.15, DESK_W)
+	if b.is_empty():
+		return
+	var fr := _band_frame(b)
+	var u: float = clampf((b.lo + b.hi) * 0.5 - DESK_W * 0.5, b.lo, b.hi - DESK_W)
+	var mid: float = u + DESK_W * 0.5
+	var y: float = rooms[room].floor * fheight
+	fr.org.y = y
 	var g = preload("res://scripts/vgeo.gd").new()
-	g.box(mn + Vector3(0, size.y - 0.04, 0), Vector3(size.x, 0.04, size.z), Color("#8a7f6d"))
-	for ax in [0.03, size.x - 0.09]:
-		g.box(mn + Vector3(ax, 0, 0.05), Vector3(0.06, size.y - 0.04, size.z - 0.1), Color("#5b6068"))
-	var n := g.node("Desk")
-	add_child(n)
+
+	# --- the desk: a top, two gable ends, a modesty panel at the back
+	_ubox(g, fr, u, u + DESK_W, 0.0, DESK_D, DESK_H - 0.04, DESK_H, Color("#9c8f79"))
+	for ux in [u + 0.02, u + DESK_W - 0.08]:
+		_ubox(g, fr, ux, ux + 0.06, 0.04, DESK_D - 0.03, 0.0, DESK_H - 0.04, Color("#5b6068"))
+	_ubox(g, fr, u + 0.09, u + DESK_W - 0.09, 0.05, 0.09, 0.22, DESK_H - 0.05,
+		Color("#6b6f76"), false)
+
+	# --- the monitor: base, stem, shell, and a dark panel proud of the shell
+	_ubox(g, fr, mid - 0.13, mid + 0.13, 0.12, 0.30, DESK_H, DESK_H + 0.02, Color("#22262b"))
+	_ubox(g, fr, mid - 0.03, mid + 0.03, 0.17, 0.24, DESK_H + 0.02, DESK_H + 0.24,
+		Color("#2a2f35"), false)
+	_ubox(g, fr, mid - 0.28, mid + 0.28, 0.15, 0.21, DESK_H + 0.24, DESK_H + 0.62,
+		Color("#1b1e22"))
+	# the glass, 6 mm proud so it is not coplanar with the shell it sits in
+	_ubox(g, fr, mid - 0.26, mid + 0.26, 0.210, 0.216, DESK_H + 0.26, DESK_H + 0.60,
+		Color("#12333f"), false)
+	# and the pale line along the bottom bezel that says a monitor is ON
+	_ubox(g, fr, mid + 0.22, mid + 0.24, 0.212, 0.218, DESK_H + 0.245, DESK_H + 0.255,
+		Color("#7fe08a"), false)
+
+	# --- keyboard and mouse, in front of it, where hands go
+	_ubox(g, fr, mid - 0.22, mid + 0.22, 0.40, 0.56, DESK_H, DESK_H + 0.022,
+		Color("#d5d2c8"), false)
+	_ubox(g, fr, mid + 0.30, mid + 0.38, 0.44, 0.55, DESK_H, DESK_H + 0.03,
+		Color("#c8c5bc"), false)
+
+	# --- the chair, pushed in
+	_ubox(g, fr, mid - 0.24, mid + 0.24, 0.86, 1.32, 0.44, 0.50, Color("#3a4048"))
+	_ubox(g, fr, mid - 0.23, mid + 0.23, 1.24, 1.30, 0.50, 1.00, Color("#3a4048"), false)
+	_ubox(g, fr, mid - 0.04, mid + 0.04, 1.05, 1.13, 0.02, 0.44, Color("#2b2f35"), false)
+	for a in [0.0, PI * 0.4, PI * 0.8, PI * 1.2, PI * 1.6]:
+		_ubox(g, fr, mid + sin(a) * 0.02 - 0.02, mid + sin(a) * 0.24 + 0.02,
+			1.09 + cos(a) * 0.02 - 0.02, 1.09 + cos(a) * 0.24 + 0.02,
+			0.02, 0.05, Color("#2b2f35"), false)
+	add_child(g.node("Workstation"))
+
+	# --- the machine itself, standing on the floor under the desk. This is the
+	# DEVICE: it has a display output and a console, and the leads go into the
+	# back of it, which is why it is a real box in a real place rather than a
+	# picture painted on the desk.
+	var t0: Vector3 = fr.org + fr.along * (u + DESK_W - 0.52) + fr.out * 0.14
+	var t1: Vector3 = fr.org + fr.along * (u + DESK_W - 0.32) + fr.out * 0.60
+	var mn := Vector3(min(t0.x, t1.x), y + 0.02, min(t0.z, t1.z))
+	var size := Vector3(absf(t1.x - t0.x), 0.45, absf(t1.z - t0.z))
+	size.x = max(size.x, 0.20)
+	size.z = max(size.z, 0.20)
+	_add_device("workstation", 0, true, true, mn, size,
+		Color("#3a3f46"), b.face, 0, -1)
+	# YOU WALK UP TO THE SCREEN, not to the box under the desk. What counts as
+	# "in reach" is where a person stands to use the thing, so the reach point
+	# is the monitor and the seat in front of it.
+	var d: Dictionary = devices[devices.size() - 1]
+	d.pos = fr.org + fr.along * mid + fr.out * 0.30 + Vector3(0, DESK_H + 0.40, 0)
+	d.is_desk = true
+	d.use_from = fr.org + fr.along * mid + fr.out * 1.05 + Vector3(0, 0.1, 0)
+	devices[devices.size() - 1] = d
 
 
 func _add_device(dname: String, which: int, hdmi: bool, serial: bool,
@@ -1362,15 +1469,37 @@ func _add_device(dname: String, which: int, hdmi: bool, serial: bool,
 	# The FRONT of a box is what tells you what it is: a lighter faceplate, and
 	# a row of ports you can count. A twenty-four port switch that does not
 	# visibly have twenty-four ports is a grey brick with a label.
+	# PROUD, AND INSET. The faceplate used to be a slab whose outer face sat on
+	# exactly the plane of the box's front and whose four edges sat on exactly
+	# the box's four sides: five pairs of coplanar surfaces, and the depth
+	# buffer picked a different winner every frame. From across the room the
+	# fronts of the servers and the switches flickered in and out of the boxes
+	# behind them.
+	#
+	# So the plate stands 2 mm off the front and is set 4 mm in from the edges:
+	# no two surfaces share a plane, and 2 mm at arm's length is a bezel rather
+	# than a panel that has come loose. Every device kind is drawn by this one
+	# function, so this is all of them.
+	const FACE_EPS := 0.002
+	const FACE_INSET := 0.004
 	var fw := 0.012
 	var fp := mn
 	var fs := size
-	if face.z > 0: fp.z = mn.z + size.z - fw
-	elif face.z < 0: fp.z = mn.z
-	elif face.x > 0: fp.x = mn.x + size.x - fw
-	else: fp.x = mn.x
+	if face.z > 0: fp.z = mn.z + size.z - fw + FACE_EPS
+	elif face.z < 0: fp.z = mn.z - FACE_EPS
+	elif face.x > 0: fp.x = mn.x + size.x - fw + FACE_EPS
+	else: fp.x = mn.x - FACE_EPS
 	if absf(face.z) > 0.5: fs.z = fw
 	else: fs.x = fw
+	# in from the edges, in the two directions that are across the face
+	fp.y += FACE_INSET
+	fs.y = max(0.004, fs.y - FACE_INSET * 2.0)
+	if absf(face.z) > 0.5:
+		fp.x += FACE_INSET
+		fs.x = max(0.004, fs.x - FACE_INSET * 2.0)
+	else:
+		fp.z += FACE_INSET
+		fs.z = max(0.004, fs.z - FACE_INSET * 2.0)
 	g.box(fp, fs, col.lightened(0.30), false)
 	# A LIT PANEL. Two lights on the end of a box is how you tell, across a
 	# room, that it is powered and that a port is up -- and it is the one thing
@@ -1428,7 +1557,8 @@ func _add_device(dname: String, which: int, hdmi: bool, serial: bool,
 	n.add_child(lab)
 	devices.append({"name": dname, "which": which, "hdmi": hdmi,
 		"serial": serial, "node": n, "pos": mn + size * 0.5, "site": site_i,
-		"face": face, "mn": mn, "size": size, "nports": nports, "fw": fw})
+		"face": face, "mn": mn, "size": size, "nports": nports, "fw": fw,
+		"is_desk": false, "use_from": mn + size * 0.5})
 
 
 # Where a lead actually goes IN: THE PORT, not the middle of the box. A lead
@@ -1487,6 +1617,79 @@ func _spawn_cart() -> void:
 	cart.with_desktop = with_desktop
 	cart.position = Vector3(0.30, -1.30, -0.82)
 	player.cam.add_child(cart)
+
+
+# ---------------------------------------------------- sitting down at the desk
+#
+# "There's no way to like hit E to use it and or see the 2D interface that we
+# built originally." The 2D desktop IS the original game -- the terminal, the
+# package manager, the log viewer, the chat with the customer on the other end
+# of it -- and until now the only way into it from the building was to find a
+# machine with a display output and hold a lead against it.
+#
+# So: walk up to the workstation, press E, and you are looking at it, full
+# screen, at the size it was designed for. It is the same de.gd on the same
+# Station object the serial lead talks to, which is the rule this project keeps
+# everywhere: two front ends, one machine, no way for them to disagree.
+
+var desk_layer: CanvasLayer = null
+var desk_de: Control = null
+
+
+func desk_open() -> bool:
+	return desk_de != null
+
+
+func sit_down() -> String:
+	if desk_de != null:
+		return "you are already sitting at it."
+	if not with_desktop:
+		return "the desktop is not built in this run."
+	desk_layer = CanvasLayer.new()
+	desk_layer.name = "Desktop"
+	desk_layer.layer = 10
+	desk_de = preload("res://scripts/de.gd").new()
+	desk_de.machine = machine
+	# _new_ticket() increments before it installs, so this lands on the ticket
+	# that is really in the rack rather than quietly swapping the machine.
+	desk_de.seed_no = seed_no - 1
+	desk_de.set_anchors_preset(Control.PRESET_FULL_RECT)
+	desk_layer.add_child(desk_de)
+	add_child(desk_layer)
+	if player:
+		player.capture(false)
+		player.velocity = Vector3.ZERO
+		player.set_physics_process(false)
+	if hud:
+		hud.visible = false
+	return "you sit down at the workstation.  [Esc] or [E] to stand up."
+
+
+func stand_up() -> String:
+	if desk_de == null:
+		return "you are not sitting at anything."
+	desk_layer.queue_free()
+	desk_layer = null
+	desk_de = null
+	if player:
+		player.set_physics_process(true)
+	if hud:
+		hud.visible = true
+	return "you stand up."
+
+
+# What [E] does where you are standing. A workstation is something you USE; a
+# lift landing is something you call. One key, and what it does is whatever is
+# in front of you.
+func use_here(dev: int) -> String:
+	if desk_de != null:
+		return stand_up()
+	if dev >= 0 and bool(devices[dev].get("is_desk", false)):
+		return sit_down()
+	var landing := _lift_landing()
+	if landing != null:
+		return landing.call_to(player_floor())
+	return ""
 
 
 # ------------------------------------------------------------ the headless API
@@ -1719,9 +1922,34 @@ func _free_port(s: int) -> int:
 	return 0
 
 
+# [E] and [Esc] come through here rather than off the polled keyboard, because
+# while the 2D desktop is up the keys belong to whatever has focus in it: a
+# terminal that is taking a command consumes the `e` and this never sees it,
+# which is the difference between typing `netstat` and standing up halfway
+# through the word.
+func _unhandled_input(event: InputEvent) -> void:
+	if player == null or not (event is InputEventKey) or not event.pressed:
+		return
+	var k: InputEventKey = event
+	if k.echo:
+		return
+	if desk_de != null:
+		if k.keycode == KEY_ESCAPE or k.keycode == KEY_E:
+			print(stand_up())
+			get_viewport().set_input_as_handled()
+		return
+	if k.keycode == KEY_E:
+		var said := use_here(nearest_device(player.global_position))
+		if said != "":
+			print(said)
+		get_viewport().set_input_as_handled()
+
+
 func _process(_dt: float) -> void:
 	if player == null:
 		return
+	if desk_de != null:
+		return                 # the world waits while you are sitting at it
 	var near := nearest_device(player.global_position)
 	var car: Object = lift_in()
 	var landing := _lift_landing()
@@ -1734,7 +1962,10 @@ func _process(_dt: float) -> void:
 		if carrying >= 0:
 			t += "\ncarrying kit in both hands   [G] put it down here"
 		elif near >= 0:
-			t += "\n%s in reach   [F] serial lead   [H] HDMI lead   [U] unplug" % devices[near].name
+			if bool(devices[near].get("is_desk", false)):
+				t += "\n%s in reach   [E] sit down at it" % devices[near].name
+			else:
+				t += "\n%s in reach   [F] serial lead   [H] display lead   [U] unplug" % devices[near].name
 			if int(devices[near].get("site", -1)) >= 0:
 				t += "   [C] cable   [G] pick up"
 		if car != null:
@@ -1769,9 +2000,6 @@ func _process(_dt: float) -> void:
 		if r != NOROOM and r != _carry_room:
 			_carry_room = r
 			site("move %d #%d" % [carrying, r])
-	if Input.is_key_pressed(KEY_E) and not _e_down and landing != null:
-		print(landing.call_to(player_floor()))
-	_e_down = Input.is_key_pressed(KEY_E)
 	if Input.is_key_pressed(KEY_O) and not _o_down:
 		print(open_next_floor())
 	_o_down = Input.is_key_pressed(KEY_O)
@@ -1801,6 +2029,5 @@ var _h_down := false
 var _u_down := false
 var _c_down := false
 var _g_down := false
-var _e_down := false
 var _o_down := false
 var _num_down := [false, false, false, false, false, false, false, false, false, false]
