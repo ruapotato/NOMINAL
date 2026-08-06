@@ -37,14 +37,98 @@
 #include "machine.h"
 
 /* ------------------------------------------------------------ the desks */
-/* WHAT A TENANT BRINGS. One computer per drop they asked for, in the first
- * room they hold. The landlord does not buy these and does not own them:
- * what the landlord sells is the port each one is plugged into, and until
- * somebody runs the copper they are a room full of machines with no network.
+/* WHAT A TENANT BRINGS. One computer per drop they asked for, in the rooms
+ * they actually lease. The landlord does not buy these and does not own
+ * them: what the landlord sells is the port each one is plugged into, and
+ * until somebody runs the copper they are a floor full of machines with no
+ * network.
  *
  * They are named for the tenancy so that a player reading `netstat` on a
  * switch, or an fdb, or a trace, can tell whose traffic they are looking at.
- * "t7d3" is the fourth desk of tenancy seven and it is on floor seven. */
+ * "t7d3" is the fourth desk of tenancy seven and it is on floor seven.
+ *
+ * WHY THEY ARE NOT ALL IN ONE ROOM ANY MORE (D35). Every desk used to go
+ * into `t->room`, the first room the tenancy holds. It was invisible for
+ * months and stopped being invisible the moment a person was seated at every
+ * desk: seed 7008's tenancy 1 holds eleven offices and a server room, and
+ * all twenty of its people were in `#36` while the other ten offices stood
+ * empty. A playtester's words: *"the building the letting agent describes
+ * and the building you walk through aren't the same building."*
+ *
+ * It is not decoration. Copper is the metered resource -- about a third of
+ * what a tower costs -- and a desk's price is the tray metres between it and
+ * whatever box is serving it. Desks in one room means every run in a tenancy
+ * is the same length and there is no within-floor geometry at all: the only
+ * question a floor can ask is which cupboard the switch is in. Desks in the
+ * rooms they are leased in makes the far office really far -- on seed 7008's
+ * floor 1 that is 42 m at the near end and 95 m at the far end of the same
+ * tenancy -- which is what `quote` is for.
+ *
+ * WHICH ROOMS TAKE PEOPLE. Offices, flats and shops do. A tenant's server
+ * room does not: it is a room built to hold equipment, it is the one room
+ * kind with cooling in the heat model, and nobody sits in it. So a tenancy
+ * holding a server room puts its desks in the other rooms, and the server
+ * room stays what the player carried a server into. If a tenancy somehow
+ * holds nothing but a server room, the desks go in `t->room` as before,
+ * because a desk that does not exist is worse than a desk in the wrong room.
+ */
+static bool room_takes_desks(int kind)
+{
+    return kind == RM_OFFICE || kind == RM_RESIDENCE || kind == RM_RETAIL;
+}
+
+/* HOW MANY DESKS IN EACH, and it is arithmetic rather than a draw.
+ *
+ * Area, apportioned: a hundred-and-twelve-metre office takes four times what
+ * a twenty-eight-metre one does, because that is what the rooms are. The
+ * split is the Hare quota with largest remainders -- floor(drops * area /
+ * total) each, then the leftover desks to the largest remainders, ties to
+ * the bigger room and then to the lower room index.
+ *
+ * THERE IS NO RNG HERE ON PURPOSE. This project was bitten on D30 by a new
+ * draw shifting an existing stream: the trade roll came out of the same Rng
+ * as `wants_server`, and every tenancy in every tower moved its move-in day,
+ * which announced itself as three unrelated blackout checks failing. The
+ * safest new stream is no new stream. Every term below is this building's
+ * own square metres in integers, so the same seed puts the same desk in the
+ * same room on every machine, and `demand` is untouched to the byte.
+ *
+ * Areas are integers because the building is on a metre grid, and the whole
+ * apportionment is integer arithmetic for the same reason: a remainder
+ * compared as a double is a remainder that can compare differently on
+ * another compiler. */
+static void apportion(const Site *s, const SiteTenant *t,
+                      const int *room, int nroom, int *out)
+{
+    long area[BLD_MAX_ROOMS], rem[BLD_MAX_ROOMS], total = 0;
+    for (int i = 0; i < nroom; i++) {
+        area[i] = (long)(bld_room_area(&s->b->rooms[room[i]]) + 0.5);
+        total += area[i];
+        out[i] = 0;
+    }
+    if (total <= 0) { out[0] = t->drops; return; }
+    int left = t->drops;
+    for (int i = 0; i < nroom; i++) {
+        out[i] = (int)((long)t->drops * area[i] / total);
+        rem[i] = ((long)t->drops * area[i]) % total;
+        left  -= out[i];
+    }
+    /* The leftover is strictly fewer than the number of rooms, so no room
+     * can win twice and a spent remainder is simply struck out. */
+    while (left > 0) {
+        int best = -1;
+        for (int i = 0; i < nroom; i++)
+            if (rem[i] >= 0 &&
+                (best < 0 || rem[i] > rem[best] ||
+                 (rem[i] == rem[best] && area[i] > area[best])))
+                best = i;
+        if (best < 0) break;
+        out[best]++;
+        rem[best] = -1;
+        left--;
+    }
+}
+
 static void move_in(Site *s, int ti)
 {
     SiteTenant *t = &s->tenant[ti];
@@ -52,12 +136,33 @@ static void move_in(Site *s, int ti)
     t->moved = 1;
     t->desk0 = s->ndev;
     t->ndesk = 0;
-    for (int i = 0; i < t->drops; i++) {
-        char nm[NET_NAME_MAX];
-        snprintf(nm, sizeof nm, "t%dd%d", t->tenant, i);
-        int d = site_install(s, SDEV_DESK, t->room, nm);
-        if (d < 0) break;              /* the world is full; say so upstairs */
-        t->ndesk++;
+
+    /* The rooms this tenancy holds that people sit in, in room order, which
+     * is the order the building generator laid them out and therefore the
+     * order `rooms` prints them. Desk numbering follows it, so t1d0 is in
+     * the tenancy's first room and the numbers walk the floor. */
+    int room[BLD_MAX_ROOMS], nroom = 0;
+    for (int i = 0; i < s->b->nrooms && nroom < BLD_MAX_ROOMS; i++) {
+        const Room *r = &s->b->rooms[i];
+        if (r->tenant != t->tenant) continue;
+        if (!room_takes_desks(r->kind)) continue;
+        room[nroom++] = i;
+    }
+    if (nroom == 0) { room[0] = t->room; nroom = 1; }
+
+    int want[BLD_MAX_ROOMS];
+    apportion(s, t, room, nroom, want);
+
+    int n = 0;
+    for (int i = 0; i < nroom; i++) {
+        for (int k = 0; k < want[i]; k++) {
+            char nm[NET_NAME_MAX];
+            snprintf(nm, sizeof nm, "t%dd%d", t->tenant, n);
+            int d = site_install(s, SDEV_DESK, room[i], nm);
+            if (d < 0) return;         /* the world is full; say so upstairs */
+            t->ndesk++;
+            n++;
+        }
     }
 }
 

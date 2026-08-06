@@ -2382,6 +2382,202 @@ static void check_industry_rent(const Building *b)
     site_free(&s);
 }
 
+/* ================================ THE ROOMS A TENANCY ACTUALLY OCCUPIES
+ *
+ * D35. `move_in` used to install every desk into `t->room`, the first room
+ * of the tenancy, and it was invisible until another agent seated a person
+ * at every desk: seed 7008's tenancy 1 holds eleven offices and a server
+ * room, and all twenty people were in `#36` while ten offices stood empty.
+ * A playtester: *"the building the letting agent describes and the building
+ * you walk through aren't the same building."*
+ *
+ * What is asserted here is not "the desks are spread out" -- that is a
+ * sentence. It is the three things spreading them was FOR:
+ *
+ *   the rooms they lease are the rooms they are in, and a server room is
+ *   not one of them;
+ *   the split follows the square metres the building generator produced,
+ *   rather than any number typed in this project;
+ *   and it is priced -- the same tenancy's nearest and farthest desk are a
+ *   different run from the same cupboard, which is the first thing in this
+ *   game that makes WITHIN-floor distance cost money.
+ *
+ * Plus the one that must not regress: nothing became unreachable. Every
+ * desk still cables, still comes up, and is still walkable to.
+ */
+static void check_desk_rooms(const Building *b)
+{
+    printf("\nthe rooms a tenancy occupies, and what the copper to them costs\n");
+    Tower w;
+    int floor = 1;
+    int comms = comms_on(b, floor, 0);
+    tower_up(&w, b, GATE_SEED, comms, CAB_CAT6, true, 1);
+    Site *s = &w.s;
+    int ti = -1;
+    for (int i = 0; i < s->ntenant; i++)
+        if (s->tenant[i].floor == floor) { ti = i; break; }
+    if (ti < 0) { ck("the gate's tower lets a tenancy on floor 1", false);
+                  site_free(s); return; }
+    tower_until(&w, ti);
+    SiteTenant *t = &s->tenant[ti];
+
+    /* What the letting agent says they hold. Counted off the building, not
+     * off anything this file decides. */
+    int held = 0, srv_rooms = 0;
+    double biggest = 0, smallest = 1e9;
+    int rbig = -1, rsmall = -1;
+    for (int i = 0; i < b->nrooms; i++) {
+        const Room *r = &b->rooms[i];
+        if (r->tenant != t->tenant) continue;
+        if (r->kind == RM_SERVER) { srv_rooms++; continue; }
+        if (!leasable(r->kind)) continue;
+        held++;
+        double a = bld_room_area(r);
+        if (a > biggest)  { biggest = a;  rbig = i; }
+        if (a < smallest) { smallest = a; rsmall = i; }
+    }
+    ck("the gate's tenancy holds a spread of rooms and a server room",
+       held >= 5 && srv_rooms >= 1 && rbig >= 0 && rsmall >= 0 &&
+       biggest > smallest);
+    printf("    tenancy %d holds %d rooms people sit in and %d server room(s); "
+           "biggest #%d at %.0f m2, smallest #%d at %.0f m2\n",
+           t->tenant, held, srv_rooms, rbig, biggest, rsmall, smallest);
+
+    /* ---- THEY ARE IN THEM. Every leased room that takes people has at
+     * least one desk in it, and every desk is in a room this tenancy holds. */
+    int occupied = 0, in_server = 0, elsewhere = 0;
+    int big_desks = 0, small_desks = 0;
+    for (int i = 0; i < b->nrooms; i++) {
+        int k = 0;
+        for (int d = 0; d < t->ndesk; d++)
+            if (s->dev[t->desk0 + d].room == i) k++;
+        if (!k) continue;
+        occupied++;
+        if (b->rooms[i].kind == RM_SERVER) in_server += k;
+        if (b->rooms[i].tenant != t->tenant) elsewhere += k;
+        if (i == rbig)   big_desks = k;
+        if (i == rsmall) small_desks = k;
+    }
+    ck("every room the tenancy leases to sit in has desks in it",
+       occupied == held && held > 1);
+    ck("and no desk of theirs stands in anybody else's room",
+       elsewhere == 0);
+    ck("and none of them is in their server room, which is for equipment",
+       in_server == 0 && srv_rooms >= 1);
+    ck("the desks are all still there: one per drop they asked for",
+       t->ndesk == (int)t->drops);
+    printf("    %d desks over %d rooms; the %.0f m2 room holds %d and the "
+           "%.0f m2 room holds %d\n",
+           t->ndesk, occupied, biggest, big_desks, smallest, small_desks);
+
+    /* ---- AND THE SPLIT IS THE SQUARE METRES. A bigger room holds more
+     * desks, and the biggest room holds at least twice what the smallest
+     * does when it is at least twice the size. */
+    ck("a bigger room takes more desks than a smaller one",
+       big_desks > small_desks && small_desks >= 1);
+    ck("and twice the floor area takes at least twice the people",
+       biggest >= 2 * smallest && small_desks >= 1 &&
+       big_desks >= 2 * small_desks);
+    /* No pair of their rooms is the wrong way round: over the whole
+     * tenancy, more square metres never means fewer desks. */
+    bool monotone = true;
+    for (int i = 0; i < b->nrooms && monotone; i++) {
+        if (b->rooms[i].tenant != t->tenant ||
+            !leasable(b->rooms[i].kind) || b->rooms[i].kind == RM_SERVER)
+            continue;
+        for (int j = 0; j < b->nrooms; j++) {
+            if (b->rooms[j].tenant != t->tenant ||
+                !leasable(b->rooms[j].kind) || b->rooms[j].kind == RM_SERVER)
+                continue;
+            int ki = 0, kj = 0;
+            for (int d = 0; d < t->ndesk; d++) {
+                if (s->dev[t->desk0 + d].room == i) ki++;
+                if (s->dev[t->desk0 + d].room == j) kj++;
+            }
+            if (bld_room_area(&b->rooms[i]) > bld_room_area(&b->rooms[j]) &&
+                ki < kj) { monotone = false; break; }
+        }
+    }
+    ck("and no two of their rooms are the wrong way round", monotone);
+
+    /* ---- WHICH IS WHAT MAKES WITHIN-FLOOR DISTANCE A PRICE. The nearest
+     * and the farthest desk of ONE tenancy are different runs from the same
+     * cupboard, and the difference is real money at the same grade. */
+    int mnear = 1 << 30, mfar = -1, dnear = -1, dfar = -1;
+    for (int d = 0; d < t->ndesk; d++) {
+        int dev = t->desk0 + d;
+        int m = site_metres(s, comms, s->dev[dev].room);
+        if (m < 0) continue;
+        if (m < mnear) { mnear = m; dnear = dev; }
+        if (m > mfar)  { mfar  = m; dfar  = dev; }
+    }
+    ck("the tenancy's nearest and farthest desk are not the same run",
+       dnear >= 0 && dfar >= 0 && mfar > mnear);
+    ck("and the difference is metres a player would notice",
+       mfar - mnear >= 10);
+    ck("which is a different price for the identical drop",
+       site_cable_price(CAB_CAT5E, mfar) > site_cable_price(CAB_CAT5E, mnear));
+    printf("    from the floor's cupboard #%d: %s is %d m at %d, %s is %d m "
+           "at %d\n", comms, s->dev[dnear].name, mnear,
+           site_cable_price(CAB_CAT5E, mnear), s->dev[dfar].name, mfar,
+           site_cable_price(CAB_CAT5E, mfar));
+
+    /* ---- AND NOTHING BECAME UNREACHABLE. `serve` still cables every one of
+     * them, every run is inside what copper carries, and every link comes
+     * up -- a desk in the far office that does not link is a desk that is
+     * not in the game. */
+    long before = s->money;
+    int done = site_serve(s, ti, w.sw[0], CAB_CAT5E);
+    ck("`serve` still cables every desk, wherever in the tenancy it stands",
+       done == t->ndesk);
+    int up = 0, toolong = 0;
+    for (int d = 0; d < t->ndesk; d++) {
+        int st = net_port_state(s->net, s->dev[t->desk0 + d].node, 0);
+        if (st == PORT_UP) up++;
+        if (st == PORT_TOOLONG) toolong++;
+    }
+    ck("and every one of them comes up: none is over what copper carries",
+       up == t->ndesk && toolong == 0);
+    bool walkable = true;
+    {
+        double *wk = malloc(sizeof(double) * (size_t)b->nrooms);
+        int lob = bld_find(b, floor, RM_LIFTLOBBY);
+        if (lob < 0 || !wk || !bld_walk_all(b, lob, wk)) walkable = false;
+        else for (int d = 0; d < t->ndesk; d++)
+                 if (wk[s->dev[t->desk0 + d].room] >= BLD_INF) walkable = false;
+        free(wk);
+    }
+    ck("and every desk is walkable to from the lift lobby", walkable);
+
+    /* The bill is the sum of the real runs, not twenty copies of one run --
+     * which is the whole point, and it is arithmetic rather than a claim. */
+    long spent = before - s->money, want = 0;
+    for (int d = 0; d < t->ndesk; d++)
+        want += site_cable_price(CAB_CAT5E,
+                                 site_metres(s, comms, s->dev[t->desk0 + d].room));
+    ck("and the bill is every desk's own metres added up",
+       spent == want && spent > 0);
+    ck("which is not what twenty copies of the nearest run would cost",
+       spent > (long)t->ndesk * site_cable_price(CAB_CAT5E, mnear));
+    printf("    serving them from the cupboard cost %ld; the same desks all "
+           "in the nearest room would be %ld\n",
+           spent, (long)t->ndesk * site_cable_price(CAB_CAT5E, mnear));
+
+    /* ---- AND IT IS THE SAME BUILDING EVERY TIME. Same seed, same desks,
+     * same rooms: the apportionment takes no draw at all, so it cannot have
+     * moved anything else's stream. */
+    Tower w2;
+    tower_up(&w2, b, GATE_SEED, comms, CAB_CAT6, true, 1);
+    tower_until(&w2, ti);
+    bool same = w2.s.tenant[ti].ndesk == t->ndesk;
+    for (int d = 0; same && d < w2.s.tenant[ti].ndesk; d++)
+        same = w2.s.dev[w2.s.tenant[ti].desk0 + d].room ==
+               w.s.dev[t->desk0 + d].room;
+    ck("the same seed puts the same desk in the same room, every time", same);
+    site_free(&w2.s);
+    site_free(s);
+}
+
 int site_selfcheck(void)
 {
     passed = total = 0;
@@ -2420,6 +2616,7 @@ int site_selfcheck(void)
     check_industry_upload();
     check_industry_uptime();
     check_industry_voice();
+    check_desk_rooms(&b);
     /* AND THAT A PERSON CAN PLAY ALL OF IT OVER A SOCKET, which is the
      * claim that had quietly stopped being true. See core/sessioncheck.c. */
     session_selfcheck(&passed, &total);
