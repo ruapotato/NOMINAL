@@ -1029,7 +1029,12 @@ void site_dump_day(const Site *s, Buf *out)
     buf_printf(out, "%d of %d transfers finished inside the busy period; "
                     "%ld MB moved.\n", r->finished, r->sessions,
                r->bytes / (1024 * 1024));
-    buf_printf(out, "%llu frames handled, %llu lost.\n",
+    /* SAY WHICH DAY THESE ARE. `status` reports the day just gone and `load`
+     * reports the life of the port, and a playtester found them disagreeing
+     * -- 3590 against 12429 at the same moment -- with nothing anywhere
+     * saying one was a delta and the other a total. Two true numbers that
+     * look like they should match are worse than one. */
+    buf_printf(out, "%llu frames handled yesterday, %llu lost yesterday.\n",
                (unsigned long long)r->frames, (unsigned long long)r->drops);
     if (r->hot[0])
         buf_printf(out, "busiest port: %s, clocking %d%% of the busy period.\n",
@@ -1065,7 +1070,10 @@ void site_dump_service(const Site *s, Buf *out)
 void site_dump_load(const Site *s, Buf *out)
 {
     uint64_t window = SITE_BUSY_MS * 1000ull;
-    buf_puts(out, "  port                 speed   busy   queue   drops\n");
+    /* "drops" alone read as today's, next to a `status` line that really was
+     * today's. It is the port's whole life. */
+    buf_puts(out, "  port                 speed   busy    queue   drops\n"
+                  "                                       peak    (since it was cabled)\n");
     /* Selection sort by utilisation, printing the worst eight. A tower has a
      * few hundred ports and the player wants the ones that are full. */
     int shown = 0;
@@ -1090,15 +1098,43 @@ void site_dump_load(const Site *s, Buf *out)
         shown++;
         char nm[NET_NAME_MAX + 8];
         snprintf(nm, sizeof nm, "%s:%d", s->dev[bd].name, bp);
-        buf_printf(out, "  %-20s %5dMb %5d%%  %5llums %7llu\n", nm,
+        /* IN MICROSECONDS, BECAUSE THAT IS THE SCALE IT HAPPENS AT.
+         *
+         * This printed the peak queue in whole milliseconds, so a port that
+         * was genuinely dropping on 405 us bursts reported `0ms` next to its
+         * drop count -- and a playtester quite reasonably concluded the tool
+         * was pointing at nothing. A 48 KB buffer is 394 us of wire at a
+         * gigabit; the interesting queues here are all under a millisecond. */
+        unsigned long long qus = net_port_queue_us(s->net, s->dev[bd].node, bp);
+        char q[24];
+        if (qus >= 1000) snprintf(q, sizeof q, "%llums", qus / 1000);
+        else             snprintf(q, sizeof q, "%lluus", qus);
+        buf_printf(out, "  %-20s %5dMb %5d%%  %7s %7llu\n", nm,
                    net_port_speed(s->net, s->dev[bd].node, bp),
                    (int)((bb * 100) / window),
-                   (unsigned long long)(net_port_queue_us(s->net, s->dev[bd].node, bp) / 1000),
+                   q,
                    (unsigned long long)net_port_drops(s->net, s->dev[bd].node, bp));
     }
     if (!shown) buf_puts(out, "  nothing is cabled up.\n");
-    else buf_puts(out, "\n  busy is the share of the last busy period this port spent clocking\n"
-                       "  bits. Past about eighty per cent the queue behind it starts to be\n"
-                       "  latency somebody can feel; at a hundred it is dropping. The evidence\n"
-                       "  is `show <box>` -- the port counters say how many and why.\n");
+    /* THE LEGEND WAS FALSE AT THESE SPEEDS, AND IT WAS THE THING THAT MADE
+     * THE TOOL USELESS.
+     *
+     * It promised that a port starts hurting past eighty per cent and drops at
+     * a hundred. A playtester's tower died with nothing above 31%, every queue
+     * reading 0ms, and three complaints filed -- so the instrument said calm
+     * while the building fell over, and there was no move to make.
+     *
+     * The arithmetic: a 48 KB egress buffer is 394 us of wire at a gigabit. A
+     * floor of desks all fetching at once empties into that in well under a
+     * millisecond, so a port drops on bursts while its average over a
+     * four-second busy period is single digits. Busy is an average and the
+     * drops are not; saying so is the whole difference between a tool that
+     * points at the problem and one that alibis it. */
+    else buf_puts(out, "\n  busy is the SHARE OF THE BUSY PERIOD this port spent clocking bits,\n"
+                       "  averaged over four seconds. Drops do not wait for it to be high: a\n"
+                       "  48 KB buffer is 394us of wire at a gigabit, so a floor of desks\n"
+                       "  fetching at once can overrun it in bursts while the average sits in\n"
+                       "  single figures. READ THE DROPS AND THE PEAK QUEUE, not the average.\n"
+                       "  `show <box>` says how many were lost and which of the four reasons\n"
+                       "  it was.\n");
 }
