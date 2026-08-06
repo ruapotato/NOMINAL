@@ -914,6 +914,167 @@ done:
     machine_free(&m);
 }
 
+/* ------------------------------------- the instruments, from inside the box */
+/* WHAT THESE CHECK, AND WHY IT IS NOT THE SAME AS check_visible(). Up there
+ * the assertions are on the kernel's own dump functions. Here a real machine
+ * boots, a person types the command at it, and what is asserted is the text
+ * a player would read -- because a tool that reformats the stack's answer can
+ * lose it, and a tool that answers from anywhere but the stack is the one
+ * thing this project cannot have.
+ *
+ * Each check makes the state change and then asks the tool. An `ip route`
+ * that printed a default gateway would pass any assertion that only ever saw
+ * a machine with one; the interesting question is whether it stops printing
+ * it when the route goes away. */
+static void check_tools(void)
+{
+    printf("\nthe network instruments, run inside a booted machine\n");
+    Machine m;
+    memset(&m, 0, sizeof m);
+    machine_install(&m, 71077);
+    machine_boot(&m);
+    NM = &m;
+    Buf o = {0};
+    if (!m.boot.running) { ck("the machine boots", false); goto done; }
+
+    /* The address this machine really has, out of the stack, so everything
+     * below can be compared against one value rather than a literal. */
+    char addr[32] = "";
+    {
+        const char *t = mrun("netstat -i", &o);
+        const char *p = strstr(t, "inet ");
+        if (p) {
+            p += 5;
+            size_t k = 0;
+            while (k + 1 < sizeof addr && p[k] && p[k] != '/' && p[k] != ' ') {
+                addr[k] = p[k]; k++;
+            }
+            addr[k] = 0;
+        }
+    }
+    ck("the machine has an address at all", addr[0] != 0);
+
+    /* ip: the same address the kernel reported, in iproute2's shape. */
+    ck("`ip addr` prints the address the stack holds, with the carrier",
+       mhas("ip addr", addr, &o) && strstr(o.p, "LOWER_UP") &&
+       strstr(o.p, "link/ether"));
+    ck("`ip link` is the card without the address",
+       mhas("ip link", "link/ether", &o) && !strstr(o.p, "inet "));
+    ck("`ip route` has the connected route and the default",
+       mhas("ip route", "10.0.2.0/24", &o) && strstr(o.p, "default via 10.0.2.2"));
+
+    /* AND IT STOPS SAYING SO WHEN IT STOPS BEING TRUE. This machine leases
+     * its address, so the default route came from the DHCP server. Configure
+     * it statically with no gateway line, reload the daemon, and the route
+     * really goes out of the running table -- which is the assertion worth
+     * making, because a tool that had memorised the answer would still be
+     * printing it. */
+    mrun("echo \"iface eth0\" > /etc/net/interfaces", &o);
+    mrun("echo \"  address 10.0.2.15\" >> /etc/net/interfaces", &o);
+    mrun("echo \"  netmask 24\" >> /etc/net/interfaces", &o);
+    mrun("svc reload net", &o);
+    ck("a static address with no gateway: `ip addr` shows the new address",
+       mhas("ip addr", "10.0.2.15/24", &o));
+    ck("and `ip route` has the connected route and no default at all",
+       mhas("ip route", "10.0.2.0/24", &o) && !strstr(o.p, "default via"));
+    ck("ping off-subnet agrees nothing was sent: no route, not no answer",
+       mhas("ping -c 1 192.168.99.9", "network is unreachable", &o));
+    ck("`traceroute` says the same thing, and sends nothing",
+       mhas("traceroute 192.168.99.9", "no route to it", &o));
+    mrun("echo \"  gateway 10.0.2.2\" >> /etc/net/interfaces", &o);
+    mrun("svc reload net", &o);
+    ck("put a gateway line in and the default route is there again",
+       mhas("ip route", "default via 10.0.2.2", &o));
+
+    /* The filter has to let icmp back in before anything can be reached;
+     * that is the pristine ruleset and check_nft() proves it separately. */
+    nft_rule("icmp accept", &o);
+
+    /* arp: the cache is filled by really talking to a neighbour. */
+    mrun("arp -d 10.0.2.2", &o);
+    ck("`arp -d` on an address that is not cached deletes nothing and says so",
+       mhas("arp -d 10.0.2.2", "no entry deleted", &o));
+    ck("nothing is cached until the machine speaks to somebody",
+       mhas("arp", "cache is empty", &o));
+    mrun("ping -c 1 10.0.2.2", &o);
+    ck("after a ping the neighbour is there, with the card it answered on",
+       mhas("arp", "10.0.2.2", &o) && strstr(o.p, "ether") &&
+       strstr(o.p, "eth0"));
+    ck("`ip neigh` prints the same entry, in ip's shape, as REACHABLE",
+       mhas("ip neigh", "10.0.2.2 dev eth0 lladdr", &o) &&
+       strstr(o.p, "REACHABLE"));
+    ck("`arp -d` really removes it from the running cache",
+       mhas("arp -d 10.0.2.2", "deleted", &o) &&
+       mhas("arp", "cache is empty", &o));
+
+    /* AN ADDRESS NOBODY HOLDS. The request goes out and nothing answers, so
+     * the entry stays incomplete -- which is a different line and a
+     * different repair from an entry with the wrong mac in it. */
+    mrun("ping -c 1 10.0.2.77", &o);
+    ck("an address nothing answers for is cached as incomplete",
+       mhas("arp", "(incomplete)", &o) && strstr(o.p, "10.0.2.77"));
+
+    /* traceroute, over the real ICMP the stack produces. */
+    ck("`traceroute` reaches a neighbour in one hop",
+       mhas("traceroute 10.0.2.20", "1 10.0.2.20", &o));
+    ck("and past the router it stops where the answers stop",
+       mhas("traceroute 192.168.99.9", "1 10.0.2.2", &o) &&
+       strstr(o.p, "never answered"));
+
+    /* ss, against sockets that are really open and really closed. */
+    ck("`ss -lt` lists the ports the running services really hold",
+       mhas("ss -lt", "*:22", &o) && strstr(o.p, "*:80") &&
+       strstr(o.p, "LISTEN"));
+    mrun("svc stop httpd", &o);
+    ck("stop the web server and its socket is gone from ss",
+       mhas("ss -lt", "*:22", &o) && !strstr(o.p, "*:80"));
+    mrun("svc start httpd", &o);
+    ck("`ss -p` is refused rather than printing an empty owner column",
+       mhas("ss -p", "no -p on this machine", &o));
+
+    /* tcpdump: the frames themselves. */
+    ck("with the capture off, tcpdump says so rather than printing nothing",
+       mhas("tcpdump", "nothing captured", &o));
+    mrun("tcpdump --capture on", &o);
+    mrun("ping -c 1 10.0.2.2", &o);
+    ck("the capture holds the echo request and the reply, at this card",
+       mhas("tcpdump icmp", "icmp echo-request", &o) &&
+       strstr(o.p, "icmp echo-reply") && strstr(o.p, "eth0"));
+    ck("and the arp exchange that had to happen first",
+       mhas("tcpdump arp", "who-has 10.0.2.2", &o) &&
+       strstr(o.p, "is-at"));
+    ck("a filter on a host nobody spoke to matches nothing",
+       mhas("tcpdump host 10.0.2.99", "0 frames shown", &o));
+    ck("a filter on the host that was spoken to matches",
+       !mhas("tcpdump host 10.0.2.2", "0 frames shown", &o));
+    ck("-Q separates the direction the frame crossed the card",
+       mhas("tcpdump -Q out icmp", "Out", &o) && !strstr(o.p, "In  "));
+    ck("an interface this machine does not have is an error, not an empty list",
+       mhas("tcpdump -i eth9", "no interface called", &o));
+    ck("a filter it cannot apply is refused BY NAME",
+       mhas("tcpdump src 10.0.2.2", "cannot filter on", &o) &&
+       mhas("tcpdump -X", "this tcpdump has no -X", &o));
+
+    /* THE ONE THAT PAYS FOR THE WHOLE THING. Put the filter back to the
+     * shipped policy and ping again: ping reports no answer, and the capture
+     * shows the reply arriving anyway -- because the capture is taken at the
+     * card and the drop happens above IP. That is the difference between
+     * "the network is broken" and "this machine ate it", and no other tool
+     * on the box can tell them apart. */
+    mrun("sed -i /icmp/d /etc/nftables.conf", &o);
+    mrun("svc reload nftables", &o);
+    mrun("tcpdump --capture on", &o);
+    ck("with icmp dropped again, ping reports no answer",
+       mhas("ping -c 1 10.0.2.2", "no answer", &o));
+    ck("and tcpdump shows the reply arriving at the card regardless",
+       mhas("tcpdump icmp", "In", &o) && strstr(o.p, "icmp echo-reply"));
+
+done:
+    buf_free(&o);
+    NM = NULL;
+    machine_free(&m);
+}
+
 int net_selfcheck(void)
 {
     passed = total = 0;
@@ -933,6 +1094,7 @@ int net_selfcheck(void)
     check_determinism();
     check_visible();
     check_nft();
+    check_tools();
     printf("\n%d/%d network checks pass\n", passed, total);
     return passed == total ? 0 : 1;
 }
