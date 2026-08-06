@@ -79,8 +79,18 @@
 /* Sockets are no longer rare. A floor of desks pulling files at the same
  * moment is a hundred connections, each with a client end, a server end and
  * a listener above it, and the busy period is precisely when they all exist
- * at once. */
-#define NET_SOCK_MAX    800
+ * at once.
+ *
+ * AND A DESK IS NOT ONE CONNECTION. A machine on a desk pulls its page and
+ * its file at the same time, the way a machine does, so the busy period of a
+ * full tower is two connections per desk with an end at each side of each:
+ * three hundred and fifty drops is what the building generator really makes,
+ * so fourteen hundred sockets is what a full tower really wants. At eight
+ * hundred the pool ran out before the network did, and a connection that
+ * cannot be opened because the world is out of sockets is a bottleneck
+ * nobody built and nobody can see -- exactly the kind of fake ceiling the
+ * sixty-four entry ARP cache was. */
+#define NET_SOCK_MAX   2000
 #define NET_LEASE_MAX   254     /* a /24 of pool, which is what one is     */
 /* POOLS ON ONE BOX, and why there is more than one. A DHCP server serves a
  * SEGMENT, and a router with a subinterface per vlan is on several of them

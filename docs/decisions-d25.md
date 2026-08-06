@@ -237,3 +237,62 @@ reading its own config file, and a `policy drop` that ate the DISCOVERs --
 existed only once a machine was booted, and the gate could not see either.
 That is a real blind spot and it is worth naming: the load gate measures a
 network, and the game runs operating systems on it.
+
+## Addendum, 2026-08-05: the demand was capped by the client, not the wire
+
+A playtester reached day sixty with a hundred desks across five tenancies and
+reported that no capacity decision ever bit: a tenancy served 36-40/40 every
+day for the twelve days its own file server was switched OFF, the busiest
+port in the tower at a hundred desks was the ISP handoff at eighteen per
+cent, and *"cable grade, circuit size and switch count beyond port exhaustion"*
+never mattered. The gate above said otherwise. The gate was right about the
+build it measured and the build it measured was not the game.
+
+**Nothing about the two chosen numbers was wrong.** The fault was one line
+further out. A desk did its web fetch, and only when that finished did it
+open its file: one socket at a time, and a socket in this world cannot beat
+one receive window per round trip. Twelve kilobytes over the four
+milliseconds a two-hop LAN costs is about twenty-four megabits, and a routed
+path is half that. So one desk could offer at most about three megabytes
+across the whole busy period -- measured, by asking it for four and watching
+every desk in the tower fail identically at exactly 50% whatever the topology
+-- and a hundred and seventy-six desks together could not fill much more than
+one gigabit link. Every riser in the tower is a gigabit link.
+
+That is the whole answer to all four of the playtester's observations at
+once. Cable grade could not matter because the cheapest drum in the catalogue
+is already a gigabit. Circuit size could not matter because file traffic was
+the only traffic with any weight in it and a server anywhere took all of it
+off the circuit. And the tenancy served with its server off was being served,
+honestly, by a different server two floors away across the trunk and the
+router -- `file_server_for` falls back to any server in the building, which
+is what a real client would be pointed at -- and that path had so much
+headroom that the fallback cost nothing measurable.
+
+The fix is not a bigger number. A person's machine pulls its page and its
+file **at the same time**, because that is what a machine does, and this file
+was modelling it as though it did not. Two transfers per desk, started
+together, and the ceiling doubles, the file server is exercised on the day it
+matters -- previously a desk whose page did not arrive never opened its file,
+so the traffic to the thing the architecture is about vanished exactly when
+the network was in trouble -- and the busiest port in a flat tower stops
+being the landlord's circuit and becomes the one gigabit port on the one
+server everybody's files are behind.
+
+The socket pool had to grow with it: two connections per desk with an end at
+each side is fourteen hundred sockets for the three hundred and fifty drops
+the generator really makes, and at eight hundred the pool would have run out
+before the network did. A connection that cannot be opened because the world
+is out of sockets is a bottleneck nobody built and nobody can see -- the same
+mistake as the sixty-four entry ARP cache. It costs memory and the world
+prints what it costs.
+
+**And the calibration is played now, not built.** Both towers in the table
+are typed into a `Session` -- the struct `--serve` hands a player -- with the
+words a player types: kit bought to goods in, carried up the stairs, put
+down, cabled off a drum, switched on. Switching a server on installs and
+boots a real machine, and its httpd answers because netd read
+`/etc/net/interfaces` off its own disk. The naive build is what somebody
+really builds, too: not "no server anywhere", which nobody plays, but one
+server in the basement next to the core switch, because that is where the
+rack is and it is one cable.

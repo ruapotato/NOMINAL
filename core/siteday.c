@@ -173,14 +173,36 @@ bool site_isp(Site *s, int mb)
 
 /* ================================================== a day's work, for real
  *
- * One transfer at a time per desk, because a person does one thing and then
- * the next: the web fetch first and then the file. Both are ordinary HTTP
- * over the ordinary TCP in netstack.c, driven a millisecond at a time so
- * that every desk in the building is pulling at once -- which is the whole
- * point. A transfer that has not finished when the busy period ends is a
- * person who did not get their work done, and that is the only definition of
- * "bad service" anywhere in this program.
- */
+ * Two transfers per desk, both running at once, because that is what a
+ * machine on a desk does: the page and the file are pulled at the same
+ * moment, not one after the other. Both are ordinary HTTP over the ordinary
+ * TCP in netstack.c, driven a millisecond at a time so that every desk in
+ * the building is pulling at once -- which is the whole point. A transfer
+ * that has not finished when the busy period ends is a person who did not
+ * get their work done, and that is the only definition of "bad service"
+ * anywhere in this program.
+ *
+ * WHY THEY USED TO BE ONE AFTER THE OTHER, AND WHY THAT CAPPED THE GAME.
+ * A desk fetched its page, and only when that finished did it open its file.
+ * One socket at a time per desk, and a socket in this world cannot beat one
+ * receive window per round trip -- twelve kilobytes over the four
+ * milliseconds a two-hop LAN costs is about twenty-four megabits, and a
+ * routed path is half that. So one desk could not offer more than about
+ * three megabytes across the whole busy period NO MATTER WHAT THE PLAYER
+ * BUILT, and a hundred and seventy-six of them together could not fill more
+ * than roughly one gigabit link. Every riser in the tower is a gigabit link.
+ * That, and not the size of anybody's day, is why cable grade, circuit size
+ * and switch count never bit: the demand was capped by the client, and the
+ * only thing left that could ever be full was the landlord's circuit -- so
+ * the whole difficulty curve reduced to the single question of whether a
+ * file server existed at all.
+ *
+ * It also meant the file server was never tested on the day it mattered. A
+ * desk whose page did not arrive never opened its file, so on a congested
+ * day the traffic to the thing the architecture is about simply vanished.
+ *
+ * Nothing here is a bigger number. A person's machine does several things at
+ * once; it always did; this file was modelling it as though it did not. */
 typedef enum {
     X_WAIT = 0,     /* has not started yet                                  */
     X_CONNECT,      /* the handshake is out                                 */
@@ -741,6 +763,7 @@ bool site_day(Site *s, SiteDay *rep)
     /* ------------------------------------------------- build the day's work */
     int cap = 0;
     for (int i = 0; i < s->ntenant; i++) if (s->tenant[i].moved) cap += s->tenant[i].ndesk;
+    cap *= 2;                       /* the page and the file, at the same time */
     Xfer *xs = cap ? (Xfer *)nom_alloc(sizeof(Xfer) * (size_t)cap) : NULL;
     int nx = 0;
 
@@ -758,26 +781,32 @@ bool site_day(Site *s, SiteDay *rep)
         r.tenants_in++;
         r.desks += t->ndesk;
         uint32_t files = file_server_for(s, i);
-        for (int j = 0; j < t->ndesk && nx < cap; j++) {
+        for (int j = 0; j < t->ndesk && nx + 1 < cap; j++) {
             int d = t->desk0 + j;
             if (net_port_state(s->net, s->dev[d].node, 0) != PORT_UP) continue;
             if (!net_if_get_addr(s->net, s->dev[d].node, 0)) continue;
             r.connected++;
-            Xfer *x = &xs[nx++];
-            memset(x, 0, sizeof *x);
-            x->dev = d;
-            x->tenant = i;
-            x->sock = -1;
-            x->leg = 0;
-            x->kb = SITE_DESK_WEB_KB;
-            x->want = (long)SITE_DESK_WEB_KB * 1024;
-            x->dst = web;
-            (void)files;
             /* WHEN THEY START. Spread across the first tenth of the busy
              * period, from the seed, because a building does not begin work
              * on the same millisecond and a thundering herd would be a
-             * difficulty knob rather than a day. */
-            x->start = (int)rng_range(&rng, 0, SITE_BUSY_MS / 10);
+             * difficulty knob rather than a day. Both of this desk's
+             * transfers start together, because they are one person sitting
+             * down and one machine waking up. */
+            int begins = (int)rng_range(&rng, 0, SITE_BUSY_MS / 10);
+            Xfer *x = &xs[nx++];            /* the page, off the internet    */
+            memset(x, 0, sizeof *x);
+            x->dev = d; x->tenant = i; x->sock = -1; x->leg = 0;
+            x->kb = SITE_DESK_WEB_KB;
+            x->want = (long)SITE_DESK_WEB_KB * 1024;
+            x->dst = web;
+            x->start = begins;
+            Xfer *y = &xs[nx++];            /* the file, off the nearest srv */
+            memset(y, 0, sizeof *y);
+            y->dev = d; y->tenant = i; y->sock = -1; y->leg = 1;
+            y->kb = SITE_DESK_FILE_KB;
+            y->want = (long)SITE_DESK_FILE_KB * 1024;
+            y->dst = files ? files : web;
+            y->start = begins;
         }
     }
 
@@ -821,27 +850,6 @@ bool site_day(Site *s, SiteDay *rep)
             } else if (x->state == X_CONNECT || x->state == X_RECV) {
                 xfer_poll(s, x, tick);
             }
-            /* THE SECOND LEG. The web fetch done, the same desk goes to the
-             * file server -- a different destination, over a path the player
-             * chose, which is where architecture stops being decoration. */
-            if (x->state == X_DONE && x->leg == 0) {
-                SiteTenant *t = &s->tenant[x->tenant];
-                t->finished++;
-                t->tried++;
-                t->bytes += x->got;
-                int ms = x->ended - x->began;
-                if (ms > t->worst_ms) t->worst_ms = ms;
-                r.sessions++; r.finished++; r.bytes += x->got;
-                uint32_t files = file_server_for(s, x->tenant);
-                x->leg = 1;
-                x->kb = SITE_DESK_FILE_KB;
-                x->want = (long)SITE_DESK_FILE_KB * 1024;
-                x->got = 0;
-                x->dst = files ? files : web;
-                x->state = X_WAIT;
-                x->start = tick;
-                x->sock = -1;
-            }
         }
         net_step(s->net, 1);
     }
@@ -861,7 +869,10 @@ bool site_day(Site *s, SiteDay *rep)
             net_tcp_close(s->net, x->sock);
             net_sock_free(s->net, x->sock);
         }
-        if (x->state != X_DONE || x->leg == 1) { t->tried++; r.sessions++; }
+        /* Two things this person's machine was asked to do today, counted
+         * whichever way they went. A page that never arrived used to take
+         * the file with it and be counted once; both are counted now. */
+        t->tried++; r.sessions++;
         if (t->worst_ms > r.worst_ms) r.worst_ms = t->worst_ms;
     }
     /* Anything still half open at the end of the day is closed, because the
