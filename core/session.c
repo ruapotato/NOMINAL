@@ -1339,9 +1339,21 @@ static void do_help(const Session *ses, Buf *out)
         "let office is wired for people and has plenty; a corridor has the\n"
         "cleaner's one. Kit is plugged in when you put it down, IF there is a\n"
         "socket free, and a box that is not in one cannot be switched on at all.\n"
-        "  outlets            this floor: what every room was wired with, what is\n"
-        "                     plugged in, what is free, what another would cost.\n"
-        "                     `outlets all` is the building, `outlets <n>` a floor\n"
+        /* WHAT IT ACTUALLY LISTS. This said "what every room was wired with",
+         * and a playtester standing in an empty comms cupboard that `look`
+         * had just told them had four sockets ran `outlets` and did not find
+         * it -- because at the time the map only listed rooms that were let
+         * or already held kit, which is to say it hid the scarce rooms and
+         * showed eleven offices with sockets that will never matter. The map
+         * was fixed to list the rooms equipment goes in whether or not
+         * anything is in them yet; this sentence was the half of it that
+         * still described the old behaviour. */
+        "  outlets            the rooms kit goes in -- risers, cupboards, plant,\n"
+        "                     the MDF, a tenant's server room -- and for each,\n"
+        "                     what it was wired with, what is plugged in, what is\n"
+        "                     free, and what another socket would cost put in\n"
+        "                     there. `outlets all` is the building, `outlets <n>`\n"
+        "                     one floor. A let office is the tenant's own problem\n"
         "  outlet [<room>]    have another socket put into this room. A sparky\n"
         "                     comes today -- it is money, not days -- priced on the\n"
         "                     run back to the riser, and it does not come out again\n"
