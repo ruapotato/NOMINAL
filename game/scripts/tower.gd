@@ -3569,6 +3569,10 @@ var _dev_sig := ""
 var run_over := false
 # The sentence that ended the run, kept for good. See _show_report().
 var run_over_why := ""
+# What the handset is currently showing, so _reconcile_phone only acts on a
+# change rather than re-plugging the lead sixty times a second.
+var _phone_dev := -1
+var _phone_lead := ""
 
 
 # WHERE THE SESSION THINKS YOU ARE STANDING, which is not always where the view
@@ -4036,7 +4040,54 @@ func _reconcile() -> void:
 		_dev_sig = sig
 		_rebuild_devices()
 	_draw_cables()
+	# AND THE HANDSET FOLLOWS THE LEAD, WHOEVER PUT IT IN.
+	#
+	# `plug core` over the socket put the SESSION on a management line and left
+	# the handset hanging at the player's side saying "no lead plugged in" --
+	# so the one verb with its own front end in this window was the one verb
+	# the window did not reconcile with. D23's rule is that the view is never
+	# the source of truth and everything must be drivable over the socket;
+	# this was the exception, and it cost an agent the ability to photograph
+	# or verify the handset at all, which is how it was found.
+	#
+	# The session has always known: `plugged <dev> <hdmi>`. Nothing here
+	# decides anything -- it reads that pair and makes the prop agree, the
+	# same way the lift buttons above follow `open`.
+	_reconcile_phone()
 	_snap_dirty = true
+
+
+func _reconcile_phone() -> void:
+	if phone == null:
+		return
+	# `plugged <dev> <hdmi>` arrives as a two-element array, because ses_state
+	# packs a multi-value line that way.
+	var st := ses_state()
+	var pl: Variant = st.get("plugged", -1)
+	var dev := -1
+	var hdmi := 0
+	if pl is Array and (pl as Array).size() >= 2:
+		dev = int((pl as Array)[0])
+		hdmi = int((pl as Array)[1])
+	else:
+		dev = int(pl)
+	var want_lead := "display" if hdmi == 1 else "serial"
+	if dev < 0:
+		if str(phone.status) != "unplugged":
+			phone.unplug()
+		return
+	if dev == _phone_dev and want_lead == _phone_lead:
+		return
+	_phone_dev = dev
+	_phone_lead = want_lead
+	phone.plug(dev, want_lead)
+	# AND IT CALLS THE FAR END WHAT THE SESSION CALLS IT. A switch and a
+	# router are appliances: the lead reaches a management line, not a shell,
+	# and `plug core` says so while the handset was answering "serial console
+	# on core" about the same wire. Two names for one thing is the defect this
+	# project has spent the day removing. SES_MGMT is 2 in core/session.h.
+	if int(st.get("where", 0)) == 2 and str(phone.status).begins_with("serial console on "):
+		phone.status = "management line on " + str(phone.status).substr(18)
 
 
 func _rebuild_devices() -> void:
