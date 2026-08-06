@@ -1036,11 +1036,19 @@ void site_dump_events(const Site *s, Buf *out)
         "  faster; the fix is to carry some of it somewhere with more air in\n"
         "  it.\n"
         "\n"
-        "  AND THE COPPER. A run over ninety metres is inside what the cable\n"
+        );
+    /* THE NUMBER COMES FROM THE CONSTANT THAT ENFORCES IT. It was spelled
+     * "ninety metres" in the prose beside a `#define COPPER_MARGIN_M 90`,
+     * which is two places for one fact and therefore one place for it to
+     * drift -- the same shape as the `demand` footer that told a player a
+     * switch24 seats 23 desks after the catalogue had made it 22. */
+    buf_printf(out,
+        "\n  AND THE COPPER. A run over %d metres is inside what the cable\n"
         "  carries and outside what it carries with any margin: under real\n"
         "  traffic it takes errors, says so here for days, and then retrains\n"
         "  itself down to a hundred megabits. `load` prints the speed the port\n"
-        "  really clocks. The fix is `uncable` and a shorter run, or fibre.\n");
+        "  really clocks. The fix is `uncable` and a shorter run, or fibre.\n",
+        COPPER_MARGIN_M);
 }
 
 /* ================================================================== a day */
