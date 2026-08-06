@@ -59,13 +59,14 @@ clock bits onto, a port that is behind holds frames back, and a port that is
 further behind than its buffer will hold drops them.
 
 `./build/bf --loadcheck` plays the same tower two ways and prints where each
-one falls over. Built flat, on one subnet, with cheap copper and every file
-coming down the landlord's circuit, it is visibly working hard at three
-floors and has fallen over by five. Built with a vlan per floor, a router
-doing real work, and a server on each floor holding that floor's files, it
-carries every floor it has been grown to — nine floors and a hundred and
-seventy-six desks. The difference is not a number anybody tuned. It is where
-the frames go.
+one falls over. It grows the building a tenancy at a time — and a floor of
+this building holds two or three tenancies, so the table counts both.
+Built flat, on one subnet, with cheap copper and every file coming down the
+landlord's circuit, it is visibly working hard by the third tenancy and has
+fallen over by the fifth. Built with a vlan per floor, a router doing real
+work, and a server on each floor holding that floor's files, it carries all
+nine tenancies it has been grown to — five floors and a hundred and seventy-six
+desks. The difference is not a number anybody tuned. It is where the frames go.
 
 ## Why a real OS matters
 

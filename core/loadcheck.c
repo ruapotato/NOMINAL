@@ -92,8 +92,19 @@ static void keep_measuring(Site *s)
 static SiteDay flat_run(Building *b);
 
 /* ------------------------------------------------------------ the numbers */
+/* TENANCIES, AND THE FLOORS THEY ARE ON, WHICH ARE NOT THE SAME NUMBER.
+ *
+ * This column used to be headed `floors` and it counted tenancies -- one row
+ * per tenancy that had moved in, twenty desks apiece. A building does not
+ * work like that: the generator puts two and three tenancies on a floor, so
+ * a player with three floors in service is five or six tenancies in, at a
+ * hundred and twenty desks rather than fifty-six, and reads a row of this
+ * table that is not theirs. That is the whole of the gap a playtester
+ * measured -- the gate said 89% at three floors and they saw 63% -- and
+ * nothing about the network was wrong. Both numbers are printed now. */
 typedef struct {
-    int  floors;          /* tenancies connected so far                     */
+    int  steps;           /* tenancies connected so far                     */
+    int  floors;          /* distinct floors those tenancies are on         */
     int  desks;
     int  finished, sessions;
     int  pct;
@@ -103,9 +114,15 @@ typedef struct {
     unsigned long long drops;
 } Step;
 
-static void record(const Site *s, const SiteDay *r, int floors, Step *st)
+static void record(const Site *s, const SiteDay *r, int steps, Step *st)
 {
-    st->floors = floors;
+    st->steps = steps;
+    /* Counted, not assumed: which floors those tenancies are really on. */
+    st->floors = 0;
+    for (int f = 0; f < 32; f++) {
+        for (int i = 0; i < s->ntenant; i++)
+            if (s->tenant[i].moved && s->tenant[i].floor == f) { st->floors++; break; }
+    }
     st->desks = r->connected;
     st->finished = r->finished;
     st->sessions = r->sessions;
@@ -119,28 +136,36 @@ static void record(const Site *s, const SiteDay *r, int floors, Step *st)
 static void show(const char *what, const Step *st, int n)
 {
     printf("\n%s\n", what);
-    printf("  floors  desks   work done   slowest   busiest port        util   frames lost\n");
+    printf("  tenancies  floors  desks   work done   slowest   busiest port"
+           "        util   frames lost\n");
     for (int i = 0; i < n; i++) {
         if (!st[i].sessions) continue;
-        printf("  %5d  %5d   %4d/%-4d %3d%%  %6dms   %-18s %4d%%  %11llu\n",
-               st[i].floors, st[i].desks, st[i].finished, st[i].sessions,
+        printf("  %8d  %6d  %5d   %4d/%-4d %3d%%  %6dms   %-18s %4d%%  %11llu\n",
+               st[i].steps, st[i].floors, st[i].desks, st[i].finished, st[i].sessions,
                st[i].pct, st[i].worst_ms, st[i].hot, st[i].hot_util, st[i].drops);
     }
 }
 
-/* The first floor count at which fewer than four fifths of the building's
+/* The first tenancy count at which fewer than four fifths of the building's
  * people got their work done, or 0 if it never happened. */
 static int broke_at(const Step *st, int n)
 {
     for (int i = 0; i < n; i++)
-        if (st[i].sessions && st[i].pct < 80) return st[i].floors;
+        if (st[i].sessions && st[i].pct < 80) return st[i].steps;
     return 0;
 }
 /* And the first at which it is visibly not comfortable any more. */
 static int slow_at(const Step *st, int n)
 {
     for (int i = 0; i < n; i++)
-        if (st[i].sessions && (st[i].pct < 97 || st[i].hot_util >= 80)) return st[i].floors;
+        if (st[i].sessions && (st[i].pct < 97 || st[i].hot_util >= 80)) return st[i].steps;
+    return 0;
+}
+/* How many floors that many tenancies were spread over, which is the number
+ * a player has in front of them. */
+static int floors_at(const Step *st, int n, int steps)
+{
+    for (int i = 0; i < n; i++) if (st[i].steps == steps) return st[i].floors;
     return 0;
 }
 
@@ -591,26 +616,35 @@ int load_selfcheck(void)
 
     int nb = broke_at(nv, STEPS), ns = slow_at(nv, STEPS);
     int pb = broke_at(pl, STEPS), grown = 0;
-    for (int i = 0; i < STEPS; i++) if (nv[i].sessions) grown = nv[i].floors;
-    if (ns) printf("\nthe naive build is visibly working hard at %d floor%s",
-                   ns, ns == 1 ? "" : "s");
-    else printf("\nthe naive build never even works hard in %d floors", grown);
-    if (nb) printf(" and falls over at %d.\n", nb);
-    else printf(" and never falls over in %d.\n", grown);
-    if (pb) printf("the planned build falls over at %d floors.\n", pb);
-    else printf("the planned build carries all %d floors it was grown to.\n", grown);
+    for (int i = 0; i < STEPS; i++) if (nv[i].sessions) grown = nv[i].steps;
+    if (ns) printf("\nthe naive build is visibly working hard at %d tenancies, "
+                   "which is %d floor%s",
+                   ns, floors_at(nv, STEPS, ns),
+                   floors_at(nv, STEPS, ns) == 1 ? "" : "s");
+    else printf("\nthe naive build never even works hard in %d tenancies", grown);
+    if (nb) printf(", and falls over at %d (%d floors).\n",
+                   nb, floors_at(nv, STEPS, nb));
+    else printf(", and never falls over in %d.\n", grown);
+    if (pb) printf("the planned build falls over at %d tenancies.\n", pb);
+    else printf("the planned build carries all %d tenancies it was grown to, "
+                "on %d floors.\n", grown, floors_at(pl, STEPS, grown));
+    /* SAY IT, BECAUSE A PLAYER READS THIS TABLE BY THE WRONG ROW OTHERWISE.
+     * A floor of this building holds two and three tenancies, so a tower with
+     * three floors in service is well down the table, not on its third row. */
+    printf("a floor holds more than one tenancy, so a tower with three floors\n"
+           "in service is further down this table than its third row.\n");
     printf("the same tenants, the same money, the same building: the difference\n"
            "is where the frames go.\n\n");
 
     /* THE GATE ON THE CURVE ITSELF. */
-    ck("a naive build is comfortable on one floor", nv[0].sessions && nv[0].pct >= 95);
-    ck("a naive build is visibly working hard by three floors",
+    ck("a naive build is comfortable on one tenancy", nv[0].sessions && nv[0].pct >= 95);
+    ck("a naive build is visibly working hard by three tenancies",
        ns > 0 && ns <= 4);
-    ck("a naive build has fallen over by five",
+    ck("a naive build has fallen over by five tenancies",
        nb > 0 && nb <= 5);
     ck("and it did not fall over at two, which would be a different game",
        nb >= 3);
-    ck("a planned build carries every floor the naive one could not",
+    ck("a planned build carries every tenancy the naive one could not",
        pb == 0 || pb > nb + 2);
     /* And it is not carrying them by doing less work. */
     int nvd = 0, pld = 0;

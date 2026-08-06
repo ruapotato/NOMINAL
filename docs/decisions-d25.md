@@ -206,3 +206,34 @@ eight ports and `show <box>` prints the drops with the reason beside them in
 words. The advice names those now, and `netstat -P` is claimed only where a
 box has a shell to type it into -- which includes the README, whose opening
 paragraph invited the reader to type netstat on a switch.
+
+## Addendum, 2026-08-05: that table counts tenancies, not floors
+
+A playtester read the calibration and then played the game, and the two did
+not agree: the gate says a naive build does 89% of the work at three floors,
+and their tower at three floors did 63%. They were right to report it and
+right not to tune anything, and the answer is that the column was mislabelled
+from the day it was written.
+
+`--loadcheck` grows the building one TENANCY at a time -- twenty desks, one
+row -- and called the row a floor. The building generator puts two and three
+tenancies on a floor. So the gate's third row is fifty-six desks on three
+floors only because the first three tenancies happened to land on different
+ones; by the fifth row it is ninety-six desks on three floors, and by the
+ninth it is a hundred and seventy-six on five. A player with three floors in
+service is five or six tenancies in and reads a row that is not theirs.
+
+Both numbers are counted and printed now, and the gate says in words that a
+floor holds more than one tenancy. Nothing about the network was tuned,
+because nothing about the network was wrong: at the desk count they really
+had, the naive curve says about what they measured.
+
+The rest of the gap was not the network either. `--loadcheck` builds its
+towers straight onto the site: `site_power` on a Site does not boot an
+operating system, so nothing in the calibration has ever had a kernel, an
+`/etc/nftables.conf` or an nft(8) in it. Both faults that cost the same
+playtester their re-architecture window -- a DHCP server swept away by a box
+reading its own config file, and a `policy drop` that ate the DISCOVERs --
+existed only once a machine was booted, and the gate could not see either.
+That is a real blind spot and it is worth naming: the load gate measures a
+network, and the game runs operating systems on it.
