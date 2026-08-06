@@ -67,6 +67,38 @@ static bool safe_pkg(const char *line)
            strncmp(v, "owns", 4) == 0 || strncmp(v, "diff", 4) == 0;
 }
 
+/* DOES THIS MACHINE HAVE THAT PROGRAM AT ALL?
+ *
+ * The safe-list above decides what may be EXECUTED, and on its own it left
+ * the worst hole in this gate wide open: a page naming `iptables`, `vi`,
+ * `systemctl` or any other tool from a different operating system was
+ * skipped as "not read-only" and passed in silence -- when a command that
+ * does not exist is the single most likely thing to be wrong in a page
+ * somebody wrote from memory. So existence is checked for every example,
+ * whether or not it is safe to run, and only the running is gated by the
+ * list. */
+static const char *BINDIRS[] = { "/bin", "/usr/bin", "/sbin", "/usr/sbin", NULL };
+
+/* Things sh does itself, which are on no disk and are still real. */
+static const char *BUILTINS[] = {
+    "cd", "pwd", "bind", "unbind", "echo", "help", "for", "export", "exit",
+    "set", "unset", "read", "test", NULL
+};
+
+static bool program_exists(Machine *m, const char *word)
+{
+    for (int i = 0; BUILTINS[i]; i++)
+        if (strcmp(word, BUILTINS[i]) == 0) return true;
+    if (word[0] == '/' || word[0] == '.')
+        return vfs_lookup(&m->disk, word) != NULL;
+    for (int i = 0; BINDIRS[i]; i++) {
+        char p[160];
+        snprintf(p, sizeof p, "%s/%s", BINDIRS[i], word);
+        if (vfs_lookup(&m->disk, p)) return true;
+    }
+    return false;
+}
+
 /* The answers that mean the machine did not understand the page. Anything
  * else -- an error about a missing file, an empty table, a refusal on
  * grounds of state -- is the program working and is not this gate's
@@ -138,6 +170,23 @@ static bool example_of(const char *line, char *out, size_t cap)
     /* Braces and angles are REQUIRED placeholders -- `fsck <device>`,
      * `mkdir <dir>` -- and there is nothing honest to substitute for them. */
     if (strpbrk(out, "{}<>")) return false;
+    /* PROSE IN A CODE BLOCK IS STILL PROSE. bofh.nomnix.org/haiku sets its
+     * verse in <pre>, and the line "ls shows you a healthy link / pointing at
+     * nothing" begins with a real program, so it came through as a command
+     * and failed the gate on a poem. A shell example of more than four words
+     * that contains no flag and no path is a sentence; a command that long is
+     * quoting or redirecting, and both of those are already skipped as not
+     * read-only. */
+    {
+        int words = 1;
+        bool flagish = false;
+        for (size_t i = 0; out[i]; i++) {
+            if (out[i] == ' ') words++;
+            if (out[i] == '/' || (out[i] == '-' && i && out[i - 1] == ' '))
+                flagish = true;
+        }
+        if (words > 4 && !flagish) return false;
+    }
     /* A program left with no arguments that would read standard input will
      * sit there until the instruction budget kills it, which costs time and
      * proves nothing. */
@@ -187,6 +236,53 @@ static Scan scan_text(Machine *m, const char *body)
                     word[w] = ex[w]; w++;
                 }
                 word[w] = 0;
+                /* Existence, for anything that is UNMISTAKABLY an invocation.
+                 *
+                 * The first draft failed twenty-two pages, and every one was
+                 * this extractor mistaking something else for a command:
+                 * config syntax (`policy drop`, `channel = stable`,
+                 * `default N`), console output being quoted back (`zbl:
+                 * loading /boot/vmnomuz`), ed's own one-letter commands
+                 * (`p`), and prose (`the WRONG mac`). None of those is a
+                 * shell line and none should be judged as one.
+                 *
+                 * So existence is only asserted where the line carries a flag
+                 * or a path -- `iptables -L`, `vi /etc/hosts` -- which is
+                 * what an invocation of a tool from somebody else's operating
+                 * system looks like, and is the case worth catching. A first
+                 * token containing a colon or a line containing an equals is
+                 * output or configuration, never a command.
+                 *
+                 * The limitation is real and worth stating: `systemctl
+                 * status foo` would slip through, because it has neither. */
+                bool looks_invoked = !strchr(word, ':') && !strchr(ex, '=');
+                if (looks_invoked) {
+                    /* Token by token, because a lone slash is prose: the
+                     * nomsh README says "and / or", and a slash with spaces
+                     * round it is a conjunction, not a path. */
+                    bool has_flag_or_path = false;
+                    const char *tk = ex;
+                    while (*tk) {
+                        while (*tk == ' ') tk++;
+                        const char *te = tk;
+                        while (*te && *te != ' ') te++;
+                        size_t tl = (size_t)(te - tk);
+                        if (tl > 1 && tk[0] == '-') has_flag_or_path = true;
+                        if (tl > 1 && memchr(tk, '/', tl)) has_flag_or_path = true;
+                        tk = te;
+                    }
+                    looks_invoked = has_flag_or_path;
+                }
+                if (looks_invoked && !program_exists(m, word)) {
+                    r.tried++;
+                    r.bad++;
+                    if (!r.firstbad[0])
+                        snprintf(r.firstbad, sizeof r.firstbad,
+                                 "`%.150s` -> this machine has no %.30s",
+                                 ex, word);
+                    p = e ? e + 1 : p + l;
+                    continue;
+                }
                 bool ok_to_run = safe_cmd(word) ||
                     (strcmp(word, "pkg") == 0 && safe_pkg(ex));
                 if (ok_to_run) {
@@ -256,6 +352,82 @@ static void check_docs(Machine *m, int *ran, int *skipped)
         d = nl ? nl + 1 : d + len;
     }
     buf_free(&dirs);
+}
+
+/* THE IN-GAME INTERNET, held to the same standard as everything else.
+ *
+ * core/net_sites.c says of itself, at the top of the wiki: "Every word of
+ * this is true of the machine." That was kept by hand, and by the time
+ * anybody checked, a page still said "nomsh 1.11" after the shell had gone
+ * to 1.12. A player reads those pages with `links wiki.nomnix.org` from
+ * inside a machine they are trying to repair, which makes a wrong command
+ * there more expensive than a wrong command in a man page, not less.
+ *
+ * The examples live in <pre> blocks at column zero rather than indented two
+ * spaces, so each line is re-indented into the shape example_of() already
+ * understands and the same filters apply -- which is why `ip addr | link |
+ * route` and `ping &lt;host&gt;` are skipped here for exactly the reasons
+ * they are skipped in a manual. */
+extern int net_site_page(int i, const char **host, const char **ip,
+                         const char **path);
+extern bool net_fetch(const char *ip, const char *path, Buf *out);
+
+/* &lt; and friends, so that a placeholder in a page reads as a placeholder
+ * to the filter rather than as a literal word. */
+static void unescape(const char *in, size_t len, Buf *out)
+{
+    for (size_t i = 0; i < len; ) {
+        if (in[i] == '&') {
+            if (!strncmp(in + i, "&lt;", 4))       { buf_putc(out, '<'); i += 4; continue; }
+            if (!strncmp(in + i, "&gt;", 4))       { buf_putc(out, '>'); i += 4; continue; }
+            if (!strncmp(in + i, "&amp;", 5))      { buf_putc(out, '&'); i += 5; continue; }
+            if (!strncmp(in + i, "&quot;", 6))     { buf_putc(out, '"'); i += 6; continue; }
+        }
+        buf_putc(out, in[i++]);
+    }
+}
+
+static void check_web(Machine *m, int *ran, int *skipped)
+{
+    printf("\nand every command the in-game internet shows\n");
+    const char *host, *ip, *path;
+    for (int i = 0; net_site_page(i, &host, &ip, &path); i++) {
+        Buf body = {0};
+        if (!net_fetch(ip, path, &body)) { buf_free(&body); continue; }
+        if (!body.p) { buf_free(&body); continue; }
+
+        /* Every <pre> block on the page, re-indented two spaces a line. */
+        Buf code = {0};
+        const char *p = body.p;
+        while ((p = strstr(p, "<pre>")) != NULL) {
+            p += 5;
+            const char *end = strstr(p, "</pre>");
+            if (!end) break;
+            const char *ls = p;
+            while (ls < end) {
+                const char *le = memchr(ls, '\n', (size_t)(end - ls));
+                size_t l = le ? (size_t)(le - ls) : (size_t)(end - ls);
+                buf_puts(&code, "  ");
+                unescape(ls, l, &code);
+                buf_putc(&code, '\n');
+                if (!le) break;
+                ls = le + 1;
+            }
+            p = end + 6;
+        }
+        if (code.p && code.len) {
+            Scan r = scan_text(m, code.p);
+            *ran += r.tried; *skipped += r.skipped;
+            if (r.tried) {
+                char what[160];
+                snprintf(what, sizeof what, "%.40s%.30s (%d run)",
+                         host, path, r.tried);
+                ck(what, r.bad == 0, r.firstbad);
+            }
+        }
+        buf_free(&code);
+        buf_free(&body);
+    }
 }
 
 int man_check(void)
@@ -346,6 +518,7 @@ int man_check(void)
 
     buf_free(&names);
     check_docs(&m, &ran, &skipped);
+    check_web(&m, &ran, &skipped);
     machine_free(&m);
 
     printf("\n%d page(s), %d example(s) run, %d skipped as not read-only\n",

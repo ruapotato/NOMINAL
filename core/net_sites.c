@@ -341,7 +341,7 @@ static const Page PAGES[] = {
 "is worth more than any status page. Compare it with <b>svc</b> and with\n"
 "/run/&lt;name&gt;.state before you believe either.</p>"
 "<h2>The rest of the toolbox</h2>"
-"<p>nomsh 1.11 ships the names people actually type, and all of them read the\n"
+"<p>nomsh ships the names people actually type, and all of them read the\n"
 "same running stack netstat does -- not the files that configure it.</p>"
 "<pre>ip addr | link | route | neigh   the shapes iproute2 prints\n"
 "arp                              the cache, and the card each entry\n"
@@ -2520,6 +2520,22 @@ int net_site_hosts(int i, const char **host, const char **ip)
         seen++;
     }
     return 0;
+}
+
+/* AND EVERY PAGE, one at a time, which net_site_hosts deliberately does not
+ * do. The header of this file says "every word of this is true of the
+ * machine", and that was a promise kept by hand: a wiki page still claimed
+ * "nomsh 1.11" after the shell went to 1.12. `bf --mancheck` now runs the
+ * command examples out of these pages on a real booted machine, and it needs
+ * to walk them. Nothing else does, and nothing else should -- serving a page
+ * is still net_fetch's business, keyed by address. */
+int net_site_page(int i, const char **host, const char **ip, const char **path)
+{
+    if (i < 0 || i >= NPAGES) return 0;
+    *host = PAGES[i].host;
+    *ip   = PAGES[i].ip;
+    *path = PAGES[i].path;
+    return 1;
 }
 
 /* Fetch by ADDRESS, not by name: the browser has already resolved. That split
