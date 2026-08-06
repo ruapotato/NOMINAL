@@ -869,6 +869,104 @@ static void check_arity(const Building *b)
     site_free(&s);
 }
 
+/* ------------------------------------------- the game contradicting itself
+ *
+ * A playtester drove the running game over a socket and caught `show` saying
+ * both things about one box in one screen: the header said SWITCHED OFF and
+ * nothing of it was on the network, and four lines later the trailer said it
+ * was on the network. The reassuring half was the false one, which is the
+ * worst direction for a report to be wrong in -- they would have walked away
+ * believing the box was up.
+ *
+ * `links` was wrong about money in the same direction: it totalled the runs
+ * still in the wall, called that the spend, and copper is deliberately not
+ * refunded when it comes out. And it kept the pulled runs in the table, so
+ * the list you scan for a cable to pull was padded with rows that cannot be
+ * pulled.
+ *
+ * These are two-line checks. They would have caught all of it years of
+ * playtests ago, which is the reason they are here now.
+ */
+static void check_reports(const Building *b)
+{
+    printf("\nwhat the game says about itself\n");
+    Site s; Buf o; buf_init(&o);
+    site_new(&s, b, GATE_SEED, 100000);
+    int mdf = bld_find(b, 0, RM_MDF);
+    int srv = site_install(&s, SDEV_SERVER, mdf, "files");
+    int sw  = site_install(&s, SDEV_SWITCH8, mdf, "core");
+    site_power(&s, srv, true);
+    int lu = site_cable(&s, sw, 0, s.uplink, 0, CAB_CAT6);
+    int lf = site_cable(&s, sw, 1, srv, 0, CAB_CAT6);
+    site_addr(&s, srv, 0, net_ip(10, 0, 1, 10), net_mask_bits(24));
+
+    /* ONE SCREEN, ONE ANSWER. Power it down -- which is what the building's
+     * own mains event does to it -- and the header and the trailer must not
+     * disagree about whether any of it is on the network. */
+    site_power(&s, srv, false);
+    buf_clear(&o);
+    site_cmd(&s, "show files", &o);
+    ck("switched off, `show` says so in the header",
+       has(o.p, "SWITCHED OFF") && has(o.p, "nothing of it is on the network"));
+    ck("and its own trailer does not then say it is on the network",
+       !has(o.p, "It is on the network"));
+
+    /* Switched on again with the lead still in it, and it is on the network,
+     * so the trailer may say so. */
+    site_power(&s, srv, true);
+    site_addr(&s, srv, 0, net_ip(10, 0, 1, 10), net_mask_bits(24));
+    buf_clear(&o);
+    site_cmd(&s, "show files", &o);
+    ck("switched on with a lead in it and an address, it says it is on the "
+       "network", has(o.p, "It is on the network") && !has(o.p, "SWITCHED OFF"));
+
+    /* And a running box with nothing plugged into it is not on the network
+     * either, whatever the light on the front says. */
+    int lonely = site_install(&s, SDEV_PC, a_room(b, 3), "lonely");
+    site_power(&s, lonely, true);
+    buf_clear(&o);
+    site_cmd(&s, "show lonely", &o);
+    ck("a running box with no lead in it does not claim to be on the network",
+       !has(o.p, "It is on the network") && has(o.p, "services: none"));
+
+    /* WHAT THE COPPER COST, against what the account says it cost. Pull one
+     * of the two runs: the money does not come back, so the total `links`
+     * prints must not come back either. */
+    long before = s.spent;
+    site_uncable(&s, lu);
+    ck("pulling a cable refunds nothing", s.spent == before);
+
+    int spent_on_cable = s.link[lu].cost + s.link[lf].cost;
+    char want[64];
+    snprintf(want, sizeof want, "%d spent on cable in all", spent_on_cable);
+    buf_clear(&o);
+    site_cmd(&s, "links", &o);
+    ck("`links` totals what copper actually cost, not what is still live",
+       has(o.p, want));
+    ck("and it still says what is live, labelled as live",
+       has(o.p, "m of cable in the building"));
+
+    /* THE PULLED RUN IS OFF THE TABLE, AND THE INDICES DID NOT MOVE. The
+     * surviving run is still link 1, and `uncable 1` still means that run. */
+    char row[64];
+    snprintf(row, sizeof row, "%2d  core:1", lf);
+    ck("a pulled run is no longer a row you can try to pull",
+       !has(o.p, "core:0") && has(o.p, row));
+    ck("and the survivor kept its index, so `uncable <n>` still means what "
+       "it meant", lf == 1 && site_link_state(&s, lf) == PORT_UP);
+    buf_clear(&o);
+    site_cmd(&s, "uncable 1", &o);
+    ck("`uncable 1` pulls the run the table numbered 1",
+       site_link_state(&s, lf) == PORT_NOCABLE);
+    buf_clear(&o);
+    site_cmd(&s, "links", &o);
+    ck("with everything pulled, the table says so and still counts the money",
+       has(o.p, "0 m of cable in the building") &&
+       has(o.p, "2 pulled runs") && has(o.p, want));
+    buf_free(&o);
+    site_free(&s);
+}
+
 /* Everything above is reachable from a pipe, or a blind playtester cannot
  * find any of it. This builds a working network out of nothing but lines of
  * text, and then asks the machine on floor two what it can see. */
@@ -959,6 +1057,7 @@ int site_selfcheck(void)
     check_demand(&b);
     check_dhcp_scope(&b);
     check_arity(&b);
+    check_reports(&b);
     check_shell(&b);
     /* AND THAT A PERSON CAN PLAY ALL OF IT OVER A SOCKET, which is the
      * claim that had quietly stopped being true. See core/sessioncheck.c. */

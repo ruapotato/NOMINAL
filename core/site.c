@@ -824,21 +824,41 @@ void site_dump(const Site *s, Buf *out)
     if (s->nlink) { buf_putc(out, '\n'); site_dump_links(s, out); }
 }
 
+/* WHAT THE TABLE IS FOR: finding a run to pull. A pulled run is not a run,
+ * and it was still in the list -- rows an `uncable` could not act on, padding
+ * the only list a player scans to find one that it can. They are off the
+ * table now.
+ *
+ * THE INDICES DO NOT MOVE. A pulled row keeps its slot for the life of the
+ * site; nothing is compacted and nothing is reused, so `uncable 4` means the
+ * same run on day sixty as it did on day one. Renumbering the survivors would
+ * have been the worse bug: a stale number that pulls the wrong live cable.
+ * The numbers climb, and gaps in them are the visible record of what went.
+ *
+ * AND WHAT IT COST. Copper is not refunded when it comes out -- a cheap run
+ * you have to redo is meant to hurt -- so the live runs are not the spend.
+ * Both numbers are here, each saying which it is. */
 void site_dump_links(const Site *s, Buf *out)
 {
-    int total = 0, cost = 0;
+    int total = 0, cost = 0, dead = 0, deadm = 0, deadc = 0;
     buf_puts(out, "  cable\n");
     for (int i = 0; i < s->nlink; i++) {
         const SiteLink *l = &s->link[i];
+        if (l->cable < 0) { dead++; deadm += l->metres; deadc += l->cost; continue; }
         char a[40], b[40];
         snprintf(a, sizeof a, "%s:%d", s->dev[l->a].name, l->aport);
         snprintf(b, sizeof b, "%s:%d", s->dev[l->b].name, l->bport);
         buf_printf(out, "  %2d  %-16s %-16s %4d m  %-6s %4d  %s\n", i, a, b,
                    l->metres, site_cable_name((CableKind)l->kind), l->cost,
                    pstate(site_link_state(s, i)));
-        if (l->cable >= 0) { total += l->metres; cost += l->cost; }
+        total += l->metres; cost += l->cost;
     }
-    buf_printf(out, "  %d m of cable in the building, %d of it spent\n", total, cost);
+    if (!total && !dead) buf_puts(out, "  none\n");
+    buf_printf(out, "  %d m of cable in the building, worth %d\n", total, cost);
+    if (dead)
+        buf_printf(out, "  %d pulled run%s not on it: %d m, %d gone. "
+                        "%d spent on cable in all -- pulling it refunds nothing\n",
+                   dead, dead == 1 ? "" : "s", deadm, deadc, cost + deadc);
 }
 
 void site_dump_rooms(const Site *s, int floor, Buf *out)
@@ -854,16 +874,51 @@ void site_dump_rooms(const Site *s, int floor, Buf *out)
     }
 }
 
+/* IS ANY OF THIS BOX ACTUALLY ON THE NETWORK? A machine is on the network
+ * when it is running, has a lead in a socket that came up, and has an
+ * address on the card that lead is in. Anything less and it is a beige box
+ * with a light on. This is asked rather than assumed because `show` used to
+ * assert it in prose. */
+static bool on_network(const Site *s, int dev)
+{
+    const SiteDev *d = &s->dev[dev];
+    if (site_kind_has_os(d->kind) && !d->powered) return false;
+    bool link = false;
+    for (int p = 0; p < d->nports; p++)
+        if (net_port_state(s->net, d->node, p) == PORT_UP) { link = true; break; }
+    if (!link) return false;
+    for (int i = 0; i < NET_IF_MAX; i++)
+        if (net_if_exists(s->net, d->node, i) &&
+            net_if_get_addr(s->net, d->node, i)) return true;
+    return false;
+}
+
 /* The services this box is running, named where a player looks for them. */
 static void dump_services(const Site *s, int dev, Buf *out)
 {
-    int node = s->dev[dev].node;
+    const SiteDev *d = &s->dev[dev];
+    int node = d->node;
+    /* A BOX WITH NO POWER IN IT IS RUNNING NOTHING, and the trailer used to
+     * say "It is on the network and serves nothing from it" four lines under
+     * a header that had just said nothing of it was on the network. One
+     * screen, two answers, and the wrong one was the reassuring one. What
+     * the trailer says is now derived from the same facts as the header. */
+    bool off = site_kind_has_os(d->kind) && !d->powered;
+    if (off) {
+        buf_puts(out, "services: none. It is switched off, so nothing of it "
+                      "is running and nothing of it is on the network.\n");
+        return;
+    }
     int pools = net_dhcpd_pools(s->net, node);
     int hp = net_httpd_port(s->net, node);
     bool ns = net_dnsd_running(s->net, node);
     if (!pools && !hp && !ns) {
-        buf_printf(out, "services: none. It is on the network and serves "
-                        "nothing from it.\n");
+        if (on_network(s, dev))
+            buf_puts(out, "services: none. It is on the network and serves "
+                          "nothing from it.\n");
+        else
+            buf_puts(out, "services: none, and nothing of it is on the "
+                          "network to serve anything from.\n");
         return;
     }
     buf_puts(out, "services:\n");
