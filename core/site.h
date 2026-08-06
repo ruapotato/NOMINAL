@@ -302,6 +302,10 @@ const char *site_tenant_kind_name(int k);      /* "office", "web host", ... */
 /* One line: what this industry will ask the network for. `demand` prints it
  * per row, so the shape of the bill is legible before the lease is signed. */
 const char *site_tenant_kind_wants(int k);
+/* What this trade COUNTS in `tried`/`finished`: an office finishes transfers,
+ * a call centre calls, a web host visitors, a studio uploads. One word in one
+ * place, so `service` and the person at the desk cannot disagree. */
+const char *site_tenant_kind_unit(int k, bool plural);
 /* What they pay for the same square metres, as a percentage of an office.
  * The premium is the trade: a studio is worth taking if you have built for
  * it and ruinous if you have not. */

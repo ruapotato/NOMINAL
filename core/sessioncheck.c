@@ -665,6 +665,79 @@ done:
     session_end(&ses);
 }
 
+/* ------------------------------------ what the person in the chair says */
+/* THREE BUGS IN ONE SENTENCE, and a playtester hit all three in one sitting.
+ *
+ * It said "on this floor" while reading `tried`, which is per TENANCY: their
+ * studio said the floor was dead while the web host on the same floor served
+ * 24 of 24 visitors. It tested `!tried` BEFORE `complained`, so a tenancy
+ * that had filed and never had one working desk -- the worst state there is
+ * -- got the neutral line and never mentioned filing. And it counted in an
+ * office's units: a call centre said "0 of 18 things we tried finished" on a
+ * day `service` was saying "18 of 18 calls broke up".
+ *
+ * The states are forced here rather than played into, because reaching all
+ * four by building and breaking a tower would take a hundred days and would
+ * still not reach them reliably. */
+static void check_desk_complaint(int *passed, int *total)
+{
+    P = passed; T = total;
+    printf("\nwhat the person whose chair it is actually says\n");
+    Session ses;
+    if (!session_start(&ses, GATE_SEED, 200000)) { ck("a session starts", false); return; }
+    Buf o = {0};
+
+    int ti = -1;
+    for (int guard = 0; guard < 400 && ti < 0; guard++) {
+        say(&ses, "day 1", &o);
+        for (int i = 0; i < ses.s.ntenant; i++)
+            if (ses.s.tenant[i].moved && ses.s.tenant[i].ndesk > 0) { ti = i; break; }
+    }
+    if (ti < 0) { ck("a tenancy moves in", false); goto done; }
+
+    {
+        SiteTenant *t = &ses.s.tenant[ti];
+        int d = t->desk0;
+        char go[64], line[64];
+        snprintf(go, sizeof go, "go %s", ses.s.dev[d].name);
+        snprintf(line, sizeof line, "sit %s", ses.s.dev[d].name);
+
+        /* 1. FILED, AND NOTHING HAS EVER WORKED. The case that used to be
+         *    unreachable, and the one a player most needs the truth about. */
+        t->complained = 1; t->strikes = 5; t->tried = 0; t->finished = 0;
+        say(&ses, go, &o);
+        const char *r = say(&ses, line, &o);
+        ck("a tenancy that has filed says so, even with nothing working",
+           has(r, "we filed with the landlord"));
+        ck("and says THIS OFFICE, not this floor -- floors hold two or three "
+           "tenancies", has(r, "in this office") && !has(r, "on this floor"));
+        say(&ses, "stand", &o);
+
+        /* 2. FILED, AND SOME OF IT WORKS -- counted in the trade's own unit. */
+        t->kind = TEN_VOICE; t->tried = 18; t->finished = 0;
+        say(&ses, go, &o);
+        r = say(&ses, line, &o);
+        ck("a call centre counts CALLS, not \"things we tried\"",
+           has(r, "calls") && !has(r, "things we tried"));
+        say(&ses, "stand", &o);
+
+        /* 3. AND AN OFFICE STILL COUNTS TRANSFERS, so the unit is the trade's
+         *    and not one word swapped for another everywhere. */
+        t->kind = TEN_OFFICE; t->complained = 0; t->strikes = 2;
+        t->tried = 80; t->finished = 60;
+        say(&ses, go, &o);
+        r = say(&ses, line, &o);
+        ck("an office counts transfers", has(r, "transfers"));
+        ck("and the unit comes from the same helper `service` uses",
+           strcmp(site_tenant_kind_unit(TEN_VOICE, true), "calls") == 0 &&
+           strcmp(site_tenant_kind_unit(TEN_OFFICE, true), "transfers") == 0);
+        say(&ses, "stand", &o);
+    }
+done:
+    buf_free(&o);
+    session_end(&ses);
+}
+
 /* ----------------------------------------- whose computer that is */
 /* `carry t3d0` used to work. The model had no objection -- a desk is not
  * cabled and not bolted to a wall -- and site_move() reassigns ownership to
@@ -2350,6 +2423,7 @@ int session_selfcheck(int *passed, int *total)
     check_build(passed, total);
     check_dangling(passed, total);
     check_tenant_kit(passed, total);
+    check_desk_complaint(passed, total);
     check_booted(passed, total);
     check_power(passed, total);
     check_services(passed, total);

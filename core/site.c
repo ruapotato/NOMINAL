@@ -110,6 +110,22 @@ const char *site_tenant_kind_wants(int k)
 {
     return (k >= 0 && k < TEN_KIND_COUNT) ? TRADE[k].wants : "?";
 }
+/* WHAT THIS TRADE COUNTS. `tried` and `finished` are one pair of integers for
+ * every tenancy, and they mean a different thing in each: an office finishes
+ * transfers, a call centre finishes CALLS, a web host serves visitors, a
+ * studio lands uploads. `service` already says so in its legend, and then the
+ * person at the desk said "0 of 18 things we tried finished" to a playtester
+ * on a day the row above was carefully saying "18 of 18 calls broke up". One
+ * word, in one place, so the two cannot drift. */
+const char *site_tenant_kind_unit(int k, bool plural)
+{
+    switch (k) {
+    case TEN_VOICE:   return plural ? "calls"    : "call";
+    case TEN_WEBHOST: return plural ? "visitors" : "visitor";
+    case TEN_STUDIO:  return plural ? "uploads"  : "upload";
+    default:          return plural ? "transfers": "transfer";
+    }
+}
 int site_tenant_rent_pct(int k)
 {
     return (k >= 0 && k < TEN_KIND_COUNT) ? TRADE[k].rent_pct : 100;

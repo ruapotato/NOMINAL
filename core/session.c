@@ -640,21 +640,44 @@ static void do_sit(Session *ses, const char *what, Buf *out)
     for (int i = 0; i < ses->s.ntenant; i++) {
         const SiteTenant *t = &ses->s.tenant[i];
         if (t->tenant != tn || !t->moved) continue;
-        if (!t->tried)
-            buf_printf(out, "\"not one machine on this floor has got onto "
-                            "anything at all. %d day%s of it.\"\n",
+        /* THREE THINGS WERE WRONG WITH THIS AND A PLAYTESTER HIT ALL THREE.
+         *
+         * It said "on this floor" while reading `tried`, which is per
+         * TENANCY -- and floors hold two or three of them, so a studio with
+         * nothing working said the floor was dead while the web host beside
+         * it served 24 of 24 visitors.
+         *
+         * `!tried` was tested before `complained`, so a tenancy that had
+         * filed and had never had one working desk -- the worst case there
+         * is -- got the neutral line and never said it had filed. Their
+         * studio had five strikes and a star in `service` and still did not
+         * mention it. Filing is now said first, because it is the strongest
+         * thing true of them, and the rest is added to it.
+         *
+         * And it counted in an office's units. A call centre on a day the
+         * row above said "18 of 18 calls broke up" told the player "0 of 18
+         * THINGS WE TRIED finished". The unit comes from the trade now, out
+         * of the same function `service` uses. */
+        const char *unit = site_tenant_kind_unit(t->kind, true);
+        if (t->complained && !t->tried)
+            buf_printf(out, "\"we filed with the landlord. Not one machine in "
+                            "this office has got onto anything at all, %d day%s "
+                            "running.\"\n",
                        t->strikes, t->strikes == 1 ? "" : "s");
         else if (t->complained)
-            buf_printf(out, "\"we filed with the landlord. %d of us got anything "
-                            "done yesterday, out of %d.\"\n", t->finished,
-                       t->tried);
+            buf_printf(out, "\"we filed with the landlord. %d of our %d %s got "
+                            "through yesterday.\"\n", t->finished, t->tried, unit);
+        else if (!t->tried)
+            buf_printf(out, "\"not one machine in this office has got onto "
+                            "anything at all. %d day%s of it.\"\n",
+                       t->strikes, t->strikes == 1 ? "" : "s");
         else if (t->strikes)
             buf_printf(out, "\"it has been like this %d day%s now. %d of %d "
-                            "things we tried finished.\"\n", t->strikes,
-                       t->strikes == 1 ? "" : "s", t->finished, t->tried);
+                            "%s got through.\"\n", t->strikes,
+                       t->strikes == 1 ? "" : "s", t->finished, t->tried, unit);
         else
-            buf_printf(out, "\"it has been fine, actually -- %d of %d finished "
-                            "yesterday.\"\n", t->finished, t->tried);
+            buf_printf(out, "\"it has been fine, actually -- %d of %d %s "
+                            "yesterday.\"\n", t->finished, t->tried, unit);
         break;
     }
     buf_puts(out, "this is a REAL SHELL on their machine, not yours. `help` for "
