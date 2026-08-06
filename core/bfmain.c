@@ -924,6 +924,14 @@ int main(int argc, char **argv)
      * Every one of those is mechanical, and this answers all of them across a
      * spread of ticket states in milliseconds.
      */
+    /* --mancheck: does every manual page describe THIS machine? Runs the
+     * command examples out of the pages on a real booted machine. See
+     * core/mancheck.c for what it will and will not execute. */
+    if (argc > 1 && strcmp(argv[1], "--mancheck") == 0) {
+        extern int man_check(void);
+        return man_check();
+    }
+
     if (argc > 1 && strcmp(argv[1], "--askcheck") == 0) {
         int pass = 0, total = 0, shown = 0;
         int misreads = 0;
