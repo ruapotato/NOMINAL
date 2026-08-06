@@ -229,6 +229,16 @@ typedef struct {
     uint32_t resolver;
     bool     httpd;
     uint16_t http_port;
+    /* AN ECHO REQUEST THIS HOST HAS OUT. Conntrack for ping: a filter that
+     * has no idea it asked the question drops the answer, and then a box
+     * with `policy drop` cannot ping ANYTHING, however healthy the far end
+     * and however correct the copper. That was half of "ping can never
+     * succeed": the target ate the request AND the source ate the reply, so
+     * fixing the target changed nothing visible. A real stateful filter
+     * tracks icmp echo by id and takes the reply -- and the errors a router
+     * in the middle sends about the probe, which is how traceroute works at
+     * all through a filter. */
+    uint64_t icmp_probe_at;
     /* What the last ICMP error about our traffic said. This is how ping
      * distinguishes "a router refused" from "nothing came back", and it is
      * set by the ICMP input path and by nothing else. */
@@ -260,6 +270,23 @@ typedef struct {
      * player can measure with ping. `qdrops` is what the buffer would not
      * hold. `busy_total` is time on the wire, which is utilisation. */
     uint64_t busy_us, busy_total, qdrops, qpeak_us;
+    /* WHY A DROP HAPPENED, kept apart from how many there were.
+     *
+     * `drops` used to be one number with four causes behind it, and the
+     * printer named whichever cause it felt like -- so a port two per cent
+     * busy with an empty queue was told its 48 KB egress buffer had
+     * overflowed, which it had not. A drop is now counted under the reason
+     * it really had:
+     *
+     *   qdrops   the egress buffer would not hold the wait          (real)
+     *   nolink   handed to a port with no link: it never left       (real)
+     *   worldq   the world ran out of in-flight frame slots         (ours)
+     *   swdrops  a switch refused it on ingress -- blocked port,
+     *            tagged frame on an access port, vlan not allowed   (real)
+     *
+     * The four sum to `drops`, which is checked by --netcheck rather than
+     * asserted here. */
+    uint64_t nolink, worldq, swdrops;
     int      rate_mb;      /* forced circuit rate; 0 = whatever the cable is */
     bool     used;
     /* Spanning tree put this port in blocking. It carries no data and it
@@ -729,6 +756,14 @@ uint64_t net_port_drops(const Net *n, int node, int port)
 { int p = pid_of(n, node, port); return p < 0 ? 0 : n->port[p].drops; }
 uint64_t net_port_qdrops(const Net *n, int node, int port)
 { int p = pid_of(n, node, port); return p < 0 ? 0 : n->port[p].qdrops; }
+uint64_t net_port_nolink(const Net *n, int node, int port)
+{ int p = pid_of(n, node, port); return p < 0 ? 0 : n->port[p].nolink; }
+uint64_t net_port_swdrops(const Net *n, int node, int port)
+{ int p = pid_of(n, node, port); return p < 0 ? 0 : n->port[p].swdrops; }
+uint64_t net_port_worldq(const Net *n, int node, int port)
+{ int p = pid_of(n, node, port); return p < 0 ? 0 : n->port[p].worldq; }
+uint64_t net_port_qpeak_us(const Net *n, int node, int port)
+{ int p = pid_of(n, node, port); return p < 0 ? 0 : n->port[p].qpeak_us; }
 uint64_t net_port_busy_us(const Net *n, int node, int port)
 { int p = pid_of(n, node, port); return p < 0 ? 0 : n->port[p].busy_total; }
 void net_port_busy_reset(Net *n, int node, int port)
@@ -769,7 +804,7 @@ static void port_tx(Net *n, int p, const uint8_t *data, int len)
 {
     if (p < 0 || len < 14 || len > NET_FRAME_MAX) return;
     Port *pt = &n->port[p];
-    if (port_state(n, p) != PORT_UP) { pt->drops++; return; }
+    if (port_state(n, p) != PORT_UP) { pt->drops++; pt->nolink++; return; }
     Cable *c = &n->cable[pt->cable];
     int other = (c->a == p) ? c->b : c->a;
 
@@ -792,19 +827,24 @@ static void port_tx(Net *n, int p, const uint8_t *data, int len)
     uint64_t start = pt->busy_us > now_us ? pt->busy_us : now_us;
     uint64_t wait  = start - now_us;
     uint64_t buf_us = ((uint64_t)NET_PORT_BUFFER * 8 + (uint64_t)mb - 1) / (uint64_t)mb;
+    /* THE PEAK IS RECORDED BEFORE THE DROP, not after it. Recording it only
+     * on the frames that got in meant a port that was dropping because its
+     * buffer was full reported the deepest queue it had ever ACCEPTED, which
+     * on a burst that overflowed inside one tick is zero -- "the buffer was
+     * full, peak queue 0ms", which is not a thing that can happen. */
+    if (wait > pt->qpeak_us) pt->qpeak_us = wait;
     if (wait > buf_us) { pt->drops++; pt->qdrops++; return; }
 
     /* Find a slot. A full queue is a saturated network, and a saturated
      * network drops -- which is exactly what a broadcast storm looks like
      * from inside, and it is why we do not need a storm detector. */
     int slot = n->qfree;
-    if (slot < 0) { n->qdrops++; pt->drops++; return; }
+    if (slot < 0) { n->qdrops++; pt->drops++; pt->worldq++; return; }
     n->qfree = n->q[slot].next;
 
     pt->tx++;
     pt->busy_us = start + serial_us;
     pt->busy_total += serial_us;
-    if (wait > pt->qpeak_us) pt->qpeak_us = wait;
 
     InFlight *f = &n->q[slot];
     f->used = true;
@@ -1184,7 +1224,7 @@ static void switch_rx(Net *n, int node, int p, uint8_t *fr, int len)
     /* A blocked port neither learns nor forwards. The link is up, the light
      * is on, and nothing crosses -- which is what spanning tree looks like
      * to someone who does not know it is running. */
-    if (in->blocked) { in->drops++; return; }
+    if (in->blocked) { in->drops++; in->swdrops++; return; }
 
     /* Ingress classification. An access port takes untagged frames and puts
      * them in its vlan; a tagged frame arriving at an access port is not
@@ -1192,14 +1232,15 @@ static void switch_rx(Net *n, int node, int p, uint8_t *fr, int len)
     int vlan;
     bool tagged = eth_tagged(fr, len, &vlan);
     if (in->mode == PORT_ACCESS) {
-        if (tagged) { in->drops++; trace(n, "%s p%d drop tagged frame on access port",
-                                         n->node[node].name, in->index); return; }
+        if (tagged) { in->drops++; in->swdrops++;
+                      trace(n, "%s p%d drop tagged frame on access port",
+                            n->node[node].name, in->index); return; }
         vlan = in->vlan;
     } else {
         if (!tagged) vlan = in->vlan;          /* the native vlan */
         else { len = eth_untag(fr, len); }     /* work untagged internally */
         if (!port_carries(n, p, vlan)) {
-            in->drops++;
+            in->drops++; in->swdrops++;
             trace(n, "%s p%d drop vlan %d not allowed", n->node[node].name,
                   in->index, vlan);
             return;
@@ -1231,6 +1272,15 @@ static void switch_rx(Net *n, int node, int p, uint8_t *fr, int len)
     for (int q = first; q < last; q++) {
         if (q == p) continue;
         if (n->port[q].blocked) continue;
+        /* A SOCKET WITH NOTHING IN IT IS NOT A PLACE A FRAME GOES MISSING.
+         * Flooding used to offer a copy to every port on the switch, and the
+         * ones with no cable counted it as a drop -- so a 24-port switch
+         * with two links in it showed twenty-two ports reading `no link
+         * drop 301`, six thousand phantom drops burying the two numbers that
+         * matter on the screen you go to when something is wrong. A switch
+         * floods to the ports that have a link. There is no frame on the
+         * others to lose. */
+        if (port_state(n, q) != PORT_UP) continue;
         if (!port_carries(n, q, vlan)) continue;
         uint8_t copy[NET_FRAME_MAX];
         memcpy(copy, fr, (size_t)len);
@@ -1719,11 +1769,46 @@ static void ip_send_frame(Net *n, int node, Host *h, int ifx,
 }
 
 /* ------------------------------------------------------------- the filter */
+/* IS THIS HOST SERVING THAT PORT. A listening socket, not a flag: the
+ * question is whether something on this machine would answer if the packet
+ * got through. */
+static bool serving_port(const Net *n, int node, uint8_t proto, uint16_t dport)
+{
+    if (proto != IP_PROTO_TCP && proto != IP_PROTO_UDP) return false;
+    for (int i = 0; i < NET_SOCK_MAX; i++) {
+        const Sock *s = &n->sock[i];
+        if (!s->used || s->node != node || s->proto != proto) continue;
+        if (s->lport != dport) continue;
+        if (proto == IP_PROTO_UDP) return true;
+        if (s->state == TCP_LISTEN) return true;
+    }
+    return false;
+}
+
 /* One place. A packet is tested here and dropped here, and nothing above
  * knows that a rule exists -- which is why a firewall rule produces a
- * timeout and not an error message, exactly as it does in life. */
-static bool fw_pass(Host *h, FwChain chain, uint8_t proto, uint16_t dport,
-                    uint32_t src)
+ * timeout and not an error message, exactly as it does in life.
+ *
+ * THE DEFAULT POLICY DOES NOT UNPLUG THE SERVICES THE MACHINE IS RUNNING.
+ *
+ * A pristine box ships `policy drop` and two accept rules, and that is a
+ * good puzzle: it refuses a ping, honestly and diagnosably, and the ruleset
+ * on its disk says why. What it must NOT do is refuse the protocol of a
+ * service somebody has just started on it -- because then telling a box to
+ * serve DHCP produced a box that said "serving" and answered nothing, with
+ * no rule anywhere naming udp 67 and nothing to edit that would help. That
+ * is not a puzzle, it is a wall, and it made the architecture this game
+ * recommends impossible to build.
+ *
+ * So the catch-all -- a rule with no protocol, no port and no source, which
+ * is what `policy drop` compiles to -- is a policy and not a rule: it
+ * disposes of what nothing is listening for. A rule that NAMES a protocol
+ * or a port is an instruction, it is matched first, and it still drops. To
+ * shut off a service you must say so, which is what a person would type.
+ *
+ * ICMP has no socket, so a pristine box still refuses a ping. */
+static bool fw_pass(const Net *n, int node, Host *h, FwChain chain,
+                    uint8_t proto, uint16_t dport, uint32_t src, bool solicited)
 {
     for (int i = 0; i < NET_FW_MAX; i++) {
         FwRule *r = &h->fw[i];
@@ -1731,6 +1816,13 @@ static bool fw_pass(Host *h, FwChain chain, uint8_t proto, uint16_t dport,
         if (r->proto != FW_ANY_PROTO && r->proto != proto) continue;
         if (r->dport != FW_ANY_PORT && r->dport != dport) continue;
         if (r->srcmask && (src & r->srcmask) != r->srcnet) continue;
+        /* The catch-all is the policy. It steps aside for a port this host
+         * is actually serving, on the way in only -- what a machine chooses
+         * to send or to route is not a service it is offering. */
+        if (chain == FW_IN && r->action == FW_DROP &&
+            r->proto == FW_ANY_PROTO && r->dport == FW_ANY_PORT && !r->srcmask &&
+            (solicited || serving_port(n, node, proto, dport)))
+            return true;
         r->hits++;
         return r->action == FW_ACCEPT;
     }
@@ -1823,10 +1915,15 @@ static PingResult ip_output_if(Net *n, int node, int force_if, uint32_t dst,
     memcpy(pkt + 20, payload, (size_t)plen);
     int len = 20 + plen;
 
-    if (!fw_pass(h, from_forward ? FW_FORWARD : FW_OUT, proto,
+    if (!fw_pass(n, node, h, from_forward ? FW_FORWARD : FW_OUT, proto,
                  (proto == IP_PROTO_TCP || proto == IP_PROTO_UDP) && plen >= 4
-                     ? get16(payload + 2) : 0, src))
+                     ? get16(payload + 2) : 0, src, false))
         return PING_TIMEOUT;             /* dropped: silence, as a drop is */
+
+    /* We asked. Note when, so the filter knows the answer is ours. */
+    if (proto == IP_PROTO_ICMP && plen >= 1 && payload[0] == ICMP_ECHO &&
+        !from_forward)
+        h->icmp_probe_at = n->now + 1;   /* +1: zero means "never asked" */
 
     /* A packet to ourselves never reaches a wire. */
     for (int i = 0; i < NET_IF_MAX; i++)
@@ -1979,6 +2076,20 @@ static void ip_input(Net *n, int node, int ifx, uint8_t *pkt, int len)
          * back. Tracked by looking for a socket already holding the exact
          * four-tuple -- which is the connection, so this is not a shortcut
          * around the filter, it is the filter's established state. */
+        /* THE ANSWER TO A PING WE SENT, or a router complaining about it.
+         * Not "established" -- an explicit `icmp drop` rule is an
+         * instruction and still bites -- but something the default POLICY
+         * steps aside for, on the same principle as a listening socket: a
+         * catch-all disposes of what this machine neither asked for nor is
+         * listening for, and this machine asked. An unsolicited echo REQUEST
+         * is not covered, so a box with `policy drop` still refuses to
+         * answer a ping, which is the puzzle worth keeping. Without this a
+         * box with the shipped ruleset could not ping ANYTHING, however
+         * healthy the far end -- so a player who correctly opened the far
+         * box saw no change and went looking at the copper. */
+        bool solicited = proto == IP_PROTO_ICMP && total >= hlen + 1 &&
+                         h->icmp_probe_at && n->now < h->icmp_probe_at + 30000 &&
+                         pkt[hlen] != ICMP_ECHO;
         bool established = false;
         if (proto == IP_PROTO_TCP || proto == IP_PROTO_UDP)
             for (int i = 0; i < NET_SOCK_MAX; i++) {
@@ -1989,7 +2100,7 @@ static void ip_input(Net *n, int node, int ifx, uint8_t *pkt, int len)
                 if (c->proto == IP_PROTO_UDP) { established = true; break; }
                 if (c->rport == sport && c->raddr == src) { established = true; break; }
             }
-        if (!established && !fw_pass(h, FW_IN, proto, dport, src)) {
+        if (!established && !fw_pass(n, node, h, FW_IN, proto, dport, src, solicited)) {
             h->ifc[ifx].rx_drop++;
             trace(n, "%s filter drop proto %d port %d", n->node[node].name, proto, dport);
             return;
@@ -2021,9 +2132,9 @@ static void ip_input(Net *n, int node, int ifx, uint8_t *pkt, int len)
         icmp_error(n, node, ICMP_UNREACH, ICMP_UNREACH_NET, pkt, total, h->ifc[ifx].ip);
         return;
     }
-    if (!fw_pass(h, FW_FORWARD, proto,
+    if (!fw_pass(n, node, h, FW_FORWARD, proto,
                  (proto == IP_PROTO_TCP || proto == IP_PROTO_UDP) && total >= hlen + 4
-                     ? get16(pkt + hlen + 2) : 0, src)) {
+                     ? get16(pkt + hlen + 2) : 0, src, false)) {
         trace(n, "%s filter drop forwarded packet", n->node[node].name);
         return;
     }
@@ -2249,6 +2360,9 @@ void net_release_host(Net *n, int node)
 {
     Host *h = host_of(n, node);
     if (!h) return;
+    /* The services go BEFORE the sockets do: net_close_all reopens what this
+     * host is still serving, and a host being released is serving nothing. */
+    h->dhcpd = h->dnsd = h->httpd = false;
     net_close_all(n, node);
     for (int i = 0; i < NET_ROUTE_MAX; i++) h->rt[i].used = false;
     for (int i = 0; i < NET_ARP_MAX; i++)   h->arp[i].used = false;
@@ -2272,10 +2386,40 @@ void net_release_host(Net *n, int node)
     }
 }
 
+/* CLOSE THE CONNECTIONS, NOT THE SERVER.
+ *
+ * This is what a machine calls when it reconfigures its card from its disk:
+ * an address change invalidates every conversation, so they all go. What it
+ * is NOT is a reason to stop serving. A DHCP server the player started on
+ * the site has nothing to do with the box's /etc/net/interfaces, and it used
+ * to be swept away by the next thing that touched that file -- so `dhcpd`
+ * said "serving", the socket was gone by the time anybody asked, the
+ * DISCOVERs fell through to the policy, and twenty cabled desks got nothing.
+ * A whole tenancy of address-less desks, caused by reading a config file.
+ *
+ * A service is a socket plus state on the host, and the state is what says
+ * whether it is running. So the sockets are reopened for whatever this host
+ * is still serving, and the running/serving views cannot disagree. */
 void net_close_all(Net *n, int node)
 {
     for (int i = 0; i < NET_SOCK_MAX; i++)
         if (n->sock[i].used && n->sock[i].node == node) n->sock[i].used = false;
+    Host *h = host_of(n, node);
+    if (!h) return;
+    if (h->dhcpd) {
+        int s = net_udp_open(n, node, 67);
+        if (s >= 0) n->sock[s].service = SVC_DHCPD;
+    }
+    if (h->dnsd) {
+        int s = net_udp_open(n, node, 53);
+        if (s >= 0) n->sock[s].service = SVC_DNSD;
+    }
+    /* NOT httpd. A web server is a service on the box's own disk, and the
+     * machine that has just reconfigured itself is about to say whether it
+     * is running -- so putting :80 back here would make `svc stop httpd`
+     * cosmetic in exactly the way `svc stop nftables` was. DHCP and DNS have
+     * no unit on that disk: the stack is the only record of them, and if it
+     * forgets them nothing else remembers. */
 }
 int net_sock_node(const Net *n, int sock)
 {
@@ -2822,6 +2966,13 @@ void net_dhcpd(Net *n, int node, uint32_t first, int count, uint32_t mask,
     for (int i = 0; i < NET_LEASE_MAX; i++) h->lease[i].used = false;
     int s = net_udp_open(n, node, 67);
     if (s >= 0) n->sock[s].service = SVC_DHCPD;
+}
+void net_services_stop(Net *n, int node)
+{
+    Host *h = host_of(n, node);
+    if (!h) return;
+    h->dhcpd = h->dnsd = h->httpd = false;
+    net_close_all(n, node);
 }
 void net_dhcpd_stop(Net *n, int node)
 {
@@ -3562,9 +3713,12 @@ void net_dump_fw(const Net *n, int node, Buf *out)
 {
     const Host *h = chost_of(n, node);
     if (!h) return;
+    bool policy = false;
+    int shown = 0;
     for (int i = 0; i < NET_FW_MAX; i++) {
         const FwRule *r = &h->fw[i];
         if (!r->used) continue;
+        shown++;
         buf_printf(out, "%-8s ", r->chain == FW_IN ? "input" :
                                  r->chain == FW_OUT ? "output" : "forward");
         if (r->proto == FW_ANY_PROTO) buf_puts(out, "any  ");
@@ -3582,7 +3736,27 @@ void net_dump_fw(const Net *n, int node, Buf *out)
                    r->action == FW_ACCEPT ? "accept" :
                    r->action == FW_DROP ? "drop" : "reject",
                    (unsigned long long)r->hits);
+        if (r->chain == FW_IN && r->action == FW_DROP &&
+            r->proto == FW_ANY_PROTO && r->dport == FW_ANY_PORT && !r->srcmask)
+            policy = true;
     }
+    /* WHERE IT CAME FROM AND WHAT IT LEAVES OPEN. A player who cannot find
+     * the file cannot change the filter, and one who does not know the
+     * policy steps aside for a listening socket reads a `drop` line and
+     * tears down a riser that was never wrong. Both facts, on the screen
+     * that shows the rules. */
+    if (policy)
+        buf_puts(out,
+                 "\nthe last line is the policy: it disposes of what no rule\n"
+                 "named AND nothing on this machine is listening for. A port a\n"
+                 "service has open is not shut off by it, and neither is the\n"
+                 "answer to something this machine asked. A ping it did not ask\n"
+                 "for has no socket, so that is refused. A rule naming a\n"
+                 "protocol or a port is matched first and still drops.\n");
+    if (shown)
+        buf_puts(out, "the ruleset is /etc/nftables.conf, loaded by the nftables\n"
+                      "service. Edit it and `svc reload nftables`; `svc stop\n"
+                      "nftables` takes the whole filter off.\n");
 }
 
 /* Twenty-four sockets with nothing in them is twenty-four lines of "no link",
@@ -3627,15 +3801,51 @@ static void dump_ports(const Net *n, int node, Buf *out, bool empties)
          * and says the reason in words, because "drop 4120" on its own is
          * the fault with no explanation. */
         uint64_t now_us = n->now * 1000ull;
-        uint64_t q = n->port[p].busy_us > now_us ? n->port[p].busy_us - now_us : 0;
-        if (q) buf_printf(out, " queue %llums", (unsigned long long)(q / 1000));
-        if (n->port[p].qdrops)
-            buf_printf(out, "\n        %llu of those drops were this port's egress "
-                            "buffer full: it was\n        offered more than %dMb "
-                            "would carry (peak queue %llums)",
-                       (unsigned long long)n->port[p].qdrops,
-                       st == PORT_UP ? port_rate_mb(n, p) : 0,
-                       (unsigned long long)(n->port[p].qpeak_us / 1000));
+        const Port *pt = &n->port[p];
+        uint64_t q = pt->busy_us > now_us ? pt->busy_us - now_us : 0;
+        if (q) {
+            /* MICROSECONDS WHEN IT IS MICROSECONDS. A gigabit port's 48 KB
+             * buffer is 393us deep and a ten-gig port's is 39us, so a queue
+             * printed only in whole milliseconds reads `0ms` right up to the
+             * moment the port starts dropping -- which is how "buffer full,
+             * queue 0ms" got printed and believed. */
+            if (q >= 1000) buf_printf(out, " queue %llums", (unsigned long long)(q / 1000));
+            else           buf_printf(out, " queue %lluus", (unsigned long long)q);
+        }
+        if (pt->drops) {
+            /* THE REASON IT REALLY HAD. Four causes, counted separately
+             * where they happen, printed here in the words that name them.
+             * Anything left over is a drop this printer does not know the
+             * cause of, and it says so rather than borrowing one. */
+            int mb = port_rate_mb(n, p);
+            uint64_t buf_us = ((uint64_t)NET_PORT_BUFFER * 8 + (uint64_t)mb - 1)
+                              / (uint64_t)mb;
+            if (pt->qdrops)
+                buf_printf(out, "\n        %llu of those drops were this port's "
+                                "egress buffer full: %d KB is\n        %lluus of "
+                                "wire at %dMb, and the queue reached %lluus",
+                           (unsigned long long)pt->qdrops,
+                           NET_PORT_BUFFER / 1024,
+                           (unsigned long long)buf_us, mb,
+                           (unsigned long long)pt->qpeak_us);
+            if (pt->nolink)
+                buf_printf(out, "\n        %llu were offered to this port while it "
+                                "had no link: they never left",
+                           (unsigned long long)pt->nolink);
+            if (pt->swdrops)
+                buf_printf(out, "\n        %llu were refused on the way in: a "
+                                "blocked port, a tagged frame on an\n        access "
+                                "port, or a vlan this port does not carry",
+                           (unsigned long long)pt->swdrops);
+            if (pt->worldq)
+                buf_printf(out, "\n        %llu were lost because the world ran out "
+                                "of in-flight frames",
+                           (unsigned long long)pt->worldq);
+            uint64_t named = pt->qdrops + pt->nolink + pt->swdrops + pt->worldq;
+            if (named < pt->drops)
+                buf_printf(out, "\n        %llu have no reason recorded",
+                           (unsigned long long)(pt->drops - named));
+        }
         buf_putc(out, '\n');
     }
     if (quiet)

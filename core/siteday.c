@@ -29,7 +29,11 @@
  */
 #include <string.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include "site.h"
+/* The world's half of the breaker. Everything this file does to a disk goes
+ * through core/breaker.c, so there is exactly one kind of broken. */
+#include "machine.h"
 
 /* ------------------------------------------------------------ the desks */
 /* WHAT A TENANT BRINGS. One computer per drop they asked for, in the first
@@ -264,6 +268,408 @@ static void hottest_port(const Site *s, uint64_t window_us, SiteDay *rep)
     rep->hot_util = best_util < 0 ? 0 : best_util;
 }
 
+/* ===================================================== THE WORLD BREAKS THINGS
+ *
+ * WHY THIS IS HERE AND NOT IN A FAULT GENERATOR. From D23: *the world
+ * supplies the cause.* Sixty-two fault types existed and every one was proven
+ * findable and repairable, and there was no way for the TOWER to cause a
+ * single one of them -- faults arrived because a ticket was generated, and a
+ * machine you installed, cabled and ran for forty days never broke.
+ *
+ * Five rules, and each of them is a thing this code can be checked against:
+ *
+ *   1. THE DAMAGE IS REAL. Every byte of it is written by core/breaker.c into
+ *      the machine's own Vfs. `pkg verify` sees it because the file genuinely
+ *      differs from what shipped. There is no event flag anywhere in the boot
+ *      chain and there must never be one.
+ *   2. THE CAUSE IS FINDABLE. A blackout is in the site's own log and in the
+ *      syslog of every box that had a battery under it; a dying disk
+ *      complains in /var/log/messages for days before it loses anything.
+ *   3. IT IS FIXABLE WITH WHAT EXISTS. `fsck`, `pkg verify`, `pkg diff`, `pkg
+ *      reinstall`, the rescue medium. Nothing new was added to repair any of
+ *      this.
+ *   4. IT IS AVOIDABLE OR SURVIVABLE BY GOOD PLAY. A UPS rides the mains
+ *      failure out; a disk warns for days before it fails and can be swapped;
+ *      a cupboard that is cooking says so before it trips and the kit in it
+ *      can be moved. A disaster nobody could have prevented is a tax.
+ *   5. IT IS DETERMINISTIC FROM THE SEED. The blackout schedule is a pure
+ *      function of seed and day. Wear is measured off the ports, and the
+ *      ports carry whatever the busy period really put through them.
+ *
+ * NOTHING HERE IS A TIMER WITH A DIE IN IT. A disk wears at a rate taken from
+ * how hard its own port worked that day, and a cupboard cooks because of the
+ * watts the player put in it divided by the square metres the building
+ * generator gave it.
+ */
+
+/* --------------------------------------------------------------- the log */
+static void ev_add(Site *s, int kind, int dev, const char *fmt, ...)
+{
+    if (s->nev >= SITE_MAX_EVENT) {
+        /* Keep the newest. A tower that has run three hundred days has had
+         * more weather than anybody wants to read. */
+        memmove(&s->ev[0], &s->ev[1], sizeof s->ev[0] * (SITE_MAX_EVENT - 1));
+        s->nev = SITE_MAX_EVENT - 1;
+    }
+    SiteEvent *e = &s->ev[s->nev++];
+    memset(e, 0, sizeof *e);
+    e->day = s->day;
+    e->kind = (uint8_t)kind;
+    e->dev = (int16_t)dev;
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(e->what, sizeof e->what, fmt, ap);
+    va_end(ap);
+    s->ev_total++;
+}
+
+void site_boxes(Site *s, SiteBoxFn fn, void *ctx) { s->box = fn; s->boxctx = ctx; }
+
+static Machine *box_of_dev(Site *s, int dev)
+{
+    if (!s->box) return NULL;
+    return (Machine *)s->box(s->boxctx, dev);
+}
+
+/* ------------------------------------------------------------ the mains */
+/* WHEN THE LIGHTS GO OUT, and it is a pure function of the seed and the day.
+ * No state, nothing rolled during play, so the same seed always has its
+ * blackout on the same morning and a gate can say which one.
+ *
+ * THE FIRST ONE IS DELIBERATELY LATE. Not to be kind: a mains failure in the
+ * first fortnight lands on a building with one switch in it and nothing to
+ * lose, which teaches the player nothing except that the game has weather.
+ * By the third or fourth week there are tenants, a server holding their
+ * files, and a decision about a battery that has already been available to
+ * make. After that they come round every two or three weeks, which is often
+ * enough that a UPS pays for itself on a long run and rare enough that
+ * nobody plans their week around one. */
+bool site_mains_fails_on(uint64_t seed, int day)
+{
+    if (day < 1) return false;
+    Rng r;
+    rng_seed(&r, seed ^ 0x9d0c17c0ffeeull);
+    int d = 20 + (int)rng_range(&r, 0, 10);
+    while (d <= day) {
+        if (d == day) return true;
+        d += 17 + (int)rng_range(&r, 0, 12);
+    }
+    return false;
+}
+
+long site_ups_price(void)  { return 220; }
+long site_disk_price(void) { return 140; }
+
+bool site_ups(Site *s, int dev)
+{
+    s->err = SITE_OK;
+    if (dev < 0 || dev >= s->ndev) { s->err = SITE_ENODEV; return false; }
+    if (!site_kind_has_os(s->dev[dev].kind)) { s->err = SITE_ENOBTN; return false; }
+    if (s->dev[dev].ups) return true;
+    if (s->money < site_ups_price()) { s->err = SITE_EMONEY; return false; }
+    s->money -= site_ups_price();
+    s->spent += site_ups_price();
+    s->dev[dev].ups = 1;
+    return true;
+}
+
+bool site_disk(Site *s, int dev)
+{
+    s->err = SITE_OK;
+    if (dev < 0 || dev >= s->ndev) { s->err = SITE_ENODEV; return false; }
+    if (!site_kind_has_os(s->dev[dev].kind)) { s->err = SITE_ENOBTN; return false; }
+    if (s->money < site_disk_price()) { s->err = SITE_EMONEY; return false; }
+    s->money -= site_disk_price();
+    s->spent += site_disk_price();
+    s->dev[dev].wear = 0;
+    s->dev[dev].warned = 0;
+    Machine *m = box_of_dev(s, dev);
+    if (m) breaker_syslog(m, "kernel: sd 0:0:0:0: [sda] new medium, "
+                             "0 reallocated sectors, 0 power-on days");
+    return true;
+}
+
+/* ----------------------------------------------------------------- heat */
+/* WHAT A BOX DISSIPATES. Ordinary nameplate figures for the class of kit --
+ * an eight-port switch is a wall wart, a server with disks in it is a fan
+ * heater -- and the desks are not counted because they are the tenant's own
+ * machines in the tenant's own room, which is a room with a window in it. */
+static int watts_of(int kind)
+{
+    switch (kind) {
+    case SDEV_UPLINK:   return 15;
+    case SDEV_SWITCH8:  return 25;
+    case SDEV_SWITCH24: return 60;
+    case SDEV_ROUTER:   return 45;
+    case SDEV_PC:       return 130;
+    case SDEV_SERVER:   return 320;
+    default:            return 0;
+    }
+}
+
+int site_room_watts(const Site *s, int room)
+{
+    int w = 0;
+    for (int i = 0; i < s->ndev; i++) {
+        const SiteDev *d = &s->dev[i];
+        if (d->room != room || d->kind == SDEV_DESK) continue;
+        if (site_kind_has_os(d->kind) && !d->powered) continue;
+        w += watts_of(d->kind);
+    }
+    return w;
+}
+
+/* WHAT A ROOM CAN GET RID OF, in watts, and the square metres in it come out
+ * of the building generator rather than out of anything anybody typed here.
+ *
+ * Per square metre a sealed cupboard sheds about twenty watts through its
+ * walls and its door and no more; a plant space with some air movement in it
+ * does half as well again; occupied space is conditioned for people and can
+ * take three times that; and a tenant's own server room is the one space in
+ * this world that was built to hold equipment, so it has cooling in it. These
+ * are the only four numbers in the heat model and every one of them is a
+ * defensible figure for that kind of space.
+ *
+ * The point is not the arithmetic. It is that a comms cupboard is a cupboard:
+ * putting a third server in one is a decision with a consequence, and the
+ * consequence is legible before it bites. */
+static int sheds_per_m2(int kind)
+{
+    switch (kind) {
+    case RM_COMMS: case RM_RISER:            return 20;
+    case RM_MDF:   case RM_PLANT:            return 30;
+    case RM_SERVER:                          return 120;
+    default:                                 return 60;
+    }
+}
+
+int site_room_capacity(const Site *s, int room)
+{
+    if (room < 0 || room >= s->b->nrooms) return 0;
+    const Room *r = &s->b->rooms[room];
+    double area = bld_room_area(r);
+    if (area < 1.0) area = 1.0;
+    return (int)(area * sheds_per_m2(r->kind));
+}
+
+/* How full of heat a room is, as a percentage of what it can shed. A hundred
+ * means the kit in there is making exactly as much heat as the room can lose,
+ * which is the point at which it stops being room temperature in there. */
+int site_room_heat(const Site *s, int room)
+{
+    int cap = site_room_capacity(s, room);
+    if (cap <= 0) return 0;
+    return site_room_watts(s, room) * 100 / cap;
+}
+
+#define HEAT_WARN   100    /* per cent of what the room can shed            */
+#define HEAT_TRIP   140    /* and hot enough to shut something down         */
+#define HEAT_DAYS     3    /* consecutive days over, before anything trips  */
+#define WEAR_WARN    45    /* days of average use before a disk complains   */
+#define WEAR_FAIL    60    /* and before it loses a sector                  */
+
+/* ------------------------------------------------------- what today did
+ * WEAR IS MEASURED, NOT COUNTED. The busy period has just finished and the
+ * port counters have not been reset yet, so this is exactly how hard the wire
+ * into this box worked today. A server holding a floor's files ages three or
+ * four times as fast as a box nobody has touched since it was installed,
+ * which is the whole of "a property of the kit and how it has been used". */
+static int used_pct(const Site *s, int dev)
+{
+    uint64_t window = SITE_BUSY_MS * 1000ull;
+    uint64_t busy = 0;
+    for (int p = 0; p < s->dev[dev].nports; p++) {
+        if (net_port_state(s->net, s->dev[dev].node, p) != PORT_UP) continue;
+        uint64_t b = net_port_busy_us(s->net, s->dev[dev].node, p);
+        if (b > busy) busy = b;
+    }
+    return (int)((busy * 100) / window);
+}
+
+static void age_the_kit(Site *s)
+{
+    for (int i = 0; i < s->ndev; i++) {
+        SiteDev *d = &s->dev[i];
+        if (!site_kind_has_os(d->kind) || !d->powered) continue;
+        d->run_days++;
+        d->wear += 1 + used_pct(s, i) / 25;      /* one to five             */
+    }
+}
+
+/* ------------------------------------------------------------ a blackout */
+static void the_mains_fails(Site *s, Rng *rng)
+{
+    ev_add(s, SEV_POWERCUT, -1,
+           "the building lost mains power at 04:12 and had it back by 04:31.");
+    for (int i = 0; i < s->ndev; i++) {
+        SiteDev *d = &s->dev[i];
+        if (!site_kind_has_os(d->kind) || !d->powered) continue;
+        Machine *m = box_of_dev(s, i);
+        if (d->ups) {
+            /* IT RODE IT OUT, and it says so in its own log. This is the
+             * receipt for the two hundred and twenty pounds. */
+            if (m) {
+                breaker_syslog(m, "nomups: utility power lost -- load transferred to battery");
+                breaker_syslog(m, "nomups: on battery, 19 min runtime remaining");
+                breaker_syslog(m, "nomups: utility power restored -- back on mains");
+            }
+            ev_add(s, SEV_UPS_HELD, i,
+                   "%s was on a battery and stayed up.", d->name);
+            continue;
+        }
+        /* IT WENT DOWN THE WAY A MACHINE GOES DOWN WHEN THE PLUG IS PULLED.
+         * Whether it lost anything depends on whether it was writing, and
+         * "was it writing" is not a die roll: it is whether this box moved
+         * frames in the busy period that has just finished. */
+        bool writing = used_pct(s, i) > 0;
+        char note[200] = "";
+        if (m) breaker_powerfail(m, rng, writing, note, sizeof note);
+        site_power(s, i, false);
+        ev_add(s, SEV_DOWN_DIRTY, i,
+               "%s went down with the power and has not been switched back on.",
+               d->name);
+        (void)note;
+    }
+}
+
+/* --------------------------------------------------------- a dying disk */
+static void the_disks(Site *s, Rng *rng)
+{
+    for (int i = 0; i < s->ndev; i++) {
+        SiteDev *d = &s->dev[i];
+        if (!site_kind_has_os(d->kind) || !d->powered) continue;
+        Machine *m = box_of_dev(s, i);
+        if (d->wear >= WEAR_FAIL) {
+            char note[200] = "";
+            if (m && breaker_bad_sector(m, rng, note, sizeof note)) {
+                breaker_syslog(m, "kernel: sd 0:0:0:0: [sda] "
+                                  "UNRECOVERED READ ERROR - auto reallocate failed");
+                breaker_syslog(m, "kernel: end_request: critical medium error, "
+                                  "dev sda, sector 1841776");
+                breaker_syslog(m, "kernel: sd 0:0:0:0: [sda] "
+                                  "SMART attribute 5 (reallocated) at threshold; "
+                                  "no spare sectors left");
+                ev_add(s, SEV_DISK_FAIL, i,
+                       "the disk in %s lost a sector after %d days. It had been "
+                       "warning.", d->name, d->run_days);
+                /* It has lost what it was going to lose. The disk keeps
+                 * running -- and keeps being a disk that has run out of
+                 * spares, which is why the wear does not reset until
+                 * somebody puts a new one in. */
+                d->wear = WEAR_WARN;
+            }
+            continue;
+        }
+        if (d->wear >= WEAR_WARN) {
+            int bad = 3 + (d->wear - WEAR_WARN) * 4;
+            char line[160];
+            snprintf(line, sizeof line,
+                     "kernel: sd 0:0:0:0: [sda] SMART attribute 5 (reallocated "
+                     "sector count) is %d and rising; %d power-on days",
+                     bad, d->run_days);
+            if (m) breaker_syslog(m, line);
+            if (!d->warned) {
+                d->warned = 1;
+                ev_add(s, SEV_DISK_WARN, i,
+                       "%s is logging reallocated sectors. Its disk is going.",
+                       d->name);
+            }
+        }
+    }
+}
+
+/* ------------------------------------------------------------- a cupboard */
+static void the_heat(Site *s, Rng *rng)
+{
+    (void)rng;
+    for (int i = 0; i < s->ndev; i++) {
+        SiteDev *d = &s->dev[i];
+        if (!site_kind_has_os(d->kind) || !d->powered) continue;
+        int heat = site_room_heat(s, d->room);
+        if (heat < HEAT_WARN) { d->hot_warned = 0; continue; }
+        Machine *m = box_of_dev(s, i);
+        if (d->hot_warned < 255) d->hot_warned++;
+        char line[160];
+        snprintf(line, sizeof line,
+                 "kernel: thermal: sensor 0 (intake) at %d C, above the 40 C "
+                 "trip point -- the air in this room is not being changed",
+                 22 + heat / 5);
+        if (m) breaker_syslog(m, line);
+        if (d->hot_warned == 1)
+            ev_add(s, SEV_HEAT_WARN, i,
+                   "%s is running hot: %d W of kit in a room that can shed %d W.",
+                   d->name, site_room_watts(s, d->room),
+                   site_room_capacity(s, d->room));
+        if (heat >= HEAT_TRIP && d->hot_warned >= HEAT_DAYS) {
+            /* IT SHUT ITSELF DOWN, which is what thermal protection is for --
+             * and a machine that stops dead mid-write is the same unclean
+             * shutdown a blackout leaves, because it is the same event. */
+            char note[200] = "";
+            if (m) {
+                breaker_syslog(m, "kernel: thermal: CRITICAL trip point reached, "
+                                  "shutting down");
+                breaker_powerfail(m, rng, used_pct(s, i) > 0, note, sizeof note);
+            }
+            site_power(s, i, false);
+            d->hot_warned = 0;
+            ev_add(s, SEV_HEAT_TRIP, i,
+                   "%s shut itself down on temperature. There is too much kit "
+                   "in that room.", d->name);
+            (void)note;
+        }
+    }
+}
+
+/* Everything the world did today, in the order it would have happened: the
+ * kit ages on the day's own traffic, the heat builds through the working day,
+ * the disks fail when they fail, and the mains goes in the small hours. */
+static void the_weather(Site *s)
+{
+    Rng rng;
+    rng_seed(&rng, s->seed ^ (0x77e47ull * (uint64_t)s->day) ^ 0xbeef01ull);
+    age_the_kit(s);
+    the_heat(s, &rng);
+    the_disks(s, &rng);
+    if (site_mains_fails_on(s->seed, s->day)) the_mains_fails(s, &rng);
+}
+
+/* ------------------------------------------------------------ the report */
+void site_dump_events(const Site *s, Buf *out)
+{
+    if (!s->nev) {
+        buf_puts(out, "nothing has happened to the building yet.\n");
+    } else {
+        buf_printf(out, "  what the world has done (%d in all, newest last)\n",
+                   s->ev_total);
+        for (int i = 0; i < s->nev; i++)
+            buf_printf(out, "  day %-4d %s\n", s->ev[i].day, s->ev[i].what);
+    }
+    buf_puts(out, "\n  box            days  disk   ups   room heat\n");
+    int shown = 0;
+    for (int i = 0; i < s->ndev; i++) {
+        const SiteDev *d = &s->dev[i];
+        if (!site_kind_has_os(d->kind)) continue;
+        int pct = d->wear * 100 / WEAR_FAIL;
+        buf_printf(out, "  %-14s %4d  %3d%%  %-4s  %7d%%\n", d->name, d->run_days,
+                   pct > 100 ? 100 : pct, d->ups ? "yes" : "no",
+                   site_room_heat(s, d->room));
+        shown++;
+    }
+    if (!shown) buf_puts(out, "  no box in this building has an operating "
+                              "system in it yet.\n");
+    buf_puts(out,
+        "\n  disk is how far through its life the disk in that box is, worked\n"
+        "  out from how hard it has actually been used. Past about three\n"
+        "  quarters it starts saying so in its own /var/log/messages, and a\n"
+        "  new one is `disk <box>`. `ups <box>` fits a battery: a box on one\n"
+        "  rides a mains failure out instead of coming back with a filesystem\n"
+        "  heat is the watts of kit in that box's room against what the room\n"
+        "  can shed -- a cupboard sheds what its walls and its door will take\n"
+        "  and no more, and a server room has cooling in it. Past a hundred\n"
+        "  per cent the kit starts saying so; the fix is to carry some of it\n"
+        "  somewhere with more air in it.\n");
+}
+
 /* ================================================================== a day */
 bool site_day(Site *s, SiteDay *rep)
 {
@@ -478,6 +884,18 @@ bool site_day(Site *s, SiteDay *rep)
         }
     }
 
+    /* ----------------------------------------------------------- and then
+     * THE WORLD HAPPENS, and it happens AFTER the day's work rather than
+     * before it. A blackout is a thing that occurs in the small hours: the
+     * building has already done its day, the player meets the mess in the
+     * morning, and has the next day to put it right before anybody's work
+     * suffers for it. Running it before the busy period would mean a mains
+     * failure took every tenancy's day with it whatever the player did, and
+     * a disaster nobody can react to is a tax rather than a game. */
+    int ev0 = s->ev_total;
+    the_weather(s);
+    r.events = s->ev_total - ev0;
+
     /* -------------------------------------------------------- and the end */
     if (s->complaints >= 3) {
         s->over = 1;
@@ -517,6 +935,11 @@ bool site_advance(Site *s, int days, Buf *out)
                 buf_printf(out, "        %d COMPLAINT%s filed today (%d in all)\n",
                            r.complaints_today, r.complaints_today == 1 ? "" : "S",
                            s->complaints);
+            /* AND WHAT THE WORLD DID, said on the day it happened. A player
+             * who advances ten days and is never told the lights went out on
+             * the sixth has been handed a mystery rather than a fault. */
+            for (int k = s->nev - r.events; k >= 0 && k < s->nev; k++)
+                buf_printf(out, "        ** %s\n", s->ev[k].what);
         }
         if (!alive) {
             if (out) buf_printf(out, "\nTHE RUN IS OVER on day %d: %s\n",

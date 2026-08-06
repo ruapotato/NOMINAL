@@ -462,6 +462,15 @@ int main(int argc, char **argv)
         return load_selfcheck();
     }
 
+    /* AND THE WORLD BREAKING THE MACHINES. A blackout, a disk that has run
+     * too long, a cupboard with too much in it -- each one damaging a real
+     * disk through core/breaker.c and each one repaired here with the tools
+     * the break-fix half already had. See core/eventcheck.c. */
+    if (argc > 1 && strcmp(argv[1], "--eventcheck") == 0) {
+        int event_selfcheck(void);
+        return event_selfcheck();
+    }
+
     /* THE SITE, OVER A PIPE. The 3D view cannot be playtested and blind
      * agents found roughly forty bugs in this project, so ordering,
      * carrying, cabling and configuring all have to be reachable from a

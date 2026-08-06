@@ -582,6 +582,79 @@ static void check_firewall(void)
     ck("a source-scoped rule drops one machine and not the other",
        net_ping(n, l.a, net_ip(10, 0, 0, 2), NULL) != PING_OK &&
        net_ping(n, c, net_ip(10, 0, 0, 2), NULL) == PING_OK);
+
+    /* ---------------------------------------------- the policy is a policy
+     *
+     * A catch-all with no protocol, no port and no source is what `policy
+     * drop` compiles to, and it is not the same kind of thing as a rule
+     * somebody wrote. It disposes of what this machine neither asked for
+     * nor is listening for. That distinction is what makes the recommended
+     * architecture buildable: a playtester started a DHCP server on a box,
+     * was told "serving", and got nothing at all for ninety minutes,
+     * because a policy nobody could see and nobody could edit was eating
+     * every DISCOVER. */
+    net_fw_clear(n, l.b);
+    net_fw_add(n, l.b, FW_IN, FW_ANY_PROTO, FW_ANY_PORT, 0, 0, FW_DROP);
+    ck("a catch-all drop refuses a ping it did not ask for",
+       net_ping(n, l.a, net_ip(10, 0, 0, 2), NULL) != PING_OK);
+    ck("but the box behind it can still ping out: the policy does not eat "
+       "the answer it asked for",
+       net_ping(n, l.b, net_ip(10, 0, 0, 1), NULL) == PING_OK);
+    ck("a service it is serving receives what it serves, through the policy",
+       net_tcp_connect_wait(n, l.a, net_ip(10, 0, 0, 2), 80) >= 0);
+    /* And DHCP, which is the one that cost the playtest its afternoon. */
+    net_dhcpd(n, l.b, net_ip(10, 0, 0, 100), 4, net_mask_bits(24),
+              net_ip(10, 0, 0, 2), net_ip(10, 0, 0, 2));
+    ck("including DHCP: a server told to serve hands out an address behind "
+       "policy drop", net_dhcp_client(n, c, 0));
+    /* A rule is an instruction and still bites. This is the half that must
+     * NOT change: "shut this service off" has to keep working. */
+    net_fw_clear(n, l.b);
+    net_fw_add(n, l.b, FW_IN, IP_PROTO_TCP, 80, 0, 0, FW_DROP);
+    net_fw_add(n, l.b, FW_IN, FW_ANY_PROTO, FW_ANY_PORT, 0, 0, FW_DROP);
+    ck("a rule that names the port still shuts the service off",
+       net_tcp_connect_wait(n, l.a, net_ip(10, 0, 0, 2), 80) < 0);
+    net_free(n);
+}
+
+/* ----------------------------------------------------- drops, and reasons
+ *
+ * A drop is reported with the reason it really had, or it is worse than no
+ * report at all. `show edge` used to tell a player that a port two per cent
+ * busy with an empty queue had overflowed its 48 KB egress buffer, and a
+ * 24-port switch with two links in it showed twenty-two `no link` ports
+ * reading `drop 301` -- six thousand phantom drops on the screen you go to
+ * when something is wrong. */
+static void check_drop_reasons(void)
+{
+    printf("\ndrops, and the reasons they really had\n");
+    Lan l = lan_new(31);
+    Net *n = l.n;
+    for (int i = 0; i < 40; i++) net_ping(n, l.a, net_ip(10, 0, 0, 2), NULL);
+
+    uint64_t empty = 0;
+    for (int p = 2; p < 8; p++) empty += net_port_drops(n, l.sw, p);
+    ck("a switch port with no cable in it has no drops", empty == 0);
+
+    bool sums = true;
+    for (int p = 0; p < 8; p++) {
+        uint64_t d = net_port_drops(n, l.sw, p);
+        if (d != net_port_qdrops(n, l.sw, p) + net_port_nolink(n, l.sw, p) +
+                 net_port_swdrops(n, l.sw, p) + net_port_worldq(n, l.sw, p))
+            sums = false;
+    }
+    ck("every drop on every port is counted under a reason", sums);
+
+    /* Pull bravo's cable out and keep sending to it. The switch still has it
+     * in the table, so it forwards to a port with no link -- a real drop,
+     * genuinely lost frames, and NOT the egress buffer overflowing. */
+    net_uncable(n, 1);
+    uint64_t before = net_port_drops(n, l.sw, 1);
+    for (int i = 0; i < 5; i++) net_ping(n, l.a, net_ip(10, 0, 0, 2), NULL);
+    uint64_t after = net_port_drops(n, l.sw, 1);
+    ck("a frame handed to a port with no link is counted, and as no link",
+       after > before && net_port_nolink(n, l.sw, 1) == after &&
+       net_port_qdrops(n, l.sw, 1) == 0);
     net_free(n);
 }
 
@@ -809,10 +882,14 @@ static void check_visible(void)
  * reads well and drops nothing.
  *
  * The shipped ruleset is `policy drop` plus tcp 22 and 80, so a pristine box
- * does not answer a ping and its own echo replies are dropped on the way back
- * in. That is a good puzzle and it stays. What is checked here is that it has
- * more than one answer: `icmp accept` is the line an administrator would
- * write, and it has to actually bite. */
+ * does not ANSWER a ping. That is a good puzzle and it stays. What it may not
+ * do is refuse the answer to a question it asked itself: a box that could not
+ * ping anything, ever, sent a playtester to re-cable a riser that was never
+ * wrong -- and it was invisible, because opening the far end correctly
+ * changed nothing they could see. The catch-all is the policy and steps aside
+ * for what this machine asked for or is listening for; a rule that NAMES a
+ * protocol is an instruction and still bites, which is what the icmp rules
+ * below are for. */
 static Machine *NM;
 
 static const char *mrun(const char *line, Buf *o)
@@ -857,14 +934,24 @@ static void check_nft(void)
        mhas("netstat -F", "any  any port    drop", &o) &&
        strstr(o.p, "tcp  dport 22") && strstr(o.p, "tcp  dport 80"));
 
-    ck("so it cannot ping its own gateway: nothing comes back",
+    ck("and it can still ping its gateway: the policy does not eat the answer "
+       "it asked for",
+       mhas("ping -c 1 10.0.2.2", "reply from 10.0.2.2", &o) &&
+       strstr(o.p, "1 sent, 1 received"));
+
+    /* Now an instruction, not a policy. `icmp drop` is somebody saying so,
+     * and it takes the reply the policy would have let through. */
+    const char *fw = nft_rule("icmp drop", &o);
+    ck("`icmp drop` is an instruction and takes the reply anyway",
+       strstr(fw, "icmp any port    drop") != NULL &&
        mhas("ping -c 1 10.0.2.2", "no answer", &o) &&
        strstr(o.p, "1 sent, 0 received"));
 
     ck("and nothing above IP was ever told -- the drop is silent",
        !mhas("ping -c 1 10.0.2.2", "unreachable", &o));
 
-    const char *fw = nft_rule("icmp accept", &o);
+    mrun("sed -i /icmp/d /etc/nftables.conf", &o);
+    fw = nft_rule("icmp accept", &o);
     ck("`icmp accept` becomes a real rule in the running filter",
        strstr(fw, "icmp any port    accept") != NULL);
 
@@ -894,6 +981,20 @@ static void check_nft(void)
     ck("`icmp drop` drops it, and the rule is what did it",
        strstr(fw, "icmp any port    drop") != NULL &&
        mhas("ping -c 1 10.0.2.2", "no answer", &o));
+
+    /* STOPPING THE FILTER STOPS THE FILTER. `svc stop nftables` used to kill
+     * the process and leave the ruleset loaded and counting up -- the unit
+     * DEAD in `svc` and `netstat -F` still matching, which is two views of
+     * one machine disagreeing. The unit unloads what it loaded. */
+    mrun("svc stop nftables", &o);
+    ck("`svc stop nftables` takes the filter off, and netstat -F agrees",
+       mhas("netstat -F", "the filter is empty", &o) &&
+       mhas("svc", "nftables         DEAD", &o));
+    ck("and the machine is reachable again over the same wire",
+       mhas("ping -c 1 10.0.2.2", "reply from 10.0.2.2", &o));
+    mrun("svc start nftables", &o);
+    ck("starting it again loads the ruleset back off the disk",
+       mhas("netstat -F", "icmp any port    drop", &o));
 
     /* A protocol with no port named: every port of it. */
     mrun("sed -i /icmp/d /etc/nftables.conf", &o);
@@ -1055,13 +1156,15 @@ static void check_tools(void)
        mhas("tcpdump src 10.0.2.2", "cannot filter on", &o) &&
        mhas("tcpdump -X", "this tcpdump has no -X", &o));
 
-    /* THE ONE THAT PAYS FOR THE WHOLE THING. Put the filter back to the
-     * shipped policy and ping again: ping reports no answer, and the capture
-     * shows the reply arriving anyway -- because the capture is taken at the
-     * card and the drop happens above IP. That is the difference between
+    /* THE ONE THAT PAYS FOR THE WHOLE THING. Write `icmp drop` -- an
+     * instruction, which the machine obeys even about its own ping -- and
+     * ping again: ping reports no answer, and the capture shows the reply
+     * arriving anyway, because the capture is taken at the card and the drop
+     * happens above IP. That is the difference between
      * "the network is broken" and "this machine ate it", and no other tool
      * on the box can tell them apart. */
     mrun("sed -i /icmp/d /etc/nftables.conf", &o);
+    mrun("sed -i \"s/tcp dport/icmp drop\\n    tcp dport/\" /etc/nftables.conf", &o);
     mrun("svc reload nftables", &o);
     mrun("tcpdump --capture on", &o);
     ck("with icmp dropped again, ping reports no answer",
@@ -1088,6 +1191,7 @@ int net_selfcheck(void)
     check_nics();
     check_tcp();
     check_firewall();
+    check_drop_reasons();
     check_dhcp();
     check_dns();
     check_http();

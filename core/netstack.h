@@ -258,9 +258,24 @@ uint64_t net_port_busy_us(const Net *n, int node, int port);
  * touched: those are lifetime counters on a real switch and a player reads
  * them expecting them to be. */
 void  net_port_busy_reset(Net *n, int node, int port);
-/* Of net_port_drops, how many were the egress buffer being full. The rest
- * are frames offered to a port with no link. */
+/* WHY A PORT DROPPED, not just how many times. net_port_drops() is the
+ * total; these four are the causes it is made of, and they sum to it. A
+ * report that names a cause must read the cause, because "drop 1804" with
+ * the wrong explanation beside it is worse than "drop 1804" on its own.
+ *   qdrops   the egress buffer would not hold the wait
+ *   nolink   offered to a port with no link: the frame never left
+ *   swdrops  refused on ingress: blocked port, tagged frame on an access
+ *            port, or a vlan the trunk does not carry
+ *   worldq   the world ran out of in-flight frame slots                 */
 uint64_t net_port_qdrops(const Net *n, int node, int port);
+uint64_t net_port_nolink(const Net *n, int node, int port);
+uint64_t net_port_swdrops(const Net *n, int node, int port);
+uint64_t net_port_worldq(const Net *n, int node, int port);
+/* The deepest a port's egress queue has been, in microseconds. At a gigabit
+ * a 48 KB buffer is 393us and at ten it is 39us, so this is a microsecond
+ * number and rounding it to milliseconds prints 0 for a port that is
+ * dropping. */
+uint64_t net_port_qpeak_us(const Net *n, int node, int port);
 /* THE CIRCUIT, WHICH IS NOT THE CABLE. What an ISP hands over is not the
  * speed of the fibre in the street, it is what they have sold you, and the
  * media converter on the wall is what enforces it. Rate-limit a port to
@@ -391,6 +406,11 @@ int   net_fw_count(const Net *n, int node);
 void  net_dhcpd(Net *n, int node, uint32_t first, int count, uint32_t mask,
                 uint32_t gw, uint32_t dns);
 void  net_dhcpd_stop(Net *n, int node);
+/* Stop everything this host serves and give the sockets back. A box that has
+ * been switched off is not serving anything, and this is how the stack is
+ * told so -- otherwise reconfiguring the card would put the listeners back,
+ * because that is exactly what net_close_all() is now careful to do. */
+void  net_services_stop(Net *n, int node);
 int   net_dhcpd_leases(const Net *n, int node);
 /* Ask for an address the way a client does: discover, offer, request, ack.
  * Returns true only if a lease was really granted. */

@@ -951,6 +951,12 @@ bool site_cmd(Site *s, const char *line, Buf *out)
             "serve <tenant> <box> [cable]   run copper from a box you own to a\n"
             "                               tenancy's desks, one each, by the metre\n"
             "isp [mb]                       what the circuit carries, and what it costs\n"
+            "events                         what the world has done to the kit, and\n"
+            "                               the condition it is in\n"
+            "ups <box>                      a battery under it: it rides a mains\n"
+            "                               failure out instead of coming back with\n"
+            "                               a filesystem to check\n"
+            "disk <box>                     a new disk, copied off the old one\n"
             "status | service | load        the day, who is suffering, which port is full\n"
             "show [dev] | links | rooms <f> | demand | money | frames\n");
         return true;
@@ -975,6 +981,40 @@ bool site_cmd(Site *s, const char *line, Buf *out)
         return true;
     }
     if (strcmp(t[0], "status") == 0) { site_dump_day(s, out); return true; }
+    /* WHAT THE WORLD HAS DONE, and what state the kit is in. See the long
+     * note at the top of the weather section in core/siteday.c. */
+    if (strcmp(t[0], "events") == 0) { site_dump_events(s, out); return true; }
+    if (strcmp(t[0], "ups") == 0 && n >= 2) {
+        int d = dev_arg(s, t[1]);
+        if (d < 0) { buf_printf(out, "no such box: %s\n", t[1]); return true; }
+        if (s->dev[d].ups) {
+            buf_printf(out, "%s already has a battery under it.\n", s->dev[d].name);
+        } else if (!site_ups(s, d)) {
+            buf_printf(out, "refused: %s\n", site_err_text(s->err));
+        } else {
+            buf_printf(out, "a %ld ups goes under %s. It will ride a mains "
+                            "failure out\n  instead of coming back with a "
+                            "filesystem to check. %ld left.\n",
+                       site_ups_price(), s->dev[d].name, s->money);
+        }
+        return true;
+    }
+    if (strcmp(t[0], "disk") == 0 && n >= 2) {
+        int d = dev_arg(s, t[1]);
+        if (d < 0) { buf_printf(out, "no such box: %s\n", t[1]); return true; }
+        int was = s->dev[d].wear;
+        if (!site_disk(s, d)) {
+            buf_printf(out, "refused: %s\n", site_err_text(s->err));
+        } else {
+            buf_printf(out, "a new disk in %s, %ld, and what was on the old one "
+                            "copied across --\n  including anything already "
+                            "wrong with it, because that is what a clone does.\n"
+                            "  it was %d%% through its life. %ld left.\n",
+                       s->dev[d].name, site_disk_price(),
+                       was * 100 / 60, s->money);
+        }
+        return true;
+    }
     if (strcmp(t[0], "service") == 0) { site_dump_service(s, out); return true; }
     if (strcmp(t[0], "load") == 0) { site_dump_load(s, out); return true; }
     if (strcmp(t[0], "isp") == 0) {

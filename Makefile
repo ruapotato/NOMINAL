@@ -43,7 +43,7 @@ BIN = build/nominal
 BF_SRC_LIB = core/util.c core/value.c core/vfs.c core/ns.c core/cpu.c \
              core/kernel.c core/image.c core/net_sites.c core/customer.c core/boot.c core/breaker.c \
              core/building.c core/netstack.c core/netsite.c core/site.c core/siteday.c core/session.c
-BF_SRC = $(BF_SRC_LIB) core/serve.c core/netcheck.c core/sitecheck.c core/loadcheck.c core/sessioncheck.c core/bfmain.c
+BF_SRC = $(BF_SRC_LIB) core/serve.c core/netcheck.c core/sitecheck.c core/loadcheck.c core/eventcheck.c core/sessioncheck.c core/bfmain.c
 BF_OBJ = $(BF_SRC:core/%.c=build/%.o)
 
 # Regenerate the embedded guest userland. Needs clang+lld for riscv; the

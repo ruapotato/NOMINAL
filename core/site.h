@@ -119,6 +119,16 @@ typedef struct {
     int      node;             /* the netstack node                         */
     uint8_t  powered;          /* an OS box arrives switched off            */
     char     name[NET_NAME_MAX];
+    /* ------------------------------------------- how it has been treated
+     * The world breaks machines out of THESE, not out of a timer. A disk
+     * that has served a floor's files for a month has done more work than
+     * one nobody has touched, and it is the work that wears it out; a box
+     * on a UPS rides a mains failure out. See core/siteday.c. */
+    uint8_t  ups;              /* somebody bought it a battery              */
+    int      run_days;         /* days it has spent switched on             */
+    int      wear;             /* disk wear, in days-of-average-use         */
+    uint8_t  warned;           /* its disk has started complaining in syslog*/
+    uint8_t  hot_warned;       /* the room it is in has started cooking     */
 } SiteDev;
 
 typedef struct {
@@ -171,7 +181,51 @@ typedef struct {
     char hot[NET_NAME_MAX + 8];
     int  hot_util;          /* percent of the busy period it was clocking  */
     int  complaints_today;
+    int  events;            /* what the world did overnight                */
 } SiteDay;
+
+/* ================================= THE WORLD BREAKING THE MACHINES ========
+ *
+ * The requirement, standing since the pivot and in the owner's words: *"for
+ * things like a blackout, could cause disk corruption and you need to find
+ * the corruption and fix it much like how we already have it. We just fanning
+ * out making the world a lot bigger."*
+ *
+ * Sixty-two fault types existed and every one was proven findable and
+ * repairable -- and nothing in the running tower could cause a single one of
+ * them. These are the causes. Each one damages a real machine through
+ * core/breaker.c, leaves its evidence in that machine's own syslog and in the
+ * site's log below, and is avoidable or survivable by something the player
+ * could have bought or done differently. */
+typedef enum {
+    SEV_NONE = 0,
+    SEV_POWERCUT,    /* the building lost mains overnight                   */
+    SEV_UPS_HELD,    /* and a box on a battery rode it out                  */
+    SEV_DOWN_DIRTY,  /* a box that was running went down unclean            */
+    SEV_DISK_WARN,   /* a disk has started reallocating sectors             */
+    SEV_DISK_FAIL,   /* and has now lost one                                */
+    SEV_HEAT_WARN,   /* a room has more kit in it than it can shed heat for */
+    SEV_HEAT_TRIP,   /* and a box in it has shut itself down                */
+    SEV_KIND_COUNT
+} SiteEventKind;
+
+typedef struct {
+    int      day;
+    uint8_t  kind;
+    int16_t  dev;              /* the box, or -1 for the building itself    */
+    char     what[128];        /* one line, in the words the player reads   */
+} SiteEvent;
+
+#define SITE_MAX_EVENT 128
+
+/* THE WORLD CANNOT REACH THE DISK ON ITS OWN, and that is a feature. A Site
+ * knows there is a box in a room; the operating system inside it is held by
+ * whoever booted it -- a Session, or a gate. So an event that damages a
+ * machine asks the owner for it, and gets NULL back for a box nobody has ever
+ * switched on, which is right: a machine that has never run has nothing in
+ * flight to lose. */
+struct Machine_;
+typedef struct Machine_ *(*SiteBoxFn)(void *ctx, int dev);
 
 typedef struct {
     const Building *b;         /* borrowed: the caller owns the tower       */
@@ -198,6 +252,12 @@ typedef struct {
     uint8_t  over;             /* the run ended                             */
     char     over_why[128];
     SiteDay  last;             /* how the last day went                     */
+    /* ------------------------------------------------------- the weather */
+    SiteEvent ev[SITE_MAX_EVENT];
+    int       nev;             /* the log wraps; `events` prints the tail   */
+    int       ev_total;        /* everything that has ever happened         */
+    SiteBoxFn box;             /* how to reach the OS inside a box          */
+    void     *boxctx;
 } Site;
 
 /* ------------------------------------------------------------- day one */
@@ -369,6 +429,34 @@ bool site_advance(Site *s, int days, Buf *out);
 /* What a circuit costs: the ISP's price for `mb` megabits a month. */
 long site_isp_price(int mb);
 bool site_isp(Site *s, int mb);
+
+/* ------------------------------------------------------------ the weather */
+/* Tell the site how to reach the operating system inside a box. Without this
+ * a power cut still takes the machines down and still logs itself; it just
+ * cannot damage a disk, because there is no disk in reach. */
+void site_boxes(Site *s, SiteBoxFn fn, void *ctx);
+/* Is a mains failure due on this day? A pure function of the seed and the
+ * day: no state, nothing rolled at runtime, so the same seed always has its
+ * blackout on the same morning. */
+bool site_mains_fails_on(uint64_t seed, int day);
+/* Fit a battery to a box. It is the difference between a machine that rides a
+ * blackout out and one that comes back with a filesystem to check, which is
+ * what makes buying one a decision rather than a purchase. */
+long site_ups_price(void);
+bool site_ups(Site *s, int dev);
+/* Swap the disk in a box and copy what was on it across. Resets the wear, so
+ * the box stops being days away from losing a sector -- and copies whatever
+ * damage is already there, because that is what a clone does. */
+long site_disk_price(void);
+bool site_disk(Site *s, int dev);
+/* The watts of kit in a room, what that room can shed, and the second as a
+ * percentage of the first. The heat model is these three numbers and the
+ * room's own area out of the building generator; nothing else. */
+int  site_room_watts(const Site *s, int room);
+int  site_room_capacity(const Site *s, int room);
+int  site_room_heat(const Site *s, int room);
+/* What the world has done, newest last, and the condition of the kit. */
+void site_dump_events(const Site *s, Buf *out);
 
 void site_dump_day(const Site *s, Buf *out);
 /* Every tenancy that is in, how many desks are up, and how their last day

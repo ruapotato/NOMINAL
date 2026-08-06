@@ -253,6 +253,16 @@ static void planned(Building *b, Step *st)
         if (srv < 0) break;
         if (site_cable(&s, sw, 1, srv, 0, CAB_CAT5E) < 0) break;
         site_power(&s, srv, true);
+        /* AND A BATTERY UNDER IT, WHICH IS PART OF THE BUILD AND NOT PART OF
+         * THE HARNESS. Growing to nine floors is months of game days and the
+         * building loses the mains two or three times on the way. A server
+         * that is off because the lights went out in week five is not a fact
+         * about the topology, and the topology is the only thing this file
+         * measures -- so the thought-through build buys the thing a
+         * thought-through build buys, out of the same money as everything
+         * else. `--eventcheck` is where the blackout is played rather than
+         * survived. */
+        site_ups(&s, srv);
         site_addr(&s, srv, 0, net_ip(10, vlan, 0, 2), net_mask_bits(24));
         site_gateway(&s, srv, net_ip(10, vlan, 0, 1));
         site_dhcpd(&s, srv, net_ip(10, vlan, 0, 10), 200, net_mask_bits(24),

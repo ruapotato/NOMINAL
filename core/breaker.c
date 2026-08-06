@@ -2726,3 +2726,119 @@ bool machine_break(Machine *m, uint64_t seed, int nfaults, char *what, size_t wh
     }
     return false;
 }
+
+/* ==================================================== THE WORLD'S OWN DAMAGE
+ *
+ * D23 said it in one line -- *the world supplies the cause* -- and until now
+ * nothing in the running tower could supply one. Faults arrived because a
+ * ticket was generated; a machine you installed, cabled and ran for forty
+ * days never broke.
+ *
+ * These three entry points are how the building breaks a box. The rule they
+ * exist to keep is that there is NO SECOND KIND OF BROKEN: a blackout
+ * truncates real bytes in the real Vfs, a bad sector nulls real bytes in a
+ * real file, and `pkg verify` finds them because they are genuinely different
+ * from what shipped -- not because anything anywhere holds a flag saying so.
+ * Everything below is machinery this file already had, with the world holding
+ * the other end of it.
+ */
+
+/* ONE LINE INTO THE MACHINE'S OWN SYSLOG, which is where a real daemon writes
+ * and where the player greps. This is the whole of "the cause must be
+ * findable": a UPS that carried a box through a mains failure says so here,
+ * and a disk that is reallocating sectors complains here for days before it
+ * finally loses one. Nothing is invented -- if the disk is full the line does
+ * not fit, which is exactly what a full disk does to a log. */
+void breaker_syslog(Machine *m, const char *line)
+{
+    VNode *n = vfs_lookup(&m->disk, "/var/log/messages");
+    if (!n) n = vfs_mkfile(&m->disk, "/var/log/messages", "");
+    if (!n || n->kind != VN_FILE) return;
+    size_t need = strlen(line) + 1;
+    if (m->fs_capacity && machine_disk_used(m) + need > m->fs_capacity) return;
+    buf_puts(&n->data, line);
+    buf_putc(&n->data, '\n');
+}
+
+/* THE LIGHTS WENT OUT WHILE IT WAS RUNNING.
+ *
+ * `writing` is not a die roll: the caller passes whether this box actually
+ * moved frames in the busy period that had just finished, so the machine that
+ * was serving a floor's files loses what it had in flight and the one nobody
+ * had touched since it was installed comes back dirty and complete. That is
+ * the same fault_unclean_shutdown the ticket generator has always used, so
+ * the console text, the fsck, the `pkg verify` afterwards and the `pkg diff`
+ * that says SHORT rather than edited are all the ones already proven by
+ * --solve. */
+void breaker_powerfail(Machine *m, Rng *r, bool writing, char *d, size_t ds)
+{
+    if (writing) {
+        fault_unclean_shutdown(m, r, d, ds);
+        if (d[0]) return;
+    }
+    m->fs_dirty = true;
+    m->fs_lost = 0;
+    snprintf(d, ds, "unclean shutdown: filesystem marked dirty");
+}
+
+/* A SECTOR THAT WILL NOT READ BACK.
+ *
+ * A disk that has been spinning for months reallocates sectors until it runs
+ * out of spares, and then a block of a file is gone: not truncated, not
+ * edited -- five hundred and twelve bytes of nothing in the middle of it,
+ * which is what a read error handed back as zeroes looks like on the day
+ * somebody finally notices. `pkg verify` reports the file CHANGED and `pkg
+ * diff` names the byte, which is a different sentence from the truncation a
+ * blackout leaves, and telling those two apart is the whole point of having
+ * both tools.
+ *
+ * WHICH FILE, AND THE JUDGEMENT IN IT. Package-owned configuration under
+ * /etc, because that is what `pkg reinstall` can put back and what the player
+ * can see the consequence of. The files the boot chain itself reads are
+ * excluded, so the box comes up and can be worked on from its own shell. That
+ * is a fairness decision rather than a physical one -- a real bad sector does
+ * not care -- and it is written down here and in the fault catalogue rather
+ * than hidden, because the blackout above already covers the machine that
+ * will not boot at all. */
+static bool boot_critical(const char *p)
+{
+    static const char *NO[] = {
+        "/etc/fstab", "/etc/passwd", "/etc/shadow", "/etc/group",
+        "/etc/inittab", "/etc/ld.so.conf", "/etc/shells", "/etc/rc.",
+        "/etc/services.d/", "/etc/zbl", "/etc/net/interfaces", NULL
+    };
+    for (int i = 0; NO[i]; i++)
+        if (strncmp(p, NO[i], strlen(NO[i])) == 0) return true;
+    return false;
+}
+
+bool breaker_bad_sector(Machine *m, Rng *r, char *d, size_t ds)
+{
+    const char *cand[128];
+    int nc = 0;
+    for (int i = 0; i < m->npkg && nc < 128; i++) {
+        const Package *p = m->pkg[i];
+        if (!p) continue;
+        for (int j = 0; j < p->nfiles && nc < 128; j++) {
+            const PkgFile *f = &p->file[j];
+            if (f->isdir || f->link || !f->content) continue;
+            if (strncmp(f->path, "/etc/", 5) != 0) continue;
+            if (boot_critical(f->path)) continue;
+            if (strlen(f->content) < 48) continue;
+            cand[nc++] = f->path;
+        }
+    }
+    if (!nc) return false;
+    const char *path = cand[rng_next(r) % (uint64_t)nc];
+    VNode *n = vfs_lookup(&m->disk, path);
+    if (!n || n->kind != VN_FILE || n->data.len < 48) return false;
+    size_t sectors = (n->data.len + 511) / 512;
+    size_t at = (size_t)(rng_next(r) % sectors) * 512;
+    size_t end = at + 512;
+    if (end > n->data.len) end = n->data.len;
+    if (end <= at) return false;
+    for (size_t i = at; i < end; i++) n->data.p[i] = '\0';
+    snprintf(d, ds, "bad sector: %d bytes of %s at offset %d read back as zeroes",
+             (int)(end - at), path, (int)at);
+    return true;
+}

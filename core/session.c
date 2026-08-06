@@ -1009,7 +1009,10 @@ static const char *DEVVERB[] = {
     "addr", "gw", "router", "subif", "vlan", "trunk", "dhcpd", "dhcp",
     "resolver", "ping", "trace", "resolve", "get", "show",
     /* A service is something you start ON a box, so you are at the box. */
-    "httpd", "dnsd", NULL
+    "httpd", "dnsd",
+    /* And so are a battery and a disk: both are something somebody carries
+     * to the rack and fits, not something that happens from the MDF. */
+    "ups", "disk", NULL
 };
 
 static bool is_devverb(const char *v)
@@ -1073,6 +1076,21 @@ static void after_config(Session *ses, const char *verb, int dev, Buf *out)
 }
 
 /* --------------------------------------------------------------- day one */
+/* HOW THE WORLD REACHES THE OPERATING SYSTEM INSIDE A BOX.
+ *
+ * A blackout in core/siteday.c has to leave real damage on a real disk, and
+ * the disks are here: a Machine exists once somebody has switched the box on.
+ * A box nobody has ever powered has no Machine and gets NULL, which is right
+ * -- a machine that has never run has nothing in flight to lose. This never
+ * creates one, because creating a machine costs 13.5 MB and the weather must
+ * not be what installs the tower. */
+static struct Machine_ *session_box(void *ctx, int dev)
+{
+    Session *ses = (Session *)ctx;
+    if (dev < 0 || dev >= SITE_MAX_DEV) return NULL;
+    return ses->mach[dev];
+}
+
 bool session_start(Session *ses, uint64_t seed, long budget)
 {
     memset(ses, 0, sizeof *ses);
@@ -1087,6 +1105,7 @@ bool session_start(Session *ses, uint64_t seed, long budget)
     if (ses->room < 0) { site_free(&ses->s); bld_free(&ses->b); return false; }
     /* The ground floor and the one above it, as the 3D shell starts. */
     ses->floors = ses->b.floors < 2 ? ses->b.floors : 2;
+    site_boxes(&ses->s, session_box, ses);
     ses->where = SES_BODY;
     ses->up = true;
     return true;
@@ -1288,6 +1307,59 @@ bool session_line(Session *ses, const char *line, Buf *out)
         do_power(ses, d, strcmp(t[2], "on") == 0, out);
         return true;
     }
+    /* THE LIVE MEDIUM ON THE CRASH CART, and the tower had no way to reach it.
+     *
+     * A machine whose root filesystem will not mount cannot produce a shell
+     * from its own disk -- that is the whole point of the initrd stopping
+     * where it does, and its own last line says "boot the rescue medium and
+     * run `fsck /dev/sda1`". The break-fix half has had that medium since
+     * D17 and reached it over the service processor; standing in a comms
+     * cupboard with a crash cart there was no verb for it at all, so the
+     * first thing a blackout produced was a machine the game told you how to
+     * fix and gave you no way to. The stick is on the cart. */
+    if (strcmp(t[0], "rescue") == 0 || strcmp(t[0], "eject") == 0) {
+        bool in = strcmp(t[0], "rescue") == 0;
+        if (n < 2) {
+            buf_printf(out, "%s which box?\n", t[0]);
+            return true;
+        }
+        int d;
+        if (!need_here(ses, t[1], &d, out)) return true;
+        if (!site_kind_has_os(ses->s.dev[d].kind)) {
+            buf_printf(out, "%s has no drive to put it in.\n", ses->s.dev[d].name);
+            return true;
+        }
+        if (!ses->s.dev[d].powered) {
+            buf_printf(out, "%s is switched off. `power %s on` first.\n",
+                       ses->s.dev[d].name, ses->s.dev[d].name);
+            return true;
+        }
+        Machine *m = ses->mach[d];
+        if (!m) {
+            buf_printf(out, "%s has never been switched on.\n", ses->s.dev[d].name);
+            return true;
+        }
+        m->sp_media = in;
+        m->sp_bootdev = in ? 1 : 0;
+        if (in) {
+            machine_boot_rescue(m);
+            buf_printf(out, "the stick goes in the front of %s and you hold the "
+                            "reset button.\n\n", ses->s.dev[d].name);
+        } else {
+            machine_boot(m);
+            netsite_apply(m);
+            buf_printf(out, "the stick comes out of %s and it boots its own "
+                            "disk again.\n\n", ses->s.dev[d].name);
+        }
+        buf_put(out, m->boot.console.p, m->boot.console.len);
+        buf_printf(out, "\n[%s at %s]\n", m->boot.running ? "UP" : "DOWN",
+                   boot_stage_name(m->boot.failed_at));
+        if (in && m->boot.running)
+            buf_printf(out, "`plug %s` for a shell on the live system. The box's "
+                            "own disk is\n  /dev/sda1 and nothing has mounted "
+                            "it.\n", ses->s.dev[d].name);
+        return true;
+    }
     if (strcmp(t[0], "unplug") == 0) {
         buf_puts(out, "there is no lead in anything.\n");
         return true;
@@ -1468,6 +1540,7 @@ bool session_line(Session *ses, const char *line, Buf *out)
         strcmp(t[0], "rooms") == 0 || strcmp(t[0], "uncable") == 0 ||
         strcmp(t[0], "credit") == 0 || strcmp(t[0], "status") == 0 ||
         strcmp(t[0], "service") == 0 || strcmp(t[0], "load") == 0 ||
+        strcmp(t[0], "events") == 0 ||
         (strcmp(t[0], "show") == 0)) {
         site_cmd(&ses->s, raw, out);
         return true;

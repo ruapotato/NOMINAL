@@ -1998,6 +1998,19 @@ int kernel_svc_stop(Machine *m, const char *name)
         d[i].pending_sig = 0;
         d[i].exit_code = 0;
         snprintf(d[i].died, sizeof d[i].died, "stopped by hand");
+        /* A UNIT THAT LOADED SOMETHING INTO THE KERNEL UNLOADS IT AGAIN.
+         *
+         * nft(8) is not a daemon that holds the ruleset in its own memory --
+         * it loads it and exits into the filter, so killing the process used
+         * to leave the rules in place, counting up, on a machine whose `svc`
+         * said DEAD. The one lever the shell offered was cosmetic: a player
+         * could watch `netstat -F` go from `matched 28` to `matched 48`
+         * after stopping the filter. Two views of one machine disagreeing,
+         * which is the thing this project does not allow.
+         *
+         * A real nftables unit has `ExecStop=nft flush ruleset` for exactly
+         * this reason. Stopping the filter takes the filter off. */
+        if (strstr(d[i].path, "nft")) netsite_fw_clear(m);
         /* Out of the process table too, which is what makes `ps` and
          * `netstat` agree with `svc` about it -- netstat lists a port only
          * while the process that opens it is alive, so stopping the web
