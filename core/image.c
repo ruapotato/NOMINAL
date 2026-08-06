@@ -2035,7 +2035,7 @@ static const Package PKG_SOUNDS = {
 };
 
 static const Package PKG_SHELL = {
-    "nomsh", "1.11", "the shell and the base tools",
+    "nomsh", "1.12", "the shell and the base tools",
     {
       { "/bin/rc",    NULL, 0755, NULL },
       { "/bin/sh",    NULL, 0755, NULL },
@@ -2067,6 +2067,14 @@ static const Package PKG_SHELL = {
       { "/bin/touch", NULL, 0755, NULL },
       { "/bin/grep", NULL, 0755, NULL },
       { "/bin/sed", NULL, 0755, NULL },
+      /* THE EDITOR. Three manual pages, the shell's own `help` and two of
+       * the previous administrator's notes end with "edit the file", and for
+       * a long time nothing on this machine could. `sed -i` changes a line
+       * that is already there and `echo >>` adds one at the end; neither can
+       * insert a line in the middle, delete the third of four, or show you
+       * what you are about to change. A playtester tried vi, ed, edit, nano
+       * and write and got `command not found` from all five. */
+      { "/bin/ed", NULL, 0755, NULL },
       { "/bin/echo", NULL, 0755, NULL },
       { "/bin/wc", NULL, 0755, NULL },
       { "/bin/head", NULL, 0755, NULL },
@@ -2136,7 +2144,7 @@ static const Package PKG_SHELL = {
        * only the second name for it. */
       { "/sbin/telinit", NULL, 0755, NULL },
       { "/usr/share/doc/nomsh/README",
-        "nomsh 1.11 -- the shell and the base tools.\n"
+        "nomsh 1.12 -- the shell and the base tools.\n"
         "\n"
         "/bin/sh is the interactive shell. /bin/rc is a different program with a\n"
         "different job: rc runs SCRIPT FILES during the boot and knows five verbs\n"
@@ -2170,7 +2178,17 @@ static const Package PKG_SHELL = {
         "what somebody intended and these are what the machine has. `man` each.\n"
         "\n"
         "THE FILTERS: grep, sed, head, tail, wc, sort-of-everything-else via find.\n"
-        "`sed -i` is the only editor on this machine, and it is enough:\n"
+        "\n"
+        "EDITING A FILE is ed(1), the line editor, and it is what every page\n"
+        "that says `edit the file` means. It is not interactive -- nothing here\n"
+        "can be, because a program runs to completion inside one command -- so\n"
+        "the session is the argument list, one ed input line per argument:\n"
+        "\n"
+        "  ed /etc/fstab ,n\n"
+        "  ed /etc/fstab 4d w\n"
+        "\n"
+        "`man ed`. For a single substitution `sed -i` is shorter, and it is the\n"
+        "right tool on a file too big for an editor to hold:\n"
         "\n"
         "  sed -i s/testing/stable/ /etc/pkg/repos.d/main.repo\n"
         "  sed -i /badline/d /etc/fstab\n"
@@ -2181,7 +2199,20 @@ static const Package PKG_SHELL = {
       { "/usr/share/doc/nomsh/CHANGELOG",
         "nomsh CHANGELOG -- newest first.\n"
         "\n"
-        "1.11 -- current. ip, arp, traceroute, ss and tcpdump. `netstat` and\n"
+        "1.12 -- current. ed(1), the line editor. Three manual pages, this\n"
+        "       shell's own `help` and the previous administrator's notes all\n"
+        "       end with `edit the file`, and nothing on the machine could:\n"
+        "       vi, ed, edit, nano and write all answered `command not found`.\n"
+        "       `sed -i` changes a line that is already there and `echo >>`\n"
+        "       adds one at the end; between them they cannot insert a line in\n"
+        "       the middle, delete the third of four, or show you what you are\n"
+        "       about to change. ed is on the rescue medium too, which is where\n"
+        "       the repair it exists for actually happens.\n"
+        "       Single quotes also stop $ expansion now, as they do in every\n"
+        "       shell. They did not, so `$a` -- ed's address for the last line\n"
+        "       -- could not be typed in any spelling at all.\n"
+        "\n"
+        "1.11 -- ip, arp, traceroute, ss and tcpdump. `netstat` and\n"
         "       `ping` were the whole of the toolbox inside a machine, and the\n"
         "       first person to build a network with it said so: one instrument,\n"
         "       and it cannot test reachability. These read the same running\n"
@@ -2230,7 +2261,7 @@ static const Package PKG_SHELL = {
         "\n"
         "1.4  -- find and netstat, because everybody reached for them and they were\n"
         "       not there.\n", 0644, NULL },
-    }, 53
+    }, 54
 };
 
 
@@ -3254,7 +3285,12 @@ static const Package PKG_MAN = {
         "/etc/net/interfaces by way of netd, and netd re-reads that file when\n"
         "it changes -- so an address set from a command line would be undone\n"
         "the next time anything touched the config, which is worse than not\n"
-        "having the command. Edit the file, `svc reload net`, then `ip addr`.\n"
+        "having the command. Edit the file, `svc reload net`, then `ip addr`\n"
+        "-- and the editor is ed(1), which is on this machine and on the\n"
+        "rescue medium:\n"
+        "\n"
+        "  ed /etc/net/interfaces ,n\n"
+        "  svc reload net\n"
         "\n"
         "WHAT THE FLAGS IN THE ANGLE BRACKETS MEAN. Two states, and they are\n"
         "two different faults:\n"
@@ -3450,6 +3486,74 @@ static const Package PKG_MAN = {
         "\n"
         "Turning the whole policy to accept works too, and opens every port on\n"
         "the machine to do it.\n", 0644, NULL },
+      { "/usr/share/man/ed",
+        "ed(1)\n\n"
+        "  ed <file>                    open it and say how big it is\n"
+        "  ed <file> <command> ...      each argument is one line of ed input\n"
+        "\n"
+        "THE LINE EDITOR. It is the editor every repair on this machine ends\n"
+        "with: `man ip` and `netstat -F` and the shell's own `help` all say to\n"
+        "edit a file, and this is what edits it.\n"
+        "\n"
+        "IT IS NOT INTERACTIVE, AND IT CANNOT BE. A program here runs to\n"
+        "completion inside one command -- nothing more will be typed until it\n"
+        "has exited -- so there is nowhere for it to stop and ask you for the\n"
+        "next line. The session is the argument list instead: each argument is\n"
+        "one line you would have typed at an ed prompt, and the commands and\n"
+        "the addressing are ed's.\n"
+        "\n"
+        "COMMANDS\n"
+        "  p      print the addressed lines\n"
+        "  n      print them with their numbers\n"
+        "  =      the current line's number\n"
+        "  d      delete the addressed lines\n"
+        "  a      add text after the addressed line\n"
+        "  i      add text before it\n"
+        "  c      replace the addressed lines with text\n"
+        "  s      substitute -- s/old/new/, and /g for every match on a line\n"
+        "  w      write the buffer back. `w /tmp/other` writes elsewhere\n"
+        "  q      stop reading commands\n"
+        "\n"
+        "ADDRESSES go in front of the command. A line number, `.` for the\n"
+        "current line, `$` for the last, `a,b` for a range, and `,` on its own\n"
+        "for the whole buffer. The default is the current line, which starts\n"
+        "at the end of the file, as ed's does. Address 0 means before the\n"
+        "first line, so `0i` and `0a` both put one at the top.\n"
+        "\n"
+        "TEXT FOR a, i AND c is the arguments that follow, ended by a lone\n"
+        "`.` -- the same full stop that ends it at an ed prompt. Leaving it\n"
+        "out is refused by name rather than guessed at.\n"
+        "\n"
+        "NOTHING IS WRITTEN UNTIL YOU SAY `w`. If the buffer changed and the\n"
+        "script had no `w` in it, ed says the file is NOT saved and exits\n"
+        "non-zero: a change you did not write is a change that did not happen,\n"
+        "and finding that out from a service that stayed down is worse.\n"
+        "\n"
+        "SUBSTITUTION IS PLAIN TEXT, not a regular expression -- `.` is a full\n"
+        "stop and matches only a full stop. Any delimiter works, which is how\n"
+        "a path is typed:  s|/usr/local|/opt|  and \\\\t and \\\\ are understood.\n"
+        "An s that matches nothing is an error and changes no line, because a\n"
+        "substitution that quietly did nothing is how a player comes to\n"
+        "believe a file was repaired when it was not.\n"
+        "\n"
+        "WORKED EXAMPLE -- the resolver, which is the repair man ip and man\n"
+        "netd both describe:\n"
+        "\n"
+        "  ed /etc/resolv.conf ,n\n"
+        "  ed /etc/resolv.conf 1c \"nameserver 10.0.2.3\" . w\n"
+        "  svc reload net\n"
+        "\n"
+        "and a line added at the end of a file, and one taken out:\n"
+        "\n"
+        "  ed /etc/hosts '$a' \"10.0.2.9  build\" . w\n"
+        "  ed /etc/fstab 4d w\n"
+        "\n"
+        "LIMITS, because there is no allocator on this machine: 4096 lines and\n"
+        "64 KB of file. `sed -i` streams and has neither, so it is still the\n"
+        "right tool on /var/log/messages. ed is the right one on a config.\n"
+        "\n"
+        "There is no undo. `ed <file> ,n` first: it costs nothing and it is\n"
+        "the only way to know what the line numbers are.\n", 0644, NULL },
       { "/usr/share/man/rev",
         "rev(1)\n\n"
         "  rev [file ...]     reverse each line; with no file, stdin\n"
@@ -3465,7 +3569,7 @@ static const Package PKG_MAN = {
         "\n"
         "If that is not `cat /etc/hostname` then the pipe is what is wrong.\n",
         0644, NULL },
-    }, 24
+    }, 25
 };
 
 /* THE JOKE PACKAGE, built exactly like the serious ones.
@@ -3914,6 +4018,11 @@ static const Package PKG_RESCUE_TOOLS = {
       { "/bin/touch", NULL, 0755, NULL },
       { "/bin/grep", NULL, 0755, NULL },
       { "/bin/sed", NULL, 0755, NULL },
+      /* An editor belongs on a rescue medium more than anywhere else: the
+       * repair the live disc exists for is a line in a config on a disk that
+       * will not boot, and until now the only way to change one was a
+       * substitution that had to match text you could not print. */
+      { "/bin/ed", NULL, 0755, NULL },
       { "/bin/echo", NULL, 0755, NULL },
       { "/bin/wc", NULL, 0755, NULL },
       { "/bin/head", NULL, 0755, NULL },
@@ -3942,7 +4051,7 @@ static const Package PKG_RESCUE_TOOLS = {
       { "/bin/seq", NULL, 0755, NULL },
       { "/bin/rev", NULL, 0755, NULL },
       { "/usr/bin/rot13", NULL, 0755, NULL },
-    }, 41
+    }, 42
 };
 
 static const Package *RESCUE_IMAGE[] = { &PKG_RESCUE_BASE, &PKG_RESCUE_TOOLS };
@@ -4035,6 +4144,8 @@ void image_generated(const Machine *m, const char *path, Buf *out)
         buf_put(out, (const char *)GUEST_GREP, GUEST_GREP_LEN);
     else if (strcmp(path, "/bin/sed") == 0)
         buf_put(out, (const char *)GUEST_SED, GUEST_SED_LEN);
+    else if (strcmp(path, "/bin/ed") == 0)
+        buf_put(out, (const char *)GUEST_ED, GUEST_ED_LEN);
     else if (strcmp(path, "/bin/echo") == 0)
         buf_put(out, (const char *)GUEST_ECHO, GUEST_ECHO_LEN);
     else if (strcmp(path, "/bin/wc") == 0)

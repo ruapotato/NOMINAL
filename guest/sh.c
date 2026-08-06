@@ -35,12 +35,35 @@ static int lookup(const char *nm, char *out, u64 cap)
 }
 
 /* Substitute $name, ${name} and $?. An unset name expands to nothing,
- * exactly as it does in sh. */
+ * exactly as it does in sh.
+ *
+ * SINGLE QUOTES AND A BACKSLASH STOP IT, as they do in every shell -- and
+ * until ed(1) landed nothing on this machine noticed that they did not.
+ * `$` is an ed address: `$a` appends after the last line, `$p` prints it, and
+ * every spelling of them -- '$a', "$a", \$a -- came out as an empty word, so
+ * the one address a player types without counting lines was unusable and the
+ * error came from ed, about a command it had never been given. The same hole
+ * hid `grep '$name' file` and any password with a dollar in it. Quoting has
+ * to be honoured HERE, before expansion, because after it there is no way to
+ * tell what was quoted. */
 static void expand(const char *in, char *out, u64 cap)
 {
     u64 o = 0;
+    char q = 0;                  /* the quote we are inside, or 0 */
     for (u64 i = 0; in[i] && o + 1 < cap; ) {
-        if (in[i] == '$' && in[i+1]) {
+        /* The quote marks themselves stay in the string: g_argv removes them
+         * later, and it is the one that knows where a word ends. */
+        if (!q && (in[i] == '\'' || in[i] == '"')) { q = in[i]; out[o++] = in[i++]; continue; }
+        if (q && in[i] == q)                       { q = 0;     out[o++] = in[i++]; continue; }
+        /* A backslash hands the next character through untouched, and leaves
+         * the backslash for g_argv to eat. Not inside single quotes, where a
+         * backslash is a backslash. */
+        if (q != '\'' && in[i] == '\\' && in[i+1] && o + 2 < cap) {
+            out[o++] = in[i++];
+            out[o++] = in[i++];
+            continue;
+        }
+        if (in[i] == '$' && in[i+1] && q != '\'') {
             u64 j = i + 1;
             char nm[32]; u64 k = 0;
             /* ${i} and $i both work; the braces matter when the name is
@@ -765,8 +788,9 @@ static int run_line(char *cmd0)
          * this builtin shadows it, so fixing only the program fixed nothing.
          * `echo "udev.* /dev/null" >> f` used to write the quote marks into
          * the file, and there was no way to write a line containing a space
-         * without them. On a machine whose only editor is `echo >>` and
-         * `sed`, that decides whether a config file can be repaired at all. */
+         * without them. When `echo >>` and `sed` were the only editors this
+         * machine had, that decided whether a config file could be repaired
+         * at all. /bin/ed exists now; this still has to be right. */
         static char ebuf[GARG_MAX];
         g_copy(ebuf, rest, sizeof ebuf);
         static char *ev[GARGS];
@@ -802,6 +826,14 @@ static int run_line(char *cmd0)
         g_putln("           a | b | c               pipelines");
         g_putln("files:     ls cat cp mv rm touch mkdir grep head tail wc du");
         g_putln("           stat chmod sed find");
+        /* THE EDITOR GOES ON ITS OWN LINE, because three manual pages end
+         * with "edit the file" and a player who has not met this machine
+         * cannot know what edits one. It was missing from here entirely. */
+        g_putln("editing:   ed <file> ,n            the file, with line numbers");
+        g_putln("           ed <file> 3c \"text\" . w   replace line 3 and save");
+        g_putln("           man ed                  the rest of it: a i c d s w q");
+        g_putln("           sed -i s/old/new/ <file>   one substitution, no");
+        g_putln("                                      line numbers needed");
         g_putln("system:    ps ns mount umount chroot df uname whoami pkg");
         g_putln("network:   ip addr | link | route | neigh    what the stack holds");
         g_putln("           ping  traceroute  arp  ss  netstat  tcpdump");
@@ -859,7 +891,8 @@ static int run_line(char *cmd0)
      * same machinery a pipeline uses -- and the capture is poured into the
      * file. This used to say "only `echo` can redirect at the moment", which
      * was an arbitrary restriction on the single most useful thing a shell
-     * does on a machine whose only editor is `echo >>` and `sed`. */
+     * does -- and at the time `echo >>` and `sed` were the only editors on
+     * the machine. */
     if (redirect_fd >= 0) {
         const char *prog = resolve(cmd);
         if (!prog) {

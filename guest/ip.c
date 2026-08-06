@@ -216,7 +216,9 @@ static void usage(void)
     g_putln("");
     g_putln("it SHOWS and does not CONFIGURE: there is no `ip addr add` on");
     g_putln("this machine. /etc/net/interfaces and `svc reload net` are the");
-    g_putln("repair; this is how you check it landed. man ip.");
+    g_putln("repair -- `ed /etc/net/interfaces ,n` prints it with line numbers");
+    g_putln("and `man ed` is how to change one. This is how you check it");
+    g_putln("landed. man ip.");
 }
 
 void _start(void)
@@ -243,7 +245,11 @@ void _start(void)
             g_puts("ip: this ip only shows; it cannot `"); g_puts(v[1]);
             g_putln("`.");
             g_putln("  an address on this machine comes from /etc/net/interfaces");
-            g_putln("  by way of netd. Edit that, `svc reload net`, and look again.");
+            g_putln("  by way of netd:");
+            g_putln("    ed /etc/net/interfaces ,n      what is in it now");
+            g_putln("    ed /etc/net/interfaces 2c \"  address 10.0.2.50/24\" . w");
+            g_putln("    svc reload net");
+            g_putln("  then look again. `man ed` for the rest of it.");
             g_exit(2);
         }
         show_only = 1;

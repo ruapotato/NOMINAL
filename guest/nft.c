@@ -163,6 +163,8 @@ static void say_what_it_is(void)
     g_putln("  netstat -F              the ruleset it is ACTUALLY running,");
     g_putln("                          with what each rule has dropped");
     g_putln("  cat /etc/nftables.conf  what it is supposed to be running");
+    g_putln("  ed /etc/nftables.conf   change it: `,n` numbers the lines,");
+    g_putln("                          `man ed` is the editor");
     g_putln("  svc reload nftables     re-read the file after editing it");
     g_putln("  man nft                 what this parser understands");
 }
