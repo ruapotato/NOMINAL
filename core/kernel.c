@@ -35,6 +35,9 @@ int  netsite_ping(Machine *m, const char *dst, int *rtt);
 void netsite_fw_clear(Machine *m);
 void netsite_fw_add(Machine *m, int chain, int proto, int dport, int drop);
 void netsite_trace(Machine *m, int on);
+void netsite_pcap(Machine *m, int on);
+void netsite_traceroute(Machine *m, const char *dst, Buf *out);
+int  netsite_arp_del(Machine *m, const char *addr);
 
 #define FD_MAX      16
 #define SPAWN_DEPTH  8
@@ -695,8 +698,29 @@ static int64_t kernel_syscall(Cpu *c, int64_t n, int64_t a0, int64_t a1,
                            (int)(a1 & 0xffff), (int)a2);
             return 0;
         case NETCTL_TRACE:   netsite_trace(p->m, (int)a1); return 0;
+        case NETCTL_PCAP:    netsite_pcap(p->m, (int)a1); return 0;
+        case NETCTL_ARPDEL: {
+            /* The address arrives as text, because that is what the tool was
+             * typed with and parsing it in one place -- the stack's own
+             * parser -- is what stops `arp -d 10.0.2.300` becoming a
+             * delete of something else. */
+            char a[64];
+            if (!guest_str(c, (uint64_t)a1, a, sizeof a)) return -1;
+            return netsite_arp_del(p->m, a);
+        }
         default: return -1;
         }
+    case SYS_traceroute: {
+        char dst[64];
+        if (!guest_str(c, (uint64_t)a0, dst, sizeof dst)) return -1;
+        Buf b = {0};
+        netsite_traceroute(p->m, dst, &b);
+        int64_t r = -1;
+        if ((int64_t)b.len + 1 <= a2 && cpu_write(c, (uint64_t)a1, b.p ? b.p : "", b.len + 1))
+            r = (int64_t)b.len;
+        buf_free(&b);
+        return r;
+    }
     case SYS_ping: {
         char dst[64];
         if (!guest_str(c, (uint64_t)a0, dst, sizeof dst)) return -1;

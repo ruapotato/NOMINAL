@@ -95,6 +95,14 @@
 #define NET_FRAME_MAX  1518     /* 1500 MTU + 14 ethernet + 4 for a tag     */
 #define NET_TRACE_MAX   512
 #define NET_TRACE_LINE   96
+/* THE FRAME CAPTURE, which is a different thing from the trace above. The
+ * trace is one line per EVENT, taken wherever in the stack the event
+ * happened, and it is the whole world's -- every node's events are in the
+ * one ring. tcpdump(8) needs something else: one line per FRAME, taken at
+ * the card of ONE machine, in the direction it crossed it, with the fields
+ * that were really in the header. That is what this ring holds. */
+#define NET_PCAP_MAX    256
+#define NET_PCAP_LINE   160
 /* THE RECEIVE WINDOW, AND IT IS THE REAL ONE. A connection cannot go faster
  * than a window per round trip, so this number and the per-hop millisecond
  * in port_tx together decide what one transfer can do: twelve kilobytes over
@@ -324,6 +332,8 @@ uint32_t net_get_gateway(const Net *n, int node);
 uint32_t net_get_resolver(const Net *n, int node);
 void  net_forwarding(Net *n, int node, bool on);
 void  net_arp_flush(Net *n, int node);
+/* Forget one neighbour. False when there was no such entry. */
+bool  net_arp_del(Net *n, int node, uint32_t ip);
 int   net_arp_count(const Net *n, int node);
 /* Resolve for real: emits a request, runs the world, waits for a reply. */
 bool  net_arp_resolve(Net *n, int node, uint32_t ip, uint8_t out[6]);
@@ -404,6 +414,15 @@ void  net_trace_clear(Net *n);
 int   net_trace_count(const Net *n);
 const char *net_trace_line(const Net *n, int i);
 void  net_dump_trace(const Net *n, Buf *out);
+/* The frame capture: off until somebody asks, because a ring nobody reads is
+ * memory nobody is paying for. One line per frame that really crossed a
+ * card, in fields tcpdump(8) formats: see pcap_frame() in netstack.c for the
+ * order, which is the only place that decides it. */
+void  net_pcap(Net *n, bool on);
+bool  net_pcap_on(const Net *n);
+void  net_pcap_clear(Net *n);
+int   net_pcap_count(const Net *n, int node);
+void  net_dump_pcap(const Net *n, int node, Buf *out);
 void  net_dump_ifaces(const Net *n, int node, Buf *out);
 void  net_dump_routes(const Net *n, int node, Buf *out);
 void  net_dump_arp(const Net *n, int node, Buf *out);

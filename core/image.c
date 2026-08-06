@@ -2109,6 +2109,23 @@ static const Package PKG_SHELL = {
        * rack had a ping verb, the operating system did not, and the shell is
        * where a sysadmin types it first. */
       { "/bin/ping",     NULL, 0755, NULL },
+      /* THE INSTRUMENTS A NETWORK ENGINEER REACHES FOR, on the box they are
+       * standing at. A playtester with a working stack under them put it
+       * exactly: "inside the box I have one instrument, netstat, and it
+       * cannot test reachability -- for a networking game that is
+       * backwards." Every one of these reads the running stack: `ip` the
+       * addresses and the table the kernel really looks in, `arp` the
+       * neighbours that really answered and which card they answered on,
+       * `traceroute` real probes and the real ICMP that came back,
+       * `tcpdump` the frames that really crossed the card, `ss` the sockets
+       * netstat already knows in the shape people type today. */
+      { "/bin/ip",       NULL, 0755, NULL },
+      { "/bin/arp",      NULL, 0755, NULL },
+      { "/bin/traceroute", NULL, 0755, NULL },
+      { "/bin/ss",       NULL, 0755, NULL },
+      /* tcpdump lives in sbin, as it does everywhere, because reading other
+       * people's frames off a card has always been root's business. */
+      { "/usr/sbin/tcpdump", NULL, 0755, NULL },
       /* `init 6` worked and `reboot` did not. Nobody types `init 6` first. */
       { "/sbin/reboot",   NULL, 0755, NULL },
       { "/sbin/halt",     NULL, 0755, NULL },
@@ -2192,7 +2209,7 @@ static const Package PKG_SHELL = {
         "\n"
         "1.4  -- find and netstat, because everybody reached for them and they were\n"
         "       not there.\n", 0644, NULL },
-    }, 48
+    }, 53
 };
 
 
@@ -3060,6 +3077,180 @@ static const Package PKG_MAN = {
         "A NAME IS RESOLVED FIRST, and its failure is reported separately, so\n"
         "`cannot resolve` is never confused with `no answer` -- a broken\n"
         "resolver and a broken route look identical otherwise.\n", 0644, NULL },
+      /* THE INSTRUMENTS, AND THE SUBSET OF EACH THAT IS REAL. A man page
+       * that documents a flag this machine does not have is the same lie as
+       * a tool that prints an answer it did not measure, so each of these
+       * describes exactly what was implemented and names what was not. */
+      { "/usr/share/man/ip",
+        "ip(8)\n\n"
+        "  ip addr [show]     the addresses and masks the cards really hold\n"
+        "  ip link [show]     the cards: mac, admin state, carrier\n"
+        "  ip route [show]    the table the kernel really looks in\n"
+        "  ip neigh [show]    the arp cache: who has really answered\n"
+        "\n"
+        "`a`, `l`, `r` and `n` are accepted, as they are in iproute2.\n"
+        "\n"
+        "IT SHOWS AND IT DOES NOT CONFIGURE. There is no `ip addr add`, no\n"
+        "`ip link set`, no `ip route add`, and asking for one says so rather\n"
+        "than failing quietly. An address on this machine comes from\n"
+        "/etc/net/interfaces by way of netd, and netd re-reads that file when\n"
+        "it changes -- so an address set from a command line would be undone\n"
+        "the next time anything touched the config, which is worse than not\n"
+        "having the command. Edit the file, `svc reload net`, then `ip addr`.\n"
+        "\n"
+        "WHAT THE FLAGS IN THE ANGLE BRACKETS MEAN. Two states, and they are\n"
+        "two different faults:\n"
+        "\n"
+        "  UP / DOWN            the INTERFACE, which is administrative\n"
+        "  LOWER_UP             carrier: there is a cable and the far end is on\n"
+        "  NO-CARRIER           the port has no link. Nothing is plugged in,\n"
+        "                       the far end is off, or the run is too long --\n"
+        "                       `netstat -P` says which\n"
+        "\n"
+        "`mtu 1500` is a constant of this machine and not a per-card setting:\n"
+        "the stack refuses a payload over 1500 bytes on every interface, and\n"
+        "there is nothing to set.\n"
+        "\n"
+        "ip neigh prints REACHABLE or STALE, and that is not decoration: the\n"
+        "stack asks again for any entry older than 120 seconds before it uses\n"
+        "it, so those are the two things an entry can really be. arp(8) prints\n"
+        "the same cache with the age in it.\n"
+        "\n"
+        "IT HAS NO FILTER. `ip addr show eth0` is refused rather than\n"
+        "ignored; it prints every interface.\n", 0644, NULL },
+      { "/usr/share/man/arp",
+        "arp(8)\n\n"
+        "  arp                 the neighbour cache, one line per entry\n"
+        "  arp -a              the BSD spelling of the same thing\n"
+        "  arp <address>       just that one\n"
+        "  arp -d <address>    forget one neighbour\n"
+        "  arp -n              numeric, which is the only thing this arp is\n"
+        "\n"
+        "THREE FAULTS LIVE IN THIS TABLE and they look different here:\n"
+        "\n"
+        "  an entry with a mac    that neighbour answered. Whatever else is\n"
+        "                         wrong, the wire between you and it works.\n"
+        "  (incomplete)           you asked and nothing answered. That address\n"
+        "                         is on this wire and no card holds it: a typo\n"
+        "                         in an address or a mask, or a box that is off.\n"
+        "  the WRONG mac          two machines answered for one address and the\n"
+        "                         cache believes whichever spoke last. That is a\n"
+        "                         duplicate address, and comparing this table\n"
+        "                         with the other machine's is how it is found.\n"
+        "\n"
+        "THE IFACE COLUMN is the card the entry was learned on, recorded by the\n"
+        "kernel when it learned it -- not worked out from the mask afterwards.\n"
+        "On a box with more than one card, an address answering on the wrong\n"
+        "one is a cable in the wrong port, and nothing else here says so.\n"
+        "\n"
+        "arp -d IS A REAL DELETE. The entry goes out of the running cache and\n"
+        "the next packet to that address asks again. That is the repair after a\n"
+        "machine is swapped and the old MAC is still being used. If there was\n"
+        "no such entry it says so and exits non-zero: it never reports a\n"
+        "success it did not have.\n"
+        "\n"
+        "The name column is `?` in the -a form because nothing on this network\n"
+        "resolves an address backwards. There is no PTR zone to ask.\n", 0644, NULL },
+      { "/usr/share/man/traceroute",
+        "traceroute(8)\n\n"
+        "  traceroute <address or name>      twelve hops, always\n"
+        "\n"
+        "The real mechanism: a probe with a TTL of 1, which the first router\n"
+        "decrements to zero and returns an ICMP time-exceeded for, then 2, and\n"
+        "so on. Each line is the source address of the error that came back.\n"
+        "The stack produces those errors for anybody's packets; this program\n"
+        "only counts.\n"
+        "\n"
+        "  1  10.0.2.2         a router answered\n"
+        "  2  *                that hop sent nothing back\n"
+        "\n"
+        "WHY IT IS WORTH TYPING when ping already failed: ping says it did not\n"
+        "work, this says HOW FAR it got. In a building with a router per floor\n"
+        "the last address that answered is the last place that is working, and\n"
+        "the next one up is where to walk.\n"
+        "\n"
+        "NO TIMES, and that is deliberate. The stack counts a probe in whole\n"
+        "milliseconds of wire time and does not hand a per-hop round trip back\n"
+        "to a program. Three columns of `1 ms` would look like a measurement\n"
+        "and be a constant. ping(1) measures, and prints what it measured.\n"
+        "\n"
+        "There is no -m, -n, -q or -w: the probe count and the hop limit belong\n"
+        "to the kernel here, not to this program, and a flag nobody honoured\n"
+        "would look like a setting. A name is resolved first and separately, so\n"
+        "`cannot resolve` is never reported as `the path is broken`.\n", 0644, NULL },
+      { "/usr/share/man/tcpdump",
+        "tcpdump(8)\n\n"
+        "  tcpdump --capture on           start the ring (and clear it)\n"
+        "  tcpdump --capture off          stop it\n"
+        "  tcpdump [-i iface] [-c n] [-Q in|out] [filter ...]\n"
+        "\n"
+        "  filters: arp  icmp  tcp  udp  ip  host <addr>  port <n>\n"
+        "           `and` between them. Every one must match.\n"
+        "\n"
+        "One line per frame that really crossed this machine's card, in both\n"
+        "directions, with the fields read out of the headers that were on the\n"
+        "wire: the macs, the ethertype, the protocol, the addresses, the ports,\n"
+        "the TCP flags, the ICMP type, the length. Every filter compares one of\n"
+        "those fields -- none of them searches the text of a line.\n"
+        "\n"
+        "  1421 eth0 Out arp who-has 10.0.2.2 tell 10.0.2.15, length 60\n"
+        "  1423 eth0 In  IP 10.0.2.2 > 10.0.2.15: icmp echo-reply, length 60\n"
+        "  1450 eth0 Out IP 10.0.2.15.41001 > 10.0.2.20.80: tcp [S], length 60\n"
+        "\n"
+        "The leading number is the stack's clock in milliseconds of wire time.\n"
+        "There is no wall clock down here, so there is no timestamp of the kind\n"
+        "the real program prints.\n"
+        "\n"
+        "IT IS NOT LIVE. Nothing runs while your shell waits, so there is\n"
+        "nobody to print a frame to as it arrives. The capture is a ring the\n"
+        "stack fills as frames pass and this reads it back:\n"
+        "\n"
+        "  tcpdump --capture on\n"
+        "  ping 10.0.2.2\n"
+        "  tcpdump icmp\n"
+        "\n"
+        "It holds the last 256 frames and it is off until asked, because a ring\n"
+        "nobody reads is memory nobody is paying for.\n"
+        "\n"
+        "IT SEES ONE MACHINE: what this card sent and what this card accepted.\n"
+        "There is no promiscuous mode on this network -- a frame addressed to\n"
+        "somebody else was never handed up here. To see the other half of a\n"
+        "conversation, run it on the other box too. That is the real technique.\n"
+        "\n"
+        "WHAT IT REFUSES, BY NAME rather than by ignoring it: -w, -r, -X, -e,\n"
+        "-v, and the pcap syntax it does not have -- src, dst, net, portrange,\n"
+        "vlan, `or`, `not`. A filter that was silently dropped would turn `no\n"
+        "packets matched` into evidence of something that never happened. There\n"
+        "is no file to write and no hex dump: the kernel keeps the fields, not\n"
+        "the bytes.\n"
+        "\n"
+        "netstat -w is the other capture and a different thing: the whole\n"
+        "network's events, every node's, one line each. This is one card's\n"
+        "frames.\n", 0644, NULL },
+      { "/usr/share/man/ss",
+        "ss(8)\n\n"
+        "  ss            every socket this machine holds\n"
+        "  ss -l         only the ones that are listening\n"
+        "  ss -t         tcp only\n"
+        "  ss -u         udp only\n"
+        "  ss -a  -n     accepted: every socket, and numeric, which it always is\n"
+        "\n"
+        "SAY WHAT THIS IS: it is netstat's socket list in ss's columns. It asks\n"
+        "the kernel the same question netstat does -- the real socket table --\n"
+        "and there is no second source for it to read. It exists because `ss\n"
+        "-ltn` is what a person types now, and a machine that answers `command\n"
+        "not found` to the standard question teaches you to distrust the\n"
+        "answers it does give.\n"
+        "\n"
+        "THERE IS NO -p. On a real system that column comes from the process\n"
+        "holding the file descriptor. This kernel binds a socket for a SERVICE\n"
+        "and does not record a pid against it, so the column would always be\n"
+        "empty -- which reads as `nobody owns this`, which is false. `svc\n"
+        "status <name>` and `ps` are the questions that have answers.\n"
+        "\n"
+        "A socket here is real: a service that has died has no line, and a\n"
+        "service running with a configuration it never reloaded is listening on\n"
+        "the port it actually loaded, not the one the file now says.\n", 0644, NULL },
       { "/usr/share/man/nft",
         "nft(8)\n\n"
         "  /usr/sbin/nft      reads /etc/nftables.conf at startup and LOADS it\n"
@@ -3116,7 +3307,7 @@ static const Package PKG_MAN = {
         "\n"
         "If that is not `cat /etc/hostname` then the pipe is what is wrong.\n",
         0644, NULL },
-    }, 15
+    }, 20
 };
 
 /* THE JOKE PACKAGE, built exactly like the serious ones.
@@ -3748,6 +3939,16 @@ void image_generated(const Machine *m, const char *path, Buf *out)
         buf_put(out, (const char *)GUEST_NETSTAT, GUEST_NETSTAT_LEN);
     else if (strcmp(path, "/bin/ping") == 0)
         buf_put(out, (const char *)GUEST_PING, GUEST_PING_LEN);
+    else if (strcmp(path, "/bin/ip") == 0)
+        buf_put(out, (const char *)GUEST_IP, GUEST_IP_LEN);
+    else if (strcmp(path, "/bin/arp") == 0)
+        buf_put(out, (const char *)GUEST_ARP, GUEST_ARP_LEN);
+    else if (strcmp(path, "/bin/traceroute") == 0)
+        buf_put(out, (const char *)GUEST_TRACEROUTE, GUEST_TRACEROUTE_LEN);
+    else if (strcmp(path, "/usr/sbin/tcpdump") == 0)
+        buf_put(out, (const char *)GUEST_TCPDUMP, GUEST_TCPDUMP_LEN);
+    else if (strcmp(path, "/bin/ss") == 0)
+        buf_put(out, (const char *)GUEST_SS, GUEST_SS_LEN);
     else if (strcmp(path, "/usr/bin/nomde") == 0)
         buf_put(out, (const char *)GUEST_NOMDE, GUEST_NOMDE_LEN);
     else if (strcmp(path, "/usr/bin/open") == 0)

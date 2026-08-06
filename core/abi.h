@@ -159,6 +159,11 @@ typedef unsigned long      uint64_t;
                              * distinct because "no route", "host
                              * unreachable" and "no answer" are three
                              * different repairs.                          */
+#define SYS_traceroute 1067 /* (addr, buf, len) -> bytes of text, one hop
+                             * per line: the TTL, and the address of the
+                             * router that sent the time-exceeded back, or
+                             * `*` for a hop that answered nothing. Real
+                             * probes, real ICMP, counted by the stack.    */
 
 #define NETINFO_IFACE  0    /* addresses, masks, carrier, counters          */
 #define NETINFO_ROUTE  1    /* the routing table, connected routes included */
@@ -170,10 +175,19 @@ typedef unsigned long      uint64_t;
                              * really dropped. A filter nobody can read is a
                              * fault with no evidence at all: the packet does
                              * not arrive and nothing says why.             */
+#define NETINFO_PCAP   7    /* THIS MACHINE'S frames, one line per frame,
+                             * in fields taken out of the headers. Not the
+                             * same ring as NETINFO_TRACE: that one is the
+                             * whole world's events, this one is one card's
+                             * traffic, which is what tcpdump(8) is.        */
 
 #define NETCTL_FWCLEAR 0    /* forget the running ruleset                   */
 #define NETCTL_FWADD   1    /* a = chain<<24 | proto<<16 | dport, b = drop  */
 #define NETCTL_TRACE   2    /* a = 1 to start capturing, 0 to stop          */
+#define NETCTL_PCAP    3    /* a = 1 to start the FRAME capture, 0 to stop  */
+#define NETCTL_ARPDEL  4    /* a = an address: forget that neighbour. -1
+                             * when there was no such entry, so `arp -d`
+                             * can say it deleted nothing.                  */
 
 /* What came back from a ping, in the order a person eliminates them. */
 #define NPING_OK           0

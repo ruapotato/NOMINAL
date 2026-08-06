@@ -159,6 +159,13 @@ typedef struct {
     int      hold;
     int      holdlen;
     int      holdif;
+    /* WHICH WIRE THIS WAS LEARNED ON. A machine with two cards has two
+     * neighbours' worth of cache and the interface is half the diagnosis --
+     * an address answering on the wrong card is a cable in the wrong port.
+     * Recorded when the entry is filled in, never guessed from the mask,
+     * because on overlapping subnets the guess is exactly wrong. -1 until
+     * something real has touched it. */
+    int      ifx;
 } ArpEntry;
 
 /* Frames waiting on an ARP answer, anywhere in the world. */
@@ -372,6 +379,11 @@ struct Net {
     bool     tracing;
     char     trace[NET_TRACE_MAX][NET_TRACE_LINE];
     int      ntrace, tracehead;
+    /* The frame capture. Per node, because a card only sees its own frames
+     * -- unlike the trace above, which is the whole world's events. */
+    bool     pcapping;
+    struct { int node; char line[NET_PCAP_LINE]; } pcap[NET_PCAP_MAX];
+    int      npcap, pcaphead;
     uint8_t  next_mac;     /* deterministic factory MAC allocation          */
 };
 
@@ -1495,6 +1507,7 @@ static ArpEntry *arp_slot(Net *n, Host *h, uint32_t ip)
     if (!e) { e = &h->arp[oldest]; arp_unhold(n, e); }
     memset(e, 0, sizeof *e);
     e->hold = -1;
+    e->ifx = -1;
     e->used = true;
     e->ip = ip;
     e->seen = n->now;
@@ -1508,6 +1521,22 @@ void net_arp_flush(Net *n, int node)
         h->arp[i].used = false;
     }
 }
+/* Forget ONE neighbour. `arp -d` on a real machine, and it is a real repair:
+ * a cache holding the MAC of a machine that has been swapped, or poisoned by
+ * a duplicate address, keeps sending frames to a card that is no longer
+ * there. Returns false when there was no such entry, so the tool can say
+ * "there was nothing to delete" rather than pretending it did something. */
+bool net_arp_del(Net *n, int node, uint32_t ip)
+{
+    Host *h = host_of(n, node);
+    if (!h) return false;
+    ArpEntry *e = arp_find(h, ip);
+    if (!e) return false;
+    arp_unhold(n, e);
+    e->used = false;
+    return true;
+}
+
 int net_arp_count(const Net *n, int node)
 {
     const Host *h = chost_of(n, node);
@@ -1527,9 +1556,122 @@ bool net_arp_cached(const Net *n, int node, uint32_t ip, uint8_t out[6])
     return true;
 }
 
+/* ------------------------------------------------------------ the capture */
+/* ONE LINE PER FRAME, TAKEN AT THE CARD. Every field below is read out of
+ * the bytes that were really on the wire -- the ethernet header, then the
+ * IPv4 header, then whatever TCP, UDP or ICMP put in front of its payload.
+ * Nothing here is derived from configuration, and nothing is invented: a
+ * field the frame does not carry is printed as `-`.
+ *
+ * THE ORDER IS THE ABI. tcpdump(8) inside the guest splits on spaces and
+ * filters on these fields, so a filter for `host 10.0.2.2` compares an
+ * address the header held rather than searching the text of the line:
+ *
+ *   ms iface dir smac dmac ethertype proto src dst sport dport bytes info
+ *
+ * `dir` is in or out. `bytes` is the length on the wire, tag included.
+ */
+static void if_name(const Net *n, int node, int ifx, char *out, size_t cap);
+
+static void pcap_frame(Net *n, int node, int ifx, const char *dir,
+                       const uint8_t *fr, int len)
+{
+    if (!n->pcapping) return;
+    char sm[20], dm[20], ifn[24];
+    net_fmt_mac(fr + 6, sm, sizeof sm);
+    net_fmt_mac(fr, dm, sizeof dm);
+    if_name(n, node, ifx, ifn, sizeof ifn);
+    uint16_t type = eth_type(fr, len);
+    int off = eth_payload_off(fr, len);
+    const uint8_t *p = fr + off;
+    int plen = len - off;
+
+    char line[NET_PCAP_LINE];
+    if (type == ETH_P_ARP && plen >= 28) {
+        char s[20], d[20];
+        net_fmt_ip(get32(p + 14), s, sizeof s);
+        net_fmt_ip(get32(p + 24), d, sizeof d);
+        snprintf(line, sizeof line, "%llu %s %s %s %s arp arp %s %s - - %d %s",
+                 (unsigned long long)n->now, ifn, dir, sm, dm, s, d, len,
+                 get16(p + 6) == 1 ? "who-has" : "is-at");
+    } else if (type == ETH_P_IP && plen >= 20) {
+        int hlen = (p[0] & 15) * 4;
+        uint8_t proto = p[9];
+        char s[20], d[20];
+        net_fmt_ip(get32(p + 12), s, sizeof s);
+        net_fmt_ip(get32(p + 16), d, sizeof d);
+        const uint8_t *l4 = p + hlen;
+        int l4len = plen - hlen;
+        char sp[8] = "-", dp[8] = "-", info[40] = "-";
+        const char *pn = "ip";
+        if (proto == IP_PROTO_ICMP && l4len >= 1) {
+            pn = "icmp";
+            snprintf(info, sizeof info, "%s",
+                     l4[0] == ICMP_ECHO       ? "echo-request" :
+                     l4[0] == ICMP_ECHOREPLY  ? "echo-reply" :
+                     l4[0] == ICMP_TIMXCEED   ? "time-exceeded" :
+                     l4[0] == ICMP_UNREACH
+                         ? (l4len >= 2 && l4[1] == ICMP_UNREACH_NET
+                                ? "net-unreachable"
+                                : l4len >= 2 && l4[1] == ICMP_UNREACH_PORT
+                                      ? "port-unreachable" : "host-unreachable")
+                         : "type");
+        } else if ((proto == IP_PROTO_TCP || proto == IP_PROTO_UDP) && l4len >= 4) {
+            pn = proto == IP_PROTO_TCP ? "tcp" : "udp";
+            snprintf(sp, sizeof sp, "%u", get16(l4));
+            snprintf(dp, sizeof dp, "%u", get16(l4 + 2));
+            if (proto == IP_PROTO_TCP && l4len >= 14) {
+                uint8_t fl = l4[13];
+                snprintf(info, sizeof info, "[%s%s%s%s%s]",
+                         fl & TCP_SYN ? "S" : "", fl & TCP_FIN ? "F" : "",
+                         fl & TCP_RST ? "R" : "", fl & TCP_PSH ? "P" : "",
+                         fl & TCP_ACK ? "." : "");
+            }
+        } else if (proto == IP_PROTO_TCP || proto == IP_PROTO_UDP) {
+            pn = proto == IP_PROTO_TCP ? "tcp" : "udp";
+        }
+        snprintf(line, sizeof line, "%llu %s %s %s %s ipv4 %s %s %s %s %s %d %s",
+                 (unsigned long long)n->now, ifn, dir, sm, dm, pn, s, d, sp, dp,
+                 len, info);
+    } else {
+        snprintf(line, sizeof line, "%llu %s %s %s %s 0x%04x - - - - - %d -",
+                 (unsigned long long)n->now, ifn, dir, sm, dm, type, len);
+    }
+
+    int slot = (n->pcaphead + n->npcap) % NET_PCAP_MAX;
+    if (n->npcap == NET_PCAP_MAX) {
+        slot = n->pcaphead;
+        n->pcaphead = (n->pcaphead + 1) % NET_PCAP_MAX;
+    } else n->npcap++;
+    n->pcap[slot].node = node;
+    memcpy(n->pcap[slot].line, line, sizeof line > sizeof n->pcap[slot].line
+                                         ? sizeof n->pcap[slot].line : sizeof line);
+    n->pcap[slot].line[NET_PCAP_LINE - 1] = 0;
+}
+
+void net_pcap(Net *n, bool on)      { n->pcapping = on; }
+bool net_pcap_on(const Net *n)      { return n->pcapping; }
+void net_pcap_clear(Net *n)         { n->npcap = 0; n->pcaphead = 0; }
+int  net_pcap_count(const Net *n, int node)
+{
+    int k = 0;
+    for (int i = 0; i < n->npcap; i++)
+        if (n->pcap[(n->pcaphead + i) % NET_PCAP_MAX].node == node) k++;
+    return k;
+}
+void net_dump_pcap(const Net *n, int node, Buf *out)
+{
+    for (int i = 0; i < n->npcap; i++) {
+        int s = (n->pcaphead + i) % NET_PCAP_MAX;
+        if (n->pcap[s].node != node) continue;
+        buf_puts(out, n->pcap[s].line);
+        buf_putc(out, '\n');
+    }
+}
+
 /* Put a frame on the interface's port, tagging it if the interface was told
  * to. This is the only place L3 touches L2. */
-static void if_tx(Net *n, Host *h, int ifx, const uint8_t dst[6],
+static void if_tx(Net *n, int node, Host *h, int ifx, const uint8_t dst[6],
                   uint16_t type, const uint8_t *payload, int plen)
 {
     Iface *f = &h->ifc[ifx];
@@ -1542,6 +1684,7 @@ static void if_tx(Net *n, Host *h, int ifx, const uint8_t dst[6],
     if (len < 60) { memset(fr + len, 0, (size_t)(60 - len)); len = 60; }
     if (f->vlan) len = eth_tag(fr, len, f->vlan);
     f->tx_pkt++;
+    pcap_frame(n, node, ifx, "out", fr, len);
     port_tx(n, f->port, fr, len);
 }
 
@@ -1566,14 +1709,13 @@ static void arp_emit(Net *n, int node, Host *h, int ifx, int op,
     else         trace(n, "%s arp reply %s is-at %02x:%02x:%02x:%02x:%02x:%02x",
                        n->node[node].name, s1, f->mac[0], f->mac[1], f->mac[2],
                        f->mac[3], f->mac[4], f->mac[5]);
-    if_tx(n, h, ifx, dst, ETH_P_ARP, a, sizeof a);
+    if_tx(n, node, h, ifx, dst, ETH_P_ARP, a, sizeof a);
 }
 
 static void ip_send_frame(Net *n, int node, Host *h, int ifx,
                           const uint8_t *pkt, int len, const uint8_t dmac[6])
 {
-    (void)node;
-    if_tx(n, h, ifx, dmac, ETH_P_IP, pkt, len);
+    if_tx(n, node, h, ifx, dmac, ETH_P_IP, pkt, len);
 }
 
 /* ------------------------------------------------------------- the filter */
@@ -1714,6 +1856,7 @@ static PingResult ip_output_if(Net *n, int node, int force_if, uint32_t dst,
     e = arp_slot(n, h, nh);
     e->pending = true;
     e->seen = n->now;
+    e->ifx = ifx;
     arp_hold(n, e, pkt, len, ifx);
     arp_emit(n, node, h, ifx, 1, nh, MAC_ZERO, MAC_BCAST);
     return PING_OK;
@@ -1901,6 +2044,7 @@ static void ip_input(Net *n, int node, int ifx, uint8_t *pkt, int len)
     if (!e->pending || n->now - e->seen > 1000) {
         e->pending = true;
         e->seen = n->now;
+        e->ifx = oif;
         arp_hold(n, e, pkt, total, oif);
         arp_emit(n, node, h, oif, 1, nh, MAC_ZERO, MAC_BCAST);
     }
@@ -1923,6 +2067,7 @@ static void arp_input(Net *n, int node, int ifx, const uint8_t *a, int len)
         memcpy(e->mac, smac, 6);
         e->pending = false;
         e->seen = n->now;
+        e->ifx = ifx;             /* the wire it really spoke on */
         if (e->holdlen && e->hold >= 0) {
             uint8_t held[NET_FRAME_MAX];
             int hl = e->holdlen, hi = e->holdif;
@@ -1960,6 +2105,8 @@ static void host_rx(Net *n, int node, int ifx, uint8_t *fr, int len)
      * hands it up. No promiscuous mode, because a machine that quietly saw
      * everybody else's traffic would make VLANs pointless. */
     if (!mac_eq(fr, f->mac) && !mac_group(fr)) { return; }
+    /* The card accepted it, so this is a frame tcpdump would see. */
+    pcap_frame(n, node, ifx, "in", fr, len);
     int off = eth_payload_off(fr, len);
     uint16_t type = eth_type(fr, len);
     if (type == ETH_P_ARP) arp_input(n, node, ifx, fr + off, len - off);
@@ -1978,6 +2125,7 @@ bool net_arp_resolve(Net *n, int node, uint32_t ip, uint8_t out[6])
     ArpEntry *e = arp_slot(n, h, ip);
     e->pending = true;
     e->seen = n->now;
+    e->ifx = ifx;
     arp_emit(n, node, h, ifx, 1, ip, MAC_ZERO, MAC_BCAST);
     for (int i = 0; i < 200; i++) {
         net_step(n, 1);
@@ -3358,8 +3506,18 @@ void net_dump_arp(const Net *n, int node, Buf *out)
         char ip[20], mac[20];
         net_fmt_ip(e->ip, ip, sizeof ip);
         net_fmt_mac(e->mac, mac, sizeof mac);
-        buf_printf(out, "%-16s %s %s\n", ip, e->pending ? "(incomplete)" : mac,
-                   e->pending ? "" : "ether");
+        /* WHICH CARD IT WAS LEARNED ON, because on a box with two of them
+         * that is the answer: an address that answers on the wrong wire is a
+         * cable in the wrong port, and a line without the interface cannot
+         * say so. Blank when nothing has touched the entry yet rather than
+         * guessed from the mask. */
+        char nm[24];
+        if (e->ifx >= 0) if_name(n, node, e->ifx, nm, sizeof nm);
+        else             snprintf(nm, sizeof nm, "?");
+        buf_printf(out, "%-16s %-18s %-6s dev %-6s age %llus\n", ip,
+                   e->pending ? "(incomplete)" : mac,
+                   e->pending ? "" : "ether", nm,
+                   (unsigned long long)((n->now - e->seen) / 1000));
     }
 }
 

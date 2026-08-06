@@ -424,8 +424,43 @@ void netsite_info(Machine *m, int op, Buf *out)
     case NETINFO_TRACE:  net_dump_trace(n, out);        break;
     case NETINFO_PORT:   net_dump_ports(n, node, out);  break;
     case NETINFO_FW:     net_dump_fw(n, node, out);     break;
+    case NETINFO_PCAP:   net_dump_pcap(n, node, out);   break;
     default: break;
     }
+}
+
+/* Traceroute, from inside the machine, over the real stack.
+ *
+ * net_traceroute() is the thing itself: a probe per TTL, and whatever ICMP
+ * comes back read off the host's own error state. All this does is put the
+ * hops into text, one per line, and a hop that answered nothing is a `*`
+ * rather than a guess. The last line is the destination only when the
+ * destination really replied. */
+void netsite_traceroute(Machine *m, const char *dst, Buf *out)
+{
+    int node = attach(m);
+    if (!node) { buf_puts(out, "ifdown\n"); return; }
+    uint32_t ip = 0;
+    if (!net_parse_ip(dst, &ip)) { buf_puts(out, "badaddr\n"); return; }
+    uint32_t hops[16];
+    int nh = net_traceroute(homenet(m), node, ip, hops, 12);
+    if (nh <= 0) { buf_puts(out, "noroute\n"); return; }
+    for (int i = 0; i < nh; i++) {
+        char a[20];
+        if (hops[i]) net_fmt_ip(hops[i], a, sizeof a);
+        else         snprintf(a, sizeof a, "*");
+        buf_printf(out, "%d %s\n", i + 1, a);
+    }
+}
+
+/* Forget one neighbour: `arp -d`. */
+int netsite_arp_del(Machine *m, const char *addr)
+{
+    int node = attach(m);
+    if (!node) return -1;
+    uint32_t ip = 0;
+    if (!net_parse_ip(addr, &ip)) return -1;
+    return net_arp_del(homenet(m), node, ip) ? 0 : -1;
 }
 
 /* Ping, from inside the machine, over the real stack. */
@@ -462,6 +497,16 @@ void netsite_trace(Machine *m, int on)
     (void)attach(m);
     net_trace(homenet(m), on != 0);
     if (on) net_trace_clear(homenet(m));
+}
+
+/* And the frame capture, which is the other ring: one line per frame at this
+ * machine's card, which is what tcpdump(8) reads. Turning it on clears it,
+ * so what a capture holds is what has happened since somebody asked. */
+void netsite_pcap(Machine *m, int on)
+{
+    (void)attach(m);
+    net_pcap(homenet(m), on != 0);
+    if (on) net_pcap_clear(homenet(m));
 }
 
 /* Forget the world. Called when the harness starts a fresh ticket, so one

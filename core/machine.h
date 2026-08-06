@@ -13,7 +13,12 @@
 #include "ns.h"
 
 #define PKG_MAX        64
-#define PKGFILE_MAX    48
+/* The most files one package may declare. nomsh, the base tools, was
+ * sitting exactly on 48 when the network instruments were added to it, and
+ * a package that overflows this is caught loudly by the installer rather
+ * than silently shipping short -- which is the only reason this number can
+ * be moved safely at all. */
+#define PKGFILE_MAX    56
 #define UNIT_MAX       32
 #define CONSOLE_MAX    120
 #define PROC_MAX        32
@@ -434,6 +439,18 @@ bool machine_break(Machine *m, uint64_t seed, int nfaults, char *what, size_t wh
  * This exists so the draw rate can be COUNTED. `NOM_FORCE_FAULT` proves a
  * fault works and says nothing about whether a player ever meets it. */
 bool machine_airgapped(uint64_t seed);
+
+/* --- and the same breaker, with the WORLD holding the other end of it ----
+ * D23: *the world supplies the cause.* A blackout, a disk that has been
+ * spinning too long or a comms cupboard with no air breaks a machine in the
+ * running tower, and it must break it the same way a ticket does -- real
+ * bytes in the real Vfs, found by `pkg verify` because they are genuinely
+ * different. core/siteday.c is what calls these; see the notes above each
+ * one in core/breaker.c. */
+void breaker_syslog(Machine *m, const char *line);
+void breaker_powerfail(Machine *m, Rng *r, bool writing, char *d, size_t ds);
+bool breaker_bad_sector(Machine *m, Rng *r, char *d, size_t ds);
+
 const char *breaker_dealt(void);
 int         breaker_fault_count(void);
 const char *breaker_fault_name(int i);
