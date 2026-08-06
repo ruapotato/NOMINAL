@@ -15,6 +15,17 @@ var v := PackedVector3Array()
 var c := PackedColorArray()
 var f := PackedVector3Array()
 
+# WHICH PART OF THE THING THIS BOX IS, for the one caller that needs to tell a
+# shirt from a head after the mesh is built. Off by default and costing nothing:
+# the tower's own mesh is a hundred thousand triangles and does not want eight
+# more bytes on every vertex of it. people.gd turns it on, sets `tag` before
+# each box, and reads it back in a shader as UV -- which is how one mesh shared
+# by twenty people can put a different shirt on each of them without becoming
+# twenty meshes. See people.gd for what the two numbers mean.
+var tagging := false
+var tag := Vector2.ZERO
+var t := PackedVector2Array()
+
 
 # The same table as tower.gd's _shade(): up is full, down is dark, and the two
 # horizontal axes differ so a corner reads as a corner.
@@ -34,6 +45,8 @@ func quad(a: Vector3, b: Vector3, d: Vector3, e: Vector3, col: Color, collide :=
 	for p in [a, d, b, a, e, d]:
 		v.append(p)
 		c.append(lit)
+		if tagging:
+			t.append(tag)
 	if collide:
 		for p in [a, b, d, a, d, e]:
 			f.append(p)
@@ -92,6 +105,8 @@ func mesh() -> ArrayMesh:
 	arr.resize(Mesh.ARRAY_MAX)
 	arr[Mesh.ARRAY_VERTEX] = v
 	arr[Mesh.ARRAY_COLOR] = c
+	if tagging and t.size() == v.size():
+		arr[Mesh.ARRAY_TEX_UV] = t
 	m.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
 	var mat := StandardMaterial3D.new()
 	mat.vertex_color_use_as_albedo = true

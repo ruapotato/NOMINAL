@@ -2011,7 +2011,7 @@ func _place_devices() -> void:
 				if not slot.is_empty():
 					_desks.append({"tenant": int(d.tenant), "k": k,
 						"pos": slot.centre, "yaw": float(slot.yaw),
-						"floor": int(d.floor)})
+						"floor": int(d.floor), "dev": str(d.name)})
 			if slot.is_empty():
 				slot = _floor_slot(room, k, nu)
 		# A managed box has a management line and no picture on the back of it.
@@ -2080,8 +2080,59 @@ func _place_devices() -> void:
 # core says HOW MANY are addressed, not WHICH, so the view spends them in
 # install order: t7d0 first. That is a presentation of a number, and it is the
 # same order the room was cabled in, which is the order they really would be.
-var _desks: Array = []          # {tenant, k, pos, yaw} -- one per desk device
+var _desks: Array = []          # {tenant, k, pos, yaw, dev} -- one per desk device
 var _people_node: Node3D = null
+
+# AND WHO SITS AT EACH ONE, WHICH IS CORE'S TO SAY AND NOT THIS FILE'S.
+# `desks <tenant>` prints a name against every desk -- "t1d4  Ola Jelinek" --
+# and prints the same one every time, because it is a hash of the seed and the
+# device. people.gd spends that name on what they look like, so the view has
+# to read it rather than invent one: an invented name would be a second
+# opinion about a person the game already has an opinion about.
+#
+# ASKED ONCE PER TENANCY, EVER. A name cannot change, so this is a cache with
+# no invalidation in it, and a tenancy that has not been asked about yet draws
+# off the desk's own name until the answer arrives.
+var _who := {}                  # device name -> the person at it
+var _who_asked := {}            # tenant -> true
+
+func _desk_names(tenants: Dictionary) -> void:
+	# NOT WITH A LEAD IN A CONSOLE. `desks` typed while the crash cart is
+	# plugged into a box is a line typed at that box's shell, not a question
+	# for the landlord -- the same rule _snapshot() follows, for the same
+	# reason. It will be asked the next time the body is on its feet.
+	if not site_up or ses_where() != 1:
+		return
+	for t in tenants.keys():
+		if _who_asked.has(t):
+			continue
+		var got := 0
+		# READING A NAME IS NOT SOMETHING HAPPENING. site() marks the clipboard
+		# stale after every line, because almost every line can move money or a
+		# box; this one cannot, and leaving the flag alone stops a new tenancy
+		# costing an extra `status`, `service` and `load` on the next frame.
+		var was := _snap_dirty
+		var said := site("desks %d" % int(t))
+		_snap_dirty = was
+		for line in said.split("\n", false):
+			var f: PackedStringArray = line.split(" ", false)
+			# `    t1d4     Ola Jelinek       f1 office #36   10.0.1.14 ...`
+			# INDENTED, which is what tells a desk from the header above it:
+			# "tenancy 1, f1 office #36: 20 desks" also begins with a t, and
+			# read as a desk it seats somebody called "1, f1" at a desk called
+			# `tenancy`. Nothing is ever drawn for that, because no device is
+			# called that -- but it is a row of nonsense in the cache and the
+			# next thing to read it would not know.
+			if not line.begins_with("    ") or f.size() < 3 \
+					or not str(f[0]).begins_with("t"):
+				continue
+			_who[str(f[0])] = "%s %s" % [str(f[1]), str(f[2])]
+			got += 1
+		# Asked and answered. A tenancy that answered nothing is one that has
+		# not moved in yet, and it gets asked again when it has.
+		if got > 0:
+			_who_asked[t] = true
+
 
 func _seats() -> Array:
 	var P = preload("res://scripts/people.gd")
@@ -2094,6 +2145,10 @@ func _seats() -> Array:
 		# however well it was served afterwards -- and the day a player finally
 		# fixes a tenancy is the day the building has to show it.
 		bad[int(row.tenant)] = int(row.strikes) > 0
+	var mine := {}
+	for d in _desks:
+		mine[int(d.tenant)] = true
+	_desk_names(mine)
 	var out: Array = []
 	for d in _desks:
 		var t := int(d.tenant)
@@ -2104,8 +2159,10 @@ func _seats() -> Array:
 			mood = P.M_SLUMPED
 		elif not works:
 			mood = P.M_WAITING_BAD if sad else P.M_WAITING
+		var dev := str(d.get("dev", ""))
 		out.append({"pos": d.pos, "yaw": d.yaw, "mood": mood,
-			"floor": int(d.get("floor", 0))})
+			"floor": int(d.get("floor", 0)),
+			"who": str(_who.get(dev, dev))})
 	return out
 
 

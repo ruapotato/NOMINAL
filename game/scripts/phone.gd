@@ -134,8 +134,32 @@ const SCREEN_H := 0.116
 #   edge shows its thickness and it reads as something with a weight in it.
 const POSE_DOWN := Vector3(0.208, -0.222, -0.430)
 const ROT_DOWN := Vector3(-0.40, 0.13, 0.0)
-const POSE_READ := Vector3(0.115, -0.070, -0.230)
-const ROT_READ := Vector3(-0.10, 0.06, 0.0)
+# AND THE ONE IN BETWEEN IS A POSE AND NOT A PARKING SPACE. Held up with a
+# lead in, it was at (0.115, -0.070, -0.230) turned three degrees: a rectangle
+# almost parallel to the glass of the screen, sitting off to one side. A
+# playtester: "still rolls with the yaw and is squarer to the eye than it
+# should be. Legible, just not designed."
+#
+# Both halves of that are the same fault. A rectangle whose face is parallel
+# to the view but whose CENTRE is off to the right does not project as a
+# rectangle -- the perspective shears it, and a sheared rectangle reads as a
+# thing that has rolled rather than a thing that is held. Three degrees of
+# yaw is not enough to say "somebody has turned this in their hand" and is
+# quite enough to shear it.
+#
+# So the pose commits: turned nine degrees so the far edge really is farther
+# away and the case shows its own left side, pitched eleven so you are looking
+# DOWN the face of it the way you look down a phone, and rolled three -- the
+# cant a right wrist puts on a slab it is holding from the low corner. The
+# shear is still there, because perspective, and now it agrees with the pose
+# instead of arguing with it.
+#
+# IT DID NOT MOVE MUCH, and that is deliberate: 186 mm of screen at reading
+# distance is the reason the console on it is readable at all, and an angle
+# steep enough to be dramatic is an angle that foreshortens the text. The
+# check is that every line of the console is still readable in a screenshot.
+const POSE_READ := Vector3(0.124, -0.082, -0.238)
+const ROT_READ := Vector3(-0.19, 0.16, -0.055)
 # AND UP IN FRONT OF YOUR FACE when you are actually typing on it: square to
 # the eye, centred, and close enough that 900 pixels of screen are about 900
 # pixels of window. This is the "zoom in on your debugger" the owner asked for,
