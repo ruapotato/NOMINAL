@@ -22,6 +22,7 @@ void netsite_pin(Machine *m, struct Net *n, int node);
 /* And make its node agree with what the operating system on it has done --
  * which is nothing at all when the operating system is not running. */
 void netsite_apply(Machine *m);
+void netsite_stale(Machine *m);
 
 #define MAXTOK 12
 
@@ -189,24 +190,57 @@ static void sync_disk(Session *ses, int dev)
     if (!m) return;
     Net *n = ses->s.net;
     int node = ses->s.dev[dev].node;
-    uint32_t a = net_if_get_addr(n, node, 0);
-    uint32_t mk = net_if_get_mask(n, node, 0);
     uint32_t gw = net_get_gateway(n, node);
     uint32_t ns = net_get_resolver(n, node);
-    char cfg[320], ip[20], g[20], s[20];
-    if (a) {
-        net_fmt_ip(a, ip, sizeof ip);
-        int len = snprintf(cfg, sizeof cfg,
-                           "iface eth0\n  address %s\n  netmask %d\n", ip,
-                           net_mask_len(mk));
-        if (gw) {
-            net_fmt_ip(gw, g, sizeof g);
-            len += snprintf(cfg + len, sizeof cfg - (size_t)len, "  gateway %s\n", g);
+    char ip[20], g[20], s[20];
+    /* EVERY CARD IT HAS, NOT THE FIRST ONE.
+     *
+     * This wrote `iface eth0` and nothing else, so a floor server carrying a
+     * vlan per tenancy on tagged subinterfaces -- which is the build D27
+     * recommends and --loadcheck measures -- had its whole configuration in
+     * memory and nowhere else. A mains failure took the subinterfaces, their
+     * addresses and every DHCP pool riding on them, and the file on its own
+     * disk went on naming an address for a card that had nothing, which is
+     * the founding rule broken in the place it costs most. netsite.c reads
+     * `iface eth1.13` back and makes the subinterface again.
+     *
+     * A card with no address still gets a stanza: the player made that
+     * subinterface, and a subinterface waiting for an address is a decision
+     * in exactly the way an address is. */
+    Buf cfg = {0};
+    int nports = net_node_ports(n, node);
+    bool any = false;
+    for (int i = 0; i < NET_IF_MAX; i++) {
+        if (!net_if_exists(n, node, i)) continue;
+        uint32_t ia = net_if_get_addr(n, node, i);
+        /* A bare socket with no address is not worth a stanza: it is a hole
+         * in the back of the box whether or not anybody writes it down. A
+         * SUBINTERFACE with no address IS, because nothing else in the world
+         * remembers that the player made it. */
+        if (!ia && i < nports) continue;
+        char nm[24];
+        net_if_name(n, node, i, nm, sizeof nm);
+        buf_printf(&cfg, "iface %s\n", nm);
+        if (ia) {
+            net_fmt_ip(ia, ip, sizeof ip);
+            buf_printf(&cfg, "  address %s\n  netmask %d\n", ip,
+                       net_mask_len(net_if_get_mask(n, node, i)));
         }
-    } else {
-        snprintf(cfg, sizeof cfg, "iface eth0\n  address dhcp\n");
+        /* THE GATEWAY BELONGS TO THE BOX, NOT TO A CARD, so it goes under the
+         * first stanza whichever card that is -- a floor server addressed
+         * only on subinterfaces has no eth0 stanza to hang it off, and netd
+         * reads the first `gateway` in the file either way. */
+        if (!any && gw) {
+            net_fmt_ip(gw, g, sizeof g);
+            buf_printf(&cfg, "  gateway %s\n", g);
+        }
+        any = true;
     }
-    vfs_write(&m->disk, "/etc/net/interfaces", cfg, strlen(cfg));
+    /* Nothing configured at all means dhcp, which is what a machine with no
+     * configuration does and what the image ships with. */
+    if (!any) buf_puts(&cfg, "iface eth0\n  address dhcp\n");
+    vfs_write(&m->disk, "/etc/net/interfaces", cfg.p, cfg.len);
+    buf_free(&cfg);
     if (ns) {
         char rc[64];
         net_fmt_ip(ns, s, sizeof s);
@@ -330,6 +364,14 @@ static void do_power(Session *ses, int dev, bool on, Buf *out)
         return;
     }
     buf_printf(out, "you press the button on %s.\n", d->name);
+    /* THE SITE EMPTIED ITS NODE WHEN THE POWER WENT (site_power ->
+     * power_down), and nothing on the disk changed while it was off -- so
+     * netsite's "the config has not changed, there is nothing to apply"
+     * short-cut was true of the FILES and false of the WIRE. Say the wire is
+     * stale, and the boot below reads the disk again. Without this a server
+     * switched back on after a mains failure came up with no address at all,
+     * while `cat /etc/net/interfaces` on its own console named one. */
+    netsite_stale(ses->mach[dev]);
     Machine *m = box_of(ses, dev, out);
     if (!m->boot.running)
         buf_puts(out, "it did not finish booting, so nothing of it is on the "
@@ -389,11 +431,30 @@ static void dev_line(const Session *ses, int i, Buf *out)
             if (net_port_state(ses->s.net, d->node, p) != PORT_NOCABLE) used++;
         buf_printf(out, " %d/%d ports used", used, d->nports);
     } else {
-        uint32_t a = net_if_get_addr(ses->s.net, d->node, 0);
+        /* THE FIRST ADDRESS IT HAS, ON WHICHEVER CARD.
+         *
+         * This read interface 0 and nothing else, so a floor server carrying
+         * its floor's vlan on a tagged subinterface -- the build D27
+         * recommends -- was listed by `look` as "no address" while `show`
+         * two lines later printed the address it plainly had. The name of
+         * the interface comes with it when it is not eth0, because that is
+         * the only way somebody who cannot see the box can tell a socket
+         * from a vlan riding on one. */
+        int ifx = 0;
+        uint32_t a = 0;
+        for (int k = 0; k < NET_IF_MAX && !a; k++) {
+            a = net_if_get_addr(ses->s.net, d->node, k);
+            if (a) ifx = k;
+        }
         if (a) {
             net_fmt_ip(a, ip, sizeof ip);
             buf_printf(out, " %s/%d", ip,
-                       net_mask_len(net_if_get_mask(ses->s.net, d->node, 0)));
+                       net_mask_len(net_if_get_mask(ses->s.net, d->node, ifx)));
+            if (ifx) {
+                char nm[24];
+                net_if_name(ses->s.net, d->node, ifx, nm, sizeof nm);
+                buf_printf(out, " on %s", nm);
+            }
         } else buf_printf(out, " no address, %d port%s", d->nports,
                           d->nports == 1 ? "" : "s");
         /* AN OS IS RUNNING ON IT ONLY IF IT IS SWITCHED ON.
@@ -679,6 +740,16 @@ static void do_help(const Session *ses, Buf *out)
         "                            a WAN side\n"
         "  router <box> on|off       vlan <box> <port> <n>   (a switch's port)\n"
         "  subif <box> <nic> <vlan> <ip>/<bits>    trunk <box> <port> <v>..\n"
+        "                            an address on a card FOR ONE VLAN, which is how\n"
+        "                            one socket terminates a subnet per floor. It is\n"
+        "                            an address like any other: a server addressed\n"
+        "                            only on subinterfaces serves its floor's files\n"
+        "                            and holds its pools exactly as eth0 would, and\n"
+        "                            all of it is on its disk and comes back after a\n"
+        "                            power cut\n"
+        "  subif <box> <nic> <vlan> off            take one away again, with any\n"
+        "                            pool that was answering on it. The card\n"
+        "                            underneath is untouched\n"
         "  dhcpd <box> <first> <count> <bits> <gw> <dns>     dhcp <box>\n"
         "                            ONE POOL PER SEGMENT, AND THERE IS NO VLAN\n"
         "                            IN THIS LINE. The pool lands on whichever\n"
@@ -1047,6 +1118,23 @@ static void do_spool(Session *ses, int n, char *t[MAXTOK], Buf *out)
                    ses->s.dev[ses->cab_dev].name, ses->cab_port);
         return;
     }
+    /* THE DRUM IN YOUR HANDS IS THE DRUM IN YOUR HANDS.
+     *
+     * This reset the metres unconditionally, and `cable a b cat5e` calls it
+     * with the kind spelled out on every run -- so a drum with 288 m left on
+     * it silently became a fresh 305 m one, six times in a row, and printed
+     * "you have 305 m of cat5e on the spool" immediately after `spool` had
+     * said 288. The drum was effectively infinite and the count was a lie,
+     * which is worse than either. Asking for what you are already holding is
+     * not a trip to the store cupboard. */
+    if (ses->spool_kind == (int)k) {
+        buf_printf(out, "you already have the %s drum: %d m left on it.\n",
+                   site_cable_name(k), ses->spool_left);
+        return;
+    }
+    if (ses->spool_kind >= 0)
+        buf_printf(out, "the %s drum goes back on the shelf.\n",
+                   site_cable_name((CableKind)ses->spool_kind));
     ses->spool_kind = (int)k;
     ses->spool_left = SPOOL_DRUM_M;
     ses->cab_dev = -1;

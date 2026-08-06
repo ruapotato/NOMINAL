@@ -273,6 +273,15 @@ static void bind_services(Net *n, Machine *m, int node)
  * it, so a box that comes back with a different address does not come back
  * serving somebody else's subnet: the pool simply does not start, which is
  * the honest outcome and is visible in `dhcpd <box>`.
+ *
+ * THAT SCOPING USED TO COST A FLOOR SERVER ITS POOLS ALTOGETHER, and it was
+ * recorded as a known limit rather than fixed: sync_disk wrote `iface eth0`
+ * and nothing else, so a pool on a tagged subinterface came back looking for
+ * an interface that no longer existed and did not start. It was the right
+ * call while a subinterface was a router's business; D27 made a per-floor
+ * vlan server the recommended build and it stopped being one. The disk names
+ * every interface now -- see read_ifaces() below -- so the subinterface is
+ * back before start_services() runs and the pool lands where it did.
  */
 #define SVC_FILE "/etc/net/services"
 
@@ -359,6 +368,102 @@ static bool cfg_field(Machine *m, const char *path, const char *key,
     return false;
 }
 
+/* --------------------------------------------- every card, not just eth0 */
+/* WHAT AN `iface` LINE NAMES.
+ *
+ * eth0 is the first socket on the back; eth1.13 is a tagged subinterface
+ * riding on the second one, and NAMING ONE IS WHAT CREATES IT. That is the
+ * whole of the fix for the worst bug a playtest has found in this file: a
+ * floor server addressed on three vlans was written to disk as `iface eth0`
+ * and nothing else, so a mains failure took its subinterfaces, its addresses
+ * and its DHCP pools with it while the file on its own disk went on
+ * describing a machine that no longer existed. The disk is the one source of
+ * truth for a configuration, so the disk has to be able to SAY subinterface.
+ *
+ * Returns the interface index, or -1 for a name this box cannot have. */
+static int if_by_name(Net *n, int node, const char *nm)
+{
+    if (nm[0] != 'e' || nm[1] != 't' || nm[2] != 'h') return -1;
+    const char *p = nm + 3;
+    if (*p < '0' || *p > '9') return -1;
+    int nic = 0;
+    while (*p >= '0' && *p <= '9' && nic < 1000) nic = nic * 10 + (*p++ - '0');
+    if (!*p) {                                    /* a socket, eth0..ethN-1 */
+        return nic < net_node_ports(n, node) ? nic : -1;
+    }
+    if (*p != '.') return -1;
+    p++;
+    if (*p < '0' || *p > '9') return -1;
+    int vlan = 0;
+    while (*p >= '0' && *p <= '9' && vlan < 10000) vlan = vlan * 10 + (*p++ - '0');
+    if (*p) return -1;
+    return net_if_subif(n, node, nic, vlan);
+}
+
+/* One `iface` stanza, as read off the disk. */
+typedef struct {
+    int      ifx;
+    bool     dhcp, has_ip;
+    uint32_t ip, mask;
+} IfCfg;
+
+/* Read /etc/net/interfaces into a list of stanzas, creating any tagged
+ * subinterface a stanza names. A file with one `iface eth0` in it -- which
+ * is every machine the break-fix half of the game ships -- comes out of here
+ * as exactly one entry, which is what it was before this existed.
+ *
+ * THE FIRST STANZA FALLS BACK TO INTERFACE 0 when its name is not one this
+ * box could have. An image whose config names a card udev did not create is
+ * a real fault this game generates, and the honest reading of it is "the
+ * config for this machine's one card", which is what it has always been. */
+static int read_ifaces(Machine *m, Net *n, int node, IfCfg *out, int cap)
+{
+    Vfs *fs = m->on_rescue ? &m->rescue : &m->disk;
+    VNode *f = vfs_resolve(fs, "/etc/net/interfaces", NULL);
+    if (!f || f->kind != VN_FILE) return 0;
+    int nif = 0;
+    IfCfg *cur = NULL;
+    const char *p = f->data.p, *end = p + f->data.len;
+    while (p < end) {
+        const char *nl = p;
+        while (nl < end && *nl != '\n') nl++;
+        const char *t = p;
+        while (t < nl && (*t == ' ' || *t == '\t')) t++;
+        if (t < nl && *t != '#') {
+            char key[24], val[64];
+            const char *q = next_word(t, nl, key, sizeof key);
+            q = next_word(q, nl, val, sizeof val);
+            if (strcmp(key, "iface") == 0) {
+                cur = NULL;
+                if (nif < cap) {
+                    int ifx = if_by_name(n, node, val);
+                    if (ifx < 0 && nif == 0) ifx = 0;
+                    if (ifx >= 0) {
+                        /* The same card named twice is one card. */
+                        for (int i = 0; i < nif; i++)
+                            if (out[i].ifx == ifx) { cur = &out[i]; break; }
+                        if (!cur) {
+                            cur = &out[nif++];
+                            memset(cur, 0, sizeof *cur);
+                            cur->ifx = ifx;
+                            cur->mask = net_mask_bits(SITE_MASK);
+                        }
+                    }
+                }
+            } else if (cur && strcmp(key, "address") == 0) {
+                if (strcmp(val, "dhcp") == 0) cur->dhcp = true;
+                else if (net_parse_ip(val, &cur->ip)) cur->has_ip = true;
+            } else if (cur && strcmp(key, "netmask") == 0) {
+                uint32_t pm;
+                if (net_parse_ip(val, &pm)) cur->mask = pm;
+                else { int b = small_int(val); if (b > 0 && b <= 32) cur->mask = net_mask_bits(b); }
+            }
+        }
+        p = nl < end ? nl + 1 : nl;
+    }
+    return nif;
+}
+
 /* Attach this machine to the site and make its node agree with its disk.
  * Returns the node id, or 0 if it could not be plugged in at all. */
 static int attach(Machine *m)
@@ -405,9 +510,24 @@ static int attach(Machine *m)
     int node = m->net_node;
     m->net_cfg = want;
 
+    /* WHAT THE DISK SAYS THIS BOX'S CARDS ARE, read before anything is torn
+     * down, because reading it is what creates the subinterfaces a stanza
+     * names and the tear-down below has to know which ones to keep. */
+    IfCfg want_if[NET_IF_MAX];
+    int nwant = read_ifaces(m, n, node, want_if, NET_IF_MAX);
+
     /* Start from nothing every time. A reconfiguration is a reconfiguration:
-     * leaving the old address on would make a deleted line invisible. */
-    net_if_addr(n, node, 0, 0, 0);
+     * leaving the old address on would make a deleted line invisible -- and
+     * a subinterface the file no longer names is a deleted line of exactly
+     * the same kind, so it goes too. A socket is a hole in the box and
+     * cannot go; it loses its address instead. */
+    for (int i = 0; i < NET_IF_MAX; i++) {
+        if (!net_if_exists(n, node, i)) continue;
+        bool keep = false;
+        for (int k = 0; k < nwant; k++) if (want_if[k].ifx == i) { keep = true; break; }
+        if (!keep && i >= net_node_ports(n, node)) net_if_del(n, node, i);
+        else net_if_addr(n, node, i, 0, 0);
+    }
     net_route_clear(n, node);
     net_set_resolver(n, node, 0);
     net_arp_flush(n, node);
@@ -427,33 +547,38 @@ static int attach(Machine *m)
      * udev did not create -- then nothing applied it, and the interface is
      * down. That is one real mechanism producing a whole family of symptoms
      * further up, and none of them are written down anywhere. */
-    if (!netd_up(m)) { net_if_up(n, node, 0, false); return node; }
+    if (!netd_up(m)) {
+        for (int i = 0; i < NET_IF_MAX; i++)
+            if (net_if_exists(n, node, i)) net_if_up(n, node, i, false);
+        return node;
+    }
+    for (int k = 0; k < nwant; k++) net_if_up(n, node, want_if[k].ifx, true);
     net_if_up(n, node, 0, true);
     /* The listeners come up whether or not addressing succeeds: a daemon
      * with a socket open on a machine that never got an address is a real
      * and quite confusing state, and netstat should show it. */
     bind_services(n, m, node);
 
-    char addr[64] = "", gw[64] = "", nm[64] = "", ns[64] = "";
-    if (!cfg_field(m, "/etc/net/interfaces", "address", addr, sizeof addr))
-        return node;                         /* configured with no address */
+    /* EVERY CARD THE FILE NAMES, not the first address in it. A floor server
+     * doing three vlans' DHCP has three addresses and no reason to have one
+     * on eth0 at all. */
+    bool addressed = false;
+    for (int k = 0; k < nwant; k++) {
+        IfCfg *c = &want_if[k];
+        if (c->dhcp) {
+            /* Really ask. Really wait. Really fail if nothing answers. */
+            if (net_dhcp_client(n, node, c->ifx)) addressed = true;
+        } else if (c->has_ip) {
+            net_if_addr(n, node, c->ifx, c->ip, c->mask);
+            addressed = true;
+        }
+    }
+    if (!addressed) return node;             /* configured with no address */
 
-    uint32_t ip = 0, mask = net_mask_bits(SITE_MASK);
-    if (strcmp(addr, "dhcp") == 0) {
-        /* Really ask. Really wait. Really fail if nothing answers. */
-        if (!net_dhcp_client(n, node, 0)) return node;
-    } else {
-        if (!net_parse_ip(addr, &ip)) return node;   /* an address that is not one */
-        if (cfg_field(m, "/etc/net/interfaces", "netmask", nm, sizeof nm)) {
-            uint32_t pm;
-            if (net_parse_ip(nm, &pm)) mask = pm;
-            else { int b = small_int(nm); if (b > 0 && b <= 32) mask = net_mask_bits(b); }
-        }
-        net_if_addr(n, node, 0, ip, mask);
-        if (cfg_field(m, "/etc/net/interfaces", "gateway", gw, sizeof gw)) {
-            uint32_t g;
-            if (net_parse_ip(gw, &g)) net_set_gateway(n, node, g);
-        }
+    char gw[64] = "", ns[64] = "";
+    if (cfg_field(m, "/etc/net/interfaces", "gateway", gw, sizeof gw)) {
+        uint32_t g;
+        if (net_parse_ip(gw, &g)) net_set_gateway(n, node, g);
     }
     /* The resolver is a separate file and a separate mistake. */
     if (cfg_field(m, "/etc/resolv.conf", "nameserver", ns, sizeof ns)) {
@@ -476,6 +601,22 @@ static int attach(Machine *m)
 void netsite_apply(Machine *m)
 {
     if (m) (void)attach(m);
+}
+
+/* THE NODE WAS EMPTIED WHILE THE MACHINE WAS NOT LOOKING.
+ *
+ * attach() skips its work when the files it watches have not changed since
+ * it last ran, which is right for a syscall and wrong the moment something
+ * OUTSIDE this file clears the node -- and switching a box off does exactly
+ * that (site_power -> power_down, which is what a power cut IS). The disk is
+ * unchanged, so the hash still matched, so a server switched back on after a
+ * mains failure applied NOTHING: it sat there with `cat /etc/net/interfaces`
+ * naming an address its own kernel did not have, which is the founding rule
+ * broken on the worst morning of a run. Whoever empties the node says so
+ * here, and the next attach re-reads the disk. */
+void netsite_stale(Machine *m)
+{
+    if (m) m->net_cfg = 0;
 }
 
 /* ------------------------------------------------------------ the syscalls */

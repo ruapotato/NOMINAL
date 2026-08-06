@@ -1338,6 +1338,159 @@ static void check_cable_batch(int *passed, int *total)
     printf("    three runs out of one cupboard cost %ld m of walking\n",
            ses.walked - walked);
 
+    /* THE DRUM DOES NOT REFILL ITSELF BETWEEN RUNS.
+     *
+     * `cable a b cat5e` names the grade on every line, and naming it took a
+     * fresh drum off the shelf -- so a drum with 288 m left on it printed
+     * "you have 305 m of cat5e on the spool" and then took the run off 305.
+     * `spool` afterwards agreed with the new number, so the state was
+     * self-consistent and the count was still a lie, six lines in a row. The
+     * drum is free (it is the RUN that is charged, and D27 says so) and it
+     * is meant to be: what it may not do is quietly reset. */
+    say(&ses, "spool back", &o);
+    say(&ses, "spool cat5e", &o);
+    int start = ses.spool_left;
+    ck("a fresh drum is a whole drum", start > 0);
+    say(&ses, "buy pc pcx", &o);
+    say(&ses, "go goods", &o); say(&ses, "carry pcx", &o);
+    say(&ses, "go f1.comms", &o); say(&ses, "drop", &o);
+    say(&ses, "go mdf", &o);
+    const char *again = say(&ses, "cable core:9 pcx:0 cat5e", &o);
+    ck("naming the grade you are already holding is not a trip to the store",
+       has(again, "you already have the cat5e drum") &&
+       !has(again, "you have 305 m"));
+    ck("and the metres came off the drum that was in your hands",
+       ses.spool_left > 0 && ses.spool_left < start);
+    ck("so `spool` and the run agree about what is left",
+       has(say(&ses, "spool", &o), "m of cat5e on the spool"));
+    {
+        char want[64];
+        snprintf(want, sizeof want, "%d m of cat5e", ses.spool_left);
+        ck("and the number it prints is the number it counted down to",
+           has(o.p, want));
+    }
+    /* Asking for a DIFFERENT grade really is a trip to the store, and it
+     * says the old drum went back rather than pretending it never existed. */
+    const char *swap = say(&ses, "spool cat6", &o);
+    ck("a different grade swaps the drum, out loud",
+       has(swap, "cat5e drum goes back on the shelf") &&
+       has(swap, "m of cat6 on the spool") && ses.spool_left == start);
+
+    buf_free(&o);
+    session_end(&ses);
+}
+
+/* ---------------------------- a floor server on vlans, across the mains
+ *
+ * THE WORST THING A PLAYTEST HAS FOUND IN THIS GAME. Every `addr`, `gw` and
+ * `subif` prints "(written onto its disk: it has an OS and netd reads that
+ * file)". After a mains failure and a repair, a floor server came back with
+ * `cat /etc/net/interfaces` naming an address its own kernel did not have,
+ * no subinterfaces at all, and every DHCP pool gone -- on the morning of a
+ * blackout, which is the morning you are least able to spare it.
+ *
+ * Two mechanisms, and this scenario needs both:
+ *
+ *   1. sync_disk wrote `iface eth0` and nothing else, so the subinterfaces
+ *      and their addresses lived in memory and went with the power.
+ *   2. netsite's attach() skips its work when the files it watches have not
+ *      changed -- but switching a box OFF empties its node from outside that
+ *      file, and the disk is unchanged, so the box came back having applied
+ *      nothing at all. THAT is why the shell below is opened before the
+ *      power cut and not after: a session that never made a syscall on the
+ *      box leaves the cache cold and the bug hidden, which is exactly how
+ *      the existing power-cut scenario passed while a player was losing
+ *      three tenancies' rent to it.
+ */
+static void check_vlan_server_reboot(int *passed, int *total)
+{
+    P = passed; T = total;
+    printf("\na floor server on vlan subinterfaces, across a power cut\n");
+    Session ses;
+    if (!session_start(&ses, GATE_SEED, 100000)) { ck("a session starts", false); return; }
+    Buf o = {0};
+    static const char *SCRIPT[] = {
+        "buy switch24 core", "buy server srv2", "buy pc desk1",
+        "go goods", "carry core",  "go mdf", "drop",
+        "go goods", "carry srv2",  "go mdf", "drop",
+        "go goods", "carry desk1", "go mdf", "drop",
+        "cable core:1 srv2:0 cat6",
+        "cable core:3 srv2:1 cat6",
+        "cable core:2 desk1:0 cat6",
+        "power srv2 on",
+        "power desk1 on",
+        "addr srv2 10.12.0.10/24",
+        "gw srv2 10.12.0.1",
+        "subif srv2 1 13 10.13.0.1/24",
+        "trunk core 3 13",
+        "vlan core 2 13",
+        "dhcpd srv2 10.13.0.100 20 24 10.13.0.1 10.13.0.1",
+        "httpd srv2",
+        NULL
+    };
+    for (int i = 0; SCRIPT[i]; i++) say(&ses, SCRIPT[i], &o);
+
+    ck("a pool on a vlan subinterface serves a desk on that vlan",
+       has(say(&ses, "dhcp desk1", &o), "10.13.0.100"));
+    ck("and the box says which leg it is answering on",
+       has(say(&ses, "dhcpd srv2", &o), "eth1.13"));
+
+    /* THE DISK, READ ON THE BOX'S OWN CONSOLE. This is the claim `subif`
+     * makes every time it is typed. */
+    say(&ses, "plug srv2", &o);
+    const char *conf = say(&ses, "cat /etc/net/interfaces", &o);
+    ck("the subinterface is on its own disk, where `subif` said it put it",
+       has(conf, "iface eth1.13") && has(conf, "10.13.0.1"));
+    ck("and so is the card underneath it, with the gateway",
+       has(conf, "iface eth0") && has(conf, "10.12.0.10") &&
+       has(conf, "gateway 10.12.0.1"));
+    /* A real syscall, which is what warms the cache the bug hid behind. */
+    ck("and the kernel in it agrees, having applied the same file",
+       has(say(&ses, "ip addr", &o), "eth1.13") && has(o.p, "10.13.0.1/24"));
+    say(&ses, "unplug", &o);
+
+    /* THE MAINS GOES. Off, on, and nothing else typed. */
+    say(&ses, "power srv2 off", &o);
+    say(&ses, "power srv2 on", &o);
+
+    const char *sh = say(&ses, "show srv2", &o);
+    ck("it comes back with the address its own disk names",
+       has(sh, "10.12.0.10/24"));
+    ck("and with the subinterface, which nothing else in the world remembered",
+       has(sh, "eth1.13") && has(sh, "10.13.0.1/24"));
+    ck("and serving the pool that was riding on it",
+       has(say(&ses, "dhcpd srv2", &o), "10.13.0.100-10.13.0.119") &&
+       has(o.p, "eth1.13"));
+    ck("and a desk that asks gets its address back, which is the whole point",
+       has(say(&ses, "dhcp desk1", &o), "10.13.0.100"));
+
+    /* AND `look` HAS TO SEE AN ADDRESS THAT IS NOT ON eth0. It read
+     * interface 0 and nothing else, so the very machine D27 recommends
+     * building was listed in its own room as "no address" while `show` two
+     * lines later printed the address it plainly had. */
+    say(&ses, "buy server srv3", &o);
+    say(&ses, "spool back", &o);          /* both hands, and one box */
+    say(&ses, "go goods", &o); say(&ses, "carry srv3", &o);
+    say(&ses, "go mdf", &o); say(&ses, "drop", &o);
+    say(&ses, "power srv3 on", &o);
+    say(&ses, "subif srv3 0 13 10.13.0.5/24", &o);
+    const char *lk = say(&ses, "look", &o);
+    ck("`look` sees an address on a subinterface, and names the interface",
+       has(lk, "10.13.0.5/24 on eth0.13") && !has(lk, "no address"));
+
+    /* AND A SUBINTERFACE CAN BE TAKEN AWAY, which no verb could do: a
+     * playtester had to park stale ones on an unused subnet to stop `dhcpd`
+     * binding to them. */
+    const char *off = say(&ses, "subif srv2 1 13 off", &o);
+    ck("`subif <box> <nic> <vlan> off` takes one away and says what went",
+       has(off, "eth1.13 is gone") && has(off, "card underneath"));
+    ck("and the pool that was answering on it went with it, not on paper only",
+       has(say(&ses, "dhcpd srv2", &o), "serves no addresses"));
+    ck("and it stays gone across the power, because the disk lost it too",
+       (say(&ses, "power srv2 off", &o), say(&ses, "power srv2 on", &o),
+        !has(say(&ses, "show srv2", &o), "eth1.13")) &&
+       has(o.p, "10.12.0.10/24"));
+
     buf_free(&o);
     session_end(&ses);
 }
@@ -1466,6 +1619,7 @@ int session_selfcheck(int *passed, int *total)
     check_prompt(passed, total);
     check_inventory(passed, total);
     check_cable_batch(passed, total);
+    check_vlan_server_reboot(passed, total);
     check_documented(passed, total);
     return 0;
 }

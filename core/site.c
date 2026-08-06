@@ -1342,7 +1342,8 @@ static const struct { const char *verb; int need; const char *usage; } VERB[] = 
     { "power",    3, "power <box> on|off" },
     { "gw",       3, "gw <box> <ip>" },
     { "router",   3, "router <box> on|off" },
-    { "subif",    5, "subif <box> <nic> <vlan> <ip>/<bits>" },
+    { "subif",    5, "subif <box> <nic> <vlan> <ip>/<bits>   add one\n"
+                     "subif <box> <nic> <vlan> off           take it away again" },
     { "vlan",     4, "vlan <switch> <port> <n>" },
     { "trunk",    3, "trunk <switch> <port> <vlan>..." },
     { "dhcpd",    2, "dhcpd <box> <first> <count> <bits> <gw> <dns>   start a pool\n"
@@ -1403,6 +1404,8 @@ bool site_cmd(Site *s, const char *line, Buf *out)
             "gw <dev> <ip>                  default gateway\n"
             "router <dev> on|off            forward between its interfaces\n"
             "subif <dev> <nic> <vlan> <ip>/<bits>   a tagged subinterface on a card\n"
+            "subif <dev> <nic> <vlan> off   take that subinterface away, with any\n"
+            "                               pool that was answering on it\n"
             "vlan <dev> <port> <n>          a switch's access port, in a vlan\n"
             "trunk <dev> <port> <vlan>...   a trunk, and what it may carry\n"
             "dhcpd <dev> <first> <count> <bits> <gw> <dns>\n"
@@ -1730,6 +1733,23 @@ bool site_cmd(Site *s, const char *line, Buf *out)
                             "`subif %s 0 30 10.0.30.1/24`\n", s->dev[d].name);
             return true;
         }
+        /* AND A WAY TO TAKE ONE AWAY. There was one -- an address of zero
+         * deletes the subinterface -- and no word in the game spelled it, so
+         * a playtester with stale vlans on a floor server could only park
+         * them on an unused subnet to stop `dhcpd` binding to them. `subif
+         * <box> <nic> <vlan> off` is that line, and it says what went. */
+        if (strcmp(t[4], "off") == 0 || strcmp(t[4], "none") == 0 ||
+            strcmp(t[4], "delete") == 0) {
+            if (!site_subif(s, d, nic, vlan, 0, 0)) {
+                buf_printf(out, "%s\n", site_err_text(s->err));
+                return true;
+            }
+            buf_printf(out, "eth%d.%d is gone from %s -- the subinterface, its "
+                            "address and any pool\n  that was answering on it. "
+                            "The card underneath it is untouched.\n",
+                       nic, vlan, s->dev[d].name);
+            return true;
+        }
         if (!parse_cidr(t[4], &ip, &mask)) { buf_puts(out, "?\n"); return true; }
         buf_printf(out, "%s\n", site_subif(s, d, nic, vlan, ip, mask)
                    ? "set" : site_err_text(s->err));
@@ -1804,6 +1824,32 @@ bool site_cmd(Site *s, const char *line, Buf *out)
             return true;
         }
         site_dump_dhcpd(s, d, out);
+        /* WHEN THE CHOICE WAS AMBIGUOUS, SAY SO. The pool lands on the
+         * interface whose address is inside it, and when two of this box's
+         * interfaces are in the same subnet the first one wins silently. It
+         * prints which one it chose, which is what saved a playtester -- but
+         * a player who is not told the choice was ambiguous has no reason to
+         * read that line at all. */
+        {
+            int node = s->dev[d].node, hit = 0;
+            char names[96] = "";
+            for (int i = 0; i < NET_IF_MAX; i++) {
+                uint32_t a = net_if_get_addr(s->net, node, i);
+                if (!a) continue;
+                uint32_t mk = net_mask_bits(atoi(t[4]));
+                if ((a & mk) != (first & mk)) continue;
+                char nm[24];
+                net_if_name(s->net, node, i, nm, sizeof nm);
+                if (hit++) strncat(names, " and ", sizeof names - strlen(names) - 1);
+                strncat(names, nm, sizeof names - strlen(names) - 1);
+            }
+            if (hit > 1)
+                buf_printf(out, "  AMBIGUOUS: %d of %s's interfaces are in that "
+                                "subnet -- %s.\n  It took the first. Two legs on one "
+                                "segment is usually a mistake somewhere\n  else, and "
+                                "`subif %s <nic> <vlan> off` takes one away.\n",
+                           hit, s->dev[d].name, names, s->dev[d].name);
+        }
         return true;
     }
     if (strcmp(t[0], "dhcp") == 0 && n >= 2) {

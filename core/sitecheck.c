@@ -702,6 +702,103 @@ static void check_agreement(const Building *b)
     site_free(&s);
 }
 
+/* ----------------------------- the floor server D27 recommends, on a vlan
+ *
+ * THE BUILD THE DOCUMENTATION RECOMMENDS, SILENTLY DISQUALIFIED. D27's
+ * competent tower is "a vlan per floor on a subinterface of the router, a
+ * switch per floor home-run to the core, a server in each floor's cupboard
+ * doing that floor's DHCP and holding its files". A server doing several
+ * vlans' DHCP MUST live on subinterfaces -- one address per segment -- and
+ * file_server_for() asked for an address on interface 0 specifically, so
+ * that server was skipped and its floor's tenancies pulled their files off a
+ * server downstairs across the riser instead. A playtester watched it for
+ * two days with the right box powered, addressed and serving ten metres
+ * away, and could only find out by reading the C.
+ *
+ * The floor server here has NO address on eth0 at all, which is the point.
+ */
+static void check_floor_server(const Building *b)
+{
+    printf("\na floor's own server, addressed only on the floor's vlan\n");
+    Site s;
+    site_new(&s, b, GATE_SEED, 100000);
+    site_credit(&s, 400000);
+
+    int mdf = bld_find(b, 0, RM_MDF);
+    int rt = site_install(&s, SDEV_ROUTER, mdf, "rt");
+    site_cable(&s, rt, 0, s.uplink, 0, CAB_CAT6);
+    site_addr(&s, rt, 0, s.wan_you, s.wan_mask);
+    site_gateway(&s, rt, s.wan_isp);
+    site_forwarding(&s, rt, true);
+
+    for (int i = 0; i < 400 && !s.tenant[0].moved; i++) site_day(&s, NULL);
+    if (!s.tenant[0].moved) { ck("a tenancy moves in", false); site_free(&s); return; }
+    int floor = s.tenant[0].floor;
+    int comms = comms_on(b, floor, s.tenant[0].room);
+
+    /* The basement server everybody's files were on before the floor got its
+     * own: one card, one address, plain eth0. It is the WRONG answer for
+     * this floor, and until this check it was the one the game picked. */
+    int base = site_install(&s, SDEV_SERVER, mdf, "basement");
+    site_power(&s, base, true);
+    site_addr(&s, base, 0, net_ip(10, 0, 0, 10), net_mask_bits(24));
+    site_gateway(&s, base, net_ip(10, 0, 0, 1));
+    site_httpd(&s, base, 80);
+    int csw = site_install(&s, SDEV_SWITCH24, mdf, "core");
+    site_cable(&s, rt, 1, csw, 0, CAB_CAT6);
+    site_cable(&s, base, 0, csw, 1, CAB_CAT6);
+    site_addr(&s, rt, 1, net_ip(10, 0, 0, 1), net_mask_bits(24));
+
+    /* The floor: its own switch, its own vlan, its own server in its own
+     * cupboard, and the router's leg into that vlan for the way out. */
+    const int V = 31;
+    int fsw = site_install(&s, SDEV_SWITCH24, comms, "fsw");
+    site_cable(&s, csw, 2, fsw, 0, CAB_FIBRE);
+    site_port_trunk(&s, csw, 2, V);
+    site_port_trunk(&s, fsw, 0, V);
+    site_subif(&s, rt, 1, V, net_ip(10, 0, 31, 1), net_mask_bits(24));
+    site_port_trunk(&s, csw, 0, V);
+
+    int fsrv = site_install(&s, SDEV_SERVER, comms, "floorsrv");
+    site_power(&s, fsrv, true);
+    site_cable(&s, fsrv, 0, fsw, 1, CAB_CAT6);
+    site_port_trunk(&s, fsw, 1, V);
+    /* ITS ONLY ADDRESS IS ON THE VLAN. No `site_addr` on eth0 anywhere. */
+    site_subif(&s, fsrv, 0, V, net_ip(10, 0, 31, 10), net_mask_bits(24));
+    site_httpd(&s, fsrv, 80);
+    site_dhcpd(&s, fsrv, net_ip(10, 0, 31, 100), 40, net_mask_bits(24),
+               net_ip(10, 0, 31, 1), net_ip(10, 0, 31, 1));
+
+    ck("the floor server has no address on eth0 and one on its vlan",
+       net_if_get_addr(s.net, s.dev[fsrv].node, 0) == 0 &&
+       net_if_get_addr(s.net, s.dev[fsrv].node, 2) == net_ip(10, 0, 31, 10));
+
+    int got = site_serve_vlan(&s, 0, fsw, CAB_CAT5E, V);
+    ck("their desks are cabled into the floor's own vlan", got > 1);
+    site_day(&s, NULL);
+    ck("and the floor's own server is what gave them their addresses",
+       site_tenant_addressed(&s, 0) == got);
+
+    Buf sv = {0};
+    site_dump_service(&s, &sv);
+    ck("a server addressed only on a vlan subinterface is still a file server",
+       s.tenant[0].files_dev == fsrv);
+    ck("so `service` names it, and does not mark them as served off-floor",
+       sv.p && strstr(sv.p, "floorsrv") != NULL &&
+       strstr(sv.p, "floorsrv <-") == NULL);
+    ck("and `service` says out loud that any address qualifies, not eth0",
+       sv.p && strstr(sv.p, "ANY address it holds") != NULL);
+    ck("their people really finished work over it",
+       s.last.finished > 0 && s.tenant[0].finished > 0);
+    /* AND IT IS THE FLOOR'S LEG THAT ANSWERED, not a hairpin through the
+     * router to some other address of the same box. */
+    ck("and the traffic never left the floor: the vlan's leg is what answered",
+       net_port_busy_us(s.net, s.dev[fsrv].node, 0) > 0 &&
+       net_port_busy_us(s.net, s.dev[base].node, 0) == 0);
+    buf_free(&sv);
+    site_free(&s);
+}
+
 /* ------------------------------------------------- flat versus segmented */
 /* THE ONE THAT PROVES ARCHITECTURE MATTERS. The same twenty-one machines,
  * doing the same work, wired two ways. Nothing anywhere decides that a big
@@ -1094,6 +1191,30 @@ static void check_dhcp_scope(const Building *b)
        has(o.p, "no lease") &&
        net_if_get_addr(s.net, s.dev[d11b].node, 0) == 0);
 
+    /* TWO LEGS ON ONE SEGMENT IS A CHOICE THE BOX MAKES SILENTLY.
+     *
+     * The pool lands on the interface whose address is inside it, and when
+     * two of them are, the first wins. It has always printed WHICH one, and
+     * that is what saved a playtester -- but a player with no reason to
+     * suspect a choice was made has no reason to read that line. */
+    site_cmd(&s, "subif edge 1 14 10.11.0.2/24", &o);
+    buf_clear(&o);
+    site_cmd(&s, "dhcpd edge 10.11.0.100 20 24 10.11.0.1 10.11.0.1", &o);
+    ck("a pool that could have landed on two interfaces says the choice was "
+       "ambiguous",
+       has(o.p, "AMBIGUOUS") && has(o.p, "eth1.11") && has(o.p, "eth1.14"));
+    ck("and names the line that takes one of them away again",
+       has(o.p, "subif edge <nic> <vlan> off"));
+    buf_clear(&o);
+    site_cmd(&s, "subif edge 1 14 off", &o);
+    ck("`subif <box> <nic> <vlan> off` is that line, and it works",
+       has(o.p, "eth1.14 is gone"));
+    buf_clear(&o);
+    site_cmd(&s, "dhcpd edge 10.11.0.100 20 24 10.11.0.1 10.11.0.1", &o);
+    ck("and with one leg on the segment the choice is no longer ambiguous",
+       !has(o.p, "AMBIGUOUS") && has(o.p, "eth1.11"));
+    site_cmd(&s, "dhcpd edge off", &o);
+
     /* And `show` names what a box serves, which it never did. */
     site_cmd(&s, "dhcpd edge 10.13.0.100 20 24 10.13.0.1 10.13.0.1", &o);
     buf_clear(&o);
@@ -1409,6 +1530,7 @@ int site_selfcheck(void)
     check_tenants(&b);
     check_bills(&b);
     check_agreement(&b);
+    check_floor_server(&b);
     check_flat(&b);
     check_demand(&b);
     check_dhcp_scope(&b);

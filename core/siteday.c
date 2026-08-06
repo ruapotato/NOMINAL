@@ -247,13 +247,59 @@ typedef struct {
 /* Returns the DEVICE, not the address, so that the day report can name it.
  * The preference order is the same as it always was: their own machine, then
  * one on their floor, then anything powered and addressed in the building. */
+/* IS THERE AN ADDRESS ON THIS BOX AT ALL -- on any card, socket or tagged
+ * subinterface.
+ *
+ * This used to ask for an address on INTERFACE 0 specifically, and that
+ * silently disqualified the exact machine D27 recommends building: a floor's
+ * own server, in the floor's own cupboard, doing that floor's DHCP -- which
+ * has to live on subinterfaces, because a box serving several vlans needs an
+ * address in each of them and eth0 is only one of them. A playtester watched
+ * floor 2's tenancies pull their files off srv1 a floor down across the
+ * riser for two days, with srv2 powered, addressed, httpd running, ten
+ * metres away. `service` printed the `<-` and explained it as a riser
+ * crossing, which was true and was not the reason.
+ *
+ * There is no justification anybody could have given a player for the old
+ * rule, so it is gone rather than documented. Which card a server's address
+ * is on is a fact about its cabling, not about whether it can hold files. */
+static uint32_t any_addr(const Site *s, int node)
+{
+    for (int i = 0; i < NET_IF_MAX; i++) {
+        uint32_t a = net_if_get_addr(s->net, node, i);
+        if (a) return a;
+    }
+    return 0;
+}
+
+/* WHICH OF ITS ADDRESSES A DESK WOULD USE: the one on the desk's own
+ * segment, if it has one, and otherwise the first it has. A floor server
+ * with a leg in each of three vlans is answered on the leg the asker is
+ * standing in, which is what a routing table does, and it means the traffic
+ * of a floor whose server is on its own vlan never leaves the floor. */
+static uint32_t server_addr_for(const Site *s, int dev, int desk)
+{
+    uint32_t da = net_if_get_addr(s->net, s->dev[desk].node, 0);
+    uint32_t dm = net_if_get_mask(s->net, s->dev[desk].node, 0);
+    int node = s->dev[dev].node;
+    uint32_t first = 0;
+    for (int i = 0; i < NET_IF_MAX; i++) {
+        uint32_t a = net_if_get_addr(s->net, node, i);
+        if (!a) continue;
+        if (!first) first = a;
+        uint32_t m = net_if_get_mask(s->net, node, i);
+        if (da && dm && (a & m) == (da & m) && (a & dm) == (da & dm)) return a;
+    }
+    return first;
+}
+
 static int file_server_for(const Site *s, int tenant)
 {
     int any = -1, floor = -1;
     for (int i = 0; i < s->ndev; i++) {
         const SiteDev *d = &s->dev[i];
         if (d->kind != SDEV_SERVER || !d->powered) continue;
-        if (!net_if_get_addr(s->net, d->node, 0)) continue;
+        if (!any_addr(s, d->node)) continue;
         if (d->tenant && d->tenant == s->tenant[tenant].tenant) return i;
         if (floor < 0 && d->floor == s->tenant[tenant].floor) floor = i;
         if (any < 0) any = i;
@@ -819,11 +865,13 @@ bool site_day(Site *s, SiteDay *rep)
         r.desks += t->ndesk;
         int fsd = file_server_for(s, i);
         t->files_dev = fsd;
-        uint32_t files = fsd >= 0 ? net_if_get_addr(s->net, s->dev[fsd].node, 0) : 0;
         for (int j = 0; j < t->ndesk && nx + SITE_DESK_FILES < cap; j++) {
             int d = t->desk0 + j;
             if (net_port_state(s->net, s->dev[d].node, 0) != PORT_UP) continue;
             if (!net_if_get_addr(s->net, s->dev[d].node, 0)) continue;
+            /* Per desk, because which of the server's legs answers depends on
+             * which segment the asker is standing in. */
+            uint32_t files = fsd >= 0 ? server_addr_for(s, fsd, d) : 0;
             r.connected++;
             /* WHEN THEY START. Spread across the first tenth of the busy
              * period, from the seed, because a building does not begin work
@@ -1193,7 +1241,10 @@ void site_dump_service(const Site *s, Buf *out)
     buf_puts(out,
                   "\n  files is the server their people actually pulled off yesterday.\n"
                   "  Their own machine if they have one and it is on; otherwise one on\n"
-                  "  their floor; otherwise anything powered in the building.\n");
+                  "  their floor; otherwise anything powered in the building. A server\n"
+                  "  qualifies on ANY address it holds -- a socket or a tagged vlan\n"
+                  "  subinterface, it makes no difference -- and the leg that answers is\n"
+                  "  the one on the asking desk's own segment when it has one.\n");
     if (offfloor)
         buf_puts(out, "  <- is a tenancy being served from another floor. Nothing refused\n"
                       "  it -- their traffic is just crossing a riser to get there, and\n"

@@ -1136,6 +1136,17 @@ bool net_if_del(Net *n, int node, int ifx)
     Host *h = host_of(n, node);
     if (!h || ifx < n->node[node].nports || ifx >= NET_IF_MAX) return false;
     if (!h->ifc[ifx].used) return false;
+    /* AND THE POOL THAT WAS ANSWERING ON IT GOES TOO. dhcpd already refuses
+     * to answer on an interface that is not there -- pool_for checks -- but
+     * the pool stayed in the table, so `dhcpd <box>` listed a range being
+     * served on a card that no longer existed. A tool that names a service
+     * nothing is running is the one thing this project cannot be. */
+    for (int i = 0; i < NET_POOL_MAX; i++) {
+        if (!h->pool[i].used || h->pool[i].ifx != ifx) continue;
+        for (int j = 0; j < NET_LEASE_MAX; j++)
+            if (h->lease[j].used && h->lease[j].pool == i) h->lease[j].used = false;
+        h->pool[i].used = false;
+    }
     memset(&h->ifc[ifx], 0, sizeof h->ifc[ifx]);
     h->ifc[ifx].port = -1;
     return true;
