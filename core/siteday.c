@@ -1427,8 +1427,16 @@ void site_dump_day(const Site *s, Buf *out)
     if (r->hot[0])
         buf_printf(out, "busiest port: %s, clocking %d%% of the busy period.\n",
                    r->hot, r->hot_util);
-    buf_printf(out, "%d complaint%s filed in all. Three ends the run.\n",
-               s->complaints, s->complaints == 1 ? "" : "s");
+    /* THE NUMBER THAT ENDS THE RUN, ASKED FOR RATHER THAN REMEMBERED. This
+     * said "Three" while `service` four hundred lines below computed it from
+     * site_complaints_allowed() -- so a player with fourteen tenancies read
+     * "Three ends the run" here and "5 filed complaints ends the run" there,
+     * about the same rule, in the same session. Of every number in the game
+     * this is the worst one to be wrong twice: it is the one the player is
+     * counting against. */
+    buf_printf(out, "%d complaint%s filed in all. %d ends the run.\n",
+               s->complaints, s->complaints == 1 ? "" : "s",
+               site_complaints_allowed(s));
     if (s->over) buf_printf(out, "\nTHE RUN IS OVER: %s\n", s->over_why);
 }
 

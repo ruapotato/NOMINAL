@@ -165,6 +165,23 @@ static void check_verbs(int *passed, int *total)
             answers = false;
         }
     }
+    /* TWO VIEWS OF THE NUMBER THAT ENDS YOUR RUN, AND THEY HAVE TO AGREE.
+     * `status` said "Three ends the run" from a literal while `service`
+     * computed it, so a player with fourteen tenancies read three in one
+     * place and five in the other, about the same rule, in the same session.
+     * Both are asked here, and both are compared against the function. */
+    {
+        char want[64];
+        snprintf(want, sizeof want, "%d ends the run",
+                 site_complaints_allowed(&ses.s));
+        ck("`status` prints the complaint threshold the model actually uses",
+           has(say(&ses, "status", &o), want));
+        snprintf(want, sizeof want, "%d filed complaints ends the run",
+                 site_complaints_allowed(&ses.s));
+        ck("and `service` prints the same number as `status`",
+           has(say(&ses, "service", &o), want));
+    }
+
     ck("the tower help names the clock, the money and the services too",
        named);
     ck("and every one of them answers at the tower prompt, not just the "
@@ -692,6 +709,30 @@ static void check_tenant_kit(int *passed, int *total)
         ck("and it stays in their room, still theirs",
            ses.s.dev[d].room == (uint16_t)room && ses.s.dev[d].tenant != 0);
         (void)floor;
+
+        /* AND THE OTHER DIRECTION, which the rule above quietly created.
+         * site_move() reassigned ownership from whatever room a box was put
+         * down in, so a playtester who bought a switch24 and carried it into
+         * a let office to serve the desks in it -- the thing the game
+         * recommends -- had it confiscated the moment they set it down. Four
+         * hundred pounds and the run, gone, and it made D28's own named
+         * mistake (the floor's switch put in the office) irreversible,
+         * because the documented fix is to carry the box somewhere cooler. */
+        say(&ses, "buy switch24 mine", &o);
+        say(&ses, "go goods", &o);
+        say(&ses, "carry mine", &o);
+        char to[64];
+        snprintf(to, sizeof to, "go #%d", room);
+        say(&ses, to, &o);
+        say(&ses, "drop", &o);
+        int mine = -1;
+        for (int i = 0; i < ses.s.ndev; i++)
+            if (strcmp(ses.s.dev[i].name, "mine") == 0) { mine = i; break; }
+        ck("a box you bought, set down in a let room, is still yours",
+           mine >= 0 && ses.s.dev[mine].room == (uint16_t)room &&
+           ses.s.dev[mine].tenant == 0);
+        ck("and you can pick it up again and carry it back out",
+           has(say(&ses, "carry mine", &o), "you pick mine up"));
     }
 
 done:

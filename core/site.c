@@ -539,7 +539,25 @@ bool site_move(Site *s, int dev, int room)
         if (s->jack[j].home == dev) { s->err = SITE_EJACK; return false; }
     s->dev[dev].room = (uint16_t)room;
     s->dev[dev].floor = s->b->rooms[room].floor;
-    s->dev[dev].tenant = s->b->rooms[room].tenant;
+    /* WHOSE BOX IT IS WAS DECIDED WHEN IT WAS INSTALLED, and carrying it
+     * somewhere does not change it. This used to reassign ownership from
+     * whatever room the thing was put down in -- so a playtester bought a
+     * switch24, carried it into a let office to serve the desks in it, put
+     * it down, and the game confiscated it:
+     *
+     *   carry sw3b
+     *   refused: sw3b belongs to the tenant on floor 3, not to you, and it
+     *     stays where it is.
+     *
+     * Four hundred pounds and the run, gone, for doing the thing the game
+     * recommends. Worse, it made D28's own named mistake -- the floor's
+     * switch put in the office with the desks -- an irreversible one, since
+     * the documented fix is to move the box somewhere cooler.
+     *
+     * A tenant's desk is a tenant's desk because move_in() INSTALLED it in
+     * their room (site_install, above, still reads the room). Nothing the
+     * player can carry is theirs to begin with, so nothing the player
+     * carries should become theirs by being set down. */
     return true;
 }
 
