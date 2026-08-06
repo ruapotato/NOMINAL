@@ -410,6 +410,15 @@ typedef struct {
      * right behaviour and it used to be silent, which made the resulting
      * slowness unattributable. -1 is nobody: no server was powered. */
     int      files_dev;
+    /* HOW MANY OF THEIR DESKS HAVE EVER ASKED FOR A LEASE. A desk asks when
+     * a day runs and not before, so twenty cabled desks with no address on
+     * the evening they were patched is not a fault at all -- it is a day
+     * that has not happened yet. `service` used to read `addressed == 0` and
+     * say "nothing is serving dhcp on their segment", which sent a player
+     * who had built it correctly off to re-check a working pool. This is
+     * counted where the request is really made, so the sentence is about
+     * what happened rather than about what a report inferred. */
+    int      leases_asked;
 } SiteTenant;
 
 /* HOW A DAY WENT, for the whole site. Every number in here was counted
@@ -420,6 +429,12 @@ typedef struct {
     int  tenants_in;        /* moved in                                    */
     int  tenants_served;    /* connected, addressed and finishing work     */
     int  desks, connected;
+    /* EVERY UNIT OF WORK THE TOWER CARRIED, which is not the same total as
+     * the tenancies' own `tried`/`finished` and must not be printed as if it
+     * were: a voice agent's CRM transfers are real traffic this building has
+     * to move and are not what the call centre is judged on. `--loadcheck`
+     * measures the tower with these; every player-facing report says the
+     * day's work with `site_day_work`, which sums the rows instead. */
     int  sessions, finished;
     long bytes;
     long rent;              /* taken today                                 */
@@ -929,6 +944,24 @@ void site_tenant_why(const Site *s, int tenant, char *out, int cap);
  * that tenancy was promised really happened yesterday. One place, because the
  * rent, the strike and the `service` page all have to agree about it. */
 bool site_tenant_served(const Site *s, int tenant);
+
+/* THE DAY'S WORK, SUMMED FROM THE ROWS `service` PRINTS -- and there is no
+ * second place it is counted.
+ *
+ * `status` and the `day` line used to print SiteDay.sessions, which is every
+ * unit of work the TOWER carried, while `service` printed each tenancy's own
+ * `tried`/`finished`, which is what that tenancy is JUDGED on. A voice
+ * agent's CRM traffic is the first and not the second, so on a two-tenancy
+ * playtest the headline said 134 transfers and the rows said 80 + 18 = 98,
+ * with nothing anywhere saying a call carries two more transfers behind it.
+ * Both numbers were true and the player could not reconcile them.
+ *
+ * So the headline is now literally the sum of the rows: this walks the same
+ * integers `site_dump_service` prints and adds them up. `unit` comes back as
+ * the trade's own word when every tenancy that did any work is in the same
+ * trade, and "jobs" when the building holds a mix -- so the headline never
+ * calls a call a transfer again. Pass NULL for anything you do not want. */
+void site_day_work(const Site *s, int *done, int *tried, const char **unit);
 
 /* ONE DAY. Moves people in, runs the busy period, takes the rent, counts the
  * strikes and files the complaints. Returns false once the run is over --

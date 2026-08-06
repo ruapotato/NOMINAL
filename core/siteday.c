@@ -209,6 +209,20 @@ int site_tenant_addressed(const Site *s, int tenant)
  *
  * Zero means "leave them where they are", which is what the untagged default
  * is and what every existing caller wants. */
+/* Which port of `dev` this desk is already on the end of -- the run off the
+ * spool or the lead into a jack, it makes no difference, because both are one
+ * link between the two boxes. -1 if the two are not joined. */
+static int port_between(const Site *s, int dev, int other)
+{
+    for (int i = 0; i < s->nlink; i++) {
+        const SiteLink *l = &s->link[i];
+        if (l->cable < 0) continue;
+        if (l->a == dev && l->b == other) return l->aport;
+        if (l->b == dev && l->a == other) return l->bport;
+    }
+    return -1;
+}
+
 int site_serve_vlan(Site *s, int tenant, int dev, CableKind k, int vlan)
 {
     s->err = SITE_OK;
@@ -219,7 +233,27 @@ int site_serve_vlan(Site *s, int tenant, int dev, CableKind k, int vlan)
     int done = 0;
     for (int i = 0; i < t->ndesk; i++) {
         int d = t->desk0 + i;
-        if (net_port_state(s->net, s->dev[d].node, 0) != PORT_NOCABLE) { done++; continue; }
+        if (net_port_state(s->net, s->dev[d].node, 0) != PORT_NOCABLE) {
+            /* AND A DESK ALREADY PATCHED INTO THIS BOX IS RE-VLANNED, not
+             * skipped. `serve 1 sw1` with no vlan patches twenty desks into
+             * the untagged default, and a playtester who did that to a
+             * tenancy wanting a segment of its own paid for the mistake
+             * twice: once in copper, and then in twenty-one hand-typed
+             * `vlan sw1 <port> 11` lines, because saying the line again
+             * with the vlan on the end did nothing at all. Setting a port
+             * that is already patched is a config change on a switch and
+             * costs nothing -- no copper is laid here and no metre is
+             * charged -- so the remedy for the whole mistake is the same
+             * line again with the vlan on it. Only ports on THIS box: the
+             * desks on somebody else's switch are somebody else's segment.
+             */
+            if (vlan > 0) {
+                int p = port_between(s, dev, d);
+                if (p >= 0) site_port_vlan(s, dev, p, vlan);
+            }
+            done++;
+            continue;
+        }
         int p = site_free_port(s, dev);
         if (p < 0) { s->err = SITE_ENOPORT; break; }
         if (site_cable(s, dev, p, d, 0, k) < 0) break;   /* money, or space */
@@ -1396,9 +1430,24 @@ void site_tenant_why(const Site *s, int ti, char *out, int cap)
         if (site_tenant_connected(s, ti) == 0)
             snprintf(out, (size_t)cap, "not one of their %d desks has a cable "
                                        "in it.", t->ndesk);
+        /* NOT ASKED YET IS NOT UNANSWERED. This said "nothing is serving
+         * dhcp on their segment" off `addressed == 0` alone, and printed it
+         * at a player who had just typed a correct `dhcpd` line: the pool
+         * was up, on the right subinterface, on the right vlan, and every
+         * one of those twenty desks held a lease from it one `day` later.
+         * The desks ask when the busy period runs and not a moment before,
+         * so which sentence this is depends on whether they have asked --
+         * which siteday counts at the call itself. */
+        else if (site_tenant_addressed(s, ti) == 0 && t->leases_asked == 0)
+            snprintf(out, (size_t)cap, "%d desks with link and no address "
+                                       "YET: their machines ask for a lease "
+                                       "when the day runs. `day`.",
+                     site_tenant_connected(s, ti));
         else if (site_tenant_addressed(s, ti) == 0)
-            snprintf(out, (size_t)cap, "%d desks with link and no address: "
-                                       "nothing is serving dhcp on their segment.",
+            snprintf(out, (size_t)cap, "%d desks with link asked for a lease "
+                                       "and got nothing: no dhcp pool answered "
+                                       "on their segment. `dhcpd <box>` says "
+                                       "what a box serves.",
                      site_tenant_connected(s, ti));
         return;
     }
@@ -1472,6 +1521,12 @@ bool site_day(Site *s, SiteDay *rep)
             int d = t->desk0 + j;
             if (net_port_state(s->net, s->dev[d].node, 0) != PORT_UP) continue;
             if (net_if_get_addr(s->net, s->dev[d].node, 0)) continue;
+            /* COUNTED WHERE THE REQUEST IS REALLY MADE. A desk that has
+             * asked and got nothing is a fault; a desk that has not asked
+             * yet is a day that has not run. `site_tenant_why` is the only
+             * reader, and it is the difference between accusing the player
+             * and telling them the clock has not turned. */
+            t->leases_asked++;
             net_dhcp_client(s->net, s->dev[d].node, 0);
         }
     }
@@ -2012,10 +2067,18 @@ bool site_advance(Site *s, int days, Buf *out)
              * which means a port with link on it AND an address on the card,
              * while `service` prints link and address in separate columns.
              * One of them had to say which it meant. */
+            /* AND THE WORK, SUMMED FROM THE ROWS `service` PRINTS. This
+             * printed r.finished/r.sessions -- what the TOWER carried --
+             * under the word "transfers", and a playtester with an office
+             * and a call centre in the building read 134 here and 80 + 18
+             * on the `service` page in the same second. See site_day_work. */
+            int wdone = 0, wtried = 0;
+            const char *wunit = "jobs";
+            site_day_work(s, &wdone, &wtried, &wunit);
             buf_printf(out, "day %d: %d in, %d served, %d/%d desks addressed, "
-                            "%d/%d transfers finished, %ld taken, %ld in hand\n",
+                            "%d/%d %s done, %ld taken, %ld in hand\n",
                        r.day, r.tenants_in, r.tenants_served, r.connected,
-                       r.desks, r.finished, r.sessions, r.rent, s->money);
+                       r.desks, wdone, wtried, wunit, r.rent, s->money);
             if (r.hot[0]) {
                 /* A DROP IS NOT NEWS; A DROP RATE IS.
                  *
@@ -2086,9 +2149,17 @@ void site_dump_day(const Site *s, Buf *out)
     buf_printf(out, "%d tenancies in, %d of them served yesterday. "
                     "%d of %d desks have a live port AND an address.\n",
                r->tenants_in, r->tenants_served, r->connected, r->desks);
-    buf_printf(out, "%d of %d transfers finished inside the busy period; "
-                    "%ld MB moved.\n", r->finished, r->sessions,
-               r->bytes / (1024 * 1024));
+    /* THE SAME ARITHMETIC AS THE `service` ROWS, and nothing else. The MB is
+     * everything the tower moved, including the traffic no tenancy is judged
+     * on, and it says so rather than being a second total of the same word. */
+    {
+        int wdone = 0, wtried = 0;
+        const char *wunit = "jobs";
+        site_day_work(s, &wdone, &wtried, &wunit);
+        buf_printf(out, "%d of %d %s finished inside the busy period, summed "
+                        "over the `service` rows; %ld MB moved in all.\n",
+                   wdone, wtried, wunit, r->bytes / (1024 * 1024));
+    }
     /* SAY WHICH DAY THESE ARE. `status` reports the day just gone and `load`
      * reports the life of the port, and a playtester found them disagreeing
      * -- 3590 against 12429 at the same moment -- with nothing anywhere
@@ -2170,7 +2241,23 @@ void site_dump_service(const Site *s, Buf *out)
                   "  uptime, so it is nineteen in twenty, and a day their origin\n"
                   "  answered nothing costs you a day's rent back.\n"
                   "  Three days in a row without that is a complaint, and a * is one\n"
-                  "  that has been filed. `load` says which port is full.\n");
+                  "  that has been filed. `load` says which port is full.\n"
+                  /* AND WHAT `worst` IS, which this footer never said. It is
+                   * `x->ended - x->began` off a finished TRANSFER and the
+                   * call loop never touches it -- so a call centre's `worst`
+                   * is measured on its agents' file and page traffic and has
+                   * nothing to do with a call. A playtester on day 18 read
+                   * `worst 780ms` beside `demand`'s "a call dies past 150 ms
+                   * one way", could not reconcile them, and had to sit at a
+                   * desk and run `voice` to find the real figure was 3.0 ms.
+                   * Two true numbers that look like they should compare. */
+                  "\n  worst is WALL TIME and not delay: the longest one transfer took\n"
+                  "  from start to finish, for any desk in that tenancy, all day. It\n"
+                  "  never comes off a call -- a voice tenancy's worst is measured on\n"
+                  "  its agents' files and pages -- so it does not compare with the\n"
+                  "  150 ms `demand` gives a call. What the calls sounded like is the\n"
+                  "  line under the row; `sit` at one of their desks and run `voice`\n"
+                  "  for the port that threw the audio away.\n");
     if (anywhy)
         buf_puts(out, "  The line under a row is that tenancy's own account of the day,\n"
                       "  in the units their business counts.\n");

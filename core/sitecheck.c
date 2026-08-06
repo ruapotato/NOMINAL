@@ -2788,6 +2788,399 @@ static void check_desk_rooms(const Building *b)
     site_free(s);
 }
 
+/* ==================================== ONE FACT, ONE PLACE: THE REPORTS AGREE
+ *
+ * This file's recurring defect, five times over in one day: a number computed
+ * in two places, and the wrong one shipped. These are the three a playtest
+ * that reached day 18 found, each pinned by the arithmetic rather than by the
+ * words, so that the two halves cannot drift apart again.
+ */
+
+/* ------------------------------------------------- A. the dhcp diagnostic
+ * `service` said "nothing is serving dhcp on their segment" at a player who
+ * had just typed a correct `dhcpd` line, because it read `addressed == 0`
+ * and never asked whether a pool existed or whether anybody had asked it for
+ * anything. One `day` later all twenty desks held leases from that pool.
+ * A desk asks when the busy period runs; the sentence has to know which of
+ * those two states it is in. */
+static void check_dhcp_diagnosis(const Building *b)
+{
+    printf("\nthe dhcp diagnostic, against what really happened\n");
+    Tower w;
+    int comms = comms_on(b, 1, 0);
+    tower_up(&w, b, GATE_SEED, comms, CAB_CAT6, true, 1);
+    Site *s = &w.s;
+    int ti = -1;
+    for (int i = 0; i < s->ntenant; i++)
+        if (s->tenant[i].floor == 1) { ti = i; break; }
+    if (ti < 0) { ck("the gate's tower lets a tenancy on floor 1", false);
+                  site_free(s); return; }
+    tower_until(&w, ti);
+    /* tower_up's router holds a pool over the whole flat /16 these desks
+     * land in: it is up, it is correct, and it has served nobody yet. */
+    int got = site_serve(s, ti, w.sw[0], CAB_CAT5E);
+    char why[240];
+    site_tenant_why(s, ti, why, sizeof why);
+    ck("cabled, with a live pool on their segment and no day run yet, they "
+       "have no addresses", got > 0 && site_tenant_addressed(s, ti) == 0);
+    ck("and `service` does NOT accuse the player of not serving dhcp",
+       strstr(why, "nothing is serving dhcp") == NULL);
+    ck("it says the leases are handed out when the day runs",
+       strstr(why, "YET") != NULL && strstr(why, "when the day runs") != NULL);
+    printf("    %s\n", why);
+    site_day(s, NULL);
+    ck("and one day later every one of those desks holds a lease from it",
+       site_tenant_addressed(s, ti) == got);
+    site_free(s);
+
+    /* AND WHEN IT REALLY IS THE FAULT IT USED TO ALLEGE, it still says so --
+     * off the same counter, because the desks asked and nothing answered. */
+    tower_up(&w, b, GATE_SEED, comms, CAB_CAT6, true, 1);
+    s = &w.s;
+    tower_until(&w, ti);
+    site_dhcpd_stop(s, w.rt);
+    site_serve(s, ti, w.sw[0], CAB_CAT5E);
+    site_day(s, NULL);
+    site_tenant_why(s, ti, why, sizeof why);
+    ck("with no pool anywhere, a day later they have asked and got nothing",
+       site_tenant_addressed(s, ti) == 0 &&
+       strstr(why, "asked for a lease and got nothing") != NULL);
+    printf("    %s\n", why);
+    site_free(s);
+}
+
+/* ------------------------------------------- B. the headline and the rows
+ * `status` said "134/134 transfers finished" over `service` rows summing to
+ * 80 + 18 = 98. Both were true: the headline counted every unit of work the
+ * TOWER carried, including the two CRM transfers behind every call, and the
+ * rows counted what each tenancy is JUDGED on. Nothing anywhere said so, and
+ * both used the word "transfers".
+ *
+ * The assertion is arithmetic, not wording: the headline is the sum of the
+ * rows. And it is run on a building where the two totals really do differ,
+ * so reverting the fix fails this rather than passing it by luck. */
+static void check_headline_sums_the_rows(void)
+{
+    printf("\nthe headline is the sum of the rows\n");
+    Building b;
+    if (!bld_generate(&b, 22ull)) { ck("seed 22 makes a building", false); return; }
+    int comms = bld_find(&b, 1, RM_COMMS);
+    if (comms < 0) comms = a_room(&b, 1);
+    Tower w;
+    tower_up(&w, &b, 22ull, comms, CAB_CAT5E, true, 3);
+    Site *s = &w.s;
+    int off = trade_on(s, TEN_OFFICE, 1), voi = trade_on(s, TEN_VOICE, 1);
+    if (off < 0 || voi < 0) {
+        ck("seed 22 lets an office and a call centre onto floor 1", false);
+        site_free(s); bld_free(&b); return;
+    }
+    tower_until(&w, voi);
+    site_serve(s, off, w.sw[0], CAB_CAT5E);
+    site_serve(s, voi, w.sw[2], CAB_CAT5E);
+    SiteDay r;
+    site_day(s, &r);
+
+    int rows_done = 0, rows_tried = 0;
+    for (int i = 0; i < s->ntenant; i++) {
+        if (!s->tenant[i].moved) continue;
+        rows_done  += s->tenant[i].finished;
+        rows_tried += s->tenant[i].tried;
+    }
+    int done = -1, tried = -1;
+    const char *unit = NULL;
+    site_day_work(s, &done, &tried, &unit);
+    ck("site_day_work is the sum of the rows `service` prints",
+       done == rows_done && tried == rows_tried && rows_tried > 0);
+    ck("a mixed building's work is not called by one trade's unit",
+       unit && strcmp(unit, "jobs") == 0);
+
+    /* THE GAP IS REAL ON THIS BUILDING, so this check is not passing by
+     * accident: the tower carried more than the tenancies were judged on. */
+    ck("and the tower really carried more than that, so the two differ",
+       r.sessions > rows_tried && r.finished != rows_done);
+    printf("    rows %d/%d judged; the tower carried %d/%d in all\n",
+           rows_done, rows_tried, r.finished, r.sessions);
+
+    char want[64];
+    Buf o = {0};
+    site_dump_day(s, &o);
+    snprintf(want, sizeof want, "%d of %d jobs", rows_done, rows_tried);
+    ck("`status` prints exactly that, and not the tower's own total",
+       has(o.p, want));
+    buf_free(&o);
+
+    /* And the `day` line, which is the other place it was printed. */
+    Buf a = {0};
+    site_advance(s, 1, &a);
+    rows_done = rows_tried = 0;
+    for (int i = 0; i < s->ntenant; i++) {
+        if (!s->tenant[i].moved) continue;
+        rows_done  += s->tenant[i].finished;
+        rows_tried += s->tenant[i].tried;
+    }
+    snprintf(want, sizeof want, "%d/%d jobs done", rows_done, rows_tried);
+    ck("and so does the line `day` prints", has(a.p, want));
+    ck("neither of them calls a call a transfer",
+       !has(a.p, "transfers") && rows_tried > 0);
+    buf_free(&a);
+
+    /* ONE TRADE IN THE BUILDING GETS ITS OWN WORD, out of the same function
+     * `service`'s legend uses, so the two cannot drift either. */
+    site_free(s);
+    tower_up(&w, &b, 22ull, comms, CAB_CAT5E, true, 3);
+    s = &w.s;
+    tower_until(&w, off);
+    site_serve(s, off, w.sw[0], CAB_CAT5E);
+    site_day(s, NULL);
+    unit = NULL;
+    site_day_work(s, NULL, NULL, &unit);
+    if (s->tenant[voi].tried == 0)
+        ck("with only offices working, the work is counted in transfers",
+           unit && strcmp(unit, site_tenant_kind_unit(TEN_OFFICE, true)) == 0);
+    site_free(s);
+    bld_free(&b);
+}
+
+/* ------------------------------------------- B2. the `worst` column, named
+ * The same family, found by the agent on core/session.c and reported through
+ * the coordinator: `service` prints `worst` and never said what it measures.
+ * It is `ended - began` on a finished TRANSFER; the call loop never touches
+ * it. So a call centre showed `worst 780ms` beside `demand`'s "a call dies
+ * past 150 ms one way", and the only way the playtester could rule out the
+ * contradiction was to sit at a desk and run `voice`, which said 3.0 ms.
+ * This reproduces exactly that shape -- a voice tenancy whose calls are well
+ * inside the delay budget and whose `worst` is not -- and asserts the page
+ * says which is which. */
+static void check_worst_is_wall_time(void)
+{
+    printf("\n`service` says what the worst column measures\n");
+    Building b;
+    if (!bld_generate(&b, 22ull)) { ck("seed 22 makes a building", false); return; }
+    int comms = bld_find(&b, 1, RM_COMMS);
+    if (comms < 0) comms = a_room(&b, 1);
+    Tower w;
+    tower_up(&w, &b, 22ull, comms, CAB_CAT5E, true, 3);
+    Site *s = &w.s;
+    int voi = trade_on(s, TEN_VOICE, 1);
+    if (voi < 0) { ck("seed 22 lets a call centre onto floor 1", false);
+                   site_free(s); bld_free(&b); return; }
+    tower_until(&w, voi);
+    site_serve(s, voi, w.sw[2], CAB_CAT5E);
+    site_day(s, NULL);
+    const SiteTenant *t = &s->tenant[voi];
+    printf("    the call centre: worst %d ms, one-way delay %d ms, %d/%d calls\n",
+           t->worst_ms, t->delay_ms, t->finished, t->tried);
+    ck("a call centre's worst is bigger than the delay a call is allowed",
+       t->worst_ms > SITE_VOICE_DELAY_MS);
+    ck("while its calls were well inside it -- so the two do not compare",
+       t->delay_ms < SITE_VOICE_DELAY_MS && t->tried > 0);
+    Buf o = {0};
+    site_dump_service(s, &o);
+    ck("`service` says worst is wall time and not delay",
+       has(o.p, "worst is WALL TIME and not delay"));
+    ck("and that a voice tenancy's worst never comes off a call",
+       has(o.p, "never comes off a call"));
+    ck("and sends them to the desk and `voice` for what a call really did",
+       has(o.p, "run `voice`"));
+    buf_free(&o);
+    site_free(s);
+    bld_free(&b);
+}
+
+/* ----------------------------------------------------- C. the power map
+ * `outlets` hid exactly the rooms the sockets run out in. Standing in a comms
+ * cupboard whose own `look` said "4 outlets on the wall, 4 free", `outlets`
+ * listed eleven let offices with thirteen free sockets each and no cupboard,
+ * no riser and no server room -- because the filter was "something is in it".
+ * The rooms it hid are the scarce ones and the rooms it showed are the ones
+ * that never matter. */
+static void check_power_map(const Building *b)
+{
+    printf("\nthe power map shows the rooms the sockets run out in\n");
+    Site s;
+    site_new(&s, b, GATE_SEED, 100000);
+    int comms = bld_find(b, 1, RM_COMMS);
+    int riser = bld_find(b, 1, RM_RISER);
+    if (comms < 0) { ck("floor 1 has a comms cupboard", false); site_free(&s); return; }
+    Buf o = {0};
+    site_dump_outlets(&s, 1, &o);
+    char row[64];
+    snprintf(row, sizeof row, "#%d", comms);
+    ck("an EMPTY comms cupboard is on the map, before anything is in it",
+       has(o.p, row));
+    /* And with the numbers `look` gives standing in it -- one source. */
+    snprintf(row, sizeof row, "#%d %*s%5d", comms, 0, "",
+             site_room_outlets_built(&s, comms));
+    ck("with the count the room was really wired with",
+       site_room_outlets_built(&s, comms) == 4 &&
+       site_room_outlets_free(&s, comms) == 4);
+    if (riser >= 0) {
+        snprintf(row, sizeof row, "#%d", riser);
+        ck("and the riser, which has one socket in it and no room for a mistake",
+           has(o.p, row) && site_room_outlets_built(&s, riser) == 1);
+    }
+    /* The corridors are still not on it: a nine-floor tower is four hundred
+     * rooms and the cleaner's socket is not a decision. */
+    int corr = bld_find(b, 1, RM_CORRIDOR);
+    if (corr >= 0) {
+        snprintf(row, sizeof row, "#%d", corr);
+        ck("and an empty corridor is still not, so the page stays readable",
+           !has(o.p, row));
+    }
+    buf_free(&o);
+
+    /* THE WHOLE BUILDING, and the question the page exists for: how many
+     * sockets has the empty cupboard I am about to fill, on a floor I have
+     * not touched. */
+    Buf all = {0};
+    site_dump_outlets(&s, -1, &all);
+    int missing = 0, kitrooms = 0;
+    for (int r = 0; r < b->nrooms; r++) {
+        if (b->rooms[r].kind != RM_COMMS && b->rooms[r].kind != RM_PLANT &&
+            b->rooms[r].kind != RM_SERVER && b->rooms[r].kind != RM_MDF)
+            continue;
+        kitrooms++;
+        snprintf(row, sizeof row, "#%d ", r);
+        if (!has(all.p, row)) missing++;
+    }
+    ck("`outlets all` has every room in the tower kit can live in, empty or not",
+       kitrooms > 0 && missing == 0);
+    printf("    %d equipment rooms in the tower, %d missing from the map\n",
+           kitrooms, missing);
+    buf_free(&all);
+    site_free(&s);
+}
+
+/* ------------------------------- and the two decisions the same report asked
+ *
+ * `serve <t> <sw>` with no vlan told the player, AFTER the copper was billed,
+ * that this tenancy had asked for a segment of its own -- and putting it
+ * right cost twenty-one hand-typed `vlan` lines, because `serve` skipped
+ * every desk that was already patched. The warning is above the bill now,
+ * and the same line with the vlan on the end is the whole remedy: it lays no
+ * copper and it moves the ports that are already there. See core/site.c for
+ * why this is not a refusal. */
+static void check_serve_vlan_remedy(const Building *b)
+{
+    printf("\nsaying `serve` again with the vlan on it is the whole remedy\n");
+    Site s;
+    site_new(&s, b, GATE_SEED, 100000);
+    site_credit(&s, 400000);
+    int mdf = bld_find(b, 0, RM_MDF);
+    int rt = site_install(&s, SDEV_ROUTER, mdf, "rt");
+    site_cable(&s, rt, 0, s.uplink, 0, CAB_CAT6);
+    site_addr(&s, rt, 0, s.wan_you, s.wan_mask);
+    site_gateway(&s, rt, s.wan_isp);
+    site_forwarding(&s, rt, true);
+    for (int i = 0; i < 400 && !s.tenant[0].moved; i++) site_day(&s, NULL);
+    if (!s.tenant[0].moved) { ck("a tenancy moves in", false); site_free(&s); return; }
+    int floor = s.tenant[0].floor;
+    int comms = comms_on(b, floor, s.tenant[0].room);
+
+    /* A pool that answers ON ONE VLAN AND NOWHERE ELSE, so an address is
+     * proof the port really moved into it. */
+    const int V = 31;
+    int csw = site_install(&s, SDEV_SWITCH24, mdf, "core");
+    site_cable(&s, rt, 1, csw, 0, CAB_CAT6);
+    int fsw = site_install(&s, SDEV_SWITCH24, comms, "fsw");
+    site_cable(&s, csw, 2, fsw, 0, CAB_CAT6);
+    site_port_trunk(&s, csw, 2, V);
+    site_port_trunk(&s, fsw, 0, V);
+    site_subif(&s, rt, 1, V, net_ip(10, 0, 31, 1), net_mask_bits(24));
+    site_port_trunk(&s, csw, 0, V);
+    site_dhcpd(&s, rt, net_ip(10, 0, 31, 100), 60, net_mask_bits(24),
+               net_ip(10, 0, 31, 1), s.wan_isp);
+
+    /* THE MISTAKE, as a player types it. */
+    Buf o = {0};
+    char line[64];
+    snprintf(line, sizeof line, "serve %d fsw", s.tenant[0].tenant);
+    site_cmd(&s, line, &o);
+    const char *note = o.p ? strstr(o.p, "NOTE:") : NULL;
+    const char *bill = o.p ? strstr(o.p, "desks have a port") : NULL;
+    ck("`serve` with no vlan warns a +segment tenancy BEFORE the bill",
+       s.tenant[0].own_segment && note && bill && note < bill);
+    long spent = s.spent;
+    int up = site_tenant_connected(&s, 0);
+    site_day(&s, NULL);
+    ck("and in the untagged default they get nothing off the vlan's pool",
+       up > 0 && site_tenant_addressed(&s, 0) == 0);
+    buf_free(&o);
+
+    /* THE REMEDY: the same line, with the vlan on the end. One line. */
+    Buf o2 = {0};
+    snprintf(line, sizeof line, "serve %d fsw %d", s.tenant[0].tenant, V);
+    site_cmd(&s, line, &o2);
+    ck("saying it again with the vlan lays no copper and costs nothing",
+       s.spent == spent && site_tenant_connected(&s, 0) == up);
+    site_day(&s, NULL);
+    ck("and every desk that was already patched is in the vlan now",
+       site_tenant_addressed(&s, 0) == up);
+    printf("    %d desks re-vlanned for 0, and all %d hold a lease off the "
+           "vlan's pool\n", up, site_tenant_addressed(&s, 0));
+    buf_free(&o2);
+    site_free(&s);
+}
+
+/* WHAT DISCHARGES `+server`. A playtester put ONE server in a floor's comms
+ * cupboard on three subinterfaces and all three of that floor's tenancies
+ * were served off it and paid -- after spending 1,350 on the assumption that
+ * they would not be. `demand` printed `+server` as a requirement and never
+ * said what satisfies it, while it DID say the web host's opposite rule,
+ * which made the ordinary case read as the unstated exception. The check is
+ * that `demand` says it and that the machine really behaves that way. */
+static void check_demand_says_what_a_server_is_for(const Building *b)
+{
+    printf("\n`demand` says what discharges +server, and the tower agrees\n");
+    Site s;
+    site_new(&s, b, GATE_SEED, 100000);
+    Buf d = {0};
+    site_dump_demand(&s, &d);
+    ck("`demand` still prints +server as a want", has(d.p, "+server"));
+    ck("and now says a shared server on their floor discharges it",
+       has(d.p, "WHAT DISCHARGES `+server`") && has(d.p, "their floor"));
+    ck("and that a web host's origin is the exception, in their own room",
+       has(d.p, "own room"));
+    buf_free(&d);
+    site_free(&s);
+
+    /* AND THE BEHAVIOUR IT DESCRIBES IS THE ONE THE DAY REALLY RUNS: one
+     * server, in the floor's cupboard, is the file server of every tenancy
+     * on that floor that did any work. */
+    Building b22;
+    if (!bld_generate(&b22, 22ull)) { ck("seed 22 makes a building", false); return; }
+    int comms = bld_find(&b22, 1, RM_COMMS);
+    if (comms < 0) comms = a_room(&b22, 1);
+    Tower w;
+    tower_up(&w, &b22, 22ull, comms, CAB_CAT5E, true, 3);
+    Site *t = &w.s;
+    int off = trade_on(t, TEN_OFFICE, 1), voi = trade_on(t, TEN_VOICE, 1);
+    if (off >= 0 && voi >= 0) {
+        tower_until(&w, voi);
+        /* The days it took them to move in included one of this building's
+         * own mains failures, which is what a blackout does to a server
+         * nobody put a battery under. Switch it back on: this check is
+         * about which tenancies a running server serves. */
+        site_power(t, w.srv, true);
+        site_addr(t, w.srv, 0, net_ip(10, 0, 0, 9), net_mask_bits(16));
+        site_gateway(t, w.srv, net_ip(10, 0, 0, 1));
+        site_httpd(t, w.srv, 80);
+        site_serve(t, off, w.sw[0], CAB_CAT5E);
+        site_serve(t, voi, w.sw[2], CAB_CAT5E);
+        site_day(t, NULL);
+        int shared = 0;
+        for (int i = 0; i < t->ntenant; i++)
+            if (t->tenant[i].moved && t->tenant[i].files_dev == w.srv) shared++;
+        ck("one server in the floor's cupboard is the file server of every "
+           "tenancy on it", shared >= 2 && t->tenant[off].files_dev == w.srv);
+        printf("    %d tenancies served off the one box in the cupboard\n", shared);
+    } else {
+        ck("seed 22 lets two tenancies onto floor 1", false);
+    }
+    site_free(t);
+    bld_free(&b22);
+}
+
 int site_selfcheck(void)
 {
     passed = total = 0;
@@ -2829,6 +3222,14 @@ int site_selfcheck(void)
     check_industry_uptime();
     check_industry_voice();
     check_desk_rooms(&b);
+    /* ONE FACT, ONE PLACE: the three reports that disagreed with each other,
+     * and the two decisions the same playtest asked for. */
+    check_dhcp_diagnosis(&b);
+    check_headline_sums_the_rows();
+    check_worst_is_wall_time();
+    check_power_map(&b);
+    check_serve_vlan_remedy(&b);
+    check_demand_says_what_a_server_is_for(&b);
     /* AND THAT A PERSON CAN PLAY ALL OF IT OVER A SOCKET, which is the
      * claim that had quietly stopped being true. See core/sessioncheck.c. */
     session_selfcheck(&passed, &total);

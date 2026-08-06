@@ -203,8 +203,9 @@ guessing into deciding:
     load                    the busiest ports, and which is dropping
     sit <desk>              their machine, their problem, their tools
     events                  what the world did to your kit overnight
-    outlets                 the power map: what every room was wired with, what
-                            is plugged into it and what is free. A comms
+    outlets                 the power map: every room kit can live in, empty
+                            or not, plus anything already plugged in -- what
+                            each was wired with and what is free. A comms
                             cupboard has four sockets and a let office has
                             plenty, so the fifth box into a cupboard is a
                             decision -- `outlet` buys another socket for that

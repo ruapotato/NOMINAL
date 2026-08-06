@@ -126,6 +126,34 @@ const char *site_tenant_kind_unit(int k, bool plural)
     default:          return plural ? "transfers": "transfer";
     }
 }
+/* THE HEADLINE IS THE SUM OF THE ROWS, and this is the only place either is
+ * added up. See site.h: `day` and `status` printed SiteDay.sessions -- every
+ * unit of work the tower carried -- under the word "transfers", beside a
+ * `service` page whose rows are each tenancy's own judged units. On a tower
+ * with one office and one call centre that read "134 transfers" over rows
+ * summing to 98, the difference being two CRM transfers behind every call,
+ * which nothing anywhere said. Summing the rows makes the two numbers one
+ * number, and a check asserts they are still the same arithmetic. */
+void site_day_work(const Site *s, int *done, int *tried, const char **unit)
+{
+    int d = 0, tr = 0, kind = -1;
+    bool mixed = false;
+    for (int i = 0; i < s->ntenant; i++) {
+        const SiteTenant *t = &s->tenant[i];
+        if (!t->moved || t->tried <= 0) continue;
+        d += t->finished;
+        tr += t->tried;
+        if (kind < 0) kind = t->kind;
+        else if (kind != t->kind) mixed = true;
+    }
+    if (done)  *done  = d;
+    if (tried) *tried = tr;
+    /* One trade in the building gets its own word; a mix gets a word that is
+     * true of all four, because "134 transfers" at a call centre is exactly
+     * the sentence this exists to stop being written. */
+    if (unit) *unit = (kind < 0 || mixed) ? "jobs" : site_tenant_kind_unit(kind, true);
+}
+
 int site_tenant_rent_pct(int k)
 {
     return (k >= 0 && k < TEN_KIND_COUNT) ? TRADE[k].rent_pct : 100;
@@ -1670,6 +1698,32 @@ void site_dump_demand(const Site *s, Buf *out)
         site_tenant_rent_pct(TEN_WEBHOST), SITE_WEB_HITS, SITE_WEB_HIT_KB,
         SITE_WEB_UP_NUM, SITE_WEB_UP_DEN,
         site_tenant_rent_pct(TEN_STUDIO), SITE_STREAM_KB);
+    /* AND WHAT DISCHARGES `+server`, because the column said the word and
+     * nothing anywhere said what satisfies it. A playtester put ONE server
+     * in a floor's comms cupboard on three vlan subinterfaces, and all three
+     * of that floor's tenancies pulled their files off it and all three paid
+     * -- which is right, and which they found out only after spending 1,350
+     * on the assumption that it would not be. The web host's rule is the
+     * opposite one and `demand` already prints it, so the office case read
+     * as an unstated exception to a rule that was actually the exception.
+     *
+     * This is the same preference order file_server_for() really applies in
+     * core/siteday.c, and the same sentence `service`'s files column already
+     * explains after the fact. Said before the lease is signed, where the
+     * decision about what to buy is actually made. */
+    buf_puts(out,
+        "\n  WHAT DISCHARGES `+server`, and it is not one box per tenancy.\n"
+        "  Their people pull files off the nearest server that is POWERED and\n"
+        "  ADDRESSED: their own machine if they have one, otherwise one on\n"
+        "  their floor, otherwise anything at all in the building, however\n"
+        "  many floors of riser that is through. So one server in a floor's\n"
+        "  comms cupboard, with a leg on each tenancy's vlan, serves that\n"
+        "  whole floor and every tenancy on it counts as having one --\n"
+        "  `service`'s files column names the box each of them really used,\n"
+        "  and marks with <- the ones being served from another floor.\n"
+        "  A WEB HOST IS THE EXCEPTION, for the reason above: their site is\n"
+        "  their software, so their origin must stand in their own room and\n"
+        "  no server of yours will answer for it.\n");
 }
 
 /* ------------------------------------------------------------ inspection */
@@ -1782,13 +1836,37 @@ void site_dump_jacks(const Site *s, int room, Buf *out)
                       "and comes out with the box.\n");
 }
 
+/* WHICH ROOMS THE POWER MAP IS ABOUT. A nine-floor tower is four hundred
+ * rooms and a page listing every corridor's one cleaner's socket is a page
+ * nobody reads -- but the rule that dropped the corridors also dropped the
+ * comms cupboards, the plant rooms, the risers and the MDF until something
+ * was standing in them, and those are THE ROOMS THE SOCKETS RUN OUT IN.
+ *
+ * A playtester stood in an empty comms cupboard whose own `look` said "4
+ * outlets on the wall, 4 free", typed `outlets`, and got eleven let offices
+ * with thirteen free sockets each and no cupboard at all. The one question
+ * the page exists to answer -- how many sockets has the empty room I am
+ * about to fill -- was the one it refused.
+ *
+ * So: every room built to hold equipment is always on the map, empty or not,
+ * and everywhere else appears once there is something in it or a socket in
+ * use. That is the same distinction outlets_built_in() already draws. */
+static bool room_holds_kit(int kind)
+{
+    switch (kind) {
+    case RM_MDF: case RM_SERVER: case RM_COMMS:
+    case RM_PLANT: case RM_RISER: case RM_GOODS:
+        return true;
+    default:
+        return false;
+    }
+}
+
 /* THE POWER MAP. The owner asked for "a way to view the mini map for the
  * entire area and request/order additional power", and this is the first
- * half: every room that has sockets in use or something in it, what the
- * wiring gave it, what has been bought, what is in it, and what one more
- * would cost. A room nobody has touched is left out, because a nine-floor
- * tower is four hundred rooms and a page that lists every corridor's one
- * cleaner's socket is a page nobody reads. */
+ * half: every room kit can live in plus every room with something in it --
+ * what the wiring gave it, what has been bought, what is in it, and what one
+ * more would cost. */
 void site_dump_outlets(const Site *s, int floor, Buf *out)
 {
     if (!s->b) return;
@@ -1803,7 +1881,8 @@ void site_dump_outlets(const Site *s, int floor, Buf *out)
         int used  = site_room_outlets_used(s, r);
         int here  = 0;
         for (int i = 0; i < s->ndev; i++) if (s->dev[i].room == r) here++;
-        if (!used && !here && have == built) continue;
+        if (!room_holds_kit(s->b->rooms[r].kind) &&
+            !used && !here && have == built) continue;
         char w[48];
         snprintf(w, sizeof w, "f%d %s #%d", s->b->rooms[r].floor,
                  bld_kind_name(s->b->rooms[r].kind), r);
@@ -2416,9 +2495,12 @@ static const struct { const char *verb; int need; const char *usage; } VERB[] = 
                      "                      room. Priced on the run back to the\n"
                      "                      riser, charged now, and it does not\n"
                      "                      come out again" },
-    { "outlets",  1, "outlets [<floor>]     what every room was wired with, what\n"
-                     "                      is plugged into it, what is free and\n"
-                     "                      what another one would cost" },
+    { "outlets",  1, "outlets [<floor>]     every room kit can live in -- comms\n"
+                     "                      cupboards, plant, risers, the MDF, goods\n"
+                     "                      in -- empty or not, plus any other room\n"
+                     "                      with something in it: what it was wired\n"
+                     "                      with, what is plugged in, what is free\n"
+                     "                      and what another socket would cost" },
     { "gw",       3, "gw <box> <ip>" },
     { "router",   3, "router <box> on|off" },
     { "subif",    5, "subif <box> <nic> <vlan> <ip>/<bits>   add one\n"
@@ -2681,6 +2763,34 @@ bool site_cmd(Site *s, const char *line, Buf *out)
         if (n > ai && !small_number(t[ai], &vlan)) { k = cable_arg(t[ai]); ai++; vlan = 0; }
         if (n > ai && vlan == 0) small_number(t[ai], &vlan);
         int before = site_tenant_connected(s, ti);
+        /* THE WARNING GOES ABOVE THE BILL, NOT UNDER IT. A playtester typed
+         * `serve 1 sw1` with no vlan and was told, after the copper had been
+         * measured and paid for, that this tenancy had asked for a segment
+         * of its own. It is printed first now, so the sentence that matters
+         * is the one at the top of the reply rather than the one under the
+         * price -- and it names the line that fixes it.
+         *
+         * WHY THIS IS NOT A REFUSAL, which was the other candidate and is
+         * the house style for `carry` on a running server: `serve <t> <sw>`
+         * with no vlan is what every scripted build in this tree types,
+         * including --loadcheck's naive tower, whose whole job is to be the
+         * flat build a player really gets on their first afternoon. A verb
+         * that refused it would silently unbuild the calibration the game
+         * measures itself against. The real cost the playtester paid was
+         * not being patched into the default -- it was that fixing it took
+         * twenty-one hand-typed lines, and site_serve_vlan no longer skips
+         * a desk that is already on this box, so the fix is this same line
+         * with the vlan on the end and it lays no new copper. */
+        if (vlan == 0 && s->tenant[ti].own_segment && before < s->tenant[ti].ndesk)
+            buf_printf(out, "  NOTE: tenancy %d asked for a broadcast domain of "
+                            "its own and this line\n  has no vlan in it, so every "
+                            "port it patches lands in the untagged\n  default. "
+                            "`serve %d %s %d` puts them in a vlan as it patches "
+                            "them --\n  and says it again over desks that are "
+                            "already on %s, for nothing, if\n  this is the line "
+                            "you meant to type.\n",
+                       s->tenant[ti].tenant, s->tenant[ti].tenant, s->dev[d].name,
+                       30 + s->tenant[ti].tenant, s->dev[d].name);
         int got = site_serve_vlan(s, ti, d, k, vlan);
         if (got < 0) { buf_printf(out, "refused: %s\n", site_err_text(s->err)); return true; }
         buf_printf(out, "tenancy %d: %d of %d desks have a port (%d new). %ld left.\n",
@@ -2695,14 +2805,17 @@ bool site_cmd(Site *s, const char *line, Buf *out)
          * a broadcast domain of its own got exactly the opposite -- twenty
          * `vlan` lines later the player found out. */
         if (vlan > 0)
-            buf_printf(out, "  and every port it patched is an access port in "
-                            "vlan %d.\n", vlan);
+            buf_printf(out, "  and every one of their ports on %s is an access "
+                            "port in vlan %d --\n  the ones it has just patched "
+                            "and the ones that were already in it. The\n  trunk "
+                            "back and the router's subinterface are still "
+                            "yours.\n", s->dev[d].name, vlan);
         else if (s->tenant[ti].own_segment)
             buf_printf(out, "  they are in the untagged default vlan, and this "
                             "tenancy asked for a\n  broadcast domain of its own. "
-                            "`serve %d %s %d` puts the ports in a vlan as\n  it "
-                            "patches them; the trunk and the router's "
-                            "subinterface are still yours.\n",
+                            "`serve %d %s %d` puts them in a vlan\n  without "
+                            "laying another metre; the trunk and the router's "
+                            "subinterface\n  are still yours.\n",
                        s->tenant[ti].tenant, s->dev[d].name,
                        30 + s->tenant[ti].tenant);
         else
