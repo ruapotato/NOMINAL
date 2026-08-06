@@ -121,7 +121,11 @@ static bool script(Session *ses, const char *const *lines, Buf *o)
  * anything about either. This is how it finds the file the world damaged
  * without ever being told which one it was -- which is the same position the
  * player is in. */
-typedef struct { char pkg[40], path[NOM_PATH_MAX]; } Finding;
+/* The STATUS word is kept too, because it is a claim about the bytes and this
+ * gate is here to check claims: a blackout leaves a file that is the shipped
+ * file and then stops, a worn sector leaves one of the right length with a
+ * hole in the middle, and verify has to call those two different things. */
+typedef struct { char pkg[40], path[NOM_PATH_MAX], status[64]; } Finding;
 
 static int verify_scan(const char *text, Finding *out, int cap)
 {
@@ -140,6 +144,7 @@ static int verify_scan(const char *text, Finding *out, int cap)
             a[0] != '/' && strlen(a) < sizeof out[0].pkg) {
             snprintf(out[n].pkg, sizeof out[n].pkg, "%s", a);
             snprintf(out[n].path, sizeof out[n].path, "%s", b);
+            snprintf(out[n].status, sizeof out[n].status, "%s", c);
             n++;
         }
         p = nl ? nl + 1 : NULL;
@@ -308,12 +313,35 @@ static void check_blackout(void)
 
     say(&ses, "plug files", &o);
     Finding now[24];
-    int nnow = verify_scan(say(&ses, "pkg verify", &o), now, 24);
+    static char vtext[16384];
+    snprintf(vtext, sizeof vtext, "%s", say(&ses, "pkg verify", &o));
+    int nnow = verify_scan(vtext, now, 24);
     Finding hit;
     bool found = false;
     for (int i = 0; i < nnow && !found; i++)
         if (!in_set(was, nwas, now[i].path)) { hit = now[i]; found = true; }
     ck("`pkg verify` now names a file that was fine the night before", found);
+
+    /* AND SAYS WHICH WAY IT DIFFERS, which is the sentence that decides what
+     * the player does next.
+     *
+     * A playtester repaired three servers after this exact event and got
+     * CHANGED on a file the power cut had cut in half, under a summary
+     * explaining that a reinstall would not put it back because the edit
+     * "may be a decision somebody made on purpose". `pkg diff` on the same
+     * file said "155 byte(s) SHORT -- it was truncated, not edited", from the
+     * same two sizes verify already had. The file here is a strict prefix of
+     * what shipped -- breaker_powerfail sets n->data.len and nothing else --
+     * so verify has to read it as damage and point at the repair. */
+    ck("verify calls the half-written file TRUNCATED, not somebody's edit",
+       found && strcmp(hit.status, "TRUNCATED") == 0);
+    ck("and the summary says a forced reinstall is what puts it back",
+       strstr(vtext, "cut short") != NULL &&
+       strstr(vtext, "pkg reinstall --force") != NULL);
+    /* Without claiming more than the bytes support: a person who deleted the
+     * end of the file by hand leaves exactly this, and verify says so. */
+    ck("while admitting a hand-deleted tail would look identical",
+       strstr(vtext, "by hand would leave the same bytes") != NULL);
 
     if (found) {
         printf("    the blackout took %s, shipped by %s\n", hit.path, hit.pkg);
@@ -341,6 +369,66 @@ static void check_blackout(void)
     const char *ev = say(&ses, "events", &o);
     ck("`events` tells the player what happened and on which day",
        has(ev, "lost mains power") && has(ev, "was on a battery and stayed up"));
+
+    buf_free(&o);
+    session_end(&ses);
+}
+
+/* ============================ THE REPAIR TOOL AND THE MACHINE'S OWN NAME ===
+ *
+ * A playtester force-reinstalled a package on a server they had called srv3
+ * and the box came back called node-4097. That behaviour is correct and this
+ * gate says so in the only way that counts, by running it: /etc/hostname is
+ * shipped by the `filesystem` package -- each machine's factory identity, the
+ * way aaa_base ships /etc/HOSTNAME -- the tower writes the player's name over
+ * it when the box is switched on, and `--force` means exactly what it says.
+ *
+ * What was missing was the sentence. A line about a .pkgsave is not "this
+ * machine is now called something else", and the rename is otherwise silent
+ * until the next thing that prints the name. So: the warning is checked, and
+ * then every claim the warning makes is checked against the machine. */
+static void check_rename(void)
+{
+    printf("\na forced reinstall, and the name the machine answers to\n");
+    Session ses;
+    if (!session_start(&ses, EV_SEED, 100000)) { ck("a session starts", false); return; }
+    Buf o = {0};
+
+    static const char *const BUILD[] = {
+        "credit 60000", "buy server srv3",
+        "go goods", "carry srv3", "go mdf", "drop",
+        "power srv3 on", NULL
+    };
+    ck("a server bought, carried in and switched on", script(&ses, BUILD, &o));
+
+    say(&ses, "plug srv3", &o);
+    ck("the operating system on it answers to the name the player gave the box",
+       has(say(&ses, "uname -n", &o), "srv3"));
+
+    /* The tower's name IS a local modification of a package file, which is
+     * why a plain reinstall leaves it alone -- and says that it is. */
+    const char *plain = say(&ses, "pkg reinstall filesystem", &o);
+    ck("a plain reinstall keeps it, and says it is keeping it",
+       has(plain, "keeping locally modified /etc/hostname") &&
+       !has(plain, "RENAMED") &&
+       has(say(&ses, "uname -n", &o), "srv3"));
+
+    static char forced[8192];
+    snprintf(forced, sizeof forced, "%s",
+             say(&ses, "pkg reinstall --force filesystem", &o));
+    ck("--force overwrites it and says the machine has been RENAMED",
+       strstr(forced, "THIS MACHINE HAS BEEN RENAMED") != NULL);
+    ck("naming both the name it had and the name it has now",
+       strstr(forced, "`srv3`") != NULL && strstr(forced, "node-") != NULL);
+
+    const char *u = say(&ses, "uname -n", &o);
+    ck("and the warning is true: the machine answers to the factory name now",
+       has(u, "node-") && !has(u, "srv3"));
+
+    /* And the way back that the warning offers really is a way back. */
+    say(&ses, "cp /etc/hostname.pkgsave /etc/hostname", &o);
+    ck("the .pkgsave the warning names puts the player's name back",
+       has(say(&ses, "uname -n", &o), "srv3"));
 
     buf_free(&o);
     session_end(&ses);
@@ -427,6 +515,15 @@ static void check_disk(void)
     for (int i = 0; i < nnow && !found; i++)
         if (!in_set(was, nwas, now[i].path)) { hit = now[i]; found = true; }
     ck("`pkg verify` finds the file the sector was under", found);
+    /* AND DOES NOT CALL IT A TRUNCATION. The blackout leaves a file that is
+     * the shipped file and then stops; a sector that will not read back
+     * leaves one of exactly the right length with five hundred and twelve
+     * bytes of zeroes in the middle of it. Verify now separates those two,
+     * and this is the check that keeps the separation honest -- a rule that
+     * called every difference a truncation would pass the blackout check
+     * above and be worthless. */
+    ck("a hole in the middle is CHANGED, not TRUNCATED",
+       found && strcmp(hit.status, "CHANGED") == 0);
     if (found) {
         printf("    the bad sector took %s, shipped by %s\n", hit.path, hit.pkg);
         char line[NOM_PATH_MAX + 32];
@@ -559,6 +656,7 @@ int event_selfcheck(void)
            "core/breaker.c, and was repaired with the tools that already existed.\n");
     check_schedule();
     check_blackout();
+    check_rename();
     check_disk();
     check_heat();
     check_determinism();

@@ -13,6 +13,10 @@
 #include "gsys.h"
 
 static char arg[256], manifest[8192], filebuf[65536], path[256];
+/* The pristine bytes, fetched from the repository. Shared by `diff` and by
+ * `verify` -- verify pulls them only for a file that already failed its hash,
+ * so it can say WHICH WAY the file differs rather than only that it does. */
+static char shipped[65536];
 
 /* Operate on a filesystem mounted somewhere else, without chrooting into it.
  * This is not a convenience: when the customer's libc is the wrong version,
@@ -100,7 +104,25 @@ static unsigned parse_oct(const char *s)
  * somebody CHANGED is a decision; a file that is missing or truncated is
  * damage; they need different advice and the summary now gives it. */
 static int g_edited;      /* an /etc file whose contents differ: reinstall KEEPS */
-static int g_damaged;     /* missing, truncated, repointed, wrong mode: restored */
+static int g_damaged;     /* missing, repointed, wrong mode: reinstall restores  */
+/* AND THE THIRD KIND, WHICH VERIFY USED TO CALL THE FIRST.
+ *
+ * A playtester repaired three servers after a mains failure. The file the
+ * unclean shutdown had cut in half came back CHANGED, and the summary told
+ * them a reinstall would not put it back, because "the edit may be a decision
+ * somebody made on purpose". `pkg diff` on the same file said -- correctly --
+ * "155 byte(s) SHORT -- it was truncated, not edited". Verify had the same
+ * two sizes in front of it and did not use them.
+ *
+ * A file that is byte-for-byte what shipped and then stops was not edited
+ * into that shape by somebody working on the config: that is the shape a
+ * write interrupted part way through leaves. It is not proof -- a person who
+ * deleted the tail by hand leaves exactly the same bytes, and the summary
+ * says so rather than claiming more than the bytes support -- but it is the
+ * sentence that decides whether the player reinstalls or goes hunting for
+ * whose decision it was, and here the reinstall IS the repair. */
+static int g_cut;         /* installed is a strict prefix of what shipped       */
+static int g_cut_etc;     /* ... and under /etc, where putting it back needs -f */
 
 static int under_etc(const char *p)
 {
@@ -174,7 +196,6 @@ static void diff_path(const char *owner, const char *path)
         g_putln(": cannot fetch the shipped copy");
         return;
     }
-    static char shipped[65536];
     for (i64 k = 0; k < want; k++) shipped[k] = filebuf[k];
     shipped[want] = 0;
 
@@ -331,12 +352,37 @@ static int verify_one(const char *pkg, int *bad)
         if (n < 0) { finding(pkg, fp, "UNREADABLE"); (*bad)++; g_damaged++; continue; }
         unsigned long h = g_hash(filebuf, (u64)n);
         if (h != parse_hex(hash)) {
-            finding(pkg, fp, "CHANGED"); (*bad)++;
-            if (under_etc(fp)) g_edited++; else g_damaged++;
+            /* WHICH WAY does it differ. The pristine copy comes from the
+             * repository, not from this disk, so this works on the machine
+             * whose disk is the damaged one -- and it is fetched only for a
+             * file that has already failed its hash. */
+            i64 want = g_repo(pkg, fp, shipped);
+            int cut = (want > n);
+            for (i64 k = 0; cut && k < n; k++)
+                if (shipped[k] != filebuf[k]) cut = 0;
+            if (cut) {
+                finding(pkg, fp, "TRUNCATED");
+                g_puts("                 "); g_putn(want - n);
+                g_puts(" byte(s) of "); g_putn(want);
+                g_putln(" are gone from the END; the rest is the shipped file");
+                (*bad)++; g_cut++;
+                if (under_etc(fp)) g_cut_etc++;
+            } else {
+                finding(pkg, fp, "CHANGED"); (*bad)++;
+                if (under_etc(fp)) g_edited++; else g_damaged++;
+            }
         } else if ((unsigned)st.mode != parse_oct(mode)) {
-            static char msg[48];
-            g_copy(msg, "MODE is ", sizeof msg);
-            finding(pkg, fp, "");
+            /* THE STATUS WORD WENT MISSING HERE, and only here: a file whose
+             * contents are right and whose permissions are wrong printed the
+             * package, the path, and then a blank column, with the two modes
+             * on the line below. A directory in the same state printed MODE.
+             * /usr/share/doc/openssh/known-issues says, in as many words,
+             * that verify "says MODE and not CHANGED" -- so the machine was
+             * contradicting its own documentation, and anything reading the
+             * output a line at a time saw two fields where every other
+             * finding has three. (The dead `msg` buffer that used to sit
+             * here, holding the string "MODE is ", is where the word went.) */
+            finding(pkg, fp, "MODE");
             g_puts("                 mode is "); g_putoct((unsigned)st.mode, 4);
             g_puts(", package shipped "); g_putoct(parse_oct(mode), 4); g_puts("\n");
             (*bad)++; g_damaged++;
@@ -599,7 +645,7 @@ void _start(void)
 
 
     if (g_streq(v[0], "verify")) {
-        g_bad = 0; g_edited = 0; g_damaged = 0;
+        g_bad = 0; g_edited = 0; g_damaged = 0; g_cut = 0; g_cut_etc = 0;
         if (n >= 2) {
             if (verify_one(v[1], &g_bad) < 0) g_exit(1);   /* unknown package */
         } else {
@@ -621,6 +667,23 @@ void _start(void)
                 g_putln(" missing, unreadable, repointed or the wrong mode: that is");
                 g_putln("  damage rather than somebody's decision, and");
                 g_putln("  `pkg reinstall <package>` puts those back.");
+            }
+            if (g_cut) {
+                g_puts("  "); g_putn(g_cut);
+                g_putln(" cut short: what is on the disk is the shipped file byte for");
+                g_putln("  byte, and then it stops. That is the shape an interrupted");
+                g_putln("  write leaves -- a power cut, a full disk, a disk that gave");
+                g_putln("  up mid-write. It is not proof: somebody who deleted the end");
+                g_putln("  of the file by hand would leave the same bytes, and nothing");
+                g_putln("  here can tell those two apart. `pkg diff <path>` prints how");
+                g_putln("  much is missing so you can judge it.");
+                if (g_cut_etc) {
+                    g_putln("  These are under /etc, so a plain reinstall would KEEP the");
+                    g_putln("  short copy. `pkg reinstall --force <package>` puts the whole");
+                    g_putln("  file back and leaves the short one as <path>.pkgsave.");
+                } else {
+                    g_putln("  `pkg reinstall <package>` puts the whole file back.");
+                }
             }
             if (g_edited) {
                 g_puts("  "); g_putn(g_edited);
@@ -656,7 +719,7 @@ void _start(void)
             g_puts("pkg: "); g_puts(v[1]); g_putln(": no such package");
             g_exit(1);
         }
-        int done = 0, failed = 0, kept = 0, saved = 0;
+        int done = 0, failed = 0, kept = 0, saved = 0, hostsaved = 0;
         char *p = manifest;
         while (*p) {
             char *nl = p; while (*nl && *nl != '\n') nl++;
@@ -698,6 +761,29 @@ void _start(void)
             g_copy(rp, root, sizeof rp);
             g_cat(rp, fp, sizeof rp);
 
+            /* THE ONE FILE WHOSE CONTENTS ARE THE MACHINE'S NAME.
+             *
+             * A playtester force-reinstalled `filesystem` on a server they
+             * had called srv3 and the box came back called node-4097. That
+             * is CORRECT: /etc/hostname is package content here -- the
+             * filesystem package ships each machine's factory identity, the
+             * way aaa_base ships /etc/HOSTNAME -- so --force puts the factory
+             * name back like any other overwritten config. What was wrong is
+             * that nothing said so. One line about a .pkgsave is not "this
+             * machine is now called something else", and everything that
+             * reads the name (`uname -n`, the login banner, getty) reads this
+             * file, so the rename is silent until the next thing to print it.
+             *
+             * Remembered BEFORE the write, because after it the old name is
+             * only in the .pkgsave. */
+            static char oldhost[128];
+            int ishost = g_streq(fp, "/etc/hostname");
+            oldhost[0] = 0;
+            if (ishost) {
+                i64 hn = g_slurp(rp, oldhost, sizeof oldhost - 1);
+                if (hn >= 0) oldhost[hn] = 0; else oldhost[0] = 0;
+            }
+
             /* --force ON AN EDITED CONFIG KEEPS A COPY.
              *
              * dpkg writes .dpkg-old, rpm writes .rpmsave, and both do it for
@@ -723,6 +809,7 @@ void _start(void)
                         g_puts("  saved your "); g_puts(fp);
                         g_puts(" as "); g_puts(fp); g_putln(".pkgsave");
                         saved++;
+                        if (ishost) hostsaved = 1;
                     }
                 }
             }
@@ -735,6 +822,39 @@ void _start(void)
             g_close(fd);
             sysc(SYS_chmod, (i64)rp, (i64)parse_oct(mode), 0);
             done++;
+
+            /* AND IF THAT FILE WAS THE MACHINE'S NAME, SAY THE MACHINE HAS
+             * BEEN RENAMED. Both names, in the same sentence, because the
+             * whole harm is that the box now answers to one name here and is
+             * known by another everywhere else. */
+            if (ishost) {
+                static char newhost[128];
+                i64 c = got < (i64)sizeof newhost - 1 ? got : (i64)sizeof newhost - 1;
+                for (i64 k = 0; k < c; k++) newhost[k] = filebuf[k];
+                newhost[c] = 0;
+                static char was[128];
+                g_copy(was, g_trim(oldhost), sizeof was);
+                char *now = g_trim(newhost);
+                if (was[0] && !g_streq(was, now)) {
+                    g_putln("  ** THIS MACHINE HAS BEEN RENAMED.");
+                    g_puts("  ** it was `"); g_puts(was);
+                    g_puts("` and it is now `"); g_puts(now); g_putln("`.");
+                    g_putln("  ** /etc/hostname is package content: the filesystem package");
+                    g_putln("  ** ships each machine's factory name, so a forced reinstall");
+                    g_putln("  ** puts the factory name back like any other config file.");
+                    g_putln("  ** `uname -n` and the login banner read that file and will");
+                    g_putln("  ** say the new name from now on. Nothing outside this");
+                    g_putln("  ** machine has been told, so anything that knew it by the");
+                    g_putln("  ** old name still calls it that.");
+                    if (hostsaved) {
+                        g_puts("  **   cp /etc/hostname.pkgsave /etc/hostname");
+                        g_putln("   puts it back");
+                    } else {
+                        g_puts("  **   echo "); g_puts(was);
+                        g_putln(" > /etc/hostname   puts it back");
+                    }
+                }
+            }
         }
         g_puts(v[1]); g_puts(": "); g_putn(done); g_puts(" files restored");
         if (kept)   { g_puts(", "); g_putn(kept); g_puts(" kept"); }
