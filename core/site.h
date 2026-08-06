@@ -166,7 +166,8 @@ typedef struct {
     int  worst_ms;
     uint64_t frames, drops; /* frames the site handled; frames it lost     */
     /* The port that was asked for the most, and how hard. This is the
-     * summary; `netstat -P` on that box is the evidence. */
+     * summary; `show <box>` is the evidence, and it is `show` because a
+     * switch port has no shell behind it to run netstat on. */
     char hot[NET_NAME_MAX + 8];
     int  hot_util;          /* percent of the busy period it was clocking  */
     int  complaints_today;
@@ -374,7 +375,8 @@ void site_dump_day(const Site *s, Buf *out);
  * went. This is the page a player reads to see a complaint coming. */
 void site_dump_service(const Site *s, Buf *out);
 /* The busiest ports in the building, most-used first: the summary whose
- * evidence is `netstat -P` on the box named in it. */
+ * evidence is `show <box>` on the box named in it -- a switch has no
+ * shell to type netstat into. */
 void site_dump_load(const Site *s, Buf *out);
 
 /* ------------------------------------------------------------ inspection */

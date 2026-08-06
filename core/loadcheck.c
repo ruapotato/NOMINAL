@@ -509,7 +509,9 @@ static void check_complaints(Building *b)
      * the landlord downgrades the circuit to ten megabits. Twenty desks
      * asking for a file each is several times that, so the same people doing
      * the same work stop finishing it -- and every frame that goes missing
-     * goes missing on the handoff's port, where `netstat -P` shows it. */
+     * goes missing on the handoff's port, where `show uplink` counts it. The
+     * handoff has no shell in it, so `netstat -P` is not the tool for that
+     * port and the game must not say it is. */
     site_isp(&s, 10);
     site_day(&s, NULL);
     ck("one bad day is not a complaint", s.complaints == 0 && s.tenant[0].strikes == 1);

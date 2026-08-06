@@ -7,9 +7,11 @@ The operating system is real. Not a prop, not a scripted console: an RV64IM CPU
 written from scratch, real compiled binaries, real syscalls, a dynamic linker
 that resolves real library versions, a package database on disk, an init system,
 services with dependencies, Plan 9 namespaces, and a boot chain that fails at
-the stage where something is actually wrong. When you type `netstat` on a switch
+the stage where something is actually wrong. When you type `netstat` on a server
 you just cabled, a program runs on an emulated processor and reads state the
-kernel really keeps.
+kernel really keeps. A switch, a router and the ISP's handoff are appliances
+with a management line and no shell, exactly as they are in a rack, so their
+port counters are read with `show <box>` from the tower instead.
 
 That is the whole idea. Everything else follows from it.
 
@@ -49,7 +51,10 @@ Step 7 is the game. Step 5 is why it is interesting.
 
 Nowhere. There is no difficulty constant, and nothing keeps a load number
 beside the network: a frame that goes missing goes missing in the stack, on
-a port, for a reason `netstat -P` prints in words. Copper takes time to
+a port, for a reason the port counters print in words. `load` names the
+busiest eight ports in the tower and `show <box>` prints the reason beside
+the count -- and on a box with an operating system in it, `netstat -P` on
+its own console reads the same counter off the same kernel. Copper takes time to
 clock bits onto, a port that is behind holds frames back, and a port that is
 further behind than its buffer will hold drops them.
 

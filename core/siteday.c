@@ -238,8 +238,10 @@ static void xfer_poll(Site *s, Xfer *x, int tick)
 
 /* ------------------------------------------------------------ the report */
 /* The busiest port in the building, and how busy. This is the summary line;
- * the evidence is `netstat -P` on the box it names, which prints the drops
- * and the queue and the reason. */
+ * the evidence is `show <box>` on the box it names, which prints the drops
+ * and the queue and the reason -- and it is `show` rather than `netstat -P`
+ * because the busiest port in a tower is almost always on a switch, a router
+ * or the handoff, and none of those have a shell to type netstat into. */
 static void hottest_port(const Site *s, uint64_t window_us, SiteDay *rep)
 {
     int best_util = -1;
@@ -352,7 +354,8 @@ bool site_day(Site *s, SiteDay *rep)
     /* ------------------------------------------------- reset the meters
      * Utilisation is measured over THIS busy period, so the counters that
      * measure it start here. The lifetime tx/rx/drop counters on a port are
-     * not touched: those are what a player reads with `netstat -P` and they
+     * not touched: those are what a player reads with `show <box>` -- or with
+     * `netstat -P` where the box has a shell to type it into -- and they
      * are cumulative, exactly as they are on a real switch. */
     uint64_t t0 = net_now(s->net);
     for (int i = 0; i < s->ndev; i++)
@@ -508,7 +511,8 @@ bool site_advance(Site *s, int days, Buf *out)
             if (r.hot[0])
                 buf_printf(out, "        busiest port %s at %d%%%s\n", r.hot,
                            r.hot_util,
-                           r.drops ? "; something is dropping -- `netstat -P` it" : "");
+                           r.drops ? "; something is dropping -- `load`, then "
+                                     "`show <box>`" : "");
             if (r.complaints_today)
                 buf_printf(out, "        %d COMPLAINT%s filed today (%d in all)\n",
                            r.complaints_today, r.complaints_today == 1 ? "" : "S",

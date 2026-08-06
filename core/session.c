@@ -424,7 +424,12 @@ static void do_help(const Session *ses, Buf *out)
         buf_printf(out,
             "this is a REAL SHELL on %s -- the same operating system every\n"
             "other machine in this game runs, on an emulated processor.\n"
-            "  ip   route   netstat   ping <addr>   svc   ps   dmesg\n"
+            "  ip addr | link | route | neigh   what the cards and the kernel\n"
+            "                               table really hold. It SHOWS; there is\n"
+            "                               no `ip addr add` on this machine\n"
+            "  netstat        -r routes  -P the port itself  -A the arp cache\n"
+            "  ping <addr>    traceroute <addr>    ss    arp    tcpdump\n"
+            "  svc   ps   dmesg\n"
             "  cat /etc/net/interfaces      what its card is configured from\n"
             "  man                          the manuals it ships with\n"
             "its address came off its own disk. Edit that file and netd will\n"
@@ -439,7 +444,8 @@ static void do_help(const Session *ses, Buf *out)
             "assumed, so `addr 10.0.1.1/24` means this one.\n\n",
             ses->s.dev[ses->plugged].name);
         site_cmd((Site *)&ses->s, "help", out);
-        buf_puts(out, "unplug                         put the lead back on the cart\n");
+        buf_puts(out, "where                          which room this box and you are in\n"
+                      "unplug                         put the lead back on the cart\n");
         return;
     }
     buf_puts(out,
@@ -457,7 +463,10 @@ static void do_help(const Session *ses, Buf *out)
         "  go <room>          walk. `go comms` `go f3.office` `go #41` `go core`\n"
         "                     -- a box's name walks you to the room it is in\n"
         "  lift <floor>       take the lift. Only floors in service have a button\n"
-        "  open               put the next floor in service\n"
+        "  open               put the next floor in service. Go and stand on it\n"
+        "                     first -- by the stairs, because its lift button is\n"
+        "                     not lit yet -- and it costs the landlord's fit-out\n"
+        "                     charge, by the square metre of let space on it\n"
         "  desk               walk back and sit down at your own workstation,\n"
         "                     where the support tickets are\n"
         "\n"
@@ -507,6 +516,28 @@ static void do_help(const Session *ses, Buf *out)
         "  ping <box> <ip>   trace <box> <ip>   resolve <box> <name>\n"
         "                     a real echo request, from that box, over the\n"
         "                     copper you laid. Nothing is reachable by default\n"
+        "  get <box> <ip> <path>     fetch a page over TCP, from that box\n"
+        "  httpd <box> [port]        serve its files. dnsd <box> answers names\n"
+        "  ups <box>          a battery under it, so a mains failure is not a\n"
+        "                     filesystem to check in the morning\n"
+        "  disk <box>         a new one, cloned off the old one\n"
+        "\n"
+        "THE CLOCK, AND WHAT IT COSTS YOU. Nothing comes back for you until a\n"
+        "day passes, and a day is when the rent arrives and the bills do.\n"
+        "  day [n]            advance the clock. Tenancies whose day has come\n"
+        "                     move in, their people work over what you built,\n"
+        "                     and rent arrives for the work that finished\n"
+        "  serve <tenant> <box> [cable] [vlan]\n"
+        "                     run copper from a box in THIS room to a tenancy's\n"
+        "                     desks, one cable each, by the metre. Name a vlan\n"
+        "                     and the ports it uses go into it\n"
+        "  service            every tenancy: desks, how many have LINK, how many\n"
+        "                     also have an ADDRESS, what finished, and strikes\n"
+        "  status             the day, the money, the frames, the complaints\n"
+        "  load               the eight busiest ports, and which is dropping\n"
+        "  isp [mb]           what the circuit carries, what it costs a month,\n"
+        "                     and when the next bill lands. `isp 100` resizes it\n"
+        "  events             what the world has done to the kit overnight\n"
         "\n"
         "THE CRASH CART. You push it up to a box and plug a lead in.\n"
         "  plug <box>         serial. A switch, a router or the handoff gives\n"
