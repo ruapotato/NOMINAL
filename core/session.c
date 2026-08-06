@@ -1091,11 +1091,17 @@ static void do_help(const Session *ses, Buf *out)
             "                         cannot be switched on at all\n"
             "  outlet                 another socket in this room, if the wall\n"
             "                         has none free.  `outlets` is the map\n"
-            "  rescue / eject         the live medium on the cart, for a box\n"
-            "                         whose own root will not mount\n"
+            "  rescue                 the live medium on the cart goes in the\n"
+            "                         front of it, for a box whose own root\n"
+            "                         will not mount\n"
+            "  eject                  and comes out again, and it boots its own\n"
+            "                         disk. THIS IS THE STICK, NOT THE LEAD\n"
             "  show                   what the site knows about it\n"
+            "  look                   the room you are standing in, and how many\n"
+            "                         sockets are on that wall\n"
             "  where                  which room you and it are in\n"
-            "  unplug                 lead back on the cart\n",
+            "  unplug                 THE LEAD, back on the cart, and you are on\n"
+            "                         your feet in the room again\n",
             d->name, d->name,
             !d->mains ? "not plugged into anything"
                       : site_kind_has_os(d->kind) && !d->powered
@@ -1183,7 +1189,17 @@ static void do_help(const Session *ses, Buf *out)
             "                               and `man pkg` included\n"
             "its address came off its own disk. Edit that file and netd will\n"
             "apply what you wrote, right or wrong.\n"
-            "  unplug            take the lead out and stand up again\n",
+            "  unplug            take the lead out and stand up again\n"
+            "\n"
+            /* THE ONE THING THIS PAGE NEVER SAID, and a day-18 playtest paid
+             * for it three times over: `eject`, `power off` and `power on`
+             * are all `command not found` here, and nothing warned them. */
+            "AND WHAT DOES NOT WORK HERE, because it is not a program. `power\n"
+            "off`, `power on`, `mains`, `eject`, `rescue`, `outlet` and every\n"
+            "other verb of the building are things a PERSON does, standing at\n"
+            "the rack with a hand on the box. This machine has never heard of\n"
+            "any of them and will tell you so. `unplug` first; they all answer\n"
+            "at the tower prompt.\n",
             ses->s.dev[ses->plugged].name);
         return;
     }
@@ -1353,6 +1369,18 @@ static void do_help(const Session *ses, Buf *out)
         "                            a WAN side\n"
         "  router <box> on|off       vlan <box> <port> <n>   (a switch's port)\n"
         "  subif <box> <nic> <vlan> <ip>/<bits>    trunk <box> <port> <v>..\n"
+        /* THE NIC IS A NUMBER AND EVERY OTHER LINE IN THIS GAME PRINTS A
+         * NAME. `show`, `ip addr`, `netstat` and the refusals all say `eth0`,
+         * so `subif srv2 eth0 21 ...` is what a player types and it is
+         * refused. The refusal fixes it in one line, which makes it a stumble
+         * rather than a wall -- and a stumble the page they read first can
+         * stop. Named here rather than left for the error message. */
+        "                            THE NIC IS THE SOCKET NUMBER, NOT ITS NAME:\n"
+        "                            0 is the card everything else in this game\n"
+        "                            prints as `eth0` and 1 is `eth1`, so it is\n"
+        "                            `subif srv2 0 21 10.0.21.1/24` and the\n"
+        "                            interface it makes is eth0.21. Spelling it\n"
+        "                            `eth0` is refused\n"
         "                            an address on a card FOR ONE VLAN, which is how\n"
         "                            one socket terminates a subnet per floor. It is\n"
         "                            an address like any other: a server addressed\n"
@@ -1499,7 +1527,16 @@ static void do_help(const Session *ses, Buf *out)
         "                     comes up the line, live), `mains on` if it is not\n"
         "                     plugged in, `rescue` for the medium on the cart,\n"
         "                     and `unplug`\n"
-        "  unplug             lead back on the cart, and you can walk again\n"
+        "  rescue <box>       the live medium on the cart, in the front of it and\n"
+        "                     booted. For a box whose own root will not mount --\n"
+        "                     which is what the initrd's own last line tells you\n"
+        "  eject <box>        the stick out again, and it boots its own disk. THE\n"
+        "                     STICK, NOT THE LEAD\n"
+        "  unplug             THE LEAD, back on the cart, and you can walk again\n"
+        "                     AND NONE OF THESE ARE PROGRAMS. Once you are at\n"
+        "                     `root@<box>#` you are talking to the machine, and the\n"
+        "                     machine has never heard of `power`, `eject` or\n"
+        "                     `rescue`. `unplug` first\n"
         "\n"
         "READING THE STATE\n"
         "  show [box]  links  money  demand  rooms [floor]  frames\n"
@@ -2675,6 +2712,65 @@ static bool is_devverb(const char *v)
     return false;
 }
 
+/* ==================== A TOWER VERB TYPED AT A GUEST SHELL ==================
+ *
+ * `power off`, `eject` and `subif` are things a PERSON does -- standing in
+ * the room, with a hand on the box or a lead in it. They are not programs,
+ * and there is no reason they would be installed on a customer's server, so
+ * a shell on that server answers `power: command not found` and is right to.
+ *
+ * What was wrong is that nothing said so. A day-18 playtest found the game
+ * printing `plug srv1` at a prompt that was already `root@srv1#`, and then
+ * `eject`, `power off` and `power on` all coming back "command not found"
+ * from a machine that has never heard of any of them. The refusal is honest
+ * and the silence around it is not: a player who has just been told to type
+ * one of these has no way to know it belongs to a different prompt.
+ *
+ * So the MACHINE STILL ANSWERS FIRST and nothing here shadows it. `links`,
+ * `open` and `httpd` are real programs on this OS -- `links` is the browser
+ * -- and typing them at a shell runs them, exactly as before. This only ever
+ * speaks after the kernel has said the word does not exist there, and all it
+ * adds is where it does.
+ */
+static const char *TOWERVERB[] = {
+    /* the crash cart and the rack */
+    "plug", "unplug", "eject", "rescue", "power", "mains", "outlet", "outlets",
+    /* your hands and your legs */
+    "carry", "drop", "go", "walk", "lift", "open", "buy", "deliver", "map",
+    "look", "where", "desk", "sit", "stand", "desks",
+    /* copper */
+    "spool", "cable", "uncable", "quote", "jack", "patch", "jacks", "serve",
+    /* the box, from the room */
+    "addr", "gw", "router", "subif", "vlan", "trunk", "dhcpd", "dhcp",
+    "resolver", "dnsd", "dns", "ups", "disk", "show", "links",
+    /* the tower's own view of itself */
+    "day", "service", "status", "load", "isp", "events", "demand", "money",
+    "frames", "rooms", NULL
+};
+
+static bool is_towerverb(const char *v)
+{
+    for (int i = 0; TOWERVERB[i]; i++) if (strcmp(TOWERVERB[i], v) == 0) return true;
+    return false;
+}
+
+/* The kernel has already answered. If what it said was that this word is not
+ * a program HERE, and the word is a verb of the building, say where it is.
+ * `leave` is the word that gets back to the prompt it works at, and it is
+ * different in a chair from what it is on a crash cart. */
+static void tower_verb_note(const char *verb, const char *box, const char *leave,
+                            Buf *out, size_t before)
+{
+    if (!verb || !is_towerverb(verb)) return;
+    char miss[64];
+    snprintf(miss, sizeof miss, "%s: command not found", verb);
+    if (!out->p || !strstr(out->p + before, miss)) return;
+    buf_printf(out, "  (and it never will be: `%s` is a TOWER verb, not a program.\n"
+                    "   It is something you do standing in the room with %s, so it\n"
+                    "   answers at the tower prompt and not at this one. `%s` first.)\n",
+               verb, box, leave);
+}
+
 /* A CONFIGURATION verb changed this box -- not a diagnostic one. If it has
  * an operating system in it, the disk has to be told, or netd will overwrite
  * what was just set.
@@ -3053,7 +3149,12 @@ bool session_line(Session *ses, const char *line, Buf *out)
         if (n && strcmp(t[0], "help") == 0) { do_help(ses, out); return true; }
         if (!n) return true;
         Machine *m = ses->mach[ses->plugged];
+        size_t before = out->len;
         if (m) kernel_run(m, raw, out);
+        /* THE MACHINE ANSWERED FIRST. If its answer was that the word is not
+         * a program on it, and the word is a verb of the building, this says
+         * which prompt it belongs to. See tower_verb_note(). */
+        tower_verb_note(t[0], ses->s.dev[ses->plugged].name, "unplug", out, before);
         return true;
     }
 
@@ -3065,14 +3166,18 @@ bool session_line(Session *ses, const char *line, Buf *out)
      * unpowered serial port: nothing. */
     if (ses->where == SES_NOCON) {
         int d = ses->plugged;
-        if (n && (strcmp(t[0], "unplug") == 0 || strcmp(t[0], "eject") == 0)) {
-            /* `eject` is the medium, and it is only that when there is a box
-             * named after it -- bare, on this line, it is the lead. */
-            if (strcmp(t[0], "unplug") == 0 || n < 2) {
-                ses->where = SES_BODY; ses->plugged = -1;
-                buf_puts(out, "lead back on the cart.\n");
-                return true;
-            }
+        /* `unplug` IS THE LEAD AND `eject` IS THE MEDIUM, and bare `eject`
+         * used to be the lead here -- which contradicted this prompt's own
+         * help, where `rescue / eject` are listed together under "the live
+         * medium on the cart, with the box assumed". A day-18 playtest hit
+         * the other half of the same contradiction from the room, where bare
+         * `eject` asks "eject which box?". One word, one meaning, at every
+         * prompt: the medium. The lead has always been `unplug` and this
+         * page has always said so. */
+        if (n && strcmp(t[0], "unplug") == 0) {
+            ses->where = SES_BODY; ses->plugged = -1;
+            buf_puts(out, "lead back on the cart.\n");
+            return true;
         }
         if (n && strcmp(t[0], "help") == 0) { do_help(ses, out); return true; }
         if (n && strcmp(t[0], "where") == 0) { do_where(ses, out); return true; }
@@ -3149,7 +3254,12 @@ bool session_line(Session *ses, const char *line, Buf *out)
         }
         if (!n) return true;
         Machine *m = ses->seat >= 0 ? ses->mach[ses->seat] : NULL;
+        size_t before = out->len;
         if (m) kernel_run(m, raw, out);
+        /* Same rule in somebody else's chair, and the word out of it is
+         * `stand` rather than `unplug`. */
+        if (ses->seat >= 0)
+            tower_verb_note(t[0], ses->s.dev[ses->seat].name, "stand", out, before);
         return true;
     }
 
@@ -3297,7 +3407,18 @@ bool session_line(Session *ses, const char *line, Buf *out)
     if (strcmp(t[0], "rescue") == 0 || strcmp(t[0], "eject") == 0) {
         bool in = strcmp(t[0], "rescue") == 0;
         if (n < 2) {
-            buf_printf(out, "%s which box?\n", t[0]);
+            /* AND IT SAYS WHAT IT WANTS, in the verb's own spelling, and
+             * which of the two things on this cart it is. "eject which box?"
+             * on its own reads like the lead to somebody who has just been
+             * told `unplug` puts the lead back. */
+            buf_printf(out, "%s which box?  `%s <box>`\n"
+                            "  %s\n"
+                            "  (that is the STICK, not the lead. The lead is "
+                            "`plug <box>` and `unplug`.)\n", t[0], t[0],
+                       in ? "the live medium on the cart goes in the front of "
+                            "it and it boots that"
+                          : "the live medium comes out of it and it boots its "
+                            "own disk again");
             return true;
         }
         int d;
@@ -3310,16 +3431,26 @@ bool session_line(Session *ses, const char *line, Buf *out)
                        ses->s.dev[d].name);
             return true;
         }
+        /* AND IF THE LEAD IS IN THAT BOX, EVERY REFUSAL SAYS SO. `eject` is
+         * the one word on this cart a player is most likely to type meaning
+         * "get me out of here", so a refusal that does not name `unplug`
+         * leaves them stuck at a prompt with no exit in the answer. */
+        const char *lead = (ses->plugged == d)
+                         ? "  (`unplug` is the LEAD, and it is what puts you back on your feet.)\n"
+                         : "";
         if (!ses->s.dev[d].powered) {
             buf_printf(out, "refused: nothing booted -- %s is switched off. `power %s "
-                            "on` first.\n", ses->s.dev[d].name, ses->s.dev[d].name);
+                            "on` first.\n%s", ses->s.dev[d].name,
+                       ses->s.dev[d].name, lead);
             return true;
         }
         Machine *m = ses->mach[d];
         if (!m) {
-            buf_printf(out, "refused: nothing booted -- %s has never been switched on.\n", ses->s.dev[d].name);
+            buf_printf(out, "refused: nothing booted -- %s has never been switched "
+                            "on.\n%s", ses->s.dev[d].name, lead);
             return true;
         }
+        bool was_media = m->sp_media;
         m->sp_media = in;
         m->sp_bootdev = in ? 1 : 0;
         if (in) {
@@ -3329,16 +3460,52 @@ bool session_line(Session *ses, const char *line, Buf *out)
         } else {
             machine_boot(m);
             netsite_apply(m);
-            buf_printf(out, "the stick comes out of %s and it boots its own "
-                            "disk again.\n\n", ses->s.dev[d].name);
+            /* AND IF THERE WAS NOTHING IN THE DRIVE, SAY THAT. Ejecting an
+             * empty drive and holding reset is a reboot and nothing else,
+             * and calling it "the stick comes out" would be a small lie
+             * about a machine that never had one in it. */
+            if (was_media)
+                buf_printf(out, "the stick comes out of %s and it boots its own "
+                                "disk again.\n\n", ses->s.dev[d].name);
+            else
+                buf_printf(out, "there was no stick in %s. The drive opens on "
+                                "nothing and your thumb is\n  still on the "
+                                "reset button, so all this did is boot it off "
+                                "its own disk.\n\n", ses->s.dev[d].name);
         }
         buf_put(out, m->boot.console.p, m->boot.console.len);
         buf_printf(out, "\n[%s at %s]\n", m->boot.running ? "UP" : "DOWN",
                    boot_stage_name(m->boot.failed_at));
-        if (in && m->boot.running)
-            buf_printf(out, "`plug %s` for a shell on the live system. The box's "
-                            "own disk is\n  /dev/sda1 and nothing has mounted "
-                            "it.\n", ses->s.dev[d].name);
+        if (in && m->boot.running) {
+            /* AND WHERE YOU ARE DECIDES WHICH SENTENCE IS TRUE.
+             *
+             * This verb is reachable two ways: from the room, on your feet,
+             * where `plug <box>` is what gets you onto the live system; and
+             * from the no-console prompt, where the lead is ALREADY in that
+             * box and the caller is about to promote this session to a shell
+             * on it. Printing `plug srv1` in the second case is what a
+             * day-18 playtest found: the game telling you to type a command
+             * to reach a prompt you are standing at, and the command is a
+             * tower verb the guest has never heard of. */
+            if (ses->plugged == d)
+                buf_printf(out, "the cart's lead is already in %s, so the live "
+                                "system comes up THIS line.\n  The box's own "
+                                "disk is /dev/sda1 and nothing has mounted "
+                                "it.\n", ses->s.dev[d].name);
+            else
+                buf_printf(out, "`plug %s` for a shell on the live system. The "
+                                "box's own disk is\n  /dev/sda1 and nothing has "
+                                "mounted it.\n", ses->s.dev[d].name);
+            /* AND THE WAY BACK, WHICH IS NOT TYPED AT THE SHELL. `eject` is a
+             * hand on the front of the machine, so from the live system it is
+             * `unplug` and then `eject <box>` -- said here, once, rather than
+             * discovered as `eject: command not found`. */
+            buf_printf(out, "  when you are done: `unplug`, then `eject %s` "
+                            "takes the stick out and\n  boots its own disk "
+                            "again. Both are things you do at the rack, so "
+                            "neither\n  answers at the shell.\n",
+                       ses->s.dev[d].name);
+        }
         return true;
     }
     if (strcmp(t[0], "unplug") == 0) {

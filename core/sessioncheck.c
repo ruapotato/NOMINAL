@@ -1394,6 +1394,304 @@ static void check_prompt(int *passed, int *total)
     session_end(&ses);
 }
 
+/* ============ THE TEXT PRINTED *AROUND* A GUEST SHELL, AND WHERE IT LIES ===
+ *
+ * `--mancheck` runs every command example in every manual page, every package
+ * README and every page of the in-game wiki on a booted machine, and fails if
+ * a named command does not exist. It cannot see any of this. The sentences
+ * session.c prints AROUND a guest shell -- the banner when a lead goes in,
+ * the hints beside a prompt, the crash cart's own help page -- are outside
+ * that gate, and a day-18 playtest found that is exactly where the remaining
+ * lies were living. Their words: *"this class of hint (session text printed
+ * around a guest shell) is outside the gate and is where the remaining lies
+ * live."*
+ *
+ * Four of them, all one bug wearing four hats: THE SESSION PRINTS A LIST OF
+ * THINGS YOU CAN TYPE WITHOUT KNOWING WHICH PROMPT YOU ARE AT.
+ *
+ *   A. `rescue` from the no-console prompt printed "`plug srv1` for a shell
+ *      on the live system" and then promoted the session to `root@srv1#` --
+ *      telling you to type a command to reach where you already were, and
+ *      the command is a tower verb the guest has never heard of.
+ *   B. `eject`, `power off` and `power on` are all `command not found` at
+ *      `root@srv1#`, which is correct -- they are things a person does
+ *      standing in the room -- and nothing said so.
+ *   C. `eject` alone meant the LEAD at the no-console prompt and asked
+ *      "eject which box?" in the room, while that prompt's own help lists it
+ *      under "the live medium on the cart".
+ *   D. `subif <box> <nic>` wants a socket NUMBER and every other line in the
+ *      game names that interface `eth0`.
+ *
+ * check_verbs() above already has the shape of the answer for the TOWER
+ * prompt: walk a list of verbs and assert each is NAMED in that prompt's help
+ * AND ANSWERS at that prompt, in both directions, so neither half can drift.
+ * This extends it to the three prompts nobody gated -- the management line,
+ * the serial shell on a machine, and the `(no console)` state that landed
+ * with power -- and adds the direction those three need and the tower prompt
+ * does not:
+ *
+ *   a verb NAMED in the help of a prompt must ANSWER at that prompt, and
+ *   a verb that will NOT answer there must not be named there without
+ *   saying where it does work.
+ */
+
+/* The word a guest kernel uses for a program it has not got. */
+static bool notfound(const char *out, const char *verb)
+{
+    char miss[64];
+    snprintf(miss, sizeof miss, "%s: command not found", verb);
+    return has(out, miss);
+}
+
+/* Verbs of the BUILDING: things a person does standing in a room, which are
+ * therefore not programs on anybody's server and never will be. Each one is
+ * checked to be honestly refused at a guest prompt -- not shadowed, and not
+ * left as a bare "command not found" with no idea where it went. */
+static const char *TOWER_ONLY[] = {
+    "plug", "eject", "rescue", "power", "mains", "outlet", "outlets",
+    "carry", "drop", "go", "buy", "deliver", "cable", "uncable", "quote",
+    "jack", "patch", "jacks", "spool", "day", "serve", "service", "status",
+    "load", "isp", "events", "demand", "money", "frames", "rooms", "map",
+    "lift", "desks", "sit", "stand", "where", "look", "show", "addr", "gw",
+    "subif", "vlan", "trunk", "dhcpd", "resolver", "dnsd", NULL
+};
+
+/* And the ones the machine really does have. `links` is the browser, `open`
+ * launches a desktop application and `httpd` is the web server: a guest
+ * prompt must go on running all three, so this gate would catch a fix to B
+ * that shadowed the machine instead of speaking after it. */
+static const char *GUEST_OWNS[] = { "links", "open", "httpd", NULL };
+
+static void check_around_the_shell(int *passed, int *total)
+{
+    P = passed; T = total;
+    printf("\nthe text printed AROUND a guest shell, which no other gate sees\n");
+    Session ses;
+    if (!session_start(&ses, GATE_SEED, 200000)) { ck("a session starts", false); return; }
+    Buf o = {0};
+    char pr[96];
+
+    /* ------------------------------------------- 1. the management line */
+    say(&ses, "plug uplink", &o);
+    session_prompt(&ses, pr, sizeof pr);
+    if (!has(pr, "mgmt@")) { ck("a lead into the handoff is a management line", false); goto done; }
+    Buf mh = {0};
+    buf_puts(&mh, say(&ses, "help", &o));
+    static const char *MGMT[] = {
+        "addr", "gw", "router", "subif", "vlan", "trunk", "dhcpd", "dhcp",
+        "resolver", "ping", "trace", "resolve", "dnsd", "dns", "get",
+        "day", "serve", "isp", "events", "ups", "disk",
+        "status", "service", "load", "show", "links", "rooms", "demand",
+        "money", "frames", "where", "help", "unplug", NULL
+    };
+    bool mnamed = true, manswers = true;
+    for (int i = 0; MGMT[i]; i++) {
+        if (!has(mh.p, MGMT[i])) {
+            printf("    the management line's help does not name `%s`\n", MGMT[i]);
+            mnamed = false;
+        }
+        const char *a = say(&ses, MGMT[i], &o);
+        if (has(a, "no such command")) {
+            printf("    `%s` is named on the management line and is not a verb "
+                   "there\n", MGMT[i]);
+            manswers = false;
+        }
+    }
+    ck("the management line's help names every verb it takes", mnamed);
+    ck("and every one of them answers AT the management line", manswers);
+    /* And it does not send anybody to a verb of the room. You cannot pick a
+     * box up with a lead in it, so `carry` at this prompt would be a lie. */
+    /* And it does not offer a verb of the ROOM in its command column. You
+     * cannot pick a box up with a lead in it, so `carry` here would be a lie
+     * -- and the column is where a player looks, which is why the marker is
+     * a line start rather than the word anywhere in the prose. */
+    ck("and its command column does not offer a verb of the ROOM",
+       !has(mh.p, "\ncarry ") && !has(mh.p, "\ndrop ") && !has(mh.p, "\nspool "));
+    buf_free(&mh);
+    say(&ses, "unplug", &o);
+
+    /* ------------------------------- 2. the serial shell on a machine */
+    say(&ses, "buy server srv1", &o);
+    {
+        int mdf = bld_find(&ses.b, 0, RM_MDF);
+        char dl[48];
+        snprintf(dl, sizeof dl, "deliver srv1 #%d", mdf);
+        say(&ses, dl, &o);
+    }
+    say(&ses, "power srv1 on", &o);
+    say(&ses, "plug srv1", &o);
+    session_prompt(&ses, pr, sizeof pr);
+    if (!has(pr, "root@srv1")) { ck("a lead into a booted server is a shell", false); goto done; }
+
+    Buf sh = {0};
+    buf_puts(&sh, say(&ses, "help", &o));
+    /* THE PROGRAMS IT NAMES HAVE TO BE ON THE MACHINE. This is `--mancheck`'s
+     * rule applied to the one page --mancheck cannot read. */
+    static const char *SHELLPROG[] = {
+        "ip addr", "netstat -r", "ping 127.0.0.1", "traceroute 127.0.0.1",
+        "ss", "arp", "tcpdump", "svc", "ps", "dmesg", "fsck /dev/sda1",
+        "pkg verify", "man pkg", NULL
+    };
+    bool progs = true;
+    for (int i = 0; SHELLPROG[i]; i++) {
+        char verb[32], *sp;
+        snprintf(verb, sizeof verb, "%s", SHELLPROG[i]);
+        if ((sp = strchr(verb, ' '))) *sp = 0;
+        if (!has(sh.p, verb)) {
+            printf("    the shell's own help does not name `%s`\n", verb);
+            progs = false;
+        }
+        if (notfound(say(&ses, SHELLPROG[i], &o), verb)) {
+            printf("    the shell's help names `%s` and the machine has not got "
+                   "it\n", verb);
+            progs = false;
+        }
+    }
+    ck("every program the shell's own help names is really on the machine", progs);
+
+    /* THE HALF NOTHING CHECKED. A tower verb typed here is `command not
+     * found`, honestly, and until this gate nothing made the session say
+     * WHERE it does work -- so a player told to type `power off` by one line
+     * of the game was answered by another with a dead end. */
+    bool located = true;
+    for (int i = 0; TOWER_ONLY[i]; i++) {
+        const char *a = say(&ses, TOWER_ONLY[i], &o);
+        if (!notfound(a, TOWER_ONLY[i])) continue;   /* it did something: fine */
+        if (!has(a, "TOWER verb") || !has(a, "unplug")) {
+            printf("    `%s` at root@srv1# is a dead end: %s", TOWER_ONLY[i], a);
+            located = false;
+        }
+    }
+    ck("a verb of the building typed at a guest shell says which prompt it "
+       "belongs to", located);
+
+    /* AND THE MACHINE STILL ANSWERS FIRST. Nothing above may shadow a real
+     * program, which is the way this fix could have been got wrong. */
+    bool owns = true;
+    for (int i = 0; GUEST_OWNS[i]; i++)
+        if (notfound(say(&ses, GUEST_OWNS[i], &o), GUEST_OWNS[i])) {
+            printf("    `%s` is a real program on this OS and the session ate "
+                   "it\n", GUEST_OWNS[i]);
+            owns = false;
+        }
+    ck("and a real program on the machine still runs, unshadowed", owns);
+
+    ck("the shell's help says out loud that the building's verbs are not "
+       "programs",
+       has(sh.p, "not a program") || has(sh.p, "does not work here") ||
+       has(sh.p, "DOES NOT WORK HERE"));
+    ck("and it names the word that gets back to the prompt they do work at",
+       has(sh.p, "unplug"));
+    buf_free(&sh);
+
+    /* ------------------------- 3. the `(no console)` prompt, and `eject` */
+    say(&ses, "rm /boot/vmnomuz", &o);
+    say(&ses, "unplug", &o);
+    say(&ses, "power srv1 off", &o);
+    say(&ses, "power srv1 on", &o);
+    say(&ses, "plug srv1", &o);
+    session_prompt(&ses, pr, sizeof pr);
+    if (!has(pr, "no console")) { ck("a box with no login gives no prompt", false); goto done; }
+
+    Buf nh = {0};
+    buf_puts(&nh, say(&ses, "help", &o));
+    static const char *NOCON[] = { "power", "mains", "outlet", "outlets",
+                                   "rescue", "eject", "show", "look", "where",
+                                   "unplug", NULL };
+    bool nnamed = true, nanswers = true;
+    for (int i = 0; NOCON[i]; i++) {
+        if (!has(nh.p, NOCON[i])) {
+            printf("    the no-console help does not name `%s`\n", NOCON[i]);
+            nnamed = false;
+        }
+        if (strcmp(NOCON[i], "unplug") == 0) continue;   /* it ends the state */
+        const char *a = say(&ses, NOCON[i], &o);
+        if (has(a, "not running anything that could read")) {
+            printf("    `%s` is named on the no-console help and is unheard "
+                   "there\n", NOCON[i]);
+            nanswers = false;
+        }
+        /* AND NONE OF THEM MAY QUIETLY END THE STATE. A verb listed as
+         * something you do to the box, that actually puts the lead back on
+         * the cart, is the same lie in the other direction. `power on` and
+         * `rescue` ARE allowed to end it -- upwards, onto a login that came
+         * up this line -- and that is a different thing from being dropped
+         * back into the room. */
+        session_prompt(&ses, pr, sizeof pr);
+        if (!has(pr, "no console") && !has(pr, "root@")) {
+            printf("    `%s` is named as a thing you do to the box and it put "
+                   "the lead back\n", NOCON[i]);
+            nanswers = false;
+        }
+        /* Put the box back where this section found it: kernel gone, powered,
+         * nothing on the wire. Whatever the verb did to it, the next one is
+         * asked at the same prompt. */
+        if (!has(pr, "no console")) {
+            say(&ses, "unplug", &o);
+            say(&ses, "eject srv1", &o);
+            say(&ses, "plug srv1", &o);
+        }
+    }
+    ck("the no-console help names every verb that prompt takes", nnamed);
+    ck("and every one of them is heard there, and none of them is `unplug` "
+       "in disguise", nanswers);
+    buf_free(&nh);
+
+    /* `eject` MEANS THE STICK AT EVERY PROMPT THAT TAKES IT, which is the
+     * whole of finding C. It used to mean the medium in the room and the lead
+     * here, with one help page listing it under the medium. */
+    {
+        const char *e = say(&ses, "eject", &o);
+        session_prompt(&ses, pr, sizeof pr);
+        ck("bare `eject` at the no-console prompt is the STICK, not the lead",
+           !has(e, "lead back on the cart") && has(pr, "no console"));
+    }
+    /* And the room's own refusal says which of the two it is, rather than
+     * "eject which box?" beside a help page that lists it bare. */
+    say(&ses, "unplug", &o);
+    {
+        const char *e = say(&ses, "eject", &o);
+        ck("and in the room it says what it wants and that it is not the lead",
+           has(e, "eject <box>") && has(e, "unplug"));
+    }
+    say(&ses, "plug srv1", &o);
+
+    /* ------ 4. the banner around the promotion, which is finding A itself */
+    {
+        const char *r = say(&ses, "rescue srv1", &o);
+        session_prompt(&ses, pr, sizeof pr);
+        ck("`rescue` from the no-console prompt puts you on the live system",
+           has(pr, "root@srv1") && has(r, "UP at target"));
+        /* THE LIE: a banner telling you to type `plug srv1` at `root@srv1#`,
+         * where `plug` is a tower verb the guest has never heard of. */
+        ck("and it does NOT tell you to plug in a lead that is already in",
+           !has(r, "`plug srv1` for a shell"));
+        ck("and it says the lead is already in and the line is the live one",
+           has(r, "already in srv1"));
+        ck("and it says the way back out is at the rack, not at this prompt",
+           has(r, "unplug") && has(r, "eject srv1"));
+    }
+    say(&ses, "unplug", &o);
+    say(&ses, "eject srv1", &o);
+
+    /* ------------------------------- 5. the nic is a number, said up front */
+    {
+        const char *h = say(&ses, "help", &o);
+        ck("the tower help says a subif's nic is a socket NUMBER, not `eth0`",
+           has(h, "subif") && has(h, "SOCKET NUMBER"));
+        ck("and the help's own example is one the model accepts",
+           has(h, "subif srv2 0 21"));
+        ck("and the spelling every other output uses is refused, as the help "
+           "says",
+           has(say(&ses, "subif srv1 eth0 21 10.0.21.1/24", &o),
+               "socket number"));
+    }
+
+done:
+    buf_free(&o);
+    session_end(&ses);
+}
+
 /* ================= THE OPENING TEXT COUNTS, IT DOES NOT PROMISE ===========
  *
  * `help` opened with *"On day one it holds exactly one thing: the ISP's
@@ -2649,6 +2947,29 @@ static void check_sit(int *passed, int *total)
         buf_free(&h);
     }
 
+    /* ---- AND THE OTHER DIRECTION, WHICH IS THE SAME HOLE THE CRASH CART HAD.
+     * See check_around_the_shell(): this is a guest shell too, so a verb of
+     * the building typed here is `command not found` and has to say which
+     * prompt it belongs to -- and the word out of this one is `stand`, not
+     * `unplug`. */
+    {
+        bool located = true;
+        for (int i = 0; TOWER_ONLY[i]; i++) {
+            /* `sit` and `stand` are the seat's own two words and the session
+             * takes them before the machine ever sees them. */
+            if (strcmp(TOWER_ONLY[i], "stand") == 0) continue;
+            const char *a = say(&ses, TOWER_ONLY[i], &o);
+            if (!notfound(a, TOWER_ONLY[i])) continue;
+            if (!has(a, "TOWER verb") || !has(a, "stand")) {
+                printf("    `%s` in somebody's chair is a dead end: %s",
+                       TOWER_ONLY[i], a);
+                located = false;
+            }
+        }
+        ck("a verb of the building typed in somebody's chair says where it "
+           "works", located);
+    }
+
     /* ---- STANDING UP GIVES THE MACHINE BACK, and that is the memory cap.
      * A booted Machine measures 18 MB of resident memory on this build and a
      * full tower is 176 desks. If this check ever fails, the feature costs
@@ -2894,6 +3215,7 @@ int session_selfcheck(int *passed, int *total)
     check_services(passed, total);
     check_refusals(passed, total);
     check_prompt(passed, total);
+    check_around_the_shell(passed, total);
     check_inventory(passed, total);
     check_cable_batch(passed, total);
     check_deliver_played(passed, total);
