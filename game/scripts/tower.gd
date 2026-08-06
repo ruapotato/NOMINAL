@@ -3567,6 +3567,8 @@ var _snapping := false
 var _waiting: Node3D = null         # the beacons over tenancies with no ports
 var _dev_sig := ""
 var run_over := false
+# The sentence that ended the run, kept for good. See _show_report().
+var run_over_why := ""
 
 
 # WHERE THE SESSION THINKS YOU ARE STANDING, which is not always where the view
@@ -3909,6 +3911,20 @@ func advance_day(line := "day") -> String:
 func _show_report(said: String) -> void:
 	report_text = said
 	if said.find("THE RUN IS OVER") >= 0 or said.find("the run ended") >= 0:
+		# WHY IT ENDED, KEPT. `report_text` is only ever "the last thing the
+		# day printed", so the sentence naming the reason was overwritten by
+		# the next `day` -- which answers with the terse "the run ended on day
+		# 19" rather than repeating it. A player who dismissed the panel and
+		# pressed [N] lost the explanation for good, and a socket client
+		# reading `hud` afterwards got the same nothing.
+		#
+		# Set once and never replaced: a run ends for one reason and that
+		# reason does not change afterwards.
+		if run_over_why == "":
+			for ln in said.split("\n"):
+				if ln.find("THE RUN IS OVER") >= 0 or ln.find("the run ended") >= 0:
+					run_over_why = ln.strip_edges()
+					break
 		run_over = true
 	if not with_player or hud == null:
 		return
@@ -4060,6 +4076,11 @@ func command(line: String) -> String:
 		var s := ledger_text() + "\n" + where_am_i() + "\n" + hud_lines()
 		if report_open():
 			s += "\n--- the day's report is up ---\n" + report_text
+		# AND WHY THE RUN ENDED, WHICH OUTLIVES THE PANEL. A client that
+		# dismissed the report, or connected after it, could read the whole
+		# ledger and never learn the game was over or what ended it.
+		if run_over and run_over_why != "":
+			s += "\n" + run_over_why
 		return s + "\n"
 	# WHAT THE FRAME COSTS, from the engine's own counters rather than from a
 	# stopwatch in a comment. A tower fills up with people, racks and copper as

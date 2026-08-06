@@ -1144,11 +1144,26 @@ func _init() -> void:
 		fail("bought a circuit worth %d with %d in the bank and the run never ended: %s"
 			% [int(max(10, (have / 3) / 3)), have, t.ledger_text()])
 	else:
-		var why: String = _line_with(t.report_text, "THE RUN IS OVER")
-		if why.strip_edges() == "":
-			fail("the run ended and the window never said so")
+		# THE REASON, NOT THE LAST THING PRINTED. `report_text` is only ever
+		# the most recent day's output, and a `day` issued after the run is
+		# over answers with a terse "the run ended on day N" rather than
+		# repeating why -- so this used to read whichever of the two the
+		# timing happened to leave behind. Since D27 put a tenancy in on day
+		# one, complaints end a run well before the circuit bill does, and the
+		# ending this section tries to CAUSE has usually already happened by
+		# the time it runs. The window keeps the sentence now, once, for good.
+		if t.run_over_why.strip_edges() == "":
+			fail("the run ended and the window never kept why. report_text was: <<%s>>"
+				% t.report_text)
+		elif t.run_over_why.find("day") < 0:
+			fail("the run-ending sentence does not say which day: " + t.run_over_why)
 		else:
-			ok("the run ends, and says why: " + why.strip_edges())
+			ok("the run ended and the window kept why: " + t.run_over_why)
+		var hud3: String = t.command("hud")
+		if hud3.find(t.run_over_why.strip_edges()) < 0:
+			fail("`hud` does not tell a socket client why the run ended")
+		else:
+			ok("and `hud` tells a socket client the same reason")
 		if t.hud_lines().find("THE RUN IS OVER") < 0:
 			fail("the run is over and the HUD still offers the next day")
 		else:
