@@ -285,6 +285,22 @@ static void check_port_speed(const Building *b)
     printf("    the same room, the same three metres: %d Mb to the router, "
            "%d Mb to the server\n", mb_up, mb_srv);
 
+    /* AND `show` SAYS WHICH NUMBER IS WHICH, without calling a server a
+     * circuit. That line was written when the ISP handoff was the only
+     * rate-limited port in the game, so it read "the cable carries 10000Mb;
+     * the circuit is 1000Mb" about a machine that is not on a circuit and
+     * never was. Since port speed comes from the kit, every box has one. */
+    {
+        Buf sh = {0};
+        site_cmd(&s, "show files", &sh);
+        ck("`show` names the cable's rate and the port's, and calls neither a "
+           "circuit",
+           sh.p && strstr(sh.p, "carries 10000Mb") &&
+           strstr(sh.p, "this port does 1000Mb") &&
+           strstr(sh.p, "circuit") == NULL);
+        buf_free(&sh);
+    }
+
     /* AND THE MONEY SAYS THE SAME THING. Fibre into a gigabit box costs
      * several times what the copper that does the identical gigabit costs,
      * which is the whole of "a wrong answer you can afford to make". */

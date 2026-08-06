@@ -4364,10 +4364,20 @@ static void dump_ports(const Net *n, int node, Buf *out, bool empties)
             int mb = port_rate_mb(n, p);
             buf_printf(out, " %dMb %s %dm", mb,
                        n->port[p].duplex == DUPLEX_FULL ? "full" : "half", c->metres);
-            /* The circuit is not the cable, and when they disagree the
-             * player needs to know which number is which. */
+            /* The port is not the cable, and when they disagree the player
+             * needs to know which number is which -- because the difference
+             * is money already spent on copper that is doing nothing.
+             *
+             * THIS SAID "the circuit" until D27, and it was true when the
+             * ISP handoff was the only rate-limited port in the game. Since
+             * port speed comes from the KIT, every box has one: a desk is a
+             * gigabit card whatever you plug into it, so cat6 to a desk
+             * printed "the circuit is 1000Mb" about a machine that is not on
+             * a circuit and never was. netstack cannot tell the handoff from
+             * any other host -- there is no such node kind -- so the wording
+             * has to be true of both, and naming the port is true of both. */
             if (n->port[p].rate_mb > 0 && n->port[p].rate_mb < cable_speed_mb(c->kind, c->metres))
-                buf_printf(out, " (%s carries %dMb; the circuit is %dMb)",
+                buf_printf(out, " (%s carries %dMb; this port does %dMb)",
                            c->kind == CAB_FIBRE ? "fibre" : "the cable",
                            cable_speed_mb(c->kind, c->metres), n->port[p].rate_mb);
         }
