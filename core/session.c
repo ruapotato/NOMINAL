@@ -216,6 +216,37 @@ static void sync_disk(Session *ses, int dev)
     char host[NET_NAME_MAX + 2];
     snprintf(host, sizeof host, "%s\n", ses->s.dev[dev].name);
     vfs_write(&m->disk, "/etc/hostname", host, strlen(host));
+    /* AND WHAT IT SERVES, for the same reason and in the same place.
+     *
+     * A DHCP pool and a nameserver the tower started lived in the stack and
+     * nowhere else, so three servers that were fsck'd and rebooted after a
+     * mains failure came back addressed, booted and silent -- serving
+     * nothing, with `svc` on the box still saying the box was fine, because
+     * from the box's point of view it was. The address survives a power cut
+     * because it is on the disk; a service the player configured is a
+     * decision of exactly the same kind, so it goes on the disk beside it
+     * and netd starts it again. `dhcpd <box> off` takes the line out, which
+     * is why an empty file is written rather than none. */
+    char svc[256];
+    int sl = snprintf(svc, sizeof svc,
+                      "# what this box serves. netd starts it; the tower "
+                      "wrote it.\n");
+    for (int i = 0; i < NET_POOL_MAX; i++) {
+        int ifx = 0, count = 0;
+        uint32_t first = 0, mk = 0, pg = 0, pd = 0;
+        if (!net_dhcpd_pool(n, node, i, &ifx, &first, &count, &mk, &pg, &pd))
+            break;
+        char a[20], gg[20], dd[20];
+        net_fmt_ip(first, a, sizeof a);
+        net_fmt_ip(pg, gg, sizeof gg);
+        net_fmt_ip(pd, dd, sizeof dd);
+        sl += snprintf(svc + sl, sizeof svc - (size_t)sl,
+                       "dhcpd %s %d %d %s %s\n", a, count, net_mask_len(mk),
+                       gg, dd);
+    }
+    if (net_dnsd_running(n, node))
+        sl += snprintf(svc + sl, sizeof svc - (size_t)sl, "dnsd\n");
+    vfs_write(&m->disk, "/etc/net/services", svc, strlen(svc));
     /* Whatever it had applied is now stale. */
     m->net_cfg = 0;
 }
@@ -1037,7 +1068,12 @@ static bool is_config(const char *v)
 {
     return strcmp(v, "addr") == 0 || strcmp(v, "gw") == 0 ||
            strcmp(v, "resolver") == 0 || strcmp(v, "subif") == 0 ||
-           strcmp(v, "dhcp") == 0;
+           strcmp(v, "dhcp") == 0 ||
+           /* Starting or stopping a service is a decision about the box, so
+            * it is written onto the box -- see sync_disk. Without these two
+            * the disk kept saying "serving" after `dhcpd <box> off`, and the
+            * next boot started a pool the player had switched off. */
+           strcmp(v, "dhcpd") == 0 || strcmp(v, "dnsd") == 0;
 }
 
 static void after_config(Session *ses, const char *verb, int dev, Buf *out)

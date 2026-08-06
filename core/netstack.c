@@ -197,10 +197,25 @@ typedef struct {
 
 typedef struct {
     uint8_t  mac[6];
+    int8_t   pool;         /* which pool on this host handed it out         */
     uint32_t ip;
     uint64_t expires;
     bool     used;
 } Lease;
+
+/* A RANGE OF ADDRESSES AND THE SEGMENT IT BELONGS TO. `ifx` is the whole
+ * point: a pool is not a property of a box, it is a property of one of the
+ * box's legs into one broadcast domain. The leases are the host's, shared
+ * across its pools and tagged with the pool that gave them out, because a
+ * box holds a couple of hundred leases in all however many segments it is
+ * on -- a lease array per pool would be four megabytes of tower spent on
+ * addresses nobody has taken. */
+typedef struct {
+    bool     used;
+    int      ifx;
+    uint32_t first, mask, gw, dns;
+    int      count;
+} Pool;
 
 typedef struct {
     char     name[48];
@@ -220,9 +235,7 @@ typedef struct {
     /* Services this host runs. A service is a socket plus a little state;
      * the state is here rather than in the socket because a daemon outlives
      * any one connection. */
-    bool     dhcpd;
-    uint32_t pool_first, pool_mask, pool_gw, pool_dns;
-    int      pool_count;
+    Pool     pool[NET_POOL_MAX];
     Lease    lease[NET_LEASE_MAX];
     bool     dnsd;
     Record   zone[NET_ZONE_MAX];
@@ -2356,20 +2369,33 @@ void net_sock_free(Net *n, int sock)
 {
     if (sock >= 0 && sock < NET_SOCK_MAX) n->sock[sock].used = false;
 }
+/* IS THIS BOX SERVING ADDRESSES AT ALL. There is no `dhcpd` flag any more:
+ * a box serves DHCP if and only if it has a pool scoped to one of its
+ * interfaces, so the flag and the pools cannot drift apart. */
+static bool serving_dhcp(const Host *h)
+{
+    for (int i = 0; i < NET_POOL_MAX; i++) if (h->pool[i].used) return true;
+    return false;
+}
+static void pools_clear(Host *h)
+{
+    for (int i = 0; i < NET_POOL_MAX; i++) h->pool[i].used = false;
+    for (int i = 0; i < NET_LEASE_MAX; i++) h->lease[i].used = false;
+}
 void net_release_host(Net *n, int node)
 {
     Host *h = host_of(n, node);
     if (!h) return;
     /* The services go BEFORE the sockets do: net_close_all reopens what this
      * host is still serving, and a host being released is serving nothing. */
-    h->dhcpd = h->dnsd = h->httpd = false;
+    pools_clear(h);
+    h->dnsd = h->httpd = false;
     net_close_all(n, node);
     for (int i = 0; i < NET_ROUTE_MAX; i++) h->rt[i].used = false;
     for (int i = 0; i < NET_ARP_MAX; i++)   h->arp[i].used = false;
     for (int i = 0; i < NET_FW_MAX; i++)    h->fw[i].used = false;
     h->forwarding = false;
     h->resolver = 0;
-    h->dhcpd = h->dnsd = h->httpd = false;
     for (int i = 0; i < NET_ALIAS_MAX; i++)
         if (n->alias[i].used && n->alias[i].node == node) n->alias[i].used = false;
     int first = n->node[node].port0, last = first + n->node[node].nports;
@@ -2406,7 +2432,7 @@ void net_close_all(Net *n, int node)
         if (n->sock[i].used && n->sock[i].node == node) n->sock[i].used = false;
     Host *h = host_of(n, node);
     if (!h) return;
-    if (h->dhcpd) {
+    if (serving_dhcp(h)) {
         int s = net_udp_open(n, node, 67);
         if (s >= 0) n->sock[s].service = SVC_DHCPD;
     }
@@ -2952,36 +2978,100 @@ static void tcp_timers(Net *n)
 #define DHCPNAK      6
 #define DHCP_LEASE_MS 3600000
 
-void net_dhcpd(Net *n, int node, uint32_t first, int count, uint32_t mask,
+/* WHICH LEG OF THIS BOX IS ON THAT SUBNET. A pool serves one broadcast
+ * domain and the box has to be IN it: the interface whose own address is
+ * inside first&mask is the one the pool belongs to, and if there is no such
+ * interface the box has no business answering for those addresses at all.
+ * Nothing here asks the player for a vlan, because the vlan is already on
+ * the subinterface -- naming it twice would be two places to be wrong. */
+int net_dhcpd_scope(const Net *n, int node, uint32_t first, uint32_t mask)
+{
+    const Host *h = chost_of(n, node);
+    if (!h || !mask) return -1;
+    for (int i = 0; i < NET_IF_MAX; i++) {
+        const Iface *f = &h->ifc[i];
+        if (!f->used || !f->ip) continue;
+        if ((f->ip & mask) == (first & mask)) return i;
+    }
+    return -1;
+}
+bool net_dhcpd(Net *n, int node, uint32_t first, int count, uint32_t mask,
                uint32_t gw, uint32_t dns)
 {
     Host *h = host_of(n, node);
-    if (!h) return;
-    h->dhcpd = true;
-    h->pool_first = first;
-    h->pool_count = count > NET_LEASE_MAX ? NET_LEASE_MAX : count;
-    h->pool_mask = mask;
-    h->pool_gw = gw;
-    h->pool_dns = dns;
-    for (int i = 0; i < NET_LEASE_MAX; i++) h->lease[i].used = false;
+    if (!h || count <= 0) return false;
+    int ifx = net_dhcpd_scope(n, node, first, mask);
+    if (ifx < 0) return false;
+    /* One pool per interface: serving the same segment twice is two answers
+     * to one DISCOVER from one box, which is nobody's intention. Reconfiguring
+     * replaces it, and the leases it had go with it. */
+    int pi = -1;
+    for (int i = 0; i < NET_POOL_MAX; i++)
+        if (h->pool[i].used && h->pool[i].ifx == ifx) pi = i;
+    if (pi < 0)
+        for (int i = 0; i < NET_POOL_MAX && pi < 0; i++)
+            if (!h->pool[i].used) pi = i;
+    if (pi < 0) return false;
+    for (int i = 0; i < NET_LEASE_MAX; i++)
+        if (h->lease[i].used && h->lease[i].pool == pi) h->lease[i].used = false;
+    Pool *p = &h->pool[pi];
+    p->used = true;
+    p->ifx = ifx;
+    p->first = first;
+    p->count = count > NET_LEASE_MAX ? NET_LEASE_MAX : count;
+    p->mask = mask;
+    p->gw = gw;
+    p->dns = dns;
     int s = net_udp_open(n, node, 67);
     if (s >= 0) n->sock[s].service = SVC_DHCPD;
+    return true;
 }
 void net_services_stop(Net *n, int node)
 {
     Host *h = host_of(n, node);
     if (!h) return;
-    h->dhcpd = h->dnsd = h->httpd = false;
+    pools_clear(h);
+    h->dnsd = h->httpd = false;
     net_close_all(n, node);
 }
-void net_dhcpd_stop(Net *n, int node)
+int net_dhcpd_stop(Net *n, int node)
 {
     Host *h = host_of(n, node);
-    if (!h) return;
-    h->dhcpd = false;
+    if (!h) return 0;
+    int k = 0;
+    for (int i = 0; i < NET_POOL_MAX; i++) if (h->pool[i].used) k++;
+    pools_clear(h);
     for (int i = 0; i < NET_SOCK_MAX; i++)
         if (n->sock[i].used && n->sock[i].node == node &&
             n->sock[i].service == SVC_DHCPD) n->sock[i].used = false;
+    return k;
+}
+int net_dhcpd_pools(const Net *n, int node)
+{
+    const Host *h = chost_of(n, node);
+    if (!h) return 0;
+    int k = 0;
+    for (int i = 0; i < NET_POOL_MAX; i++) if (h->pool[i].used) k++;
+    return k;
+}
+bool net_dhcpd_pool(const Net *n, int node, int i, int *ifx, uint32_t *first,
+                    int *count, uint32_t *mask, uint32_t *gw, uint32_t *dns)
+{
+    const Host *h = chost_of(n, node);
+    if (!h) return false;
+    for (int j = 0; j < NET_POOL_MAX; j++) {
+        if (!h->pool[j].used) continue;
+        if (i--) continue;
+        const Pool *p = &h->pool[j];
+        if (ifx) *ifx = p->ifx;
+        if (first) *first = p->first;
+        if (count) *count = p->count;
+        if (mask) *mask = p->mask;
+        if (gw) *gw = p->gw;
+        if (dns) *dns = p->dns;
+        return true;
+    }
+    return false;
 }
 int net_dhcpd_leases(const Net *n, int node)
 {
@@ -3046,22 +3136,60 @@ static int dhcp_find(const uint8_t *m, int len, int code, const uint8_t **out)
  * free one in the pool. When there is no free one the server does not answer
  * -- a pool CAN exhaust, and when it does, the machines that were switched on
  * last are the ones with no address. */
-static uint32_t dhcp_assign(Net *n, Host *h, const uint8_t mac[6])
+static uint32_t dhcp_assign(Net *n, Host *h, int pi, const uint8_t mac[6])
 {
-    for (int i = 0; i < h->pool_count; i++)
-        if (h->lease[i].used && mac_eq(h->lease[i].mac, mac)) {
+    Pool *p = &h->pool[pi];
+    for (int i = 0; i < NET_LEASE_MAX; i++)
+        if (h->lease[i].used && h->lease[i].pool == pi &&
+            mac_eq(h->lease[i].mac, mac)) {
             h->lease[i].expires = n->now + DHCP_LEASE_MS;
             return h->lease[i].ip;
         }
-    for (int i = 0; i < h->pool_count; i++)
-        if (!h->lease[i].used || h->lease[i].expires <= n->now) {
-            h->lease[i].used = true;
-            memcpy(h->lease[i].mac, mac, 6);
-            h->lease[i].ip = h->pool_first + (uint32_t)i;
-            h->lease[i].expires = n->now + DHCP_LEASE_MS;
-            return h->lease[i].ip;
+    /* The lowest address in the range nobody currently holds. The leases are
+     * shared across this box's pools, so the range is walked and the table is
+     * asked, rather than the table being indexed by the range. */
+    for (int off = 0; off < p->count; off++) {
+        uint32_t ip = p->first + (uint32_t)off;
+        int free_slot = -1;
+        bool taken = false;
+        for (int i = 0; i < NET_LEASE_MAX && !taken; i++) {
+            if (!h->lease[i].used || h->lease[i].expires <= n->now) {
+                if (free_slot < 0) free_slot = i;
+                continue;
+            }
+            if (h->lease[i].pool == pi && h->lease[i].ip == ip) taken = true;
         }
+        if (taken) continue;
+        if (free_slot < 0) return 0;      /* the box holds no more leases */
+        h->lease[free_slot].used = true;
+        h->lease[free_slot].pool = (int8_t)pi;
+        memcpy(h->lease[free_slot].mac, mac, 6);
+        h->lease[free_slot].ip = ip;
+        h->lease[free_slot].expires = n->now + DHCP_LEASE_MS;
+        return ip;
+    }
     return 0;
+}
+
+/* WHICH POOL, IF ANY, SERVES THE HOLE THIS FRAME CAME IN BY. This is the
+ * whole scoping fix in one function: a DISCOVER that arrives on an interface
+ * with no pool on it is answered by nothing, so a router serving vlan 11
+ * says nothing at all to a desk broadcasting on vlan 13, however plainly it
+ * can hear it. And a pool whose interface has moved off its subnet since it
+ * was configured stops answering too -- the addresses it holds are no longer
+ * on the wire it is holding them for. */
+static int pool_for(const Host *h, int ifx)
+{
+    if (ifx < 0 || ifx >= NET_IF_MAX) return -1;
+    for (int i = 0; i < NET_POOL_MAX; i++) {
+        const Pool *p = &h->pool[i];
+        if (!p->used || p->ifx != ifx) continue;
+        uint32_t ip = h->ifc[ifx].ip;
+        if (!h->ifc[ifx].used || !ip || (ip & p->mask) != (p->first & p->mask))
+            return -1;
+        return i;
+    }
+    return -1;
 }
 
 static void dhcpd_poll(Net *n, int sock)
@@ -3074,7 +3202,10 @@ static void dhcpd_poll(Net *n, int sock)
     memcpy(m, s->dgram, (size_t)len);
     int ifx = s->dgram_if;
     s->dgram_len = 0;
-    if (!h || !h->dhcpd || len < 244 || m[0] != 1) return;
+    if (!h || len < 244 || m[0] != 1) return;
+    int pi = pool_for(h, ifx);
+    if (pi < 0) return;              /* no pool of ours serves that segment */
+    Pool *pool = &h->pool[pi];
 
     const uint8_t *o = NULL;
     if (dhcp_find(m, len, 53, &o) < 1) return;
@@ -3082,10 +3213,10 @@ static void dhcpd_poll(Net *n, int sock)
     uint32_t xid = get32(m + 4);
     uint8_t cmac[6];
     memcpy(cmac, m + 28, 6);
-    uint32_t self = (ifx >= 0 && ifx < NET_IF_MAX) ? h->ifc[ifx].ip : 0;
+    uint32_t self = h->ifc[ifx].ip;
 
     if (type == DHCPDISCOVER) {
-        uint32_t give = dhcp_assign(n, h, cmac);
+        uint32_t give = dhcp_assign(n, h, pi, cmac);
         if (!give) {
             trace(n, "%s dhcp pool exhausted, no offer", n->node[s->node].name);
             return;                       /* a full pool is silence */
@@ -3097,14 +3228,16 @@ static void dhcpd_poll(Net *n, int sock)
         int rl = dhcp_build(r, 2, xid, cmac, give, self);
         uint8_t t = DHCPOFFER;
         rl = dhcp_opt(r, rl, 53, &t, 1);
-        rl = dhcp_opt32(r, rl, 1, h->pool_mask);
-        if (h->pool_gw)  rl = dhcp_opt32(r, rl, 3, h->pool_gw);
-        if (h->pool_dns) rl = dhcp_opt32(r, rl, 6, h->pool_dns);
+        rl = dhcp_opt32(r, rl, 1, pool->mask);
+        if (pool->gw)  rl = dhcp_opt32(r, rl, 3, pool->gw);
+        if (pool->dns) rl = dhcp_opt32(r, rl, 6, pool->dns);
         rl = dhcp_opt32(r, rl, 51, DHCP_LEASE_MS / 1000);
         rl = dhcp_opt32(r, rl, 54, self);
         r[rl++] = 255;
-        char a[20]; net_fmt_ip(give, a, sizeof a);
-        trace(n, "%s dhcp offer %s", n->node[s->node].name, a);
+        char a[20], nm[24];
+        net_fmt_ip(give, a, sizeof a);
+        if_name(n, s->node, ifx, nm, sizeof nm);
+        trace(n, "%s dhcp offer %s on %s", n->node[s->node].name, a, nm);
         udp_send_from(n, sock, ifx, self, 0xffffffffu, 68, r, rl);
         return;
     }
@@ -3112,7 +3245,7 @@ static void dhcpd_poll(Net *n, int sock)
         uint32_t want = 0;
         const uint8_t *ro = NULL;
         if (dhcp_find(m, len, 50, &ro) == 4) want = get32(ro);
-        uint32_t give = dhcp_assign(n, h, cmac);
+        uint32_t give = dhcp_assign(n, h, pi, cmac);
         uint8_t r[512];
         uint8_t t;
         int rl;
@@ -3127,14 +3260,16 @@ static void dhcpd_poll(Net *n, int sock)
             rl = dhcp_build(r, 2, xid, cmac, give, self);
             t = DHCPACK;
             rl = dhcp_opt(r, rl, 53, &t, 1);
-            rl = dhcp_opt32(r, rl, 1, h->pool_mask);
-            if (h->pool_gw)  rl = dhcp_opt32(r, rl, 3, h->pool_gw);
-            if (h->pool_dns) rl = dhcp_opt32(r, rl, 6, h->pool_dns);
+            rl = dhcp_opt32(r, rl, 1, pool->mask);
+            if (pool->gw)  rl = dhcp_opt32(r, rl, 3, pool->gw);
+            if (pool->dns) rl = dhcp_opt32(r, rl, 6, pool->dns);
             rl = dhcp_opt32(r, rl, 51, DHCP_LEASE_MS / 1000);
             rl = dhcp_opt32(r, rl, 54, self);
             r[rl++] = 255;
-            char a[20]; net_fmt_ip(give, a, sizeof a);
-            trace(n, "%s dhcp ack %s", n->node[s->node].name, a);
+            char a[20], nm[24];
+            net_fmt_ip(give, a, sizeof a);
+            if_name(n, s->node, ifx, nm, sizeof nm);
+            trace(n, "%s dhcp ack %s on %s", n->node[s->node].name, a, nm);
         }
         udp_send_from(n, sock, ifx, self, 0xffffffffu, 68, r, rl);
     }
@@ -3165,11 +3300,28 @@ bool net_dhcp_client(Net *n, int node, int ifx)
         if (get32(r + 4) != xid || !mac_eq(r + 28, h->ifc[ifx].mac)) continue;
         const uint8_t *o = NULL;
         if (dhcp_find(r, rl, 53, &o) < 1 || o[0] != DHCPOFFER) continue;
-        offer = get32(r + 16);
-        if (dhcp_find(r, rl, 1, &o) == 4) mask = get32(o);
-        if (dhcp_find(r, rl, 3, &o) == 4) gw = get32(o);
-        if (dhcp_find(r, rl, 6, &o) == 4) dns = get32(o);
-        if (dhcp_find(r, rl, 54, &o) == 4) server = get32(o);
+        uint32_t o_ip = get32(r + 16), o_mask = 0, o_gw = 0, o_dns = 0, o_srv = 0;
+        if (dhcp_find(r, rl, 1, &o) == 4) o_mask = get32(o);
+        if (dhcp_find(r, rl, 3, &o) == 4) o_gw = get32(o);
+        if (dhcp_find(r, rl, 6, &o) == 4) o_dns = get32(o);
+        if (dhcp_find(r, rl, 54, &o) == 4) o_srv = get32(o);
+        /* AN OFFER FROM A POOL THAT IS NOT OF THIS SEGMENT IS NOT AN OFFER.
+         * The server identifier is the address of the server's leg into this
+         * broadcast domain, and an address handed out on this wire has to be
+         * on the same subnet as that leg -- a machine on it would otherwise
+         * be unable to reach the server that gave it the address, which is
+         * the plainest possible sign that the answer came from somebody
+         * else's pool. Rogue servers on the same L2 are still a hazard, as
+         * they are on real copper; what this refuses is the impossible
+         * lease, and the client keeps waiting for the one that fits. */
+        if (!o_mask || !o_srv || (o_srv & o_mask) != (o_ip & o_mask)) {
+            char a[20];
+            net_fmt_ip(o_ip, a, sizeof a);
+            trace(n, "%s dhcp ignores offer of %s: not this segment",
+                  n->node[node].name, a);
+            continue;
+        }
+        offer = o_ip; mask = o_mask; gw = o_gw; dns = o_dns; server = o_srv;
     }
     if (!offer) { net_sock_free(n, s); return false; }
 
@@ -3192,6 +3344,11 @@ bool net_dhcp_client(Net *n, int node, int ifx)
         if (dhcp_find(r, rl, 53, &o) < 1) continue;
         if (o[0] == DHCPNAK) break;
         if (o[0] != DHCPACK) continue;
+        /* And the same test on the ACK: the lease that is committed is the
+         * one that was offered, from the server that offered it. */
+        uint32_t sid = 0;
+        if (dhcp_find(r, rl, 54, &o) == 4) sid = get32(o);
+        if (sid != server || get32(r + 16) != offer) continue;
         net_if_addr(n, node, ifx, get32(r + 16), mask ? mask : net_mask_bits(24));
         if (gw) net_set_gateway(n, node, gw);
         if (dns) h->resolver = dns;
@@ -3203,6 +3360,16 @@ bool net_dhcp_client(Net *n, int node, int ifx)
 }
 
 /* ---------------------------------------------------------------- DNS    */
+bool net_dnsd_running(const Net *n, int node)
+{
+    const Host *h = chost_of(n, node);
+    return h && h->dnsd;
+}
+int net_httpd_port(const Net *n, int node)
+{
+    const Host *h = chost_of(n, node);
+    return (h && h->httpd) ? h->http_port : 0;
+}
 void net_dnsd(Net *n, int node)
 {
     Host *h = host_of(n, node);
@@ -3592,6 +3759,16 @@ static void if_name(const Net *n, int node, int ifx, char *out, size_t cap)
     if (ifx < n->node[node].nports || nic < 0) snprintf(out, cap, "eth%d", ifx);
     else if (vlan) snprintf(out, cap, "eth%d.%d", nic, vlan);
     else snprintf(out, cap, "eth%d:%d", nic, ifx);
+}
+
+void net_if_name(const Net *n, int node, int ifx, char *out, size_t cap)
+{
+    if (!out || !cap) return;
+    if (!chost_of(n, node) || ifx < 0 || ifx >= NET_IF_MAX) {
+        snprintf(out, cap, "?");
+        return;
+    }
+    if_name(n, node, ifx, out, cap);
 }
 
 void net_dump_ifaces(const Net *n, int node, Buf *out)

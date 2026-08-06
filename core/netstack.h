@@ -82,6 +82,13 @@
  * at once. */
 #define NET_SOCK_MAX    800
 #define NET_LEASE_MAX   254     /* a /24 of pool, which is what one is     */
+/* POOLS ON ONE BOX, and why there is more than one. A DHCP server serves a
+ * SEGMENT, and a router with a subinterface per vlan is on several of them
+ * at once -- so it plausibly runs a pool per vlan, or serves one vlan and
+ * not the others. One pool per box meant the router that served the first
+ * tenancy answered every other tenancy's broadcast with the first tenancy's
+ * addresses, on a segment its pool had nothing to do with. */
+#define NET_POOL_MAX      8
 #define NET_ZONE_MAX     64
 #define NET_ALIAS_MAX    64     /* extra addresses, pooled across the world */
 #define NET_QUEUE_MAX  4096     /* frames in flight anywhere in the world   */
@@ -306,6 +313,11 @@ bool  net_if_del(Net *n, int node, int ifx);
  * whether it is there at all. */
 int   net_if_nic(const Net *n, int node, int ifx);
 int   net_if_get_vlan(const Net *n, int node, int ifx);
+/* What that interface is called on the box -- eth1, or eth0.13 for a tagged
+ * subinterface. The one name a player who cannot see the box has to tell a
+ * socket from a vlan riding on it, so everything that prints an interface
+ * prints this and they cannot drift. */
+void  net_if_name(const Net *n, int node, int ifx, char *out, size_t cap);
 bool  net_if_exists(const Net *n, int node, int ifx);
 int   net_fdb_count(const Net *n, int node);
 /* Forget everything learned. A real switch command, and the honest way to
@@ -403,9 +415,27 @@ uint64_t net_fw_hits(const Net *n, int node, int rule);
 int   net_fw_count(const Net *n, int node);
 
 /* -------------------------------------------------------------- services */
-void  net_dhcpd(Net *n, int node, uint32_t first, int count, uint32_t mask,
+/* A POOL IS SCOPED TO THE SEGMENT IT SERVES, and the segment is not a
+ * seventh argument: it is the interface of this box whose own address is
+ * inside the pool's subnet. A router with three subinterfaces can run three
+ * pools, one per vlan, by calling this three times -- and a DISCOVER that
+ * arrives on an interface no pool is scoped to is answered by silence,
+ * however loudly it was broadcast. Returns false, and starts nothing, when
+ * no interface of this box is on that subnet: a pool with no segment under
+ * it has nobody to serve and would only poison somebody else's.
+ * net_dhcpd_scope() answers which interface it would be. */
+bool  net_dhcpd(Net *n, int node, uint32_t first, int count, uint32_t mask,
                 uint32_t gw, uint32_t dns);
-void  net_dhcpd_stop(Net *n, int node);
+int   net_dhcpd_scope(const Net *n, int node, uint32_t first, uint32_t mask);
+/* Stop serving addresses. Every pool on the box, the sockets with them, and
+ * the leases they held. Returns how many pools were stopped, so a caller can
+ * tell "stopped" from "it was not serving anything". */
+int   net_dhcpd_stop(Net *n, int node);
+/* What this box is serving, pool by pool, for anything that has to print it.
+ * Returns false past the last pool. */
+int   net_dhcpd_pools(const Net *n, int node);
+bool  net_dhcpd_pool(const Net *n, int node, int i, int *ifx, uint32_t *first,
+                     int *count, uint32_t *mask, uint32_t *gw, uint32_t *dns);
 /* Stop everything this host serves and give the sockets back. A box that has
  * been switched off is not serving anything, and this is how the stack is
  * told so -- otherwise reconfiguring the card would put the listeners back,
@@ -418,6 +448,11 @@ bool  net_dhcp_client(Net *n, int node, int ifx);
 uint32_t net_dhcp_lease_of(const Net *n, int node, const uint8_t mac[6]);
 
 void  net_dnsd(Net *n, int node);
+/* What this box is serving, for anything that has to say so out loud. A
+ * tower that cannot print the services a box runs is a tower where a service
+ * can quietly stop running. */
+bool  net_dnsd_running(const Net *n, int node);
+int   net_httpd_port(const Net *n, int node);   /* 0 when it serves nothing */
 void  net_dns_record(Net *n, int node, const char *name, uint32_t ip);
 void  net_set_resolver(Net *n, int node, uint32_t server);
 /* A real query over UDP to the configured resolver. */

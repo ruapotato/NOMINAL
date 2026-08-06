@@ -106,6 +106,8 @@ typedef enum {
     SITE_ENOTSW,      /* only a switch has ports with vlans on them         */
     SITE_EOFF,        /* it is switched off, and an off box is not on a net */
     SITE_ENOBTN,      /* an appliance has no power button                   */
+    SITE_ESEG,        /* no interface of that box is on that pool's subnet   */
+    SITE_EPOOL,       /* a pool of no addresses, or no room for another one  */
     SITE_ERR_COUNT
 } SiteErr;
 const char *site_err_text(int e);
@@ -340,8 +342,18 @@ bool site_forwarding(Site *s, int dev, bool on);
 bool site_subif(Site *s, int dev, int nic, int vlan, uint32_t ip, uint32_t mask);
 bool site_port_vlan(Site *s, int dev, int port, int vlan);
 bool site_port_trunk(Site *s, int dev, int port, int vlan);
+/* A DHCP POOL, AND THE SEGMENT IT SERVES. There is no vlan argument: the
+ * segment is the interface of that box whose own address is inside the
+ * pool's subnet, so a router with three subinterfaces runs three pools by
+ * being called three times, and a pool with no leg of the box under it is
+ * refused rather than left broadcasting into somebody else's tenancy. */
 bool site_dhcpd(Site *s, int dev, uint32_t first, int count, uint32_t mask,
                 uint32_t gw, uint32_t dns);
+/* Stop serving addresses. Returns how many pools it stopped, so "stopped
+ * three" and "it was not serving anything" are different sentences. */
+int  site_dhcpd_stop(Site *s, int dev);
+/* What that box is serving, in words, for `show` and for `dhcpd <box>`. */
+void site_dump_dhcpd(const Site *s, int dev, Buf *out);
 bool site_dhcp(Site *s, int dev);          /* ask for a lease, for real     */
 bool site_resolver(Site *s, int dev, uint32_t ns);
 bool site_dnsd(Site *s, int dev);

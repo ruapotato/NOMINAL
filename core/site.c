@@ -102,6 +102,11 @@ const char *site_err_text(int e)
                                "running is not on the network";
     case SITE_ENOBTN:   return "it has no power button -- it comes up with the "
                                "socket it is plugged into";
+    case SITE_ESEG:     return "no interface of that box is on that pool's "
+                               "subnet -- a pool serves the segment the box "
+                               "is standing on";
+    case SITE_EPOOL:    return "a pool of no addresses serves nobody, and a "
+                               "box holds eight pools at most";
     }
     return "?";
 }
@@ -560,13 +565,68 @@ bool site_port_trunk(Site *s, int dev, int port, int vlan)
     if (vlan > 0) net_trunk_allow(s->net, s->dev[dev].node, port, vlan);
     return true;
 }
+/* WHICH LEG OF THE BOX A POOL LANDS ON, and the refusal when there is none.
+ *
+ * The `dhcpd` line has never had a vlan in it and it must not grow one: a
+ * server's segment is a fact about its own interfaces, not a seventh number
+ * to get wrong. So the pool is scoped to the interface whose address is in
+ * the pool's subnet -- which lets a router with three subinterfaces run
+ * three pools by being told about them three times, and refuses outright the
+ * thing a playtester did by accident: a pool for one tenancy's subnet
+ * started on a router, answering every OTHER tenancy's broadcast with
+ * addresses from a subnet their segment has never heard of. */
 bool site_dhcpd(Site *s, int dev, uint32_t first, int count, uint32_t mask,
                 uint32_t gw, uint32_t dns)
 {
     s->err = SITE_OK;
     if (!live_dev(s, dev)) return false;
-    net_dhcpd(s->net, s->dev[dev].node, first, count, mask, gw, dns);
+    if (count <= 0) { s->err = SITE_EPOOL; return false; }
+    if (net_dhcpd_scope(s->net, s->dev[dev].node, first, mask) < 0) {
+        s->err = SITE_ESEG; return false;
+    }
+    if (!net_dhcpd(s->net, s->dev[dev].node, first, count, mask, gw, dns)) {
+        s->err = SITE_EPOOL; return false;
+    }
     return true;
+}
+/* AND THERE IS A WAY OUT. `dhcpd <box> off` was not a line anybody could
+ * type: a pool started by mistake could only be re-pointed, never stopped,
+ * and an appliance has no power button to pull it down with either. */
+int site_dhcpd_stop(Site *s, int dev)
+{
+    s->err = SITE_OK;
+    if (!live_dev(s, dev)) return -1;
+    return net_dhcpd_stop(s->net, s->dev[dev].node);
+}
+void site_dump_dhcpd(const Site *s, int dev, Buf *out)
+{
+    if (dev < 0 || dev >= s->ndev) return;
+    int node = s->dev[dev].node;
+    int np = net_dhcpd_pools(s->net, node);
+    if (!np) {
+        buf_printf(out, "%s serves no addresses.\n", s->dev[dev].name);
+        return;
+    }
+    for (int i = 0; i < np; i++) {
+        int ifx = 0, count = 0;
+        uint32_t first = 0, mask = 0, gw = 0, dns = 0;
+        if (!net_dhcpd_pool(s->net, node, i, &ifx, &first, &count, &mask, &gw, &dns))
+            break;
+        char a[20], b[20], g[20], d[20], nm[24];
+        net_fmt_ip(first, a, sizeof a);
+        net_fmt_ip(first + (uint32_t)(count - 1), b, sizeof b);
+        net_fmt_ip(gw, g, sizeof g);
+        net_fmt_ip(dns, d, sizeof d);
+        net_if_name(s->net, node, ifx, nm, sizeof nm);
+        int vlan = net_if_get_vlan(s->net, node, ifx);
+        buf_printf(out, "%s dhcpd: %s-%s /%d on %s", s->dev[dev].name, a, b,
+                   net_mask_len(mask), nm);
+        if (vlan) buf_printf(out, " (vlan %d)", vlan);
+        buf_printf(out, ", gw %s, dns %s\n", g, d);
+    }
+    buf_printf(out, "  %d lease%s out. It answers on that interface and on no "
+                    "other.\n", net_dhcpd_leases(s->net, node),
+               net_dhcpd_leases(s->net, node) == 1 ? "" : "s");
 }
 bool site_dhcp(Site *s, int dev)
 {
@@ -794,6 +854,38 @@ void site_dump_rooms(const Site *s, int floor, Buf *out)
     }
 }
 
+/* The services this box is running, named where a player looks for them. */
+static void dump_services(const Site *s, int dev, Buf *out)
+{
+    int node = s->dev[dev].node;
+    int pools = net_dhcpd_pools(s->net, node);
+    int hp = net_httpd_port(s->net, node);
+    bool ns = net_dnsd_running(s->net, node);
+    if (!pools && !hp && !ns) {
+        buf_printf(out, "services: none. It is on the network and serves "
+                        "nothing from it.\n");
+        return;
+    }
+    buf_puts(out, "services:\n");
+    for (int i = 0; i < pools; i++) {
+        int ifx = 0, count = 0;
+        uint32_t first = 0, mask = 0, gw = 0, dns = 0;
+        if (!net_dhcpd_pool(s->net, node, i, &ifx, &first, &count, &mask, &gw, &dns))
+            break;
+        char a[20], b[20], nm[24];
+        net_fmt_ip(first, a, sizeof a);
+        net_fmt_ip(first + (uint32_t)(count - 1), b, sizeof b);
+        net_if_name(s->net, node, ifx, nm, sizeof nm);
+        int vlan = net_if_get_vlan(s->net, node, ifx);
+        buf_printf(out, "  dhcpd  %s-%s on %s", a, b, nm);
+        if (vlan) buf_printf(out, " (vlan %d)", vlan);
+        buf_printf(out, ", %d lease%s out\n", net_dhcpd_leases(s->net, node),
+                   net_dhcpd_leases(s->net, node) == 1 ? "" : "s");
+    }
+    if (ns) buf_puts(out, "  dnsd   answering names for the tower\n");
+    if (hp) buf_printf(out, "  httpd  serving its own files on port %d\n", hp);
+}
+
 static void dump_dev(Site *s, int dev, Buf *out, bool empties)
 {
     if (dev < 0 || dev >= s->ndev) { buf_puts(out, "no such device\n"); return; }
@@ -812,6 +904,11 @@ static void dump_dev(Site *s, int dev, Buf *out, bool empties)
         net_dump_ifaces(s->net, d->node, out);
         net_dump_routes(s->net, d->node, out);
         net_dump_arp(s->net, d->node, out);
+        /* WHAT IT IS SERVING. `show srv3` used to say what it was and where
+         * it was and never what it did, so a DHCP server that had stopped
+         * serving looked exactly like one that was -- and the only way to
+         * find out was to watch a floor fail to get addresses. */
+        dump_services(s, dev, out);
     }
 }
 
@@ -907,6 +1004,72 @@ static CableKind cable_arg(const char *a)
     return CAB_CAT6;
 }
 
+/* WHAT EVERY VERB WANTS, IN THE VERB'S OWN WORDS.
+ *
+ * `dhcpd edge` answered "no such command: dhcpd (try help)" -- about a
+ * command that exists, is in the help, and had simply been handed the wrong
+ * number of arguments. That is the same lie as a help text naming a command
+ * the machine has not got, arriving from the other side: the player is told
+ * the thing they read about does not exist, and stops trusting the rest of
+ * the page. Every verb the dispatcher below answers to is in this table with
+ * the smallest number of words it can do anything with, and a line short of
+ * that gets the spelling instead of a denial. The table is also the list of
+ * verbs that exist, so "no such command" is still true when it is printed.
+ */
+static const struct { const char *verb; int need; const char *usage; } VERB[] = {
+    { "help",     1, "help" },
+    { "show",     1, "show [<box>]" },
+    { "links",    1, "links" },
+    { "rooms",    1, "rooms [<floor>]" },
+    { "demand",   1, "demand" },
+    { "day",      1, "day [<n>]" },
+    { "status",   1, "status" },
+    { "events",   1, "events" },
+    { "service",  1, "service" },
+    { "load",     1, "load" },
+    { "money",    1, "money" },
+    { "frames",   1, "frames" },
+    { "isp",      1, "isp [<mb>]" },
+    { "credit",   2, "credit <amount>" },
+    { "ups",      2, "ups <box>" },
+    { "disk",     2, "disk <box>" },
+    { "order",    2, "order <kind> [name]   switch8 switch24 router pc server" },
+    { "buy",      2, "buy <kind> [name]     switch8 switch24 router pc server" },
+    { "move",     3, "move <box> <room>     rooms: #41, f3.comms, f0.mdf" },
+    { "cable",    3, "cable <box>:<port> <box>:<port> [cat5e|cat6|fibre|cat5]" },
+    { "uncable",  2, "uncable <n>           `links` numbers them" },
+    { "serve",    3, "serve <tenant> <box> [cat5e|cat6|fibre] [vlan]" },
+    { "addr",     3, "addr <box>[:<nic>] <ip>/<bits>" },
+    { "power",    3, "power <box> on|off" },
+    { "gw",       3, "gw <box> <ip>" },
+    { "router",   3, "router <box> on|off" },
+    { "subif",    5, "subif <box> <nic> <vlan> <ip>/<bits>" },
+    { "vlan",     4, "vlan <switch> <port> <n>" },
+    { "trunk",    3, "trunk <switch> <port> <vlan>..." },
+    { "dhcpd",    2, "dhcpd <box> <first> <count> <bits> <gw> <dns>   start a pool\n"
+                     "dhcpd <box> off                                stop them all\n"
+                     "dhcpd <box>                                    what it serves" },
+    { "dhcp",     2, "dhcp <box>            ask for a lease, for real" },
+    { "httpd",    2, "httpd <box> [port]" },
+    { "dnsd",     2, "dnsd <box>" },
+    { "resolver", 3, "resolver <box> <ip>" },
+    { "ping",     3, "ping <box> <ip>" },
+    { "trace",    3, "trace <box> <ip>" },
+    { "resolve",  3, "resolve <box> <name>" },
+    { "get",      4, "get <box> <ip> <path>" },
+    { NULL, 0, NULL }
+};
+
+int site_verb_count(void) { return (int)(sizeof VERB / sizeof VERB[0]) - 1; }
+const char *site_verb_name(int i)
+{
+    return (i >= 0 && i < site_verb_count()) ? VERB[i].verb : NULL;
+}
+int site_verb_arity(int i)
+{
+    return (i >= 0 && i < site_verb_count()) ? VERB[i].need : 0;
+}
+
 bool site_cmd(Site *s, const char *line, Buf *out)
 {
     char buf[512];
@@ -914,6 +1077,12 @@ bool site_cmd(Site *s, const char *line, Buf *out)
     char *t[MAXTOK];
     int n = split(buf, t);
     if (!n) return true;
+
+    for (int i = 0; VERB[i].verb; i++) {
+        if (strcmp(t[0], VERB[i].verb) != 0 || n >= VERB[i].need) continue;
+        buf_printf(out, "%s\n", VERB[i].usage);
+        return true;
+    }
 
     if (strcmp(t[0], "help") == 0) {
         buf_puts(out,
@@ -937,6 +1106,12 @@ bool site_cmd(Site *s, const char *line, Buf *out)
             "vlan <dev> <port> <n>          a switch's access port, in a vlan\n"
             "trunk <dev> <port> <vlan>...   a trunk, and what it may carry\n"
             "dhcpd <dev> <first> <count> <bits> <gw> <dns>\n"
+            "                               a pool, on the interface of that box\n"
+            "                               whose own address is in it -- so a\n"
+            "                               router serves the vlan it is on and\n"
+            "                               not the one next door\n"
+            "dhcpd <dev> off                stop serving addresses. `dhcpd <dev>`\n"
+            "                               says what it is serving now\n"
             "dhcp <dev>                     ask for a lease, for real\n"
             "resolver <dev> <ip>            resolv.conf, in one line\n"
             "ping <dev> <ip>                a real ICMP echo over the wire\n"
@@ -1271,14 +1446,59 @@ bool site_cmd(Site *s, const char *line, Buf *out)
         buf_printf(out, "%s\n", ok ? "set" : site_err_text(s->err));
         return true;
     }
-    if (strcmp(t[0], "dhcpd") == 0 && n >= 7) {
+    if (strcmp(t[0], "dhcpd") == 0) {
         int d = dev_arg(s, t[1]);
+        if (d < 0) { buf_printf(out, "no such box: %s\n", t[1]); return true; }
+        /* `dhcpd <box>` says what it is serving. A service you cannot ask
+         * about is a service you cannot find, and this is the line the
+         * player types when the addresses on a floor are wrong. */
+        if (n == 2) {
+            site_dump_dhcpd(s, d, out);
+            buf_puts(out, "  dhcpd <box> <first> <count> <bits> <gw> <dns> "
+                          "starts one, `dhcpd <box> off` stops\n  every pool "
+                          "on it.\n");
+            return true;
+        }
+        if (strcmp(t[2], "off") == 0 || strcmp(t[2], "stop") == 0) {
+            int k = site_dhcpd_stop(s, d);
+            if (k < 0) { buf_printf(out, "%s\n", site_err_text(s->err)); return true; }
+            if (!k) buf_printf(out, "%s was not serving any addresses.\n",
+                               s->dev[d].name);
+            else buf_printf(out, "%s stops serving addresses: %d pool%s gone, "
+                                 "and the leases with\n  them. Anything holding "
+                                 "one keeps it until it asks again.\n",
+                            s->dev[d].name, k, k == 1 ? "" : "s");
+            return true;
+        }
+        if (n < 7) {
+            buf_puts(out, "dhcpd <box> <first> <count> <bits> <gw> <dns>   "
+                          "start a pool\n"
+                          "dhcpd <box> off                                "
+                          "stop them all\n"
+                          "dhcpd <box>                                    "
+                          "what it serves\n");
+            return true;
+        }
         uint32_t first, gw, dns;
-        if (d < 0 || !net_parse_ip(t[2], &first) || !net_parse_ip(t[5], &gw) ||
+        if (!net_parse_ip(t[2], &first) || !net_parse_ip(t[5], &gw) ||
             !net_parse_ip(t[6], &dns)) { buf_puts(out, "?\n"); return true; }
-        buf_printf(out, "%s\n", site_dhcpd(s, d, first, atoi(t[3]),
-                                           net_mask_bits(atoi(t[4])), gw, dns)
-                   ? "serving" : site_err_text(s->err));
+        if (!site_dhcpd(s, d, first, atoi(t[3]), net_mask_bits(atoi(t[4])),
+                        gw, dns)) {
+            buf_printf(out, "%s\n", site_err_text(s->err));
+            if (s->err == SITE_ESEG) {
+                Buf ifs = {0};
+                net_dump_ifaces(s->net, s->dev[d].node, &ifs);
+                buf_printf(out, "  %s has:\n", s->dev[d].name);
+                if (ifs.len) buf_put(out, ifs.p, ifs.len);
+                buf_puts(out, "  Give it an address on that subnet first -- "
+                              "`addr` for a socket, `subif` for\n  a vlan -- and "
+                              "the pool goes on that interface and serves only "
+                              "it.\n");
+                buf_free(&ifs);
+            }
+            return true;
+        }
+        site_dump_dhcpd(s, d, out);
         return true;
     }
     if (strcmp(t[0], "dhcp") == 0 && n >= 2) {

@@ -173,7 +173,8 @@ void netsite_pin(Machine *m, struct Net *n, int node)
  * to resolv.conf takes effect the moment somebody makes it. */
 static uint32_t cfg_hash(Machine *m)
 {
-    static const char *WATCH[] = { "/etc/net/interfaces", "/etc/resolv.conf", NULL };
+    static const char *WATCH[] = { "/etc/net/interfaces", "/etc/resolv.conf",
+                                   "/etc/net/services", NULL };
     uint32_t h = 2166136261u;
     Vfs *fs = m->on_rescue ? &m->rescue : &m->disk;
     for (int i = 0; WATCH[i]; i++) {
@@ -248,6 +249,71 @@ static void bind_services(Net *n, Machine *m, int node)
         net_httpd(n, node, (uint16_t)svc_port(m, "httpd", "Listen", 80));
     if (kernel_svc_running(m, "postfix"))
         net_tcp_listen(n, node, 25);
+}
+
+/* WHAT THIS BOX SERVES, OFF ITS OWN DISK.
+ *
+ * An address lives in /etc/net/interfaces and comes back when the box does.
+ * A DHCP pool the player started lived in the stack and nowhere else, so a
+ * server that was serving twenty desks came back from a power cut addressed,
+ * booted, `svc`-clean -- and handing out nothing, with no line anywhere
+ * saying so. A machine that reports a service running while the tower serves
+ * nothing from it is the worst kind of wrong this project can be.
+ *
+ * So the tower writes what it started onto the disk beside the address (see
+ * sync_disk in core/session.c) and netd starts it again here, from the file.
+ * One source of truth: a line in the file is a pool, no line is no pool, and
+ * `dhcpd <box> off` takes the line out.
+ *
+ *     dhcpd <first> <count> <bits> <gw> <dns>
+ *     dnsd
+ *
+ * The pool is scoped by netstack to the interface whose address is inside
+ * it, so a box that comes back with a different address does not come back
+ * serving somebody else's subnet: the pool simply does not start, which is
+ * the honest outcome and is visible in `dhcpd <box>`.
+ */
+#define SVC_FILE "/etc/net/services"
+
+static const char *next_word(const char *p, const char *end, char *out, size_t cap)
+{
+    while (p < end && (*p == ' ' || *p == '\t')) p++;
+    size_t o = 0;
+    while (p < end && *p != ' ' && *p != '\t' && *p != '\n' && o < cap - 1)
+        out[o++] = *p++;
+    out[o] = 0;
+    return p;
+}
+
+static void start_services(Net *n, Machine *m, int node)
+{
+    Vfs *fs = m->on_rescue ? &m->rescue : &m->disk;
+    VNode *f = vfs_resolve(fs, SVC_FILE, NULL);
+    if (!f || f->kind != VN_FILE) return;
+    const char *p = f->data.p, *end = p + f->data.len;
+    while (p < end) {
+        const char *nl = p;
+        while (nl < end && *nl != '\n') nl++;
+        char verb[16];
+        const char *q = next_word(p, nl, verb, sizeof verb);
+        if (strcmp(verb, "dhcpd") == 0) {
+            char a[24], c[16], b[16], g[24], d[24];
+            q = next_word(q, nl, a, sizeof a);
+            q = next_word(q, nl, c, sizeof c);
+            q = next_word(q, nl, b, sizeof b);
+            q = next_word(q, nl, g, sizeof g);
+            q = next_word(q, nl, d, sizeof d);
+            uint32_t first = 0, gw = 0, dns = 0;
+            int bits = small_int(b), count = small_int(c);
+            net_parse_ip(g, &gw);
+            net_parse_ip(d, &dns);
+            if (net_parse_ip(a, &first) && bits > 0 && bits <= 32 && count > 0)
+                net_dhcpd(n, node, first, count, net_mask_bits(bits), gw, dns);
+        } else if (strcmp(verb, "dnsd") == 0) {
+            net_dnsd(n, node);
+        }
+        p = nl < end ? nl + 1 : nl;
+    }
 }
 
 /* The first value of `key` in a config file, in the shape netd reads. */
@@ -332,6 +398,11 @@ static int attach(Machine *m)
     net_set_resolver(n, node, 0);
     net_arp_flush(n, node);
     net_close_all(n, node);
+    /* And the pools go, because the file below is what puts them back. A
+     * reconfiguration is a reconfiguration: leaving a pool running would
+     * make a line somebody deleted invisible, which is the same fault as
+     * leaving the old address on. */
+    net_dhcpd_stop(n, node);
 
     /* NO NETWORK DAEMON, NO NETWORK. netd is what applies the config; if it
      * refused to start -- because the file is missing, or names an interface
@@ -371,6 +442,8 @@ static int attach(Machine *m)
         uint32_t s;
         if (net_parse_ip(ns, &s)) net_set_resolver(n, node, s);
     }
+    /* And what it serves, which is now on the disk beside what it is. */
+    start_services(n, m, node);
     return node;
 }
 
