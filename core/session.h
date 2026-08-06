@@ -38,7 +38,17 @@ typedef enum {
     SES_DESK = 0,   /* sitting at your workstation: the break-fix game     */
     SES_BODY,       /* standing in a room of the tower                     */
     SES_MGMT,       /* at a managed box's management line, via the cart    */
-    SES_SHELL       /* at a real shell on a real machine, via the cart     */
+    SES_SHELL,      /* at a real shell on a real machine, via the cart     */
+    /* SAT IN SOMEBODY ELSE'S CHAIR. A tenancy's desk is a real card in a
+     * real broadcast domain, and until somebody sits at it there is no
+     * operating system behind that card at all -- because a booted Machine
+     * measures 18.3 MB of resident memory on this build (D23 records 13.5 MB
+     * of allocation; the rest is the allocator's) and a full tower is 176
+     * desks, which would be 3.2 GB. See do_sit() in session.c:
+     * the machine is built when you pull the chair out and freed when you
+     * stand up, so the tower pays for ONE of them, ever, and only while
+     * somebody is looking at it. */
+    SES_SEAT
 } SesWhere;
 
 typedef struct {
@@ -77,6 +87,11 @@ typedef struct {
      * a server and never before. Its address comes off its own disk and its
      * node is the one the player's cable is already in. */
     Machine *mach[SITE_MAX_DEV];
+    /* THE CHAIR YOU ARE SITTING IN, or -1. One, because a person has one
+     * backside: this is the whole of the cap on what the desks cost, and it
+     * is a fact about bodies rather than a budget somebody chose. The
+     * Machine at mach[seat] exists for exactly as long as this is set. */
+    int      seat;
 } Session;
 
 /* The tower, and you in the MDF of it. */

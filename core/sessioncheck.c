@@ -80,7 +80,9 @@ static void check_verbs(int *passed, int *total)
         /* THE COUNTERPART TO THE SPOOL, which D23 and the README both sold
          * and the tower did not have: the first blind playtester of it went
          * looking for the verb and there was none. */
-        "jack", "patch", "jacks", NULL
+        "jack", "patch", "jacks",
+        /* D31: the people at the desks, and the chair you can sit in. */
+        "desks", "sit", "stand", NULL
     };
     bool all = true;
     for (int i = 0; VERB[i]; i++)
@@ -144,7 +146,12 @@ static void check_verbs(int *passed, int *total)
     static const char *LOOP[] = {
         "day", "serve", "service", "status", "load", "isp", "events",
         "get", "httpd", "dnsd", "ups", "disk",
-        "jack", "patch", "jacks", NULL
+        "jack", "patch", "jacks",
+        /* D31. The verb that walks you round to the complainant's side of the
+         * problem. It is in this list rather than the one above because both
+         * halves matter: the tower help has to NAME it, and it has to answer
+         * where the help says it does. */
+        "desks", "sit", "stand", NULL
     };
     const char *h = say(&ses, "help", &o);
     Buf help = {0};
@@ -1924,6 +1931,277 @@ done:
     session_end(&ses);
 }
 
+/* ================================================== sitting at somebody's desk
+ *
+ * D31. A tenancy's complaint is a fact about their machines, and until this
+ * existed the only way to read it was a number in `service`. What is checked
+ * here is the whole of the claim: that the desk is a REAL machine whose tools
+ * agree with the wire, that its complaint is legible from its own console,
+ * that sitting at it changes nothing about the network, and -- the one that
+ * would quietly cost gigabytes if it stopped being true -- that exactly one
+ * of these machines can exist at a time and that standing up frees it.
+ */
+/* WHERE THE SESSION SAYS YOU ARE, asked the way a player asks it: off the
+ * prompt. Deliberately not `ses.where == SES_SEAT` -- this file has to be
+ * compilable against the tree as it was before the verb existed, so that
+ * "this check fails without the feature" can be demonstrated rather than
+ * asserted, and an enum member that does not exist yet is a build error
+ * rather than a failing check. */
+static bool seated_at(const Session *ses, const char *name)
+{
+    char p[64];
+    session_prompt(ses, p, sizeof p);
+    return strncmp(p, "desk:", 5) == 0 && has(p, name);
+}
+
+static bool on_your_feet(const Session *ses)
+{
+    char p[64];
+    session_prompt(ses, p, sizeof p);
+    return strncmp(p, "desk:", 5) != 0;
+}
+
+static int desk_machines(const Session *ses)
+{
+    int n = 0;
+    for (int i = 0; i < ses->s.ndev; i++)
+        if (ses->s.dev[i].kind == SDEV_DESK && ses->mach[i]) n++;
+    return n;
+}
+
+/* Run the clock to the first tenancy with desks in a room, and stand in it. */
+static int desks_are_in(Session *ses, Buf *o)
+{
+    int ti = -1;
+    for (int guard = 0; guard < 400 && ti < 0; guard++) {
+        say(ses, "day 1", o);
+        for (int i = 0; i < ses->s.ntenant; i++)
+            if (ses->s.tenant[i].moved && ses->s.tenant[i].ndesk) { ti = i; break; }
+    }
+    return ti;
+}
+
+static void check_sit(int *passed, int *total)
+{
+    P = passed; T = total;
+    printf("\nwalking to a tenant's desk and using their computer\n");
+    Session ses;
+    if (!session_start(&ses, GATE_SEED, 100000)) { ck("a session starts", false); return; }
+    Buf o = {0};
+
+    ck("`desks` before anybody moves in says the building is empty of people",
+       has(say(&ses, "desks", &o), "not a desk in the building"));
+
+    int ti = desks_are_in(&ses, &o);
+    if (ti < 0) { ck("a tenancy moves in with desks", false); goto done; }
+    const SiteTenant *t = &ses.s.tenant[ti];
+    int d0 = t->desk0;
+    char first[NET_NAME_MAX];
+    snprintf(first, sizeof first, "%s", ses.s.dev[d0].name);
+
+    /* ---- THE MODEL IS WHAT SAYS WHERE A PERSON SITS. D23's rule: the 3D
+     * view is never the source of truth, so everything the view needs about
+     * a person and their machine has to come out of a socket. */
+    {
+        char line[32];
+        snprintf(line, sizeof line, "desks %d", t->tenant);
+        const char *r = say(&ses, line, &o);
+        char room[48];
+        snprintf(room, sizeof room, "#%d", ses.s.dev[d0].room);
+        ck("`desks <tenant>` names every desk, the room it is in and its state",
+           has(r, first) && has(r, room) && has(r, "no link"));
+        /* A name, and the same name every time: a floor of numbered cards is
+         * not a floor of people, and the view has to read the nameplate off
+         * the model rather than invent one. */
+        Buf again = {0};
+        buf_puts(&again, r);
+        const char *r2 = say(&ses, line, &o);
+        ck("and the person at each desk is the same person on the second ask",
+           again.p && *again.p && has(r2, first) && strcmp(again.p, r2) == 0);
+        buf_free(&again);
+    }
+
+    /* ---- YOU HAVE TO BE IN THEIR OFFICE, like everything else in this game. */
+    {
+        char line[32];
+        snprintf(line, sizeof line, "sit %s", first);
+        const char *r = say(&ses, line, &o);
+        ck("sitting at a desk on another floor is refused and names the room",
+           has(r, "and you are not") && has(r, "their office") &&
+           on_your_feet(&ses));
+    }
+
+    /* ---- AND IT HAS TO BE SOMEBODY'S DESK. Your own kit gets the cart. */
+    say(&ses, "sit uplink", &o);
+    ck("`sit` on your own kit is refused and points at the crash cart",
+       has(o.p, "not somebody's desk") && has(o.p, "plug uplink"));
+
+    /* ---- Now cable them, so they have LINK and no address: the commonest
+     * unhappy tenancy in the game, and the one this feature is for. */
+    {
+        char line[64];
+        say(&ses, "buy switch24 dsw", &o);
+        say(&ses, "go goods", &o);
+        say(&ses, "carry dsw", &o);
+        snprintf(line, sizeof line, "go %s", first);
+        say(&ses, line, &o);
+        say(&ses, "drop", &o);
+        snprintf(line, sizeof line, "serve %d dsw", t->tenant);
+        say(&ses, line, &o);
+        say(&ses, "day 4", &o);
+    }
+    ck("the tenancy is now striking with copper in every desk and no address",
+       ses.s.tenant[ti].strikes > 0 &&
+       net_port_state(ses.s.net, ses.s.dev[d0].node, 0) == PORT_UP &&
+       !net_if_get_addr(ses.s.net, ses.s.dev[d0].node, 0));
+
+    /* ---- SITTING DOWN. */
+    {
+        char line[32];
+        snprintf(line, sizeof line, "sit %s", first);
+        const char *r = say(&ses, line, &o);
+        ck("you can sit down at a desk in the room you are standing in",
+           seated_at(&ses, first) && has(r, "chair"));
+        ck("and it says whose machine it is and that nothing you leave stays",
+           has(r, "not yours") && has(r, "nothing you leave on it stays"));
+        char p[64];
+        session_prompt(&ses, p, sizeof p);
+        ck("the prompt names the desk and does not claim a user that has no "
+           "account", has(p, first) && !has(p, "root@"));
+    }
+    ck("a booted operating system exists for the desk you are sat at, and one",
+       desk_machines(&ses) == 1);
+
+    /* ---- THE COMPLAINT, READ OFF THEIR OWN MACHINE. Nothing below is a
+     * string this game wrote about the desk: every line is a program running
+     * on an emulated processor reading state the kernel really holds. */
+    ck("`ip addr` on their machine says the card has no address",
+       has(say(&ses, "ip addr", &o), "eth0") && has(o.p, "no address"));
+    ck("and /etc/net/interfaces says it asked -- so it asked and got nothing",
+       has(say(&ses, "cat /etc/net/interfaces", &o), "address dhcp"));
+    /* The image ships /etc/resolv.conf naming 10.0.2.3, which is a host in
+     * the break-fix world and not in this building at all. A resolver comes
+     * with a lease and this machine has not got one. */
+    ck("and the resolver file does not name a box out of another game's world",
+       has(say(&ses, "cat /etc/resolv.conf", &o), "No lease has arrived") &&
+       !has(o.p, "10.0.2.3"));
+    ck("and a ping off their machine fails for the reason it really fails for",
+       has(say(&ses, "ping 198.51.100.1", &o), "unreachable"));
+    ck("the shell is the machine's: a command it has not got is not found",
+       has(say(&ses, "notaprogram", &o), "command not found"));
+
+    /* ---- Every tool the seat's own help offers has to be on the machine.
+     * Same rule the shell help is held to, arriving from the same direction. */
+    {
+        Buf h = {0};
+        buf_puts(&h, say(&ses, "help", &o));
+        static const char *PROG[] = { "ip", "ping", "traceroute", "netstat",
+                                      "ss", "arp", "tcpdump", "svc", "ps",
+                                      "dmesg", "cat", NULL };
+        bool exists = true, listed = true;
+        for (int i = 0; PROG[i]; i++) {
+            if (has(say(&ses, PROG[i], &o), "command not found")) {
+                printf("    the seat help names `%s` and their machine has no "
+                       "such program\n", PROG[i]);
+                exists = false;
+            }
+            if (!has(h.p, PROG[i])) {
+                printf("    the seat help stopped naming `%s`\n", PROG[i]);
+                listed = false;
+            }
+        }
+        ck("every program the seat's help names is really on their machine",
+           exists);
+        ck("and the seat's help still names every one of them", listed);
+        buf_free(&h);
+    }
+
+    /* ---- STANDING UP GIVES THE MACHINE BACK, and that is the memory cap.
+     * A booted Machine measures 18 MB of resident memory on this build and a
+     * full tower is 176 desks. If this check ever fails, the feature costs
+     * three gigabytes. */
+    {
+        const char *r = say(&ses, "stand", &o);
+        ck("`stand` gets you up and says the machine goes back to being theirs",
+           on_your_feet(&ses) && has(r, "theirs again"));
+    }
+    ck("and no operating system is left behind for any desk in the building",
+       desk_machines(&ses) == 0);
+
+    /* Twenty desks, one after another: the cost is one machine, never twenty,
+     * because a person has one backside and sits in one chair. */
+    {
+        int most = 0;
+        for (int j = 0; j < ses.s.tenant[ti].ndesk && j < 20; j++) {
+            char line[32];
+            snprintf(line, sizeof line, "sit %s", ses.s.dev[d0 + j].name);
+            say(&ses, line, &o);
+            if (desk_machines(&ses) > most) most = desk_machines(&ses);
+            say(&ses, "stand", &o);
+        }
+        ck("sitting at every desk of a tenancy in turn never holds more than one",
+           most == 1 && desk_machines(&ses) == 0);
+    }
+
+    /* AND MOVING STRAIGHT FROM ONE CHAIR TO THE NEXT still holds one, which
+     * is the shape of the cap that could most easily go wrong: `sit` from
+     * inside the seat stands you up first. */
+    if (ses.s.tenant[ti].ndesk > 1) {
+        char line[32];
+        snprintf(line, sizeof line, "sit %s", first);
+        say(&ses, line, &o);
+        snprintf(line, sizeof line, "sit %s", ses.s.dev[d0 + 1].name);
+        say(&ses, line, &o);
+        ck("moving straight to the next desk holds one machine, not two",
+           desk_machines(&ses) == 1 && seated_at(&ses, ses.s.dev[d0 + 1].name));
+        say(&ses, "stand", &o);
+        ck("and standing up from that one leaves nothing behind either",
+           desk_machines(&ses) == 0 && on_your_feet(&ses));
+    }
+
+    /* ---- AND IT IS A DIAGNOSTIC, NOT AN INTERVENTION. Waking their machine
+     * must not renew a lease, re-point a resolver or otherwise move the
+     * network the player is being judged on -- a player who made a striking
+     * tenancy worse by looking at it would never look again. */
+    {
+        say(&ses, "buy router drt", &o);
+        say(&ses, "go goods", &o);
+        say(&ses, "carry drt", &o);
+        char line[64];
+        snprintf(line, sizeof line, "go %s", first);
+        say(&ses, line, &o);
+        say(&ses, "drop", &o);
+        say(&ses, "cable drt dsw cat6", &o);
+        say(&ses, "addr drt:0 10.9.1.1/24", &o);
+        say(&ses, "router drt on", &o);
+        say(&ses, "dhcpd drt 10.9.1.100 40 24 10.9.1.1 10.9.1.1", &o);
+        say(&ses, "day 1", &o);
+        uint32_t before = net_if_get_addr(ses.s.net, ses.s.dev[d0].node, 0);
+        uint32_t gw_before = net_get_gateway(ses.s.net, ses.s.dev[d0].node);
+        uint32_t ns_before = net_get_resolver(ses.s.net, ses.s.dev[d0].node);
+        ck("with a pool on the segment the desks really do get addresses",
+           before != 0);
+        snprintf(line, sizeof line, "sit %s", first);
+        say(&ses, line, &o);
+        char ip[20];
+        net_fmt_ip(before, ip, sizeof ip);
+        ck("and `ip addr` on the desk prints the address the SITE says it has",
+           has(say(&ses, "ip addr", &o), ip));
+        ck("and /etc/net/interfaces says the address is a lease, not a decision",
+           has(say(&ses, "cat /etc/net/interfaces", &o), "lease") &&
+           has(o.p, ip));
+        say(&ses, "stand", &o);
+        ck("standing up leaves the desk's address, gateway and resolver alone",
+           net_if_get_addr(ses.s.net, ses.s.dev[d0].node, 0) == before &&
+           net_get_gateway(ses.s.net, ses.s.dev[d0].node) == gw_before &&
+           net_get_resolver(ses.s.net, ses.s.dev[d0].node) == ns_before);
+    }
+
+done:
+    buf_free(&o);
+    session_end(&ses);
+}
+
 int session_selfcheck(int *passed, int *total)
 {
     check_verbs(passed, total);
@@ -1945,5 +2223,6 @@ int session_selfcheck(int *passed, int *total)
     check_vlan_server_reboot(passed, total);
     check_vlan_only_server(passed, total);
     check_documented(passed, total);
+    check_sit(passed, total);
     return 0;
 }

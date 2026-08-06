@@ -406,6 +406,335 @@ static void do_power(Session *ses, int dev, bool on, Buf *out)
                       "far enough to configure one.\n");
 }
 
+/* ====================================================== somebody else's desk
+ *
+ * D31. The owner: *"let's also add in the virtual people to actually be in
+ * their office at a computer desk... where if you felt like it you could go
+ * over to their desk and see what issues they're complaining about --
+ * literally using their computer."*
+ *
+ * A tenancy's desk has been a real card in a real broadcast domain since the
+ * pivot: it asks for an address, it pulls its files, and core/siteday.c
+ * counts whether it finished. What it has never had is an operating system,
+ * and it cannot have one lying about: 13.5 MB a machine against 176 desks in
+ * a full tower is 2.4 GB, and the world is meant to be 73 MB plus what is
+ * running.
+ *
+ * So the machine is LAZY AND BOUNDED BY THE BODY. There is one chair and one
+ * person to sit in it: the Machine is installed and booted when you pull the
+ * chair out, and freed the moment you stand up. The cap is one, it is not a
+ * number anybody tuned, and a session that never sits at a desk pays nothing.
+ *
+ * WHAT IT COSTS IN HONESTY, and this is the real decision. The machine's
+ * disk is written from what its card ALREADY HAS on the wire -- the lease it
+ * is holding, the gateway and the resolver that came with it -- rather than
+ * from `address dhcp`. That is what makes waking it a no-op for the network:
+ * netsite.c tears the node down and puts back exactly what was there, so a
+ * player who sits at a desk has not renewed anybody's lease, has not
+ * re-pointed anybody's resolver, and cannot make a striking tenancy worse by
+ * looking at it. The price is that /etc/net/interfaces reads as a static
+ * address on a machine that was handed one, so the file says which it is in
+ * a comment above it. A desk with NO address writes `address dhcp` and means
+ * it: netd really asks, really gets nothing, and that is the commonest
+ * complaint in the game diagnosed from the complainant's own console.
+ */
+/* WHOSE DESK IT IS. A name is not a technical claim and nothing hangs off
+ * it, but a floor of numbered cards is not a floor of people, and the 3D
+ * shell needs somewhere to read the nameplate from. Deterministic in the
+ * seed and the device, so the same tower always seats the same people. */
+static const char *PERSON[] = {
+    "Ada", "Bo", "Cai", "Dot", "Efe", "Fen", "Gus", "Hana", "Ida", "Jo",
+    "Kit", "Lev", "Mira", "Nils", "Ola", "Pia", "Quin", "Ravi", "Sam", "Tess",
+    "Uli", "Vik", "Wren", "Xan", "Yara", "Zoe"
+};
+/* AND A SURNAME, because twenty desks drawn from twenty-six given names put
+ * four people called Vik in one office and a room of four Viks is not a room
+ * of people. Two draws off one hash is five hundred and twenty of them. */
+static const char *FAMILY[] = {
+    "Adeyemi", "Baqri", "Costa", "Dvorak", "Eriksen", "Farah", "Guo", "Haddad",
+    "Iversen", "Jelinek", "Kowalski", "Lindqvist", "Moreau", "Nakamura",
+    "Okonkwo", "Petrov", "Quiroga", "Reyes", "Sandoval", "Tanaka"
+};
+#define NPERSON ((int)(sizeof PERSON / sizeof PERSON[0]))
+#define NFAMILY ((int)(sizeof FAMILY / sizeof FAMILY[0]))
+
+static uint64_t desk_hash(const Session *ses, int dev)
+{
+    uint64_t h = ses->seed ^ (0x9e3779b97f4a7c15ull * (uint64_t)(dev + 1));
+    h ^= h >> 30; h *= 0xbf58476d1ce4e5b9ull;
+    h ^= h >> 27; h *= 0x94d049bb133111ebull;
+    h ^= h >> 31;
+    return h;
+}
+
+/* Their full name, into a caller's buffer, because there are two tables and
+ * a static would be a bug the day two desks are named in one line. */
+static const char *desk_person_full(const Session *ses, int dev, char *out,
+                                    size_t cap)
+{
+    uint64_t h = desk_hash(ses, dev);
+    snprintf(out, cap, "%s %s", PERSON[(int)(h % (uint64_t)NPERSON)],
+             FAMILY[(int)((h >> 20) % (uint64_t)NFAMILY)]);
+    return out;
+}
+
+/* Just the given name, for the sentences that use one. */
+static const char *desk_person(const Session *ses, int dev)
+{
+    return PERSON[(int)(desk_hash(ses, dev) % (uint64_t)NPERSON)];
+}
+
+static bool is_desk(const Session *ses, int d)
+{
+    return d >= 0 && d < ses->s.ndev && ses->s.dev[d].kind == SDEV_DESK;
+}
+
+/* WHAT THIS MACHINE IS, WRITTEN FROM WHAT ITS CARD ALREADY HAS. See the note
+ * above. This is deliberately NOT sync_disk(): that function writes the
+ * player's decisions onto a box the player owns, and nobody decided anything
+ * about this one -- a desk's address came off the wire from a server the
+ * player runs, and the file has to say so. */
+static void desk_disk(Session *ses, int dev)
+{
+    Machine *m = ses->mach[dev];
+    if (!m) return;
+    Net *n = ses->s.net;
+    int node = ses->s.dev[dev].node;
+    uint32_t a  = net_if_get_addr(n, node, 0);
+    uint32_t gw = net_get_gateway(n, node);
+    uint32_t ns = net_get_resolver(n, node);
+    Buf cfg = {0};
+    if (a) {
+        char ip[20], g[20];
+        net_fmt_ip(a, ip, sizeof ip);
+        buf_puts(&cfg, "# the lease this machine is holding. It asked, something\n"
+                       "# answered, and this is what came back.\n");
+        buf_printf(&cfg, "iface eth0\n  address %s\n  netmask %d\n", ip,
+                   net_mask_len(net_if_get_mask(n, node, 0)));
+        if (gw) {
+            net_fmt_ip(gw, g, sizeof g);
+            buf_printf(&cfg, "  gateway %s\n", g);
+        }
+    } else {
+        buf_puts(&cfg, "# nobody has ever configured this machine by hand. It asks.\n"
+                       "iface eth0\n  address dhcp\n");
+    }
+    vfs_write(&m->disk, "/etc/net/interfaces", cfg.p, cfg.len);
+    buf_free(&cfg);
+    if (ns) {
+        char rc[64], s[20];
+        net_fmt_ip(ns, s, sizeof s);
+        snprintf(rc, sizeof rc, "nameserver %s\n", s);
+        vfs_write(&m->disk, "/etc/resolv.conf", rc, strlen(rc));
+    } else {
+        /* THE IMAGE SHIPS A RESOLVER AND IT IS NOT IN THIS BUILDING. Leaving
+         * the shipped 10.0.2.3 on a tenant's desk would have put an address
+         * out of the break-fix world onto a machine in the player's tower,
+         * and the first thing a player does at a desk with no network is
+         * read this file. A resolver arrives with a lease; there is no
+         * lease. */
+        static const char NORES[] =
+            "# a nameserver arrives with the lease. No lease has arrived.\n";
+        vfs_write(&m->disk, "/etc/resolv.conf", NORES, sizeof NORES - 1);
+    }
+    char host[NET_NAME_MAX + 2];
+    snprintf(host, sizeof host, "%s\n", ses->s.dev[dev].name);
+    vfs_write(&m->disk, "/etc/hostname", host, strlen(host));
+    /* A desk serves nothing. An empty file rather than none, so netd reads a
+     * decision rather than an absence. */
+    vfs_write(&m->disk, "/etc/net/services", "", 0);
+    m->net_cfg = 0;
+}
+
+/* Pull the chair out. Installs, writes, pins and boots -- and the boot
+ * console is NOT printed: this machine has been on since the morning, the
+ * person has been working at it all day, and a kernel banner would be the
+ * game claiming something it does not mean. What is printed is the state,
+ * which is read off the machine and off the wire. */
+static Machine *desk_wake(Session *ses, int dev)
+{
+    Machine *m = ses->mach[dev];
+    if (m) return m;
+    m = nom_alloc(sizeof *m);
+    memset(m, 0, sizeof *m);
+    machine_install(m, ses->seed + 9000 + (uint64_t)dev);
+    ses->mach[dev] = m;
+    desk_disk(ses, dev);
+    netsite_pin(m, ses->s.net, ses->s.dev[dev].node);
+    machine_boot(m);
+    netsite_apply(m);
+    return m;
+}
+
+/* And put it back. THE MACHINE GOES WITH THE CHAIR: whatever was typed at it
+ * is gone, because it is not the player's machine and they do not get to keep
+ * anything of it. That is the memory answer and the ownership answer in one
+ * decision -- see docs/decisions-d31.md. */
+static void desk_sleep(Session *ses)
+{
+    int d = ses->seat;
+    ses->seat = -1;
+    if (d < 0 || !ses->mach[d]) return;
+    machine_free(ses->mach[d]);
+    nom_free(ses->mach[d]);
+    ses->mach[d] = NULL;
+}
+
+/* WHAT IS WRONG WITH THIS DESK, in the words of the thing that is wrong --
+ * link, then address, and no further. This is a reading of the wire and it
+ * deliberately stops at the two facts core/siteday.c uses to decide whether
+ * a person got their work done: anything past that is a diagnosis and the
+ * diagnosis is the player's job, at the machine. */
+static const char *desk_state(const Session *ses, int d)
+{
+    if (net_port_state(ses->s.net, ses->s.dev[d].node, 0) != PORT_UP)
+        return "no link";
+    if (!net_if_get_addr(ses->s.net, ses->s.dev[d].node, 0))
+        return "link, no address";
+    return "link and address";
+}
+
+static void do_sit(Session *ses, const char *what, Buf *out)
+{
+    if (ses->carrying >= 0) {
+        buf_printf(out, "refused: you are carrying %s in both hands. `drop` "
+                        "first.\n", ses->s.dev[ses->carrying].name);
+        return;
+    }
+    int d = dev_arg(ses, what);
+    if (d < 0) {
+        buf_printf(out, "there is no desk called %s in this building. `desks` "
+                        "lists them by\n  tenancy, and `look` says which are in "
+                        "this room.\n", what);
+        return;
+    }
+    if (!is_desk(ses, d)) {
+        buf_printf(out, "refused: %s is not somebody's desk -- it is a %s, and "
+                        "it is yours.\n  `plug %s` puts the crash cart's serial "
+                        "lead in it.\n",
+                   ses->s.dev[d].name, site_kind_name(ses->s.dev[d].kind),
+                   ses->s.dev[d].name);
+        return;
+    }
+    if (!dev_here(ses, d)) {
+        char w[48];
+        room_label(ses, ses->s.dev[d].room, w, sizeof w);
+        buf_printf(out, "%s is in %s and you are not. `go %s` first -- you have "
+                        "to be in\n  their office to sit down at it.\n",
+                   ses->s.dev[d].name, w, ses->s.dev[d].name);
+        return;
+    }
+    Machine *m = desk_wake(ses, d);
+    ses->seat = d;
+    ses->where = SES_SEAT;
+    char who[48];
+    buf_printf(out, "%s pushes their chair back and lets you sit down at %s.\n",
+               desk_person_full(ses, d, who, sizeof who), ses->s.dev[d].name);
+    buf_printf(out, "[%s at %s] -- %s\n", m->boot.running ? "UP" : "DOWN",
+               boot_stage_name(m->boot.failed_at), desk_state(ses, d));
+    /* WHAT THEY ARE COMPLAINING ABOUT, in their words, before any tool has
+     * been run. It is a reading of the tenancy's own strike count -- the
+     * number `service` prints -- so it cannot say anything the player could
+     * not already have read, and it never names a cause. */
+    int tn = ses->s.dev[d].tenant;
+    for (int i = 0; i < ses->s.ntenant; i++) {
+        const SiteTenant *t = &ses->s.tenant[i];
+        if (t->tenant != tn || !t->moved) continue;
+        if (!t->tried)
+            buf_printf(out, "\"not one machine on this floor has got onto "
+                            "anything at all. %d day%s of it.\"\n",
+                       t->strikes, t->strikes == 1 ? "" : "s");
+        else if (t->complained)
+            buf_printf(out, "\"we filed with the landlord. %d of us got anything "
+                            "done yesterday, out of %d.\"\n", t->finished,
+                       t->tried);
+        else if (t->strikes)
+            buf_printf(out, "\"it has been like this %d day%s now. %d of %d "
+                            "things we tried finished.\"\n", t->strikes,
+                       t->strikes == 1 ? "" : "s", t->finished, t->tried);
+        else
+            buf_printf(out, "\"it has been fine, actually -- %d of %d finished "
+                            "yesterday.\"\n", t->finished, t->tried);
+        break;
+    }
+    buf_puts(out, "this is a REAL SHELL on their machine, not yours. `help` for "
+                  "what is on it,\n  `stand` to get up again -- and the machine "
+                  "goes back to being theirs when\n  you do, so nothing you "
+                  "leave on it stays.\n");
+}
+
+static void do_stand(Session *ses, Buf *out)
+{
+    int d = ses->seat;
+    desk_sleep(ses);
+    ses->where = SES_BODY;
+    buf_printf(out, "you stand up out of %s's chair.\n",
+               d >= 0 ? desk_person(ses, d) : "somebody");
+    if (d >= 0)
+        buf_printf(out, "%s is theirs again, and it is a card on a wire once "
+                        "more: nothing of the\n  operating system in it is left "
+                        "in this game's memory.\n", ses->s.dev[d].name);
+}
+
+/* WHERE THE PEOPLE ARE. The model is what says who sits where and what is
+ * wrong with their machine -- D23's rule, and the reason a fourth agent can
+ * put desks and people into the 3D world against something rather than
+ * inventing them. Every field here is read off the site and the wire. */
+static void do_desks(Session *ses, int n, char *t[MAXTOK], Buf *out)
+{
+    int want = n > 1 ? atoi(t[1]) : -1;
+    int shown = 0;
+    for (int i = 0; i < ses->s.ntenant; i++) {
+        const SiteTenant *tn = &ses->s.tenant[i];
+        if (!tn->moved) continue;
+        if (want >= 0 && tn->tenant != want) continue;
+        shown++;
+        char w[48];
+        room_label(ses, tn->room, w, sizeof w);
+        buf_printf(out, "tenancy %d, %s: %d desk%s, %d of %d finished yesterday, "
+                        "%d strike%s%s\n", tn->tenant, w, tn->ndesk,
+                   tn->ndesk == 1 ? "" : "s", tn->finished, tn->tried,
+                   tn->strikes, tn->strikes == 1 ? "" : "s",
+                   tn->complained ? ", COMPLAINT FILED" : "");
+        if (want < 0) {
+            /* One line a tenancy, and the desk to walk to if you want it. */
+            if (tn->ndesk)
+                buf_printf(out, "    `desks %d` for who sits at them; `go %s` "
+                                "then `sit %s`\n", tn->tenant,
+                           ses->s.dev[tn->desk0].name,
+                           ses->s.dev[tn->desk0].name);
+            continue;
+        }
+        for (int j = 0; j < tn->ndesk; j++) {
+            int d = tn->desk0 + j;
+            char rw[48];
+            room_label(ses, ses->s.dev[d].room, rw, sizeof rw);
+            char ip[20] = "-", who[48];
+            uint32_t a = net_if_get_addr(ses->s.net, ses->s.dev[d].node, 0);
+            if (a) net_fmt_ip(a, ip, sizeof ip);
+            buf_printf(out, "    %-8s %-18s %-18s %-16s %s\n",
+                       ses->s.dev[d].name,
+                       desk_person_full(ses, d, who, sizeof who), rw, ip,
+                       desk_state(ses, d));
+        }
+    }
+    if (!shown) {
+        if (want >= 0)
+            buf_printf(out, "tenancy %d has not moved in, so there are no desks "
+                            "on that floor yet.\n  `demand` says when they "
+                            "come.\n", want);
+        else
+            buf_puts(out, "nobody has moved in yet, so there is not a desk in "
+                          "the building.\n  `demand` says who is coming and "
+                          "when.\n");
+        return;
+    }
+    if (want < 0)
+        buf_puts(out, "\n`sit <desk>` sits down at one, in the room it is in. It "
+                      "is their computer:\n  the operating system in it exists "
+                      "while you are in the chair and no longer.\n");
+}
+
 /* --------------------------------------------------------------- walking */
 /* Real metres through real doors. A room with no route is refused and says
  * so: the riser is a shaft with a ladder in it and building.h has always
@@ -659,6 +988,35 @@ static void inventory(const Session *ses, Buf *out)
 
 static void do_help(const Session *ses, Buf *out)
 {
+    if (ses->where == SES_SEAT && ses->seat >= 0) {
+        buf_printf(out,
+            "you are sat at %s, which belongs to %s and not to you. It is a\n"
+            "REAL SHELL on the same operating system every other machine in "
+            "this\ngame runs, and there is one account on it and it is root -- "
+            "so be\ncareful: the only thing stopping you is you.\n"
+            "\n"
+            "THE POINT OF BEING HERE is that their complaint is a fact about "
+            "THIS\nmachine, and these read it off this machine rather than off "
+            "a number\nin `service`:\n"
+            "  ip addr                      has this card got an address at all\n"
+            "  ip route                     and does it know a way off its own\n"
+            "                               subnet\n"
+            "  cat /etc/net/interfaces      how it was told to get one. A desk\n"
+            "                               asks; `address dhcp` and no address\n"
+            "                               means it asked and nothing answered\n"
+            "  cat /etc/resolv.conf         which resolver it was given\n"
+            "  ping <addr>                  from HERE, over the copper you laid\n"
+            "  traceroute <addr>            where it stops\n"
+            "  netstat -r routes   -P this port's own counters   -A the arp cache\n"
+            "  ss    arp    tcpdump    svc    ps    dmesg\n"
+            "\n"
+            "  stand                        get up. Their machine goes back to\n"
+            "                               being a card on a wire, and anything\n"
+            "                               you did to it goes with it -- it is\n"
+            "                               theirs, and you are not keeping it\n",
+            ses->s.dev[ses->seat].name, desk_person(ses, ses->seat));
+        return;
+    }
     if (ses->where == SES_SHELL) {
         buf_printf(out,
             "this is a REAL SHELL on %s -- the same operating system every\n"
@@ -923,6 +1281,27 @@ static void do_help(const Session *ses, Buf *out)
         "  isp [mb]           what the circuit carries, what it costs a month,\n"
         "                     and when the next bill lands. `isp 100` resizes it\n"
         "  events             what the world has done to the kit overnight\n"
+        "\n"
+        "THEIR DESKS, AND THE PEOPLE AT THEM. A tenancy's computers are real\n"
+        "machines on your network and the complaint is a fact about one of\n"
+        "them. You can go and look at it from their side.\n"
+        "  desks              every tenancy that has moved in: how many desks,\n"
+        "                     what finished yesterday, and how many strikes\n"
+        "  desks <tenant>     each of that tenancy's desks -- who sits at it,\n"
+        "                     which room, its address, and whether it has link\n"
+        "  sit <desk>         sit down at it. You must be in their office, so\n"
+        "                     `go t1d3` first. It is a REAL SHELL on THEIR\n"
+        "                     machine: `ip addr`, `ping`, `cat\n"
+        "                     /etc/resolv.conf` and the rest, reading the same\n"
+        "                     network your copper made\n"
+        "  stand              get up again. The machine is theirs, so it goes\n"
+        "                     back to being a card on a wire and nothing you\n"
+        "                     left on it survives -- which is also why sitting\n"
+        "                     at one desk costs what one machine costs and a\n"
+        "                     tower full of them costs nothing\n"
+        "                     `carry` on a tenant's kit is refused, and this is\n"
+        "                     the same rule: you are here to fix it, not to own\n"
+        "                     it\n"
         "\n"
         "THE CRASH CART. You push it up to a box and plug a lead in.\n"
         "  plug <box>         serial. A switch, a router or the handoff gives\n"
@@ -1728,6 +2107,7 @@ bool session_start(Session *ses, uint64_t seed, long budget)
     ses->spool_kind = -1;
     ses->cab_dev = -1;
     ses->carrying = -1;
+    ses->seat = -1;
     if (!bld_generate(&ses->b, seed)) return false;
     if (!site_new(&ses->s, &ses->b, seed, budget)) { bld_free(&ses->b); return false; }
     ses->room = bld_find(&ses->b, 0, RM_MDF);
@@ -1751,6 +2131,7 @@ void session_end(Session *ses)
     }
     site_free(&ses->s);
     bld_free(&ses->b);
+    ses->seat = -1;
     ses->up = false;
     ses->where = SES_DESK;
 }
@@ -1760,6 +2141,14 @@ void session_prompt(const Session *ses, char *out, size_t cap)
     switch (ses->where) {
     case SES_SHELL: snprintf(out, cap, "root@%s# ", ses->s.dev[ses->plugged].name); break;
     case SES_MGMT:  snprintf(out, cap, "mgmt@%s# ", ses->s.dev[ses->plugged].name); break;
+    /* NOT `root@`, THOUGH THE ACCOUNT IS ROOT. There is one account on every
+     * machine in this game and /bin/whoami says so, so a prompt claiming a
+     * user called Ada would be the game lying in the one place a player
+     * cannot look away from. What the prompt has to carry is the thing that
+     * IS different: this box is not yours. */
+    case SES_SEAT:  snprintf(out, cap, "desk:%s# ",
+                             ses->seat >= 0 ? ses->s.dev[ses->seat].name : "?");
+                    break;
     case SES_BODY: {
         const Room *rm = room_of(ses, ses->room);
         snprintf(out, cap, "f%d %s> ", rm ? rm->floor : 0,
@@ -1884,6 +2273,33 @@ bool session_line(Session *ses, const char *line, Buf *out)
         if (n && strcmp(t[0], "help") == 0) { do_help(ses, out); return true; }
         if (!n) return true;
         Machine *m = ses->mach[ses->plugged];
+        if (m) kernel_run(m, raw, out);
+        return true;
+    }
+
+    /* AND THE SAME THING IN SOMEBODY ELSE'S CHAIR. One word gets you out of
+     * it, and it is `stand` because that is what you do; `unplug` is taken
+     * too, because it is the word this game has already taught for "put the
+     * thing down and be a person in a room again". */
+    if (ses->where == SES_SEAT) {
+        if (n && (strcmp(t[0], "stand") == 0 || strcmp(t[0], "unplug") == 0 ||
+                  strcmp(t[0], "leave") == 0)) {
+            do_stand(ses, out);
+            return true;
+        }
+        if (n && strcmp(t[0], "help") == 0) { do_help(ses, out); return true; }
+        /* THE NEXT CHAIR ALONG. Twenty desks in one office and a player
+         * comparing two of them should not have to type `stand` between
+         * every pair -- and this is still one machine at a time, because
+         * standing up is what happens first and it is what frees the last
+         * one. There is no `sit` program on the machine to shadow. */
+        if (n > 1 && strcmp(t[0], "sit") == 0) {
+            do_stand(ses, out);
+            do_sit(ses, t[n - 1], out);
+            return true;
+        }
+        if (!n) return true;
+        Machine *m = ses->seat >= 0 ? ses->mach[ses->seat] : NULL;
         if (m) kernel_run(m, raw, out);
         return true;
     }
@@ -2027,6 +2443,30 @@ bool session_line(Session *ses, const char *line, Buf *out)
     }
     if (strcmp(t[0], "unplug") == 0) {
         buf_puts(out, "there is no lead in anything.\n");
+        return true;
+    }
+    /* ------------------------------------------------ sitting down at a desk */
+    if (strcmp(t[0], "sit") == 0) {
+        if (n < 2) {
+            buf_puts(out, "sit at which desk? `desks` lists every tenancy's, "
+                          "`look` says which are\n  in this room. You have to be "
+                          "in their office: `go <desk>` walks you there.\n");
+            return true;
+        }
+        /* `sit at t1d3` and `sit down at t1d3` are what people type. */
+        int a = 1;
+        while (a < n - 1 && (strcmp(t[a], "at") == 0 || strcmp(t[a], "down") == 0))
+            a++;
+        do_sit(ses, t[a], out);
+        return true;
+    }
+    if (strcmp(t[0], "stand") == 0) {
+        buf_puts(out, "you are already on your feet. `sit <desk>` sits down at "
+                      "somebody's computer.\n");
+        return true;
+    }
+    if (strcmp(t[0], "desks") == 0 || strcmp(t[0], "people") == 0) {
+        do_desks(ses, n, t, out);
         return true;
     }
     if (strcmp(t[0], "spool") == 0) { do_spool(ses, n, t, out); return true; }
