@@ -774,8 +774,249 @@ func _init() -> void:
 			else:
 				ok("and [Esc] stands you back up")
 
+	# ================================================ THE LOOP, IN THE WORLD
+	#
+	# core/siteday.c has had the clock, the tenants, the rent and the ending
+	# since D25, and for as long as the 3D existed none of it was reachable
+	# from inside the building: no date, no money, no tenants, no losing. Every
+	# check below is that the WINDOW shows what the socket verbs say, and each
+	# one was proved by breaking the thing it watches and watching it fail.
+
+	# ---- A DAY ADVANCES, AND THE HUD SAYS SO.
+	var day0: int = int(t.ses_state().get("day", -1))
+	var money0: int = int(t.ses_state().get("money", 0))
+	var rep: String = t.advance_day()
+	var day1: int = int(t.ses_state().get("day", -1))
+	if day1 != day0 + 1:
+		fail("advanced a day and the session went from day %d to %d" % [day0, day1])
+	elif rep.find("day %d:" % day1) < 0:
+		fail("the day report does not report the day: '%s'" % rep.split("\n")[0])
+	else:
+		ok("a day passes: " + rep.split("\n")[0].strip_edges())
+	if t.ledger_text().find("day %d." % day1) < 0:
+		fail("the day advanced and the ledger still reads '%s'"
+			% t.ledger_text().split("\n")[0])
+	elif t.ledger_text().find("in hand") < 0:
+		fail("the ledger says nothing about money: '%s'" % t.ledger_text())
+	elif t.ledger_text().find("billed in") < 0:
+		fail("the ledger never says when the next bill lands: '%s'" % t.ledger_text())
+	else:
+		ok("the HUD carries the date and the money: "
+			+ t.ledger_text().replace("\n", "  "))
+	if not t.report_open():
+		fail("a day passed and the window showed no report of it")
+	else:
+		ok("and the day's own report is up on the screen, %d lines"
+			% t.report_text.split("\n").size())
+	t._dismiss_report()
+	if money0 == 0:
+		fail("the ledger's money came out of nowhere")
+
+	# ---- A TENANCY MOVES IN AND THE BUILDING SHOWS IT.
+	#
+	# On this seed the first tenancy has the keys on day 49 and their twenty
+	# computers arrive in the room they rent, plugged into nothing. That is the
+	# player's whole job and until now nothing in the world said it had begun.
+	var was_dev: int = t.devices.size()
+	t.command("day 49")
+	await process_frame
+	var rows: Array = t.service_rows()
+	if rows.is_empty():
+		fail("forty-nine days passed and `service` lists nobody")
+	else:
+		var row: Dictionary = rows[0]
+		ok("tenant %d moved in on floor %d: %d desks, %d up"
+			% [int(row.tenant), int(row.floor), int(row.desks), int(row.up)])
+		# their computers are DRAWN, in the room they rent
+		var troom: int = t.tenant_room(int(row.tenant))
+		var drawn := 0
+		for d in t.devices:
+			var df: int = int(floor((d.pos.y + 0.3) / t.fheight))
+			if t.room_of(df, int(floor(d.pos.x)), int(floor(d.pos.z))) == troom:
+				drawn += 1
+		if drawn < int(row.desks):
+			fail("the tenancy has %d desks and the view draws %d of them in their room"
+				% [int(row.desks), drawn])
+		else:
+			ok("%d of their computers stand in the %s (%d devices, was %d)"
+				% [drawn, t.rooms[troom].name, t.devices.size(), was_dev])
+		# and you can find out without typing a verb: over their door, and on
+		# the HUD, in `service`'s own columns
+		if t.waiting_signs() == 0:
+			fail("a tenancy is waiting and nothing in the building says so")
+		else:
+			ok("%d signs hang over the doors of tenancies with no ports"
+				% t.waiting_signs())
+		if t.hud_lines().find("tenant %d" % int(row.tenant)) < 0:
+			fail("the HUD does not name the tenancy that is waiting:\n" + t.hud_lines())
+		else:
+			ok("the HUD names them: " + _line_with(t.hud_lines(), "tenant "))
+
+	# ---- WHAT THE NEXT FLOOR NEEDS, BEFORE THE KEY IS PRESSED, IN CORE'S WORDS.
+	if t.floors_in_service < t.nfloors:
+		var says: String = t.hud_lines()
+		if t.ses_floor() == t.floors_in_service:
+			if says.find("[O] sign floor") < 0:
+				fail("standing on the next floor and the HUD does not offer [O]")
+			else:
+				ok("standing on it, the HUD offers [O]")
+		elif says.find("standing on it") < 0 or says.find("cost") < 0:
+			fail("the HUD offers a floor without saying what it needs or costs:\n" + says)
+		else:
+			ok("the HUD says what [O] needs first: "
+				+ _line_with(says, "it will cost").strip_edges())
+
+	# ---- A COMMAND FROM OUTSIDE DRIVES THE RUNNING WINDOW.
+	#
+	# The owner's reason for all of this: "Claude playing a video game in 3D
+	# space by taking screenshots of the actual user interface is not a
+	# fantastic way for it to iterate. It should operate with commands over the
+	# port." So an agent opens a socket to the window that is already running,
+	# types the same verbs a socket client types, and the world keeps up: the
+	# body walks, and a cable it asks for is really in the tray.
+	var port: int = t.wire_port()
+	if port <= 0:
+		fail("the running tower is not listening on any port")
+	else:
+		var c := StreamPeerTCP.new()
+		c.connect_to_host("127.0.0.1", port)
+		var joined := false
+		for i in range(240):
+			await process_frame
+			c.poll()
+			if c.get_status() == StreamPeerTCP.STATUS_CONNECTED:
+				joined = true
+				break
+		if not joined:
+			fail("nothing answered on port %d" % port)
+		else:
+			ok("connected to the running tower on 127.0.0.1:%d" % port)
+			var pre_links: int = t.site_links().size()
+			var goods2: int = t.find_room(0, t.K_GOODS)
+			# walk the body somewhere else, from outside
+			t.teleport(t.room_centre(t.find_room(0, t.K_MDF)) + Vector3(0, 0.4, 0))
+			for i in range(10):
+				await process_frame
+			var said3: String = await _tell(self, c, "go goods")
+			for i in range(6):
+				await process_frame
+			if t.player_room() != goods2:
+				fail("`go goods` over the socket and the body is in room %d: %s"
+					% [t.player_room(), said3.strip_edges()])
+			else:
+				ok("`go goods` over the socket walked the player into %s"
+					% t.rooms[goods2].name)
+			# and cable something, from outside, and see it in the world:
+			# fetch the server out of goods in, put it in the MDF beside the
+			# switch, and patch it. Six lines, no mouse, and the transcript is
+			# kept so that a failure says which of them the tower refused.
+			# `spool back` first because both hands are still on the drum from
+			# the run above -- core's rule, and the same refusal a player reads.
+			var script: Array = ["spool back", "carry files", "go mdf", "drop",
+				"spool cat6", "plug files:0", "plug core:9"]
+			var talk := ""
+			var laid := ""
+			for cmd in script:
+				laid = await _tell(self, c, cmd)
+				talk += "\n    $ " + cmd + " -> " + laid.strip_edges().split("\n")[0]
+			for i in range(6):
+				await process_frame
+			var now_links: Array = t.site_links()
+			if now_links.size() != pre_links + 1:
+				fail("cabled over the socket and the site holds %d links, not %d:%s"
+					% [now_links.size(), pre_links + 1, talk])
+			else:
+				var l2: Dictionary = now_links[now_links.size() - 1]
+				if t.cables_drawn() < 8:
+					fail("a cable was run over the socket and the world draws %d vertices of copper"
+						% t.cables_drawn())
+				else:
+					ok("a cable run from outside is %d m of copper in the world: port %d to port %d"
+						% [int(l2.metres), int(l2.aport), int(l2.bport)])
+			# ---- AND WHAT IS STRUGGLING IS READ OFF `load`, in its own row.
+			# The HUD only says it when a port is really dropping, so what is
+			# gated here is that the row is being read at all: a port with a
+			# cable in it, named the way `load` names it, with its drops in the
+			# column `load` puts them in.
+			t.command("day")
+			var worst: String = t.load_worst()
+			if worst.find(":") < 0:
+				fail("ports are cabled and `load` names none of them: '%s'" % worst)
+			elif t.load_drops() < 0:
+				fail("the drops column of `load` did not read as a number: '%s'" % worst)
+			else:
+				ok("the busiest port, in `load`'s own row: " + worst)
+			# and the window can be READ from outside too, which is the other
+			# half of playing it blind
+			var hud2: String = await _tell(self, c, "hud")
+			if hud2.find("in hand") < 0:
+				fail("`hud` over the socket does not show the ledger: " + hud2)
+			else:
+				ok("`hud` over the socket reads back what the window shows")
+			c.disconnect_from_host()
+
+	# ---- THE RUN ENDS, AND SAYS WHY.
+	#
+	# A game you cannot lose is not a game. The cheapest honest way to lose
+	# this one is to buy a circuit you cannot pay for: the standing charge
+	# lands on the thirtieth day whatever the network did with it, and an
+	# account that goes overdrawn with no rent coming in ends the run. Nothing
+	# here is a test hook -- it is `isp`, then days.
+	var have: int = int(t.ses_state().get("money", 0))
+	t.command("isp %d" % int(max(10, (have / 3) / 3)))
+	for i in range(14):
+		if t.run_over:
+			break
+		t.command("day 30")
+		await process_frame
+	if not t.run_over:
+		fail("bought a circuit worth %d with %d in the bank and the run never ended: %s"
+			% [int(max(10, (have / 3) / 3)), have, t.ledger_text()])
+	else:
+		var why: String = _line_with(t.report_text, "THE RUN IS OVER")
+		if why.strip_edges() == "":
+			fail("the run ended and the window never said so")
+		else:
+			ok("the run ends, and says why: " + why.strip_edges())
+		if t.hud_lines().find("THE RUN IS OVER") < 0:
+			fail("the run is over and the HUD still offers the next day")
+		else:
+			ok("and the HUD stops offering a day that will not come")
+
 	print("tower: %d failures" % bad)
 	quit(1 if bad else 0)
+
+
+# One line over the socket, and the answer back. The prompt is the frame: the
+# wire writes it after every answer, so a client knows the answer is complete.
+func _tell(tree: SceneTree, c: StreamPeerTCP, line: String) -> String:
+	# Anything already waiting is the greeting, or the prompt after the last
+	# answer. Draining it first is what makes an answer belong to its command
+	# rather than to whichever line happened to be one behind.
+	c.poll()
+	var left := c.get_available_bytes()
+	if left > 0:
+		c.get_data(left)
+	c.put_data((line + "\n").to_utf8_buffer())
+	var out := ""
+	for i in range(900):
+		await tree.process_frame
+		c.poll()
+		var n := c.get_available_bytes()
+		if n > 0:
+			var g: Array = c.get_data(n)
+			if int(g[0]) == OK:
+				out += (g[1] as PackedByteArray).get_string_from_utf8()
+		if out.strip_edges().ends_with(">"):
+			break
+	return out
+
+
+func _line_with(text: String, want: String) -> String:
+	for line in text.split("\n"):
+		if line.find(want) >= 0:
+			return line
+	return ""
 
 
 # Walk there. Steers every frame and drives forward under the same physics the
