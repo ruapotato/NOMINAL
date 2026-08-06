@@ -34,10 +34,33 @@ That is the whole idea. Everything else follows from it.
 5. **You make it work.** The box boots the same OS everything else runs. Give it
    an address, a route, a resolver, a firewall rule, a service. Get it wrong and
    it fails the way a real machine fails, and says so.
-6. **Then it breaks.** Not because a designer hid a fault — because of something
+6. **Then a day passes.** Tenants move in on their day, their people do a
+   day's work over what you built — real DNS, real TCP, real files across
+   real copper — and the rent for the work that finished arrives that
+   evening. Four fifths of a tenancy's people getting their work done is a
+   day they pay for. Three days without it is a complaint. Three complaints
+   ends the run.
+7. **Then it breaks.** Not because a designer hid a fault — because of something
    you did three floors ago and have forgotten.
 
-Step 6 is the game. Step 5 is why it is interesting.
+Step 7 is the game. Step 5 is why it is interesting.
+
+## Where the difficulty comes from
+
+Nowhere. There is no difficulty constant, and nothing keeps a load number
+beside the network: a frame that goes missing goes missing in the stack, on
+a port, for a reason `netstat -P` prints in words. Copper takes time to
+clock bits onto, a port that is behind holds frames back, and a port that is
+further behind than its buffer will hold drops them.
+
+`./build/bf --loadcheck` plays the same tower two ways and prints where each
+one falls over. Built flat, on one subnet, with cheap copper and every file
+coming down the landlord's circuit, it is visibly working hard at three
+floors and has fallen over by five. Built with a vlan per floor, a router
+doing real work, and a server on each floor holding that floor's files, it
+carries every floor it has been grown to — nine floors and a hundred and
+seventy-six desks. The difference is not a number anybody tuned. It is where
+the frames go.
 
 ## Why a real OS matters
 
@@ -71,6 +94,9 @@ Here the terminal is the machine, and it follows that:
                             the building: walk it, buy the kit, run the
                             copper, and get a shell on the box you cabled
     ./build/bf --towersh S  that half alone, one line at a time, over a pipe
+    ./build/bf --loadcheck  the loop: a day, the rent, the load, and the
+                            calibration — where a naive tower falls over and
+                            how much further a planned one carries
     ./build/bf --health     every pristine machine boots with every service up
     ./build/bf --solve 60   every generated fault is findable and repairable
     ./build/bf --askcheck   the person on the phone never says anything untrue
@@ -96,6 +122,12 @@ What it could not do was stay interesting. A fault a designer hides in one file
 on one machine has a floor of one move, because the tools can name the file.
 Building the network yourself is what gives a fault a history, and a history is
 what makes it worth diagnosing.
+
+What it still could not do, until D25, was come back for you. A blind
+playtester of the tower put it exactly: *"They felt like MY decisions; they
+did not yet feel like decisions that would come back for me."* Nothing came
+back because nothing advanced. Now a day passes, and the network is what has
+to carry it.
 
 See `docs/` for the decision records, including the ones that turned out to be
 wrong and say so.
