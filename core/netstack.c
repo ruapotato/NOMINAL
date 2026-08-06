@@ -280,6 +280,13 @@ typedef struct {
     uint8_t  icmp_err_type, icmp_err_code;
     uint32_t icmp_err_from;
     uint64_t icmp_err_at;
+    /* THE CALLS THIS MACHINE HAS FINISHED, which outlive the streams that
+     * made them for the reason netstack.h gives at length: the person who
+     * needs the number is at the desk after the calls have ended, not
+     * during them. It sits in the Host and not in the Machine somebody
+     * boots to read it, so standing up out of the chair does not take it
+     * with them. */
+    VoiceLog vlog;
 } Host;
 
 typedef struct {
@@ -2716,6 +2723,9 @@ void net_release_host(Net *n, int node)
     net_dnsd_stop(n, node);
     h->httpd = false;
     net_close_all(n, node);
+    /* A box that has been carried out of the building did not make the calls
+     * the next box in that slot will be asked about. */
+    memset(&h->vlog, 0, sizeof h->vlog);
     for (int i = 0; i < NET_ROUTE_MAX; i++) h->rt[i].used = false;
     for (int i = 0; i < NET_ARP_MAX; i++)   h->arp[i].used = false;
     for (int i = 0; i < NET_FW_MAX; i++)    h->fw[i].used = false;
@@ -2927,10 +2937,86 @@ static void udp_input(Net *n, int node, int ifx, uint32_t src, uint32_t dst,
  * on one clock rather than a subtraction of two that disagree.
  */
 
+/* ------------------------------------------------ the call record
+ *
+ * A stream that ends is folded into the two machines that were on it, and
+ * the numbers stay there. See netstack.h for why, and for the one thing
+ * about the outbound direction that is a shortcut rather than a
+ * measurement. */
+
+static bool node_on_a_call(const Net *n, int node)
+{
+    for (int i = 0; i < NET_VOICE_MAX; i++)
+        if (n->voice[i].used &&
+            (n->voice[i].from == node || n->voice[i].to == node)) return true;
+    return false;
+}
+
+/* A RUN OPENS when a call starts at a machine that is not already on one.
+ * That is the whole definition, and it is deliberately not "a day": this
+ * file has never heard of days. A tenancy that dials in the morning and
+ * hangs up in the evening leaves exactly yesterday's calls behind it, and
+ * nothing above had to tell the stack when yesterday was. */
+static void voice_log_begin(Net *n, int node)
+{
+    Host *h = host_of(n, node);
+    if (!h) return;
+    if (node_on_a_call(n, node)) return;
+    memset(&h->vlog, 0, sizeof h->vlog);
+    h->vlog.first_ms = n->now;
+}
+
+static void vleg_fold(VoiceLeg *l, const VoiceStats *s)
+{
+    l->calls++;
+    l->sent      += s->sent;
+    l->expected  += s->expected;
+    l->received  += s->received;
+    l->lost      += s->lost;
+    l->late      += s->late;
+    l->concealed += s->concealed;
+    l->conceal_ppm = l->expected
+        ? (int)(((uint64_t)l->concealed * 1000000ull) / l->expected) : 0;
+    if (s->delay_avg_us > l->delay_us)  l->delay_us  = s->delay_avg_us;
+    if (s->jitter_us    > l->jitter_us) l->jitter_us = s->jitter_us;
+}
+
+/* WHICH CALL TO KEEP WHOLE. One, because a VoiceStats is a hundred bytes
+ * and there are four hundred machines. The worst by concealment, because
+ * concealment is what a listener hears; the longer one breaks the tie,
+ * because a call with nothing missing and too much delay is the failure
+ * nothing else in this project can see and it must not be the one that
+ * gets thrown away. */
+static void voice_log_close(Net *n, VoiceLog *g, const VoiceStats *s, bool out)
+{
+    g->any = true;
+    g->last_ms = n->now;
+    if (!g->worst_set || s->conceal_ppm > g->worst.conceal_ppm ||
+        (s->conceal_ppm == g->worst.conceal_ppm &&
+         s->delay_avg_us > g->worst.delay_avg_us)) {
+        g->worst = *s;
+        g->worst_set = true;
+        g->worst_out = out;
+    }
+}
+
+static void voice_log_fold(Net *n, const VoiceStats *s)
+{
+    Host *a = host_of(n, s->from);
+    Host *b = host_of(n, s->to);
+    if (a) { vleg_fold(&a->vlog.out, s); voice_log_close(n, &a->vlog, s, true); }
+    if (b) { vleg_fold(&b->vlog.in,  s); voice_log_close(n, &b->vlog, s, false); }
+}
+
 static void voice_teardown(Net *n, int i)
 {
     VStream *v = &n->voice[i];
     if (!v->used) return;
+    /* Read it before the stream stops existing: net_voice_stats refuses a
+     * stream that is not active, which is exactly what this is about to
+     * become. */
+    VoiceStats s;
+    if (net_voice_stats(n, i, &s)) voice_log_fold(n, &s);
     if (v->txsock >= 0 && v->txsock < NET_SOCK_MAX) n->sock[v->txsock].used = false;
     if (v->rxsock >= 0 && v->rxsock < NET_SOCK_MAX) {
         n->sock[v->rxsock].used = false;
@@ -2956,6 +3042,10 @@ int net_voice_start(Net *n, int from, int to, uint32_t dst, uint16_t dport,
     if (rx < 0) return -1;
     int tx = net_udp_open(n, from, 0);
     if (tx < 0) { n->sock[rx].used = false; return -1; }
+    /* Before the stream is marked used, so that `is this machine already on
+     * a call` means the calls it was on before this one. */
+    voice_log_begin(n, from);
+    voice_log_begin(n, to);
     VStream *v = &n->voice[i];
     memset(v, 0, sizeof *v);
     v->used = true;
@@ -3176,11 +3266,9 @@ static int loss_ppm(const VoiceStats *s)
  * and 30ms of jitter is half a de-jitter buffer. They decide the WORDS. They
  * decide nothing about the packets: a call is exactly as good as the
  * arithmetic above makes it whether or not anybody reads this. */
-void net_voice_verdict(const Net *n, int stream, Buf *out)
+static void voice_verdict_stats(const Net *n, const VoiceStats *sp, Buf *out)
 {
-    VoiceStats s;
-    if (!out) return;
-    if (!net_voice_stats(n, stream, &s)) { buf_puts(out, "no such call\n"); return; }
+    VoiceStats s = *sp;
     char ip[20];
     net_fmt_ip(s.dst, ip, sizeof ip);
     buf_printf(out, "call %s -> %s (%s:%u), %d bytes every %dms\n",
@@ -3305,6 +3393,99 @@ void net_voice_verdict(const Net *n, int stream, Buf *out)
         }
         buf_puts(out, ".\n");
     }
+}
+
+void net_voice_verdict(const Net *n, int stream, Buf *out)
+{
+    VoiceStats s;
+    if (!out) return;
+    if (!net_voice_stats(n, stream, &s)) { buf_puts(out, "no such call\n"); return; }
+    voice_verdict_stats(n, &s, out);
+}
+
+/* ---------------------------------------------- the record, read back */
+
+bool net_voice_log(const Net *n, int node, VoiceLog *out)
+{
+    const Host *h = chost_of(n, node);
+    if (!h || !out) return false;
+    *out = h->vlog;
+    return true;
+}
+
+void net_voice_log_clear(Net *n, int node)
+{
+    Host *h = host_of(n, node);
+    if (h) memset(&h->vlog, 0, sizeof h->vlog);
+}
+
+static void vleg_row(Buf *out, const char *dir, const VoiceLeg *l)
+{
+    buf_printf(out, "  %-4s %5u %7u %7u %6u %6u %8u  ",
+               dir, l->calls, l->sent, l->received, l->lost, l->late,
+               l->concealed);
+    put_pct(out, l->conceal_ppm);
+    buf_puts(out, "\n");
+}
+
+/* WHAT A MACHINE CAN SAY ABOUT CALLS THAT ARE OVER.
+ *
+ * This is the whole point of the type: the busy period has ended, every
+ * stream has been hung up, `ss` shows no sockets and `ip addr` shows a card
+ * that dropped nothing -- all of which is true, and none of which is the
+ * answer. The answer is here, and it is the same arithmetic that was true
+ * while the calls were up, kept rather than thrown away. */
+void net_dump_voice_log(const Net *n, int node, Buf *out)
+{
+    VoiceLog g;
+    if (!out) return;
+    if (!net_voice_log(n, node, &g)) {
+        buf_puts(out, "this machine is not a host on this network.\n");
+        return;
+    }
+    int live = 0;
+    for (int i = 0; i < NET_VOICE_MAX; i++)
+        if (n->voice[i].used &&
+            (n->voice[i].from == node || n->voice[i].to == node)) live++;
+
+    if (!g.any) {
+        if (live)
+            buf_printf(out, "no call at this machine has ended yet. %d in "
+                            "progress: `voice -l`.\n", live);
+        else
+            buf_puts(out, "this machine has not been on a call.\n"
+                          "  nothing has been dialled to it or from it since "
+                          "it came up.\n");
+        return;
+    }
+
+    buf_printf(out, "%u call%s out, %u in, over %llu ms of wire time "
+                    "(%llu to %llu; the clock is at %llu now)\n",
+               g.out.calls, g.out.calls == 1 ? "" : "s", g.in.calls,
+               (unsigned long long)(g.last_ms - g.first_ms),
+               (unsigned long long)g.first_ms,
+               (unsigned long long)g.last_ms,
+               (unsigned long long)n->now);
+    buf_puts(out, "  dir  calls    sent arrived   lost   late concealed\n");
+    if (g.out.calls) vleg_row(out, "out", &g.out);
+    if (g.in.calls)  vleg_row(out, "in",  &g.in);
+    /* SAY WHICH NUMBER CAME FROM WHERE. `in` this machine measured. `out` it
+     * was told, which is what a receiver report is for and is the one thing
+     * on this page an endpoint cannot work out alone. */
+    buf_puts(out, "  in  is audio this machine RECEIVED and timed itself.\n"
+                  "  out is audio it SENT, as the far end reported hearing "
+                  "it.\n");
+    buf_printf(out, "  concealed is audio frames with no sound to play: lost, "
+                    "or so late\n  the %d ms de-jitter buffer had already "
+                    "played the silence.\n", NET_VOICE_JITTER_MS);
+    if (g.worst_set) {
+        buf_printf(out, "\nthe worst of them, %s:\n",
+                   g.worst_out ? "one it sent" : "one it received");
+        voice_verdict_stats(n, &g.worst, out);
+    }
+    if (live)
+        buf_printf(out, "\n%d call%s in progress right now: `voice -l`.\n",
+                   live, live == 1 ? " is" : "s are");
 }
 
 void net_dump_voice(const Net *n, int node, Buf *out)

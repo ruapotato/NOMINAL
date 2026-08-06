@@ -2098,7 +2098,7 @@ static const Package PKG_SOUNDS = {
 };
 
 static const Package PKG_SHELL = {
-    "nomsh", "1.12", "the shell and the base tools",
+    "nomsh", "1.13", "the shell and the base tools",
     {
       { "/bin/rc",    NULL, 0755, NULL },
       { "/bin/sh",    NULL, 0755, NULL },
@@ -2194,6 +2194,15 @@ static const Package PKG_SHELL = {
       { "/bin/arp",      NULL, 0755, NULL },
       { "/bin/traceroute", NULL, 0755, NULL },
       { "/bin/ss",       NULL, 0755, NULL },
+      /* THE ONE INSTRUMENT ON THIS LIST THAT READS THE PAST. Every other
+       * program here takes a reading now: the sockets now, the neighbours
+       * now, the card's counters now. A call is over by the time anybody
+       * sits down to ask why it was bad -- the busy period ended hours ago
+       * and the streams were hung up with it -- so a live reading of one is
+       * an empty screen on a desk whose day was ruined. `voice` reads the
+       * record of the calls this machine has FINISHED, which the stack keeps
+       * on the node beside the interface counters and for the same reason. */
+      { "/bin/voice",    NULL, 0755, NULL },
       /* tcpdump lives in sbin, as it does everywhere, because reading other
        * people's frames off a card has always been root's business. */
       { "/usr/sbin/tcpdump", NULL, 0755, NULL },
@@ -2207,7 +2216,7 @@ static const Package PKG_SHELL = {
        * only the second name for it. */
       { "/sbin/telinit", NULL, 0755, NULL },
       { "/usr/share/doc/nomsh/README",
-        "nomsh 1.12 -- the shell and the base tools.\n"
+        "nomsh 1.13 -- the shell and the base tools.\n"
         "\n"
         "/bin/sh is the interactive shell. /bin/rc is a different program with a\n"
         "different job: rc runs SCRIPT FILES during the boot and knows five verbs\n"
@@ -2262,7 +2271,18 @@ static const Package PKG_SHELL = {
       { "/usr/share/doc/nomsh/CHANGELOG",
         "nomsh CHANGELOG -- newest first.\n"
         "\n"
-        "1.12 -- current. ed(1), the line editor. Three manual pages, this\n"
+        "1.13 -- current. voice(8): the calls this machine has finished, and\n"
+        "       why the worst of them broke up. Everything else in this package\n"
+        "       reads the network NOW -- the sockets now, the neighbours now,\n"
+        "       the card's counters now -- and a call is over by the time\n"
+        "       anybody asks about it. Somebody sat at a desk whose day was\n"
+        "       ruined by concealed audio and found ping, traceroute, ip addr\n"
+        "       and netstat -P all reporting a machine in perfect health,\n"
+        "       because it was: the audio was thrown away on somebody else's\n"
+        "       port. The record outlives the stream, so the desk can now say\n"
+        "       how much of its own audio never got played, and where.\n"
+        "\n"
+        "1.12 -- ed(1), the line editor. Three manual pages, this\n"
         "       shell's own `help` and the previous administrator's notes all\n"
         "       end with `edit the file`, and nothing on the machine could:\n"
         "       vi, ed, edit, nano and write all answered `command not found`.\n"
@@ -2324,7 +2344,7 @@ static const Package PKG_SHELL = {
         "\n"
         "1.4  -- find and netstat, because everybody reached for them and they were\n"
         "       not there.\n", 0644, NULL },
-    }, 54
+    }, 55
 };
 
 
@@ -3523,6 +3543,76 @@ static const Package PKG_MAN = {
         "A socket here is real: a service that has died has no line, and a\n"
         "service running with a configuration it never reloaded is listening on\n"
         "the port it actually loaded, not the one the file now says.\n", 0644, NULL },
+      { "/usr/share/man/voice",
+        "voice(8)\n\n"
+        "  voice         the calls this machine has finished, and the verdict\n"
+        "                on the worst of them\n"
+        "  voice -l      the calls in progress at this instant\n"
+        "\n"
+        "THE ONE PROGRAM ON THIS MACHINE THAT READS THE PAST. netstat, ss, ip,\n"
+        "arp and tcpdump all take a reading NOW: the sockets now, the\n"
+        "neighbours now, the card's counters now. A call is over by the time\n"
+        "anybody sits down to ask why it was bad -- the busy period ended, the\n"
+        "streams were hung up with it, and `ss` shows nothing at all. So the\n"
+        "stack keeps the finished calls on the node, beside the interface\n"
+        "counters and for the same reason, and this reads them back.\n"
+        "\n"
+        "WHY A HEALTHY DESK IS NOT EVIDENCE. A phone call is 172 bytes every\n"
+        "20 ms, a fiftieth of what one office desk pulls, so it is never short\n"
+        "of bandwidth. It is ruined by a packet lost, a packet late, or a path\n"
+        "long -- and none of those happen on this card. They happen on a port\n"
+        "further up, which is why `netstat -P` here can read tx 21898 rx 21764\n"
+        "drop 0 on a day every call on this desk broke up. Both numbers are\n"
+        "true. Only one of them is the answer.\n"
+        "\n"
+        "  dir  calls    sent arrived   lost   late concealed\n"
+        "  out      1    1250    1250      0    368      368  29.4%\n"
+        "  in       1    1250    1250      0      0        0   0.0%\n"
+        "\n"
+        "  in   is audio this machine RECEIVED, and it timed every packet as\n"
+        "       it landed.\n"
+        "  out  is audio it SENT, as the FAR END reported hearing it. No\n"
+        "       endpoint can know that on its own; a real one is told, in RTCP\n"
+        "       receiver reports and the VoIP metrics block that carries\n"
+        "       concealment. Nothing puts RTCP on this wire -- the report is\n"
+        "       handed over when the call ends -- and that is a shortcut in\n"
+        "       how the number travels, not in the number. Every packet it\n"
+        "       counts really crossed a port and was really dropped or really\n"
+        "       held.\n"
+        "\n"
+        "CONCEALED IS THE NUMBER THAT MATTERS: audio frames with no sound to\n"
+        "play, because the packet was lost or because it arrived after the\n"
+        "60 ms de-jitter buffer had already played the silence where it should\n"
+        "have gone. It is a count of 20 ms frames, not a score anybody scaled.\n"
+        "Under one per cent and nobody hears it; past five and the call is\n"
+        "being given up on.\n"
+        "\n"
+        "AND IT NAMES THE PORT when the stack knows which one it was. A frame\n"
+        "carries the stream it belongs to, so the port that dropped it or held\n"
+        "it in a queue is recorded on the call rather than guessed at\n"
+        "afterwards from whichever port was busiest:\n"
+        "\n"
+        "  verdict: unusable -- 368 packets arrived too late to play: the\n"
+        "  queue on edge port 0 held them for 98.0ms, past the 60ms the\n"
+        "  receiver buffers.\n"
+        "\n"
+        "IT SAYS SO WHEN THE CALLS WERE FINE. `verdict: clear` is an answer\n"
+        "too, and a more useful one than silence: it means the audio left and\n"
+        "arrived intact and whatever the complaint is, it is not the network\n"
+        "under this desk. A tool that only speaks when something is wrong\n"
+        "teaches you to ignore it when it is quiet.\n"
+        "\n"
+        "A RUN IS NOT A DAY. The stack has never heard of days. The record is\n"
+        "cleared when a call starts at a machine that is not already on one,\n"
+        "and each call is added as it ends -- so a desk that dials in the\n"
+        "morning and hangs up in the evening holds exactly the last day's\n"
+        "calls, and the wire-clock milliseconds on the first line say when\n"
+        "they ran.\n"
+        "\n"
+        "THERE IS NO FLAG TO PLACE A CALL AND NONE TO CLEAR THE RECORD. The\n"
+        "phone system dials; there is nothing here to dial with. And the\n"
+        "record is usually the only copy of the evidence, so it is not one\n"
+        "keystroke from being destroyed.\n", 0644, NULL },
       { "/usr/share/man/nft",
         "nft(8)\n\n"
         "  /usr/sbin/nft      reads /etc/nftables.conf at startup and LOADS it\n"
@@ -3647,7 +3737,7 @@ static const Package PKG_MAN = {
         "\n"
         "If that is not `cat /etc/hostname` then the pipe is what is wrong.\n",
         0644, NULL },
-    }, 25
+    }, 26
 };
 
 /* THE JOKE PACKAGE, built exactly like the serious ones.
@@ -4306,6 +4396,8 @@ void image_generated(const Machine *m, const char *path, Buf *out)
         buf_put(out, (const char *)GUEST_TCPDUMP, GUEST_TCPDUMP_LEN);
     else if (strcmp(path, "/bin/ss") == 0)
         buf_put(out, (const char *)GUEST_SS, GUEST_SS_LEN);
+    else if (strcmp(path, "/bin/voice") == 0)
+        buf_put(out, (const char *)GUEST_VOICE, GUEST_VOICE_LEN);
     else if (strcmp(path, "/usr/bin/nomde") == 0)
         buf_put(out, (const char *)GUEST_NOMDE, GUEST_NOMDE_LEN);
     else if (strcmp(path, "/usr/bin/open") == 0)

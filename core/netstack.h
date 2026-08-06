@@ -536,6 +536,66 @@ void  net_voice_verdict(const Net *n, int stream, Buf *out);
 /* Every stream at this node, one line each, for a tool that prints them. */
 void  net_dump_voice(const Net *n, int node, Buf *out);
 
+/* ------------------------------------------- what a machine REMEMBERS
+ *
+ * WHY A LIVE READING IS NOT ENOUGH, and this is the whole reason the type
+ * exists. Everything above is measured on a stream that is still up. The
+ * person who needs it is sitting at the desk AFTERWARDS: the busy period is
+ * over, every call has been hung up, `ss` shows no sockets, and the machine
+ * looks perfectly healthy because at this instant it is. A counter that
+ * dies with the stream can only ever answer "is the call bad right now",
+ * which is the one question nobody is at the desk to ask.
+ *
+ * So a stream that ENDS is folded into the machines at both ends of it,
+ * exactly as an interface's tx/rx counters outlive the packets they
+ * counted, and it survives standing up out of the chair because it is state
+ * of the NODE and not of the Machine somebody booted to read it.
+ *
+ * WHAT A RUN IS. Not a "day" -- this file has never heard of days and is
+ * not going to start. A run is a contiguous set of calls: the log is
+ * cleared when a call starts at a machine that is not already on one, and
+ * closed as each call ends. A tenancy that dials every morning and hangs up
+ * every evening therefore leaves exactly yesterday's calls in it, without
+ * anything above having to say so.
+ *
+ * THE ONE SHORTCUT, stated rather than hidden. `in` is what this machine
+ * heard and measured for itself. `out` is what the FAR END heard of what
+ * this machine sent, and no endpoint can know that on its own -- a real one
+ * is told, in RTCP receiver reports (RFC 3550) and the VoIP metrics block
+ * (RFC 3611), which carries concealment exactly like this. This world does
+ * not put RTCP frames on the wire; the report is handed over when the call
+ * ends. That is a shortcut in the TRANSPORT of the number and not in the
+ * number: every packet it counts really crossed a port and was really
+ * dropped or really late.
+ */
+typedef struct {
+    uint32_t calls;                /* streams folded into this direction   */
+    uint32_t sent;                 /* datagrams the sender put on the wire */
+    uint32_t expected;             /* what the receiver could tell was sent*/
+    uint32_t received;
+    uint32_t lost, late, concealed;
+    int      conceal_ppm;          /* of expected, over the whole run      */
+    uint32_t delay_us, jitter_us;  /* the worst call of the run            */
+} VoiceLeg;
+
+typedef struct {
+    bool       any;                /* a call at this machine has ended     */
+    uint64_t   first_ms, last_ms;  /* wire time the run opened and closed  */
+    VoiceLeg   out, in;
+    bool       worst_set;
+    bool       worst_out;          /* the worst call was one it SENT       */
+    VoiceStats worst;              /* kept whole, so the verdict can name
+                                    * the port that did it                 */
+} VoiceLog;
+
+/* The calls this machine has finished. False if it is not a host at all. */
+bool  net_voice_log(const Net *n, int node, VoiceLog *out);
+/* Wipe it -- what a player does before listening again. */
+void  net_voice_log_clear(Net *n, int node);
+/* The record in words, with the verdict on the worst call in it. This is
+ * what `voice` prints on a machine with a shell. */
+void  net_dump_voice_log(const Net *n, int node, Buf *out);
+
 /* --------------------------------------------------------------- filter  */
 void  net_fw_add(Net *n, int node, FwChain c, int proto, uint16_t dport,
                  uint32_t srcnet, uint32_t srcmask, FwAction a);

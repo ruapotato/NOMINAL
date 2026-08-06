@@ -838,6 +838,13 @@ static int run_line(char *cmd0)
         g_putln("network:   ip addr | link | route | neigh    what the stack holds");
         g_putln("           ping  traceroute  arp  ss  netstat  tcpdump");
         g_putln("           netstat -F               the firewall, and its drops");
+        /* THE ONE THAT READS THE PAST, and the only reason it is on its own
+         * line is that nobody thinks to look for it. Everything above
+         * answers "what is the network doing now"; on a desk whose calls
+         * broke up this morning the answer to that is "nothing", and the
+         * player leaves believing the machine is healthy. It was. */
+        g_putln("           voice                    calls this machine has");
+        g_putln("                                    FINISHED, and why they broke");
         g_putln("           links <host>[/path]      try links wiki.nomnix.org");
         /* THE FOUR TOOLS A REPAIR ACTUALLY NEEDS, which this list left out.
          * A playtester fixed a mains-damaged filesystem here and said they

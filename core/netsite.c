@@ -657,6 +657,8 @@ void netsite_info(Machine *m, int op, Buf *out)
     case NETINFO_PORT:   net_dump_ports(n, node, out);  break;
     case NETINFO_FW:     net_dump_fw(n, node, out);     break;
     case NETINFO_PCAP:   net_dump_pcap(n, node, out);   break;
+    case NETINFO_VOICE:  net_dump_voice_log(n, node, out); break;
+    case NETINFO_VOICENOW: net_dump_voice(n, node, out); break;
     default: break;
     }
 }

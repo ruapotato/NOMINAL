@@ -29,6 +29,10 @@
  * and a rule that parses and does not bite is worse than no rule at all. */
 #include "machine.h"
 #include "kernel.h"
+/* Put a booted machine on a node of a net this file built, so that the last
+ * voice checks are a person typing on the desk rather than a call into the
+ * stack. core/session.c does exactly this when somebody pulls a chair out. */
+void netsite_pin(Machine *m, struct Net *n, int node);
 
 static int passed, total;
 
@@ -1362,6 +1366,180 @@ static void check_voice_circuit(void)
     net_free(n);
 }
 
+/* ============ voice: what is left to read after the calls have ended ======
+ *
+ * THE DEAD END THIS SECTION EXISTS TO CLOSE. A playtester sat down at a call
+ * centre agent's desk on a day the tenancy scored 0 of 18 calls with 29% of
+ * its audio concealed. `ping` was 3 of 3 at 8ms with no loss, `traceroute`
+ * was two clean hops, `ip addr` read 20,175 packets and 0 dropped. Every one
+ * of those answers was true: the desk's own card dropped nothing, because
+ * the audio was thrown away on somebody else's port -- and the calls were
+ * over, so there was no stream left to read.
+ *
+ * Everything above this comment measures a call while it is UP, which is the
+ * one time nobody is sitting in that chair. So the checks below hang the
+ * calls up first, exactly as the end of a busy period does, and then ask the
+ * machines what they can still say.
+ */
+static void check_voice_log(void)
+{
+    printf("\nvoice: what the desk can still read after the calls are over\n");
+    char what[200];
+    Voice v;
+    voice_build(&v, VOICE_DESKS, 0);
+    Net *n = v.n;
+    VoiceLog g, p;
+    Buf o;
+
+    /* -------------------------------------------------- nothing to report */
+    ck("a machine that has never been on a call holds no record of one",
+       net_voice_log(n, v.files, &g) && !g.any &&
+       g.out.calls == 0 && g.in.calls == 0);
+    buf_init(&o);
+    net_dump_voice_log(n, v.files, &o);
+    ck("and says so, rather than printing an empty table",
+       strstr(o.p ? o.p : "", "has not been on a call") != NULL);
+    buf_free(&o);
+
+    /* ------------------------------------------- a call that is still up */
+    voice_spin(&v, 200);
+    ck("a call in progress is not in the record: it has not ended yet",
+       net_voice_log(n, v.handset, &g) && !g.any);
+    buf_init(&o);
+    net_dump_voice_log(n, v.handset, &o);
+    ck("and the record points at the live view instead of inventing one",
+       strstr(o.p ? o.p : "", "in progress") != NULL);
+    buf_free(&o);
+
+    /* ------------------------------------- and now the floor pulls files */
+    for (int i = 0; i < v.nd; i++)
+        v.cs[i] = net_tcp_connect(n, v.desk[i], net_ip(10, 0, 0, 1), 8080);
+    voice_spin(&v, 1500);
+    /* THE LANDLORD'S VIEW, taken while the stream is still alive. This is
+     * what `service` reads, and it is the number the desk has to agree with:
+     * a tool that answered something else would be a second opinion, which
+     * is the one thing this project does not allow. */
+    VoiceStats live;
+    bool got = net_voice_stats(n, v.riser, &live);
+    ck("the loaded riser really ruins the call being measured",
+       got && live.concealed > 0 && live.expected > 0);
+
+    /* THE HANG-UP. This is what the end of a busy period does to every call
+     * in the building, and until now it took the evidence with it. */
+    net_voice_stop(n, v.riser);
+    net_voice_stop(n, v.inhouse);
+    VoiceStats gone;
+    ck("hanging up destroys the stream: a live reading is now impossible",
+       !net_voice_active(n, v.riser) && !net_voice_stats(n, v.riser, &gone));
+
+    ck("but the machine that was listening kept the count",
+       net_voice_log(n, v.handset, &g) && g.any && g.in.calls == 1);
+    snprintf(what, sizeof what,
+             "and it is the same measurement, not a second opinion (%u of %u "
+             "concealed, both)", g.in.concealed, g.in.expected);
+    ck(what, g.in.concealed == live.concealed &&
+             g.in.expected == live.expected &&
+             g.in.conceal_ppm == live.conceal_ppm);
+    ck("the machine that was TALKING kept the far end's report of it",
+       net_voice_log(n, v.pbx, &p) && p.out.calls == 2 && p.in.calls == 0);
+    snprintf(what, sizeof what,
+             "and its two calls are summed, not overwritten (%u packets over "
+             "%u calls)", p.out.sent, p.out.calls);
+    ck(what, p.out.sent >= live.sent);
+
+    /* THE PLAYTESTER'S BLIND SPOT, asserted rather than described: the desk's
+     * own card is clean. That is why nothing already on the machine could
+     * have said a word about it. */
+    snprintf(what, sizeof what,
+             "the receiving card itself dropped NOTHING (%llu), which is why "
+             "netstat -P could not say",
+             (unsigned long long)net_port_drops(n, v.handset, 0));
+    ck(what, net_port_drops(n, v.handset, 0) == 0 && g.in.concealed > 0);
+
+    /* IT MUST SURVIVE THE BUSY PERIOD BEING OVER. Time passes, the transfers
+     * finish, and the record is still the record. */
+    voice_spin(&v, 500);
+    VoiceLog later;
+    ck("time passing does not erase it: this is a record, not a reading",
+       net_voice_log(n, v.handset, &later) &&
+       later.in.concealed == g.in.concealed &&
+       later.in.calls == g.in.calls);
+
+    /* AND IT MUST NAME THE CAUSE. */
+    buf_init(&o);
+    net_dump_voice_log(n, v.handset, &o);
+    ck("the record names the port that did it, off the stream's own tag",
+       strstr(o.p ? o.p : "", "core port 0") != NULL);
+    ck("and puts a verdict in words on the worst call of the run",
+       strstr(o.p ? o.p : "", "verdict:") != NULL);
+    ck("it says which direction the bad call was, because they differ",
+       strstr(o.p ? o.p : "", "one it received") != NULL);
+    ck("and it says where the outbound numbers came from, which no endpoint "
+       "can measure alone",
+       strstr(o.p ? o.p : "", "as the far end reported") != NULL);
+    buf_free(&o);
+
+    /* A NEW RUN CLEARS THE OLD ONE. Yesterday's calls are what is wanted, and
+     * a counter that added today's to them would be a lifetime total nobody
+     * asked for. */
+    net_ping(n, v.pbx, net_ip(10, 0, 0, 4), NULL);
+    int again = net_voice_call(n, v.pbx, v.handset, net_ip(10, 0, 0, 4));
+    ck("dialling again opens a new run and clears the last one",
+       again >= 0 && net_voice_log(n, v.handset, &g) && !g.any &&
+       g.in.calls == 0);
+    net_voice_stop(n, again);
+    net_free(n);
+
+    /* ---------------------------------------------------------- the good day
+     *
+     * THE JUDGEMENT CALL, ASSERTED. A tool that only speaks when things are
+     * bad teaches a player to ignore it when it is silent, and "the calls off
+     * this desk were clear, so the fault is not the network under it" is a
+     * diagnosis worth being able to reach from the chair. */
+    Voice q;
+    voice_build(&q, VOICE_DESKS, 0);
+    voice_spin(&q, 1000);
+    net_voice_stop(q.n, q.riser);
+    net_voice_stop(q.n, q.inhouse);
+    buf_init(&o);
+    net_dump_voice_log(q.n, q.handset, &o);
+    ck("a desk whose calls were fine says so, in the same words and unasked",
+       strstr(o.p ? o.p : "", "verdict: clear") != NULL);
+    ck("and it still prints the counters, so `nothing missing` is evidence",
+       strstr(o.p ? o.p : "", "concealed") != NULL &&
+       net_voice_log(q.n, q.handset, &g) && g.in.calls == 1 &&
+       g.in.concealed == 0);
+    buf_free(&o);
+
+    /* ------------------------------------------------- and from the chair
+     *
+     * The whole point is a person typing on the machine, so the last checks
+     * are a real booted machine pinned to that node, running the real
+     * program off its own disk. */
+    {
+        Machine m;
+        memset(&m, 0, sizeof m);
+        machine_install(&m, 4242);
+        machine_boot(&m);
+        netsite_pin(&m, q.n, q.handset);
+        Buf b = {0};
+        kernel_run(&m, "voice", &b);
+        ck("`voice` on the machine itself prints the record off the kernel",
+           b.p && strstr(b.p, "verdict: clear") && strstr(b.p, "dir  calls"));
+        buf_clear(&b);
+        kernel_run(&m, "voice -l", &b);
+        ck("`voice -l` asks the live question and honestly answers `no calls`",
+           b.p && strstr(b.p, "no calls"));
+        buf_clear(&b);
+        kernel_run(&m, "voice -Z", &b);
+        ck("and a flag it does not have is refused by name, not ignored",
+           b.p && strstr(b.p, "no such option"));
+        buf_free(&b);
+        machine_free(&m);
+    }
+    net_free(q.n);
+}
+
 static void check_firewall(void)
 {
     printf("the filter\n");
@@ -2240,6 +2418,7 @@ int net_selfcheck(void)
     check_congestion();
     check_voice();
     check_voice_circuit();
+    check_voice_log();
     check_firewall();
     check_drop_reasons();
     check_dhcp();

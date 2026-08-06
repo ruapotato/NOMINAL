@@ -180,6 +180,17 @@ typedef unsigned long      uint64_t;
                              * same ring as NETINFO_TRACE: that one is the
                              * whole world's events, this one is one card's
                              * traffic, which is what tcpdump(8) is.        */
+#define NETINFO_VOICE  8    /* THE CALLS THIS MACHINE HAS FINISHED, which is
+                             * the only network state on this list that
+                             * outlives the thing it measured. Everything
+                             * else here is a reading taken now; a call is
+                             * over by the time anybody sits down to ask
+                             * about it, so the counters are kept on the
+                             * node. Concealed audio, both directions, and
+                             * the verdict on the worst one.               */
+#define NETINFO_VOICENOW 9  /* calls in progress at this instant, one line
+                             * each. Usually none, and that is the point of
+                             * the one above.                              */
 
 #define NETCTL_FWCLEAR 0    /* forget the running ruleset                   */
 #define NETCTL_FWADD   1    /* a = chain<<24 | proto<<16 | dport, b = drop  */
