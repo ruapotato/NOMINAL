@@ -401,6 +401,14 @@ typedef struct {
     /* Set when the daemon that owns this socket is the world's, not a
      * player's -- HTTP, DNS and DHCP servers are driven from net_step. */
     uint8_t  service;
+    /* The voice stream this socket receives for, or -1. A stream's datagrams
+     * are consumed at the instant they land rather than left in `dgram` for
+     * somebody to poll, because two of them can arrive in the same
+     * millisecond and the second would overwrite the first -- which would be
+     * loss the network did not cause, in the one measurement whose whole
+     * point is that the network caused it. A real RTP receiver timestamps on
+     * arrival for the same reason. */
+    int      vstream;
     /* BYTES STILL TO SEND. A page of a few hundred characters fits in one
      * write; a file of two megabytes does not, and the difference is the
      * whole reason capacity is felt at all. The daemon pushes what the send
@@ -412,6 +420,7 @@ typedef struct {
 #define SVC_HTTPD 1
 #define SVC_DNSD  2
 #define SVC_DHCPD 3
+#define SVC_VOICE 4
 
 typedef struct {
     int      inport;       /* the port it is arriving ON                    */
@@ -420,8 +429,57 @@ typedef struct {
     uint32_t seq;          /* enqueue order: ties in `due` break by this    */
     int      next;         /* the next frame due in the same millisecond    */
     bool     used;
+    /* WHERE INSIDE THE LANDING MILLISECOND IT LANDS, in microseconds. The
+     * due ring is a tick wide, and a tick is far too coarse to measure
+     * jitter with: everything that queued for less than a millisecond would
+     * read as perfectly even. The queueing arithmetic in port_tx is already
+     * in microseconds, so this carries the remainder it was about to throw
+     * away, and a receiver's arrival timestamp is `due * 1000 + land_us`.
+     * Nothing above L1 may look at it except through that timestamp. */
+    uint16_t land_us;
+    /* WHICH VOICE STREAM THIS FRAME BELONGS TO, or -1. This is the one
+     * place the stack tags a frame with something above it, and it is here
+     * for one reason: when a port throws a frame away, the frame is gone
+     * and nobody upstream can ever say WHICH port did it. A call that has
+     * lost eight per cent of its packets is a fact; that they were dropped
+     * on core port 2 is the answer, and it can only be recorded at the
+     * moment of the drop. It changes no behaviour -- a tagged frame is
+     * switched, queued and dropped exactly as an untagged one is. */
+    int16_t  vs;
     uint8_t  data[NET_FRAME_MAX];
 } InFlight;
+
+/* ONE VOICE STREAM. Sender state and receiver state in the same record,
+ * because the world holds both ends; a real endpoint would know only its
+ * half, and the only thing that buys us is the one-way delay below, which
+ * a real receiver needs a synchronised clock to measure and this world
+ * gets for nothing. Everything else here -- loss, jitter, the playout
+ * deadline -- a real phone works out on its own. */
+typedef struct {
+    bool     used;
+    int      from, to;
+    uint32_t dst;
+    uint16_t dport;
+    int      txsock, rxsock;
+    int      ptime, payload;
+    uint32_t seq;              /* next sequence number to send             */
+    uint64_t next_tx;          /* the tick the next packet is due out      */
+    uint32_t sent, received, late, reordered;
+    uint32_t baseseq, hiseq;
+    bool     anyrx;
+    int64_t  transit_prev;     /* us, for the RFC 3550 recursion           */
+    uint32_t jitter_us;
+    uint32_t dmin, dmax;
+    uint64_t dsum;
+    /* The playout clock: the first packet to arrive sets it, and every
+     * later one has a deadline of base + (seq - baseseq) * ptime. */
+    uint64_t play_base_us;
+    uint32_t play_base_seq;
+    int      q_node, q_port;   /* the deepest queue one of them sat in     */
+    uint32_t q_us;
+    int      d_node, d_port;   /* where they were dropped                  */
+    uint32_t drops;
+} VStream;
 
 /* WHEN A FRAME LANDS, INDEXED BY THE MILLISECOND IT LANDS IN. The queue used
  * to be swept end to end on every delivery looking for the oldest frame that
@@ -432,8 +490,22 @@ typedef struct {
  * port with more than its buffer behind it drops instead of queueing -- so
  * "which millisecond" is a ring of buckets and delivery is a list walk.
  * Order within a millisecond is still enqueue order, so the trace is the
- * trace it always was. */
-#define NET_DUE_RING  64
+ * trace it always was.
+ *
+ * WHY IT IS 512 AND NOT 64, which is what it was until voice went looking.
+ * The paragraph above says "at most four of egress queue", and that is true
+ * of a gigabit: 48 KB of buffer is 393us at a gigabit and 3.9ms at a
+ * hundred megabits. It is NOT true of a circuit somebody is paying for by
+ * the megabit. The same 48 KB is 65ms at six megabits and 196ms at two, and
+ * a frame that wanted to wait 196ms was landing at 63 instead -- so the port
+ * printed a 201ms peak queue while nothing on it had ever taken longer than
+ * 63ms to arrive, which is two numbers out of the same buffer disagreeing.
+ * Nobody could see it before, because the only thing that reads a one-way
+ * delay is a voice stream and there were none. 512 covers the whole of a
+ * 48 KB buffer down to 0.8 megabits, which is below any circuit this world
+ * sells, and costs 4 KB of world. The clamp stays underneath as the
+ * arithmetic's own floor rather than as a working part. */
+#define NET_DUE_RING  512
 
 struct Net {
     Rng      rng;
@@ -453,6 +525,16 @@ struct Net {
      * world has thirty of them and every other machine has none. */
     struct { int node; uint32_t ip; bool used; } alias[NET_ALIAS_MAX];
     struct { uint8_t data[NET_FRAME_MAX]; bool used; } hold[NET_HOLD_MAX];
+    VStream  voice[NET_VOICE_MAX];
+    /* The stream whose frame is being delivered right now, or -1. Set for
+     * the length of one synchronous delivery -- frame_land and anything a
+     * switch forwards out of it -- so that a port that drops or queues can
+     * say whose packet it was. Deliveries do not nest: a switch's forward
+     * goes back on the queue rather than being handed on here. */
+    int      cur_vs;
+    /* The microsecond within the current millisecond at which the frame
+     * being delivered landed. */
+    uint32_t land_us;
     InFlight q[NET_QUEUE_MAX];
     int      qfree;                    /* head of the unused list           */
     int      qhead[NET_DUE_RING];      /* frames due in that millisecond    */
@@ -529,6 +611,7 @@ Net *net_new(uint64_t seed)
     n->q[NET_QUEUE_MAX - 1].next = -1;
     n->qfree = 0;
     for (int i = 0; i < NET_DUE_RING; i++) n->qhead[i] = n->qtail[i] = -1;
+    n->cur_vs = -1;
     return n;
 }
 void net_free(Net *n) { if (n) nom_free(n); }
@@ -891,7 +974,16 @@ static void port_tx(Net *n, int p, const uint8_t *data, int len)
 {
     if (p < 0 || len < 14 || len > NET_FRAME_MAX) return;
     Port *pt = &n->port[p];
-    if (port_state(n, p) != PORT_UP) { pt->drops++; pt->nolink++; return; }
+    /* Whose packet this is, for the two counters below that record where a
+     * call was hurt. It is read here and nowhere else in the L1 path. */
+    int vsi = n->cur_vs;
+    VStream *vsp = (vsi >= 0 && vsi < NET_VOICE_MAX && n->voice[vsi].used)
+                   ? &n->voice[vsi] : NULL;
+    if (port_state(n, p) != PORT_UP) {
+        pt->drops++; pt->nolink++;
+        if (vsp) { vsp->d_node = pt->node; vsp->d_port = pt->index; vsp->drops++; }
+        return;
+    }
     Cable *c = &n->cable[pt->cable];
     int other = (c->a == p) ? c->b : c->a;
 
@@ -964,13 +1056,28 @@ static void port_tx(Net *n, int p, const uint8_t *data, int len)
      * on a burst that overflowed inside one tick is zero -- "the buffer was
      * full, peak queue 0ms", which is not a thing that can happen. */
     if (wait > pt->qpeak_us) pt->qpeak_us = wait;
-    if (wait > buf_us) { pt->drops++; pt->qdrops++; return; }
+    /* THE DEEPEST QUEUE THIS CALL'S OWN PACKETS SAT IN, which is not the
+     * same number as the port's peak: the port's peak is whatever anybody
+     * ever waited there, and this is what the audio waited. Recorded before
+     * the drop test for the same reason the port's peak is. */
+    if (vsp && wait > vsp->q_us) {
+        vsp->q_us = (uint32_t)wait; vsp->q_node = pt->node; vsp->q_port = pt->index;
+    }
+    if (wait > buf_us) {
+        pt->drops++; pt->qdrops++;
+        if (vsp) { vsp->d_node = pt->node; vsp->d_port = pt->index; vsp->drops++; }
+        return;
+    }
 
     /* Find a slot. A full queue is a saturated network, and a saturated
      * network drops -- which is exactly what a broadcast storm looks like
      * from inside, and it is why we do not need a storm detector. */
     int slot = n->qfree;
-    if (slot < 0) { n->qdrops++; pt->drops++; pt->worldq++; return; }
+    if (slot < 0) {
+        n->qdrops++; pt->drops++; pt->worldq++;
+        if (vsp) { vsp->d_node = pt->node; vsp->d_port = pt->index; vsp->drops++; }
+        return;
+    }
     n->qfree = n->q[slot].next;
 
     pt->tx++;
@@ -1005,6 +1112,13 @@ static void port_tx(Net *n, int p, const uint8_t *data, int len)
      * be lost, so it is clamped where the arithmetic is, not hidden. */
     if (delay >= NET_DUE_RING) delay = NET_DUE_RING - 1;
     f->due = (uint32_t)(n->now + delay);
+    /* The sub-millisecond the tick above rounded off: how far into the
+     * landing millisecond the last bit of this frame really arrived. The
+     * tick and this together are one timestamp, and the arithmetic is the
+     * same one -- `delay` counts whole milliseconds of (queue + wire) and
+     * this is the remainder of it. */
+    f->land_us = (uint16_t)((start + serial_us - now_us) % 1000);
+    f->vs = (int16_t)(vsp ? vsi : -1);
     memcpy(f->data, data, (size_t)len);
     f->next = -1;
     int b = (int)(f->due % NET_DUE_RING);
@@ -1533,11 +1647,14 @@ static void net_tick(Net *n)
         int len = f->len;
         int p = f->inport;
         memcpy(data, f->data, (size_t)len);
+        n->cur_vs  = f->vs;
+        n->land_us = f->land_us;
         f->next = n->qfree;
         n->qfree = i;
         /* A frame lands on a port whose cable has since been pulled: it is
          * gone, and the count above already forgot it. */
         if (port_state(n, p) == PORT_UP) frame_land(n, p, data, len);
+        n->cur_vs = -1;
         i = next;
     }
 }
@@ -2567,6 +2684,7 @@ static int sock_alloc(Net *n, int node, uint8_t proto)
         s->listener = -1;
         s->accepted = -1;
         s->dgram_if = -1;
+        s->vstream  = -1;
         return i;
     }
     return -1;
@@ -2635,6 +2753,12 @@ void net_release_host(Net *n, int node)
  * is still serving, and the running/serving views cannot disagree. */
 void net_close_all(Net *n, int node)
 {
+    /* THE CALLS GO WITH THE SOCKETS. A stream holds a socket at each end,
+     * and a machine that has just rebooted is not on a call -- leaving the
+     * stream would have it sending down a socket index the pool has since
+     * handed to somebody else. This is also what makes rebooting a phone a
+     * thing that hangs up on you, which is true of every phone. */
+    net_voice_stop_node(n, node);
     for (int i = 0; i < NET_SOCK_MAX; i++)
         if (n->sock[i].used && n->sock[i].node == node) n->sock[i].used = false;
     Host *h = host_of(n, node);
@@ -2750,6 +2874,8 @@ int net_udp_recv(Net *n, int sock, void *data, int cap, uint32_t *src,
     return k;
 }
 
+static void voice_rx(Net *n, int stream, const uint8_t *p, int len);
+
 static void udp_input(Net *n, int node, int ifx, uint32_t src, uint32_t dst,
                       const uint8_t *seg, int len)
 {
@@ -2766,6 +2892,14 @@ static void udp_input(Net *n, int node, int ifx, uint32_t src, uint32_t dst,
         Sock *s = &n->sock[i];
         if (!s->used || s->node != node || s->proto != IP_PROTO_UDP) continue;
         if (s->lport != dport) continue;
+        /* A call's audio is consumed at the instant it lands. See the note
+         * on Sock.vstream: leaving it in the one-datagram slot would turn
+         * two packets in one millisecond into a loss the wire did not
+         * cause. */
+        if (s->service == SVC_VOICE && s->vstream >= 0) {
+            voice_rx(n, s->vstream, seg + 8, dlen);
+            return;
+        }
         if (dlen > (int)sizeof s->dgram) dlen = (int)sizeof s->dgram;
         memcpy(s->dgram, seg + 8, (size_t)dlen);
         s->dgram_len = dlen;
@@ -2777,6 +2911,424 @@ static void udp_input(Net *n, int node, int ifx, uint32_t src, uint32_t dst,
     /* Nothing is listening. That is a port unreachable, and it is the answer
      * that tells a player "the machine is up and the service is not". */
     (void)dst;
+}
+
+/* =================================================================== voice
+ * A call is UDP at a fixed rate, and everything below is arithmetic on when
+ * the datagrams turned up. Nothing here decides anything: the sender hands
+ * a packet to net_udp_send every ptime milliseconds and the receiver
+ * timestamps whatever arrives. If the wire is clear the numbers are boring.
+ *
+ * THE ONE THING THIS WORLD CAN DO THAT A REAL PHONE CANNOT is measure
+ * one-way delay, because the sender's clock and the receiver's clock are
+ * the same clock. A real endpoint measures round trip and halves it, or
+ * synchronises with NTP and argues about the result. The stamp in the
+ * payload is the sender's millisecond, so the delay is honest arithmetic
+ * on one clock rather than a subtraction of two that disagree.
+ */
+
+static void voice_teardown(Net *n, int i)
+{
+    VStream *v = &n->voice[i];
+    if (!v->used) return;
+    if (v->txsock >= 0 && v->txsock < NET_SOCK_MAX) n->sock[v->txsock].used = false;
+    if (v->rxsock >= 0 && v->rxsock < NET_SOCK_MAX) {
+        n->sock[v->rxsock].used = false;
+        n->sock[v->rxsock].vstream = -1;
+    }
+    v->used = false;
+}
+
+int net_voice_start(Net *n, int from, int to, uint32_t dst, uint16_t dport,
+                    int payload, int ptime_ms)
+{
+    if (!n || from < 0 || from >= n->nnode || to < 0 || to >= n->nnode) return -1;
+    if (!host_of(n, from) || !host_of(n, to)) return -1;
+    /* Twelve bytes is the sequence number and the timestamp: a stream whose
+     * packets are smaller than its own header is not a stream. */
+    if (payload < 12 || payload > 1400) return -1;
+    if (ptime_ms < 1 || ptime_ms > 200) return -1;
+    if (!dport) return -1;
+    int i;
+    for (i = 0; i < NET_VOICE_MAX; i++) if (!n->voice[i].used) break;
+    if (i == NET_VOICE_MAX) return -1;
+    int rx = net_udp_open(n, to, dport);
+    if (rx < 0) return -1;
+    int tx = net_udp_open(n, from, 0);
+    if (tx < 0) { n->sock[rx].used = false; return -1; }
+    VStream *v = &n->voice[i];
+    memset(v, 0, sizeof *v);
+    v->used = true;
+    v->from = from; v->to = to; v->dst = dst; v->dport = dport;
+    v->txsock = tx; v->rxsock = rx;
+    v->ptime = ptime_ms; v->payload = payload;
+    v->dmin = 0xffffffffu;
+    v->q_node = v->q_port = v->d_node = v->d_port = -1;
+    /* The first packet goes out on the next tick, not this one, so that a
+     * stream started at the same instant as another is not lock-stepped
+     * with it by the caller's ordering. */
+    v->next_tx = n->now + 1;
+    n->sock[rx].service = SVC_VOICE;
+    n->sock[rx].vstream = i;
+    return i;
+}
+
+int net_voice_call(Net *n, int from, int to, uint32_t dst)
+{
+    /* 16384 is where RTP media conventionally starts, and the port matters
+     * here for the same reason 80 does: a filter written against it bites. */
+    return net_voice_start(n, from, to, dst, 16384,
+                           NET_VOICE_PAYLOAD, NET_VOICE_PTIME);
+}
+
+void net_voice_stop(Net *n, int stream)
+{
+    if (!n || stream < 0 || stream >= NET_VOICE_MAX) return;
+    voice_teardown(n, stream);
+}
+
+void net_voice_stop_node(Net *n, int node)
+{
+    if (!n) return;
+    for (int i = 0; i < NET_VOICE_MAX; i++)
+        if (n->voice[i].used && (n->voice[i].from == node || n->voice[i].to == node))
+            voice_teardown(n, i);
+}
+
+bool net_voice_active(const Net *n, int stream)
+{
+    return n && stream >= 0 && stream < NET_VOICE_MAX && n->voice[stream].used;
+}
+
+int net_voice_count(const Net *n)
+{
+    int k = 0;
+    for (int i = 0; i < NET_VOICE_MAX; i++) if (n->voice[i].used) k++;
+    return k;
+}
+
+void net_voice_reset(Net *n, int stream)
+{
+    if (!net_voice_active(n, stream)) return;
+    VStream *v = &n->voice[stream];
+    v->sent = v->received = v->late = v->reordered = 0;
+    v->baseseq = v->hiseq = 0;
+    v->anyrx = false;
+    v->transit_prev = 0;
+    v->jitter_us = 0;
+    v->dmin = 0xffffffffu; v->dmax = 0; v->dsum = 0;
+    v->play_base_us = 0; v->play_base_seq = 0;
+    v->q_us = 0; v->q_node = v->q_port = -1;
+    v->drops = 0; v->d_node = v->d_port = -1;
+}
+
+/* WHAT THE RECEIVER DOES WITH A PACKET THAT LANDED. Called from udp_input at
+ * the instant of arrival, which is where a real RTP stack timestamps too. */
+static void voice_rx(Net *n, int stream, const uint8_t *p, int len)
+{
+    if (!net_voice_active(n, stream) || len < 12) return;
+    VStream *v = &n->voice[stream];
+    uint32_t seq = get32(p);
+    uint64_t sent_us = ((uint64_t)get32(p + 4) << 32) | get32(p + 8);
+    uint64_t arr_us  = n->now * 1000ull + n->land_us;
+    if (arr_us < sent_us) return;              /* cannot happen; not trusted */
+    uint64_t transit = arr_us - sent_us;
+
+    /* ------------------------------------------------------ the delay */
+    if (transit < v->dmin) v->dmin = (uint32_t)transit;
+    if (transit > v->dmax) v->dmax = (uint32_t)transit;
+    v->dsum += transit;
+
+    /* ----------------------------------------------------- the jitter
+     * RFC 3550's interarrival jitter, exactly as the RFC writes it: D is
+     * the difference in transit time between this packet and the last one
+     * that arrived, and J is its smoothed mean deviation. The /16 is the
+     * RFC's gain, and the units are microseconds so that the division has
+     * something left to divide. */
+    if (v->anyrx) {
+        int64_t d = (int64_t)transit - v->transit_prev;
+        if (d < 0) d = -d;
+        v->jitter_us += (uint32_t)((d - (int64_t)v->jitter_us) / 16);
+    }
+    v->transit_prev = (int64_t)transit;
+
+    /* --------------------------------------------- what gets played
+     * THE PLAYOUT DEADLINE, which is how a late packet becomes silence
+     * without anybody writing a rule that says so. The first packet to
+     * arrive starts the clock; from then on packet k is due to be played
+     * one buffer-depth plus k packet-times after that, because that is
+     * what playing audio at a constant rate means. Anything that lands
+     * after its own deadline has missed its turn: the silence has already
+     * been played and there is nowhere to put the sound. It is counted
+     * as arrived AND as concealed, because both are true. */
+    if (!v->anyrx) {
+        v->anyrx = true;
+        v->baseseq = v->hiseq = seq;
+        v->play_base_seq = seq;
+        v->play_base_us  = arr_us + (uint64_t)NET_VOICE_JITTER_MS * 1000ull;
+    } else {
+        if (seq > v->hiseq) v->hiseq = seq;
+        else if (seq < v->hiseq) v->reordered++;
+        int64_t off = (int64_t)seq - (int64_t)v->play_base_seq;
+        uint64_t due = (uint64_t)((int64_t)v->play_base_us
+                                  + off * (int64_t)v->ptime * 1000);
+        if (arr_us > due) v->late++;
+    }
+    v->received++;
+}
+
+/* THE SENDER, driven from net_step: one packet every ptime milliseconds,
+ * through net_udp_send like any other program. A tick that is late by more
+ * than one packet time sends the packets it owes rather than skipping them,
+ * so a caller stepping the world coarsely still puts the right number of
+ * packets on the wire. */
+static void voice_poll(Net *n)
+{
+    for (int i = 0; i < NET_VOICE_MAX; i++) {
+        VStream *v = &n->voice[i];
+        if (!v->used) continue;
+        int guard = 0;
+        while (n->now >= v->next_tx && guard++ < 64) {
+            uint8_t pkt[1400];
+            uint64_t stamp = n->now * 1000ull;
+            put32(pkt, v->seq);
+            put32(pkt + 4, (uint32_t)(stamp >> 32));
+            put32(pkt + 8, (uint32_t)stamp);
+            /* The rest of a voice packet is audio, and audio is bytes. What
+             * is in them changes nothing on the wire, so they are the
+             * sequence number repeated -- which at least makes a capture of
+             * one readable. */
+            for (int k = 12; k < v->payload; k++) pkt[k] = (uint8_t)(v->seq + k);
+            v->seq++;
+            v->sent++;
+            v->next_tx += (uint64_t)v->ptime;
+            n->cur_vs = i;
+            net_udp_send(n, v->txsock, v->dst, v->dport, pkt, v->payload);
+            n->cur_vs = -1;
+        }
+    }
+}
+
+bool net_voice_stats(const Net *n, int stream, VoiceStats *out)
+{
+    if (!out || !net_voice_active(n, stream)) return false;
+    const VStream *v = &n->voice[stream];
+    memset(out, 0, sizeof *out);
+    out->from = v->from; out->to = v->to;
+    out->dst = v->dst; out->dport = v->dport;
+    out->ptime_ms = v->ptime; out->payload = v->payload;
+    out->sent = v->sent;
+    out->received = v->received;
+    out->reordered = v->reordered;
+    out->late = v->late;
+    /* WHAT A RECEIVER MAY CLAIM TO KNOW. It has never seen the sender's
+     * counter; all it has is sequence numbers, so what it expected is the
+     * highest it saw minus the first it saw, plus one. A stream that lost
+     * its last four packets does not know they existed, which is exactly
+     * the position RFC 3550 puts a real receiver in. */
+    out->expected = v->anyrx ? v->hiseq - v->baseseq + 1 : 0;
+    out->lost = out->expected > v->received ? out->expected - v->received : 0;
+    out->concealed = out->lost + v->late;
+    out->conceal_ppm = out->expected
+        ? (int)(((uint64_t)out->concealed * 1000000ull) / out->expected) : 0;
+    out->delay_min_us = v->anyrx ? v->dmin : 0;
+    out->delay_max_us = v->dmax;
+    out->delay_avg_us = v->received ? (uint32_t)(v->dsum / v->received) : 0;
+    out->base_us = out->delay_min_us;
+    out->jitter_us = v->jitter_us;
+    out->queue_node = v->q_node; out->queue_port = v->q_port;
+    out->queue_us = v->q_us;
+    out->drop_node = v->d_node; out->drop_port = v->d_port;
+    out->drops = v->drops;
+    return true;
+}
+
+/* Tenths of a per cent and tenths of a millisecond, without floating point:
+ * every number this file prints has to be the same on every machine. */
+static void fmt_pct(char *o, size_t cap, int ppm)
+{
+    snprintf(o, cap, "%d.%d%%", ppm / 10000, (ppm / 1000) % 10);
+}
+static void fmt_ms(char *o, size_t cap, uint32_t us)
+{
+    snprintf(o, cap, "%u.%ums", us / 1000, (us / 100) % 10);
+}
+static void put_pct(Buf *b, int ppm)
+{
+    char t[24]; fmt_pct(t, sizeof t, ppm); buf_puts(b, t);
+}
+static void put_ms(Buf *b, uint32_t us)
+{
+    char t[24]; fmt_ms(t, sizeof t, us); buf_puts(b, t);
+}
+/* The loss a receiver would quote: of what it expected, what never came. */
+static int loss_ppm(const VoiceStats *s)
+{
+    return s->expected ? (int)(((uint64_t)s->lost * 1000000ull) / s->expected) : 0;
+}
+
+/* THE ANSWER IN WORDS.
+ *
+ * The thresholds below are the ones the telephony industry uses and are
+ * named as such rather than tuned: one per cent of concealed audio is where
+ * a listener starts hearing it, five is where the call is being given up on,
+ * 150ms one way is ITU G.114's limit for a conversation nobody talks over,
+ * and 30ms of jitter is half a de-jitter buffer. They decide the WORDS. They
+ * decide nothing about the packets: a call is exactly as good as the
+ * arithmetic above makes it whether or not anybody reads this. */
+void net_voice_verdict(const Net *n, int stream, Buf *out)
+{
+    VoiceStats s;
+    if (!out) return;
+    if (!net_voice_stats(n, stream, &s)) { buf_puts(out, "no such call\n"); return; }
+    char ip[20];
+    net_fmt_ip(s.dst, ip, sizeof ip);
+    buf_printf(out, "call %s -> %s (%s:%u), %d bytes every %dms\n",
+               net_node_name(n, s.from), net_node_name(n, s.to), ip, s.dport,
+               s.payload, s.ptime_ms);
+    buf_printf(out, "  %u sent, %u arrived, %u lost, %u too late to play\n",
+               s.sent, s.received, s.lost, s.late);
+    buf_puts(out, "  loss ");
+    put_pct(out, loss_ppm(&s));
+    buf_puts(out, "   jitter ");
+    put_ms(out, s.jitter_us);
+    buf_puts(out, "   one way ");
+    put_ms(out, s.delay_avg_us);
+    buf_puts(out, " (best ");
+    put_ms(out, s.delay_min_us);
+    buf_puts(out, ", worst ");
+    put_ms(out, s.delay_max_us);
+    buf_puts(out, ")\n");
+    buf_printf(out, "  %u of %u audio frames had no sound to play (",
+               s.concealed, s.expected);
+    put_pct(out, s.conceal_ppm);
+    buf_puts(out, ")\n");
+    if (s.drops && s.drop_node >= 0)
+        buf_printf(out, "  %u of this call's packets were thrown away on %s port %d\n",
+                   s.drops, net_node_name(n, s.drop_node), s.drop_port);
+    if (s.queue_us && s.queue_node >= 0) {
+        buf_printf(out, "  the deepest queue they waited in was on %s port %d, ",
+                   net_node_name(n, s.queue_node), s.queue_port);
+        put_ms(out, s.queue_us);
+        buf_puts(out, "\n");
+    }
+
+    /* ------------------------------------------------------ the verdict */
+    if (!s.sent)                { buf_puts(out, "verdict: nothing sent yet\n"); return; }
+    if (!s.received) {
+        buf_puts(out, "verdict: dead -- not one packet arrived");
+        if (s.drops && s.drop_node >= 0)
+            buf_printf(out, "; they are being dropped on %s port %d",
+                       net_node_name(n, s.drop_node), s.drop_port);
+        else
+            buf_puts(out, "; nothing dropped them on a port, so they were "
+                          "never routed to it");
+        buf_puts(out, "\n");
+        return;
+    }
+    bool bad_conceal = s.conceal_ppm >= 10000;      /* 1%, audible          */
+    bool bad_delay   = s.delay_avg_us >= 150000;    /* G.114, one way       */
+    bool bad_jitter  = s.jitter_us >= 30000;
+    if (!bad_conceal && !bad_delay && !bad_jitter) {
+        buf_puts(out, "verdict: clear -- ");
+        put_pct(out, s.conceal_ppm);
+        buf_puts(out, " of the audio missing, and ");
+        put_ms(out, s.delay_avg_us);
+        buf_puts(out, " each way\n");
+        return;
+    }
+    /* WHICH CAUSE TO NAME. Concealment is what a listener actually hears, so
+     * it is named first when there is any; between its two halves, whichever
+     * threw more audio away is the one to fix, and they have different
+     * repairs -- a drop is a full buffer on a port, a late packet is a queue
+     * deep enough to outrun the de-jitter buffer. Delay alone gets named
+     * only when nothing is missing, because on a path that is merely long
+     * there is nothing to fix but the path. */
+    buf_puts(out, "verdict: ");
+    buf_puts(out, s.conceal_ppm >= 50000 ? "unusable -- " : "poor -- ");
+    if (bad_conceal && s.lost >= s.late) {
+        if (s.drop_node >= 0)
+            buf_printf(out, "%u packets thrown away on %s port %d, whose egress "
+                            "buffer is full. Nothing can fetch them back in time; "
+                            "move the bulk traffic off that port or give it its "
+                            "own path.\n",
+                       s.drops ? s.drops : s.lost,
+                       net_node_name(n, s.drop_node), s.drop_port);
+        else
+            buf_printf(out, "%u packets never arrived and no port in this world "
+                            "dropped them, so they were not sent this way at "
+                            "all -- check the route and the filter at %s.\n",
+                       s.lost, net_node_name(n, s.to));
+    } else if (bad_conceal) {
+        buf_printf(out, "%u packets arrived too late to play", s.late);
+        if (s.queue_node >= 0) {
+            buf_printf(out, ": the queue on %s port %d held them for ",
+                       net_node_name(n, s.queue_node), s.queue_port);
+            put_ms(out, s.queue_us);
+            buf_printf(out, ", past the %dms the receiver buffers",
+                       NET_VOICE_JITTER_MS);
+        }
+        buf_puts(out, ".\n");
+    } else if (bad_jitter) {
+        buf_puts(out, "the audio arrives unevenly (jitter ");
+        put_ms(out, s.jitter_us);
+        buf_puts(out, ")");
+        if (s.queue_node >= 0)
+            buf_printf(out, ", from the queue on %s port %d",
+                       net_node_name(n, s.queue_node), s.queue_port);
+        buf_puts(out, ".\n");
+    } else {
+        /* NOTHING IS MISSING AND THE CALL IS STILL BAD, which is the case no
+         * throughput measure can see. Where the delay comes from is
+         * subtraction and not judgement: the least this path has ever taken
+         * is what the wire itself costs, and a queue that is always full is
+         * indistinguishable from a longer wire EXCEPT that a port measured
+         * it. So the port is named when there is one and the wire is blamed
+         * when there is not. */
+        buf_puts(out, "nothing is missing and the call is still bad: ");
+        put_ms(out, s.delay_avg_us);
+        buf_puts(out, " each way, past the 150ms at which people talk over "
+                      "each other");
+        if (s.queue_us >= 20000 && s.queue_node >= 0) {
+            buf_puts(out, ". ");
+            put_ms(out, s.queue_us);
+            buf_printf(out, " of it is spent sitting in the queue on %s port "
+                            "%d, which is full of somebody else's files -- "
+                            "the circuit is not too small for the call, it is "
+                            "too small for what is sharing it",
+                       net_node_name(n, s.queue_node), s.queue_port);
+        } else {
+            buf_puts(out, ", and ");
+            put_ms(out, s.base_us);
+            buf_puts(out, " of that is there on an empty wire: it is the path "
+                          "itself, not anything on it");
+        }
+        buf_puts(out, ".\n");
+    }
+}
+
+void net_dump_voice(const Net *n, int node, Buf *out)
+{
+    if (!out) return;
+    int shown = 0;
+    for (int i = 0; i < NET_VOICE_MAX; i++) {
+        VoiceStats s;
+        char a[24], b[24], c[24], d[24];
+        if (!n->voice[i].used) continue;
+        if (node >= 0 && n->voice[i].from != node && n->voice[i].to != node) continue;
+        if (!net_voice_stats(n, i, &s)) continue;
+        if (!shown++)
+            buf_puts(out, "call  from       to           sent   loss   "
+                          "conceal  jitter  one-way\n");
+        fmt_pct(a, sizeof a, loss_ppm(&s));
+        fmt_pct(b, sizeof b, s.conceal_ppm);
+        fmt_ms(c, sizeof c, s.jitter_us);
+        fmt_ms(d, sizeof d, s.delay_avg_us);
+        buf_printf(out, "%-5d %-10s %-10s %6u  %-6s %-8s %-7s %s\n", i,
+                   net_node_name(n, s.from), net_node_name(n, s.to),
+                   s.sent, a, b, c, d);
+    }
+    if (!shown) buf_puts(out, "no calls\n");
 }
 
 /* ------------------------------------------------------------------- TCP */
@@ -4226,6 +4778,7 @@ void net_step(Net *n, int ticks)
         net_tick(n);
         tcp_timers(n);
         service_poll(n);
+        voice_poll(n);
         /* The load window. A hundred ticks is short enough that a storm is
          * visible immediately and long enough that a ping is not mistaken
          * for one. */

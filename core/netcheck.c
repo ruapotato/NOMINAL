@@ -949,6 +949,419 @@ static void check_congestion(void)
     ck(what, b.median_stall < 50);
 }
 
+/* =================================================================== voice
+ *
+ * THE POINT OF THIS WHOLE SECTION IN ONE SENTENCE: a call and a file
+ * transfer are hurt by different things, so a network that is fine for one
+ * can be useless for the other, and nothing in the stack is allowed to know
+ * that in advance.
+ *
+ * The building below is the smallest one in which that is true. A core
+ * switch in the basement with the file server and the phone system on
+ * gigabit legs; a floor switch upstairs with the desks and one handset on
+ * it; and between them one riser of the cheap copper, which negotiates a
+ * hundred megabits. The riser is not undersized for the voice -- one call
+ * is 86 kilobits, a thousandth of it -- and it is not undersized for one
+ * transfer either. It is undersized for eight desks all pulling at once,
+ * and the call is on the wrong side of that.
+ *
+ * The same call is measured three times over: on an idle riser, while the
+ * floor pulls its files, and after they stop. Nothing about the call
+ * changes between the three. Everything about the numbers does.
+ */
+#define VOICE_DESKS 20
+typedef struct {
+    Net *n;
+    int core, floorsw, files, pbx, handset, deskphone;
+    int desk[VOICE_DESKS], cs[VOICE_DESKS], ss[VOICE_DESKS];
+    int lsock, nacc, nd;
+    int riser;                /* the call across the riser                 */
+    int inhouse;              /* a call that never touches it              */
+} Voice;
+
+static void voice_build(Voice *v, int desks, int circuit_mb)
+{
+    memset(v, 0, sizeof *v);
+    v->nd = desks;
+    Net *n = v->n = net_new(31);
+    v->core    = net_add_switch(n, "core", 16);
+    v->floorsw = net_add_switch(n, "floor3", 24);
+    /* THE RISER, and it is the ordinary drum: 35 metres of cat5, which comes
+     * up at a hundred megabits. Every other leg here is cat5e at a gigabit,
+     * so this is the only narrow place in the building. */
+    net_cable(n, v->core, 0, v->floorsw, 0, 35, CAB_CAT5);
+    /* Or a circuit somebody is paying by the megabit for, which is what the
+     * ISP handoff is: the same port, told what it may clock. */
+    if (circuit_mb) net_port_rate(n, v->core, 0, circuit_mb);
+
+    v->files     = net_add_host(n, "files");
+    v->pbx       = net_add_host(n, "pbx");
+    v->deskphone = net_add_host(n, "phone1");
+    net_cable(n, v->files,     0, v->core, 1, 8, CAB_CAT5E);
+    net_cable(n, v->pbx,       0, v->core, 2, 8, CAB_CAT5E);
+    net_cable(n, v->deskphone, 0, v->core, 3, 8, CAB_CAT5E);
+    net_if_addr(n, v->files,     0, net_ip(10, 0, 0, 1), net_mask_bits(24));
+    net_if_addr(n, v->pbx,       0, net_ip(10, 0, 0, 2), net_mask_bits(24));
+    net_if_addr(n, v->deskphone, 0, net_ip(10, 0, 0, 3), net_mask_bits(24));
+
+    v->handset = net_add_host(n, "phone3");
+    net_cable(n, v->handset, 0, v->floorsw, 1, 12, CAB_CAT5E);
+    net_if_addr(n, v->handset, 0, net_ip(10, 0, 0, 4), net_mask_bits(24));
+    for (int i = 0; i < v->nd; i++) {
+        char nm[NET_NAME_MAX];
+        snprintf(nm, sizeof nm, "desk%d", i);
+        v->desk[i] = net_add_host(n, nm);
+        net_cable(n, v->desk[i], 0, v->floorsw, i + 2, 10, CAB_CAT5E);
+        net_if_addr(n, v->desk[i], 0, net_ip(10, 0, 0, 11 + i), net_mask_bits(24));
+        v->cs[i] = v->ss[i] = -1;
+    }
+    v->lsock = net_tcp_listen(n, v->files, 8080);
+    /* Resolve the addresses before anything is measured. A first packet held
+     * back waiting for an ARP reply is a real delay and it is not the delay
+     * being measured here. */
+    net_ping(n, v->pbx, net_ip(10, 0, 0, 4), NULL);
+    net_ping(n, v->pbx, net_ip(10, 0, 0, 3), NULL);
+    for (int i = 0; i < v->nd; i++)
+        net_ping(n, v->files, net_ip(10, 0, 0, 11 + i), NULL);
+    v->riser   = net_voice_call(n, v->pbx, v->handset,   net_ip(10, 0, 0, 4));
+    v->inhouse = net_voice_call(n, v->pbx, v->deskphone, net_ip(10, 0, 0, 3));
+}
+
+/* Run the world for `ms`, with the file server pushing into every accepted
+ * connection on every tick and every desk draining what arrived -- which is
+ * what a floor pulling its files off a server does. With no connections
+ * open, this is just time passing on an empty wire. */
+static void voice_spin(Voice *v, int ms)
+{
+    uint8_t page[4096];
+    char sink[4096];
+    memset(page, 'x', sizeof page);
+    for (int t = 0; t < ms; t++) {
+        for (int i = 0; i < v->nacc; i++)
+            if (v->ss[i] >= 0)
+                while (net_tcp_send(v->n, v->ss[i], page, (int)sizeof page) > 0) { }
+        net_step(v->n, 1);
+        int a;
+        while (v->nacc < v->nd && (a = net_tcp_accept(v->n, v->lsock)) >= 0)
+            v->ss[v->nacc++] = a;
+        for (int i = 0; i < v->nd; i++)
+            if (v->cs[i] >= 0)
+                while (net_tcp_recv(v->n, v->cs[i], sink, (int)sizeof sink) > 0) { }
+    }
+}
+
+static void check_voice(void)
+{
+    printf("\nvoice: a call is not a transfer\n");
+    char what[160];
+    Voice v;
+    voice_build(&v, VOICE_DESKS, 0);
+    Net *n = v.n;
+
+    /* -------------------------------------------------- one: an idle riser */
+    voice_spin(&v, 1000);
+    VoiceStats idle, idle2;
+    net_voice_stats(n, v.riser, &idle);
+    net_voice_stats(n, v.inhouse, &idle2);
+    snprintf(what, sizeof what,
+             "a G.711 call is real datagrams on the wire (%u sent, %u arrived)",
+             idle.sent, idle.received);
+    ck(what, idle.sent >= 45 && idle.received >= idle.sent - 2);
+    snprintf(what, sizeof what,
+             "and 20ms apart, so a second of it is fifty packets (%u in 1000ms)",
+             idle.sent);
+    ck(what, idle.sent >= 48 && idle.sent <= 52);
+    snprintf(what, sizeof what,
+             "on an empty riser it loses nothing (%u lost, %u late)",
+             idle.lost, idle.late);
+    ck(what, idle.lost == 0 && idle.late == 0);
+    snprintf(what, sizeof what,
+             "and arrives evenly: jitter %u.%ums", idle.jitter_us / 1000,
+             (idle.jitter_us / 100) % 10);
+    ck(what, idle.jitter_us < 2000);
+    snprintf(what, sizeof what,
+             "one way is the path's own cost and no more (%u.%ums, best %u.%ums)",
+             idle.delay_avg_us / 1000, (idle.delay_avg_us / 100) % 10,
+             idle.delay_min_us / 1000, (idle.delay_min_us / 100) % 10);
+    ck(what, idle.delay_avg_us < 6000 &&
+             idle.delay_avg_us >= idle.delay_min_us);
+    {
+        Buf o; buf_init(&o);
+        net_voice_verdict(n, v.riser, &o);
+        ck("and the verdict on it is that the call is clear",
+           strstr(o.p, "verdict: clear") != NULL);
+        buf_free(&o);
+    }
+
+    /* ------------------------------------------- two: the floor pulls files */
+    net_voice_reset(n, v.riser);
+    net_voice_reset(n, v.inhouse);
+    for (int i = 0; i < v.nd; i++)
+        v.cs[i] = net_tcp_connect(n, v.desk[i], net_ip(10, 0, 0, 1), 8080);
+    uint64_t q0 = net_port_qdrops(n, v.core, 0);
+    net_port_busy_reset(n, v.core, 0);
+    voice_spin(&v, 1500);
+    VoiceStats load, load2;
+    net_voice_stats(n, v.riser, &load);
+    net_voice_stats(n, v.inhouse, &load2);
+    int util = (int)(net_port_busy_us(n, v.core, 0) * 100 / 1500000ull);
+    snprintf(what, sizeof what,
+             "twenty desks pulling files fill the riser they share (%d%% busy, "
+             "%llu frames dropped)", util,
+             (unsigned long long)(net_port_qdrops(n, v.core, 0) - q0));
+    ck(what, util >= 90 && net_port_qdrops(n, v.core, 0) > q0);
+    snprintf(what, sizeof what,
+             "the SAME call now loses audio (%u of %u, was 0)",
+             load.concealed, load.expected);
+    ck(what, load.concealed > 0 && load.expected > 0);
+    snprintf(what, sizeof what,
+             "enough of it to hear: %d.%d%% concealed, over the 1%% that is audible",
+             load.conceal_ppm / 10000, (load.conceal_ppm / 1000) % 10);
+    ck(what, load.conceal_ppm >= 10000);
+    snprintf(what, sizeof what,
+             "and it arrives unevenly now: jitter %u.%ums, was %u.%ums",
+             load.jitter_us / 1000, (load.jitter_us / 100) % 10,
+             idle.jitter_us / 1000, (idle.jitter_us / 100) % 10);
+    ck(what, load.jitter_us > idle.jitter_us * 2 + 200);
+    snprintf(what, sizeof what,
+             "and later: %u.%ums one way, was %u.%ums",
+             load.delay_avg_us / 1000, (load.delay_avg_us / 100) % 10,
+             idle.delay_avg_us / 1000, (idle.delay_avg_us / 100) % 10);
+    ck(what, load.delay_avg_us > idle.delay_avg_us);
+
+    /* THE PART THAT IS NOT A THROUGHPUT NUMBER. Every transfer is still
+     * moving; the wire is busy, not broken; and the call is the thing that
+     * is unusable. If the only measure in this game were bytes carried,
+     * nothing here would show up at all. */
+    long long moved = 0;
+    for (int i = 0; i < v.nd; i++) if (v.ss[i] >= 0) moved++;
+    snprintf(what, sizeof what,
+             "meanwhile every transfer is still running (%lld of %d connected)",
+             moved, v.nd);
+    ck(what, moved == v.nd);
+
+    /* WHOSE FAULT IT IS, named by the stack rather than deduced by a person.
+     * The attribution is recorded on this call's own packets as they were
+     * queued and thrown away, so it names the riser port and not merely the
+     * busiest port in the building. */
+    snprintf(what, sizeof what,
+             "the stack names the port that threw the audio away (%s port %d, %u frames)",
+             load.drop_node >= 0 ? net_node_name(n, load.drop_node) : "-",
+             load.drop_port, load.drops);
+    ck(what, load.drop_node == v.core && load.drop_port == 0 && load.drops > 0);
+    {
+        Buf o; buf_init(&o);
+        net_voice_verdict(n, v.riser, &o);
+        ck("and says so in words, with the port in them",
+           (strstr(o.p, "verdict: poor") || strstr(o.p, "verdict: unusable")) &&
+           strstr(o.p, "core port 0") != NULL);
+        buf_free(&o);
+    }
+
+    /* The listing a tool would print: both of this phone system's calls, on
+     * the same page, with the one that is in trouble reading differently
+     * from the one that is not. */
+    {
+        Buf o; buf_init(&o);
+        net_dump_voice(n, v.pbx, &o);
+        int lines = 0;
+        for (const char *q = o.p; (q = strchr(q, '\n')) != NULL; q++) lines++;
+        ck("both of the pbx's calls are listed, and only its calls",
+           lines == 3 && strstr(o.p, "phone3") && strstr(o.p, "phone1") &&
+           !strstr(o.p, "desk"));
+        buf_free(&o);
+    }
+
+    /* THE CONTROL. The second call goes from the same phone system to a
+     * handset on the core switch, so its audio never crosses the riser. It
+     * is running through the same busy building, on the same stack, at the
+     * same instant, and it is fine -- which is the proof that what ruined
+     * the first one was the shared port and not the hour of the day. */
+    snprintf(what, sizeof what,
+             "a call that does NOT cross that port is untouched (%u lost, %u late)",
+             load2.lost, load2.late);
+    ck(what, load2.lost == 0 && load2.late == 0 && load2.received > 60);
+
+    /* ----------------------------------------------- three: they stop again */
+    for (int i = 0; i < v.nd; i++) {
+        if (v.cs[i] >= 0) net_tcp_close(n, v.cs[i]);
+        if (v.ss[i] >= 0) net_tcp_close(n, v.ss[i]);
+        v.cs[i] = v.ss[i] = -1;
+    }
+    v.nacc = 0;
+    voice_spin(&v, 200);
+    net_voice_reset(n, v.riser);
+    voice_spin(&v, 1000);
+    VoiceStats after;
+    net_voice_stats(n, v.riser, &after);
+    snprintf(what, sizeof what,
+             "the transfers stop and the call recovers on its own (%u lost, "
+             "jitter %u.%ums)", after.lost, after.jitter_us / 1000,
+             (after.jitter_us / 100) % 10);
+    ck(what, after.lost == 0 && after.late == 0 && after.jitter_us < 2000);
+    {
+        Buf o; buf_init(&o);
+        net_voice_verdict(n, v.riser, &o);
+        ck("and the verdict goes back to clear, with nobody resetting anything",
+           strstr(o.p, "verdict: clear") != NULL);
+        buf_free(&o);
+    }
+
+    /* ------------------------------------------------- a call to nowhere */
+    int dead = net_voice_call(n, v.pbx, v.files, net_ip(10, 0, 9, 9));
+    voice_spin(&v, 400);
+    VoiceStats ds;
+    net_voice_stats(n, dead, &ds);
+    ck("a call to an address the routing cannot reach is a stream at 100% loss",
+       ds.sent > 0 && ds.received == 0);
+    {
+        Buf o; buf_init(&o);
+        net_voice_verdict(n, dead, &o);
+        ck("and the verdict says not one packet arrived, not that it is quiet",
+           strstr(o.p, "verdict: dead") != NULL);
+        buf_free(&o);
+    }
+    net_voice_stop(n, dead);
+
+    /* ------------------------------- the calls belong to the machines */
+    int before = net_voice_count(n);
+    net_close_all(n, v.handset);
+    snprintf(what, sizeof what,
+             "rebooting a phone hangs up on it (%d calls, was %d)",
+             net_voice_count(n), before);
+    ck(what, net_voice_count(n) == before - 1);
+    net_free(n);
+}
+
+/* ---------------------------------------------- the other way a call dies
+ *
+ * The riser above kills a call by THROWING PACKETS AWAY: at a hundred
+ * megabits the whole 48 KB buffer is under four milliseconds deep, so the
+ * audio that gets through is barely later than it was and the audio that
+ * does not is simply gone. That is what congestion looks like on a LAN, and
+ * it is the only shape of it a building of gigabit copper can make.
+ *
+ * A circuit somebody is paying for by the megabit is a different illness out
+ * of the same buffer. 48 KB is 65ms deep at six megabits and 196ms at two,
+ * so the packets that survive come out of it a fifth of a second later than
+ * they went in -- and the two cases below are the two ways that ruins a
+ * call, neither of which loses a single packet by itself:
+ *
+ *   - a queue that is always full delays every packet by the SAME amount,
+ *     which loses nothing, jitters by nothing, and makes a conversation
+ *     that people talk over. G.114 puts the limit at 150ms one way.
+ *   - a queue that is sometimes full and sometimes not delays them by
+ *     DIFFERENT amounts, and a receiver holding 60ms of audio to smooth the
+ *     wire out has nowhere to put one that arrives after its turn. It
+ *     arrived. It is still silence.
+ *
+ * Both are the same arithmetic in port_tx as the riser. Only the rate
+ * differs, and the rate is what somebody paid for. */
+static void check_voice_circuit(void)
+{
+    printf("\nvoice: a narrow circuit, where late is as bad as lost\n");
+    char what[160];
+
+    /* ------------------------------------------- one: a standing queue */
+    Voice v;
+    voice_build(&v, 4, 2);          /* four desks over two megabits */
+    Net *n = v.n;
+    voice_spin(&v, 300);
+    VoiceStats clear;
+    net_voice_stats(n, v.riser, &clear);
+    snprintf(what, sizeof what,
+             "an idle two megabit circuit carries a call perfectly well "
+             "(%u.%ums one way, %u lost)", clear.delay_avg_us / 1000,
+             (clear.delay_avg_us / 100) % 10, clear.lost);
+    ck(what, clear.lost == 0 && clear.late == 0 && clear.delay_avg_us < 6000);
+
+    for (int i = 0; i < v.nd; i++)
+        v.cs[i] = net_tcp_connect(n, v.desk[i], net_ip(10, 0, 0, 1), 8080);
+    voice_spin(&v, 500);
+    net_voice_reset(n, v.riser);
+    voice_spin(&v, 3000);
+    VoiceStats s;
+    net_voice_stats(n, v.riser, &s);
+    snprintf(what, sizeof what,
+             "four desks fill it, and the queue stands full (%u.%ums on %s port %d)",
+             s.queue_us / 1000, (s.queue_us / 100) % 10,
+             s.queue_node >= 0 ? net_node_name(n, s.queue_node) : "-", s.queue_port);
+    ck(what, s.queue_us > 150000 && s.queue_node == v.core && s.queue_port == 0);
+    /* THE ONE THAT NO THROUGHPUT MEASURE CAN SEE. Not a packet lost, not a
+     * packet late, jitter of two milliseconds -- and the call is unusable,
+     * because every word takes a fifth of a second to arrive and the two
+     * people talk over each other. A file transfer does not notice this at
+     * all; it is the same bytes, slightly later. */
+    snprintf(what, sizeof what,
+             "not one packet is lost or late (%u lost, %u late, jitter %u.%ums)",
+             s.lost, s.late, s.jitter_us / 1000, (s.jitter_us / 100) % 10);
+    ck(what, s.lost == 0 && s.late == 0 && s.jitter_us < 10000);
+    snprintf(what, sizeof what,
+             "and the call is still unusable: %u.%ums one way, past G.114's 150",
+             s.delay_avg_us / 1000, (s.delay_avg_us / 100) % 10);
+    ck(what, s.delay_avg_us > 150000);
+    snprintf(what, sizeof what,
+             "and the BEST it ever managed was %u.%ums: the queue never drains",
+             s.delay_min_us / 1000, (s.delay_min_us / 100) % 10);
+    ck(what, s.delay_min_us > 130000 && clear.delay_avg_us < 6000);
+    {
+        Buf o; buf_init(&o);
+        net_voice_verdict(n, v.riser, &o);
+        ck("the verdict names the delay and the port, with nothing lost to blame",
+           strstr(o.p, "talk over each other") != NULL &&
+           strstr(o.p, "core port 0") != NULL);
+        buf_free(&o);
+    }
+    net_free(n);
+
+    /* ------------------------------------------ two: a queue that swings */
+    voice_build(&v, 8, 4);          /* eight desks over four megabits */
+    n = v.n;
+    voice_spin(&v, 300);
+    for (int i = 0; i < v.nd; i++)
+        v.cs[i] = net_tcp_connect(n, v.desk[i], net_ip(10, 0, 0, 1), 8080);
+    voice_spin(&v, 500);
+    net_voice_reset(n, v.riser);
+    voice_spin(&v, 3000);
+    VoiceStats t;
+    net_voice_stats(n, v.riser, &t);
+    snprintf(what, sizeof what,
+             "eight desks over four megabits make it swing instead (%u.%ums "
+             "best, %u.%ums worst)", t.delay_min_us / 1000,
+             (t.delay_min_us / 100) % 10, t.delay_max_us / 1000,
+             (t.delay_max_us / 100) % 10);
+    ck(what, t.delay_max_us - t.delay_min_us > 60000);
+    snprintf(what, sizeof what,
+             "which is jitter a receiver can measure: %u.%ums",
+             t.jitter_us / 1000, (t.jitter_us / 100) % 10);
+    ck(what, t.jitter_us > 3000);
+    /* THE ARITHMETIC THAT TURNS A LATE PACKET INTO BAD AUDIO. Nothing
+     * decides that these are bad. They arrived after the millisecond at
+     * which the receiver had to play them, and there is only one thing a
+     * receiver can do with a sound whose moment has gone. */
+    snprintf(what, sizeof what,
+             "%u packets ARRIVED and are still silence: they missed their turn "
+             "in the %dms buffer", t.late, NET_VOICE_JITTER_MS);
+    ck(what, t.late > 0);
+    snprintf(what, sizeof what,
+             "more audio is lost to lateness than to loss (%u late, %u lost)",
+             t.late, t.lost);
+    ck(what, t.late > t.lost);
+    snprintf(what, sizeof what,
+             "%u of %u audio frames concealed, and only %u packets were "
+             "actually dropped", t.concealed, t.expected, t.lost);
+    ck(what, t.concealed == t.late + t.lost && t.concealed > t.lost);
+    {
+        Buf o; buf_init(&o);
+        net_voice_verdict(n, v.riser, &o);
+        const char *ver = strstr(o.p, "verdict:");
+        ck("and the verdict blames the lateness, not the loss",
+           ver && strstr(ver, "too late to play") && strstr(ver, "core port 0"));
+        buf_free(&o);
+    }
+    net_free(n);
+}
+
 static void check_firewall(void)
 {
     printf("the filter\n");
@@ -1825,6 +2238,8 @@ int net_selfcheck(void)
     check_tcp();
     check_utilisation();
     check_congestion();
+    check_voice();
+    check_voice_circuit();
     check_firewall();
     check_drop_reasons();
     check_dhcp();

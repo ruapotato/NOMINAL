@@ -440,6 +440,102 @@ int   net_tcp_reap(Net *n, int idle_ms);
  * this is not the same as deleting a host. */
 void  net_release_host(Net *n, int node);
 
+/* ----------------------------------------------------------------- voice
+ *
+ * WHY THIS IS A DIFFERENT KIND OF TRAFFIC AND NOT A NUMBER BESIDE ONE.
+ *
+ * Everything else this stack can be asked for is throughput-shaped: a
+ * transfer either finishes or it does not, and the thing that stops it
+ * finishing is a port that is full. A call is the opposite. It needs almost
+ * nothing -- a G.711 stream is 86 kb/s on the wire, a thousandth of a
+ * gigabit -- and it is ruined by three things a file transfer does not even
+ * notice: a packet lost (there is no time to ask for it again), a packet
+ * late (the buffer that smooths the wire out has already played the silence
+ * where it should have gone), and a path so long that the two people start
+ * talking over each other. So a tower can be at twenty per cent utilisation,
+ * with every transfer finishing, and the calls unusable -- and the fix is
+ * not more bandwidth, it is where the bulk traffic goes.
+ *
+ * None of that is computed beside the stack. A stream is real UDP datagrams
+ * at a fixed rate and size, through the same ports, the same queues and the
+ * same drops as everything else; the receiver timestamps them as they land
+ * and the numbers below are arithmetic on those timestamps. If the wire is
+ * clear the numbers are boring, because nothing made them otherwise.
+ *
+ * COST: about 130 bytes of world per stream, plus the two UDP sockets a real
+ * call would hold -- one at each end.
+ */
+/* G.711 at 20ms: 160 bytes of audio and 12 of RTP header, which is the
+ * datagram every desk phone in the world sends fifty times a second. */
+#define NET_VOICE_PAYLOAD  172
+#define NET_VOICE_PTIME     20
+/* THE DE-JITTER BUFFER, and it is what turns a late packet into silence.
+ * A receiver holds the audio back by this long so that a packet which took
+ * a detour still arrives before its turn to be played. A packet that lands
+ * after its playout instant cannot be played at all -- the silence has
+ * already gone out -- so it is discarded, exactly as a real one is. Sixty
+ * milliseconds is three packets, which is an ordinary fixed buffer. It is
+ * also the whole reason jitter HURTS rather than merely being measurable. */
+#define NET_VOICE_JITTER_MS 60
+#define NET_VOICE_MAX      128     /* concurrent calls in the world        */
+
+typedef struct {
+    int      from, to;             /* nodes: who is talking to whom        */
+    uint32_t dst;                  /* the address the audio is sent to     */
+    uint16_t dport;
+    int      ptime_ms, payload;    /* the shape of the stream              */
+    uint32_t sent, received, reordered;
+    /* WHAT THE RECEIVER EXPECTED, by sequence number, which is the only way
+     * a receiver can know: highest seen minus first seen plus one. */
+    uint32_t expected, lost, late;
+    /* CONCEALED = lost + late: audio frames that had no sound to play. This
+     * is the number that IS the call quality, and it is a count of packets
+     * rather than a score somebody scaled. */
+    uint32_t concealed;
+    int      conceal_ppm;          /* concealed per million of expected    */
+    /* One-way delay, in microseconds. `base_us` is the minimum ever seen,
+     * which is the path's fixed cost -- propagation, serialisation, a tick
+     * a hop -- and everything above it is queueing. */
+    uint32_t delay_min_us, delay_avg_us, delay_max_us, base_us;
+    /* RFC 3550's interarrival jitter: the smoothed mean deviation of the
+     * transit time, J += (|D| - J)/16, kept in microseconds. */
+    uint32_t jitter_us;
+    /* WHERE IT HURT, gathered on this stream's own packets as they crossed
+     * the world rather than guessed afterwards from the busiest port. */
+    int      queue_node, queue_port;  /* deepest queue one of them sat in  */
+    uint32_t queue_us;
+    int      drop_node, drop_port;    /* where they were thrown away       */
+    uint32_t drops;
+} VoiceStats;
+
+/* Start a stream: `payload` bytes of UDP from `from` to `dst`:`dport` every
+ * `ptime_ms` milliseconds, received by a socket on node `to`. The
+ * destination node is named rather than looked up from the address on
+ * purpose: a call to an address the routing cannot reach then shows up as a
+ * stream with a hundred per cent loss, which is a fault a player can find,
+ * instead of failing to start. Returns a stream id, or -1. */
+int   net_voice_start(Net *n, int from, int to, uint32_t dst, uint16_t dport,
+                      int payload, int ptime_ms);
+/* One ordinary call: G.711, 20ms, to the usual RTP port. */
+int   net_voice_call(Net *n, int from, int to, uint32_t dst);
+void  net_voice_stop(Net *n, int stream);
+/* Every stream with this node at either end, hung up. Called for you when a
+ * host is released, because a box that has been carried out of the building
+ * is not on a call. */
+void  net_voice_stop_node(Net *n, int node);
+bool  net_voice_active(const Net *n, int stream);
+int   net_voice_count(const Net *n);
+bool  net_voice_stats(const Net *n, int stream, VoiceStats *out);
+/* Forget the measurement and keep talking. What a player does before
+ * changing something and listening again. */
+void  net_voice_reset(Net *n, int stream);
+/* THE ANSWER IN WORDS. Numbers say a call is bad; this says what made it
+ * bad, and names the port if a port did it. It reads the same state
+ * net_voice_stats returns and invents nothing. */
+void  net_voice_verdict(const Net *n, int stream, Buf *out);
+/* Every stream at this node, one line each, for a tool that prints them. */
+void  net_dump_voice(const Net *n, int node, Buf *out);
+
 /* --------------------------------------------------------------- filter  */
 void  net_fw_add(Net *n, int node, FwChain c, int proto, uint16_t dport,
                  uint32_t srcnet, uint32_t srcmask, FwAction a);
