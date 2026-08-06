@@ -173,6 +173,7 @@ typedef struct {
     int  sessions, finished;
     long bytes;
     long rent;              /* taken today                                 */
+    long bill;              /* the circuit, on the day of the month it lands*/
     int  worst_ms;
     uint64_t frames, drops; /* frames the site handled; frames it lost     */
     /* The port that was asked for the most, and how hard. This is the
@@ -414,6 +415,9 @@ void site_dump_demand(const Site *s, Buf *out);
  * free ports for, and charges for every metre. Returns how many desks got a
  * port, or -1 with s->err set. */
 int  site_serve(Site *s, int tenant, int dev, CableKind k);
+/* The same, putting each port it patches into `vlan` as it patches it. Zero
+ * leaves them in the untagged default, which is what site_serve does. */
+int  site_serve_vlan(Site *s, int tenant, int dev, CableKind k, int vlan);
 /* How many of a tenancy's desks have a cable in them and an address on the
  * card. Service is this, and then whether the work finishes. */
 int  site_tenant_connected(const Site *s, int tenant);
@@ -426,8 +430,12 @@ bool site_day(Site *s, SiteDay *rep);
 /* Several, stopping early if the run ends. */
 bool site_advance(Site *s, int days, Buf *out);
 
-/* What a circuit costs: the ISP's price for `mb` megabits a month. */
+/* What a circuit costs: the ISP's price for `mb` megabits a month -- and it
+ * is really taken, on the thirtieth day, out of the same account the rent
+ * goes into. `site_isp_days_to_bill` is how many days until the next one, so
+ * `isp` and `status` can say it rather than leave the player to count. */
 long site_isp_price(int mb);
+int  site_isp_days_to_bill(const Site *s);
 bool site_isp(Site *s, int mb);
 
 /* ------------------------------------------------------------ the weather */

@@ -948,8 +948,11 @@ bool site_cmd(Site *s, const char *line, Buf *out)
             "                               their day, their people work over what\n"
             "                               you built, and rent arrives for the work\n"
             "                               that finished\n"
-            "serve <tenant> <box> [cable]   run copper from a box you own to a\n"
-            "                               tenancy's desks, one each, by the metre\n"
+            "serve <tenant> <box> [cable] [vlan]\n"
+            "                               run copper from a box you own to a\n"
+            "                               tenancy's desks, one each, by the metre.\n"
+            "                               Name a vlan and every port it patches is\n"
+            "                               an access port in it, as it is patched\n"
             "isp [mb]                       what the circuit carries, and what it costs\n"
             "events                         what the world has done to the kit, and\n"
             "                               the condition it is in\n"
@@ -1025,16 +1028,23 @@ bool site_cmd(Site *s, const char *line, Buf *out)
     if (strcmp(t[0], "load") == 0) { site_dump_load(s, out); return true; }
     if (strcmp(t[0], "isp") == 0) {
         if (n < 2) {
-            buf_printf(out, "the circuit is %d Mb, %ld a month. `isp <mb>` buys "
-                            "another size.\n", s->isp_mb, site_isp_price(s->isp_mb));
+            buf_printf(out, "the circuit is %d Mb, %ld a month, and the next "
+                            "month is billed in %d day%s.\n"
+                            "  `isp <mb>` buys another size.\n",
+                       s->isp_mb, site_isp_price(s->isp_mb),
+                       site_isp_days_to_bill(s),
+                       site_isp_days_to_bill(s) == 1 ? "" : "s");
             return true;
         }
         int mb = atoi(t[1]);
         if (!site_isp(s, mb))
             buf_printf(out, "refused: %s\n", site_err_text(s->err));
         else
-            buf_printf(out, "the circuit is %d Mb now, %ld a month. %ld left.\n",
-                       s->isp_mb, site_isp_price(s->isp_mb), s->money);
+            buf_printf(out, "the circuit is %d Mb now, %ld a month, billed in %d "
+                            "day%s. %ld left.\n",
+                       s->isp_mb, site_isp_price(s->isp_mb),
+                       site_isp_days_to_bill(s),
+                       site_isp_days_to_bill(s) == 1 ? "" : "s", s->money);
         return true;
     }
     if (strcmp(t[0], "serve") == 0 && n >= 3) {
@@ -1048,9 +1058,15 @@ bool site_cmd(Site *s, const char *line, Buf *out)
         int d = dev_arg(s, t[2]);
         if (ti < 0) { buf_printf(out, "no tenancy %s. `service` lists who is in.\n", t[1]); return true; }
         if (d < 0) { buf_printf(out, "no such box: %s\n", t[2]); return true; }
-        CableKind k = n > 3 ? cable_arg(t[3]) : CAB_CAT5E;
+        /* `serve 2 sw cat6 30` and `serve 2 sw 30` both read naturally, so
+         * a number where the cable goes is a vlan and not a cable nobody
+         * makes. */
+        CableKind k = CAB_CAT5E;
+        int vlan = 0, ai = 3;
+        if (n > ai && !small_number(t[ai], &vlan)) { k = cable_arg(t[ai]); ai++; vlan = 0; }
+        if (n > ai && vlan == 0) small_number(t[ai], &vlan);
         int before = site_tenant_connected(s, ti);
-        int got = site_serve(s, ti, d, k);
+        int got = site_serve_vlan(s, ti, d, k, vlan);
         if (got < 0) { buf_printf(out, "refused: %s\n", site_err_text(s->err)); return true; }
         buf_printf(out, "tenancy %d: %d of %d desks have a port (%d new). %ld left.\n",
                    s->tenant[ti].tenant, got, s->tenant[ti].ndesk, got - before,
@@ -1058,6 +1074,26 @@ bool site_cmd(Site *s, const char *line, Buf *out)
         if (got < s->tenant[ti].ndesk)
             buf_printf(out, "  %d of them have nowhere to go: %s\n",
                        s->tenant[ti].ndesk - got, site_err_text(s->err));
+        /* WHERE THE PORTS ENDED UP, said rather than left to be discovered.
+         * `serve` used to patch twenty desks into the untagged default and
+         * say nothing about it, and a tenancy the generator marked as wanting
+         * a broadcast domain of its own got exactly the opposite -- twenty
+         * `vlan` lines later the player found out. */
+        if (vlan > 0)
+            buf_printf(out, "  and every port it patched is an access port in "
+                            "vlan %d.\n", vlan);
+        else if (s->tenant[ti].own_segment)
+            buf_printf(out, "  they are in the untagged default vlan, and this "
+                            "tenancy asked for a\n  broadcast domain of its own. "
+                            "`serve %d %s %d` puts the ports in a vlan as\n  it "
+                            "patches them; the trunk and the router's "
+                            "subinterface are still yours.\n",
+                       s->tenant[ti].tenant, s->dev[d].name,
+                       30 + s->tenant[ti].tenant);
+        else
+            buf_printf(out, "  they are in the untagged default vlan. `serve %d "
+                            "%s <vlan>` puts them\n  somewhere else as it patches "
+                            "them.\n", s->tenant[ti].tenant, s->dev[d].name);
         return true;
     }
     if (strcmp(t[0], "money") == 0) {

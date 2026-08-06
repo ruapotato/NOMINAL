@@ -456,6 +456,7 @@ static void do_help(const Session *ses, Buf *out)
             ses->s.dev[ses->plugged].name);
         site_cmd((Site *)&ses->s, "help", out);
         buf_puts(out, "where                          which room this box and you are in\n"
+                      "help                           this page again\n"
                       "unplug                         put the lead back on the cart\n");
         return;
     }
@@ -528,7 +529,8 @@ static void do_help(const Session *ses, Buf *out)
         "                     a real echo request, from that box, over the\n"
         "                     copper you laid. Nothing is reachable by default\n"
         "  get <box> <ip> <path>     fetch a page over TCP, from that box\n"
-        "  httpd <box> [port]        serve its files. dnsd <box> answers names\n"
+        "  httpd <box> [port]        it serves its own files over real TCP\n"
+        "  dnsd <box>                and answers names for the tower\n"
         "  ups <box>          a battery under it, so a mains failure is not a\n"
         "                     filesystem to check in the morning\n"
         "  disk <box>         a new one, cloned off the old one\n"
@@ -1525,7 +1527,10 @@ bool session_line(Session *ses, const char *line, Buf *out)
      * comes out of, because somebody is standing at that box with a drum. */
     if (strcmp(t[0], "serve") == 0) {
         if (n < 3) {
-            buf_puts(out, "serve <tenant> <box> [cat5e|cat6|fibre|cat5]\n");
+            buf_puts(out, "serve <tenant> <box> [cat5e|cat6|fibre] [vlan]\n"
+                          "  one cable from that box to each of the tenancy's "
+                          "desks, by the metre.\n  Name a vlan and every port it "
+                          "patches goes into it as it is patched.\n");
             return true;
         }
         int d;

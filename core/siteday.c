@@ -94,7 +94,16 @@ int site_tenant_addressed(const Site *s, int tenant)
  * A view does this one desk at a time with a person walking a drum around;
  * this is the same call, in bulk, for the socket. Nothing here is cheaper
  * than doing it by hand -- every metre is charged. */
-int site_serve(Site *s, int tenant, int dev, CableKind k)
+/* AND THE VLAN THE PORTS LAND IN, because leaving that out made the verb
+ * half a job. `serve` cabled twenty desks and left every one of them in the
+ * default vlan, so a playtester typed twenty `vlan sw 0 30`..`vlan sw 19 30`
+ * lines afterwards -- for a tenancy the site already knows wants a broadcast
+ * domain of its own. A person standing at that switch with a drum patches
+ * the port and sets the port, in that order, at the same moment.
+ *
+ * Zero means "leave them where they are", which is what the untagged default
+ * is and what every existing caller wants. */
+int site_serve_vlan(Site *s, int tenant, int dev, CableKind k, int vlan)
 {
     s->err = SITE_OK;
     if (tenant < 0 || tenant >= s->ntenant) { s->err = SITE_ENODEV; return -1; }
@@ -108,9 +117,17 @@ int site_serve(Site *s, int tenant, int dev, CableKind k)
         int p = site_free_port(s, dev);
         if (p < 0) { s->err = SITE_ENOPORT; break; }
         if (site_cable(s, dev, p, d, 0, k) < 0) break;   /* money, or space */
+        /* The port is set as it is patched, not in a second pass, so a run
+         * that stops halfway leaves no port cabled into the wrong segment. */
+        if (vlan > 0) site_port_vlan(s, dev, p, vlan);
         done++;
     }
     return done;
+}
+
+int site_serve(Site *s, int tenant, int dev, CableKind k)
+{
+    return site_serve_vlan(s, tenant, dev, k, 0);
 }
 
 /* ----------------------------------------------------------- the circuit */
@@ -123,6 +140,24 @@ long site_isp_price(int mb)
     if (mb <= 0) return 0;
     return 40 + (long)mb * 3;           /* pounds a month                    */
 }
+
+/* AND THE CIRCUIT IS BILLED, which for forty-two days of playtesting it was
+ * not. `isp` said "500 Mb, 1540 a month" and a month and a half went by
+ * without a penny of it ever leaving the account: `spent` was hardware plus
+ * copper and nothing else, so the biggest recurring decision in the game --
+ * how much circuit to buy, against how much of the tower's traffic you keep
+ * off it by putting a server on the floor -- cost the player nothing either
+ * way. A bill that never arrives is not a price.
+ *
+ * The month is the same thirty days the rent is a thirtieth of, so the two
+ * halves of the account use one calendar. */
+#define SITE_MONTH_DAYS  30
+
+int site_isp_days_to_bill(const Site *s)
+{
+    return SITE_MONTH_DAYS - (s->day % SITE_MONTH_DAYS);
+}
+
 bool site_isp(Site *s, int mb)
 {
     s->err = SITE_OK;
@@ -884,6 +919,17 @@ bool site_day(Site *s, SiteDay *rep)
         }
     }
 
+    /* ------------------------------------------------------- and the bill
+     * The circuit is a standing charge and it lands on the thirtieth day,
+     * whatever the network did with it. It is taken AFTER the rent, so a
+     * month that just about paid for itself reads in that order, and it is
+     * `spent` like everything else the player bought. */
+    if (s->day % SITE_MONTH_DAYS == 0 && s->isp_mb > 0) {
+        r.bill = site_isp_price(s->isp_mb);
+        s->money -= r.bill;
+        s->spent += r.bill;
+    }
+
     /* ----------------------------------------------------------- and then
      * THE WORLD HAPPENS, and it happens AFTER the day's work rather than
      * before it. A blackout is a thing that occurs in the small hours: the
@@ -922,7 +968,13 @@ bool site_advance(Site *s, int days, Buf *out)
         }
         bool alive = site_day(s, &r);
         if (out) {
-            buf_printf(out, "day %d: %d in, %d served, %d/%d desks up, "
+            /* "DESKS UP" AND `service`'s "up" WERE DIFFERENT NUMBERS.
+             * Consecutive commands answered "0/20 desks up" and "up 20", and
+             * both were right: this line counts the desks that did any work,
+             * which means a port with link on it AND an address on the card,
+             * while `service` prints link and address in separate columns.
+             * One of them had to say which it meant. */
+            buf_printf(out, "day %d: %d in, %d served, %d/%d desks addressed, "
                             "%d/%d transfers finished, %ld taken, %ld in hand\n",
                        r.day, r.tenants_in, r.tenants_served, r.connected,
                        r.desks, r.finished, r.sessions, r.rent, s->money);
@@ -931,6 +983,10 @@ bool site_advance(Site *s, int days, Buf *out)
                            r.hot_util,
                            r.drops ? "; something is dropping -- `load`, then "
                                      "`show <box>`" : "");
+            if (r.bill)
+                buf_printf(out, "        the ISP bills the month: %ld for the "
+                                "%d Mb circuit. %ld in hand\n",
+                           r.bill, s->isp_mb, s->money);
             if (r.complaints_today)
                 buf_printf(out, "        %d COMPLAINT%s filed today (%d in all)\n",
                            r.complaints_today, r.complaints_today == 1 ? "" : "S",
@@ -956,14 +1012,16 @@ void site_dump_day(const Site *s, Buf *out)
     const SiteDay *r = &s->last;
     buf_printf(out, "day %d. %ld in hand, %ld spent, %ld taken in rent.\n",
                s->day, s->money, s->spent, s->rent_taken);
-    buf_printf(out, "the circuit is %d Mb (%ld a month).\n",
-               s->isp_mb, site_isp_price(s->isp_mb));
+    buf_printf(out, "the circuit is %d Mb (%ld a month, next billed in %d "
+                    "day%s).\n", s->isp_mb, site_isp_price(s->isp_mb),
+               site_isp_days_to_bill(s),
+               site_isp_days_to_bill(s) == 1 ? "" : "s");
     if (!r->day) {
         buf_puts(out, "no day has been run yet: `day` advances the clock.\n");
         return;
     }
     buf_printf(out, "%d tenancies in, %d of them served yesterday. "
-                    "%d of %d desks have a live port.\n",
+                    "%d of %d desks have a live port AND an address.\n",
                r->tenants_in, r->tenants_served, r->connected, r->desks);
     buf_printf(out, "%d of %d transfers finished inside the busy period; "
                     "%ld MB moved.\n", r->finished, r->sessions,
@@ -992,7 +1050,11 @@ void site_dump_service(const Site *s, Buf *out)
                    t->floor, t->tenant, t->ndesk, up, ad, done, t->worst_ms,
                    t->strikes, t->complained ? "*" : " ", t->rent / 30);
     }
-    buf_puts(out, "\n  a tenancy is served on a day when four fifths of its people got\n"
+    buf_puts(out, "\n  up is desks whose port has LINK on it: copper in a socket at both\n"
+                  "  ends, short enough to carry. addr is how many of those also got an\n"
+                  "  ADDRESS, and only an addressed desk does any work -- which is the\n"
+                  "  number `day` counts. up 20 addr 0 is twenty cables and no dhcp.\n"
+                  "\n  a tenancy is served on a day when four fifths of its people got\n"
                   "  their work done. Three days in a row without that is a complaint,\n"
                   "  and a * is one that has been filed. `load` says which port is full.\n");
 }

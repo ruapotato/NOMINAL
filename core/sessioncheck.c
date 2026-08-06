@@ -101,6 +101,55 @@ static void check_verbs(int *passed, int *total)
        has(say(&ses, "demand", &o), "drops in all") &&
        has(o.p, "twenty-four port switches"));
 
+    /* ============================== THE HELP HAS TO BE TRUE OF THE MACHINE
+     *
+     * A blind playtester's verdict on this build was "three of the game's
+     * four help texts describe commands that do not exist", and the worse
+     * half of it was the other direction: they could not find how to advance
+     * a day. They tried `next`, `advance`, `sleep`, `end day`, `night` and
+     * `tomorrow`, and found `day` only by plugging a lead into the handoff,
+     * where a DIFFERENT help text lists it.
+     *
+     * So both directions are gated. Every verb below must be NAMED in the
+     * tower help and must ANSWER at the tower prompt, and neither half is
+     * allowed to drift without this failing. */
+    static const char *LOOP[] = {
+        "day", "serve", "service", "status", "load", "isp", "events",
+        "get", "httpd", "dnsd", "ups", "disk", NULL
+    };
+    const char *h = say(&ses, "help", &o);
+    Buf help = {0};
+    buf_puts(&help, h);
+    bool named = true, answers = true;
+    for (int i = 0; LOOP[i]; i++) {
+        /* Named in the command column of the help, not merely mentioned in a
+         * sentence somewhere: "\n  <verb>" is where a player looks. */
+        char marker[32];
+        snprintf(marker, sizeof marker, "\n  %s ", LOOP[i]);
+        if (!has(help.p, marker)) {
+            printf("    the tower help does not name `%s`\n", LOOP[i]);
+            named = false;
+        }
+        const char *a = say(&ses, LOOP[i], &o);
+        if (has(a, "no such command")) {
+            printf("    `%s` is named in the help and is not a verb here\n", LOOP[i]);
+            answers = false;
+        }
+    }
+    ck("the tower help names the clock, the money and the services too",
+       named);
+    ck("and every one of them answers at the tower prompt, not just the "
+       "handoff", answers);
+
+    /* AND IT DOES NOT SEND ANYBODY TO A PROGRAM THEY CANNOT RUN. `netstat`
+     * lives on a machine with an operating system in it; a switch, a router
+     * and the handoff are appliances with a management line and no shell,
+     * and the ports that drop are on those. */
+    ck("the tower help does not name a program the tower prompt has not got",
+       !has(help.p, "netstat") && has(say(&ses, "netstat -P", &o),
+                                     "no such command"));
+    buf_free(&help);
+
     buf_free(&o);
     session_end(&ses);
 }
@@ -576,9 +625,118 @@ static void check_power(int *passed, int *total)
     session_end(&ses);
 }
 
+/* ================================================ four help texts, one truth
+ *
+ * There are four surfaces that tell a player what they can do -- the tower
+ * prompt, the management line on an appliance, the shell on a machine, and
+ * the README -- and a playtester found them disagreeing with each other and
+ * with the machine. This checks the three that are inside the program: that
+ * every verb a help text names answers where it names it, that the room name
+ * the game PRINTS is a room name the game TAKES, and that the shell help
+ * does not list a program that is not in the image.
+ */
+static void check_help(int *passed, int *total)
+{
+    P = passed; T = total;
+    printf("\nthe help texts, against the machine they describe\n");
+    Session ses;
+    if (!session_start(&ses, GATE_SEED, 100000)) { ck("a session starts", false); return; }
+    Buf o = {0};
+
+    /* ---- THE MANAGEMENT LINE. Every verb in its own help has to work on it. */
+    say(&ses, "plug uplink", &o);
+    Buf mh = {0};
+    buf_puts(&mh, say(&ses, "help", &o));
+    ck("plugging into the handoff gives a management line with its own help",
+       ses.where == SES_MGMT && has(mh.p, "day ") && has(mh.p, "unplug"));
+
+    static const char *MGMT[] = {
+        "show", "links", "rooms", "demand", "day", "status", "service",
+        "load", "isp", "events", "money", "where", "help", NULL
+    };
+    bool ok_mgmt = true, in_mgmt_help = true;
+    for (int i = 0; MGMT[i]; i++) {
+        if (has(say(&ses, MGMT[i], &o), "no such command")) {
+            printf("    `%s` is in the management help and not on the line\n", MGMT[i]);
+            ok_mgmt = false;
+        }
+        if (!has(mh.p, MGMT[i])) {
+            printf("    the management help stopped naming `%s`\n", MGMT[i]);
+            in_mgmt_help = false;
+        }
+    }
+    ck("every verb the management help names answers on the management line",
+       ok_mgmt);
+    ck("and the management help still names all of them", in_mgmt_help);
+    buf_free(&mh);
+    say(&ses, "unplug", &o);
+
+    /* ---- THE SHELL ON A MACHINE. `help` listed `ip` and `route`; `route` is
+     * not a program in the image and never was, so a player who typed the
+     * second thing the help offered got "command not found" from a real
+     * shell -- which is the machine telling the truth about a help text that
+     * was not. Every name below is run, and the answer has to come from the
+     * program rather than from the shell failing to find it. */
+    say(&ses, "buy pc probe", &o);
+    say(&ses, "go goods", &o);
+    say(&ses, "carry probe", &o);
+    say(&ses, "go mdf", &o);
+    say(&ses, "drop", &o);
+    say(&ses, "power probe on", &o);
+    say(&ses, "plug probe", &o);
+    Buf sh = {0};
+    buf_puts(&sh, say(&ses, "help", &o));
+    ck("a serial lead into a running pc is a real shell, with its own help",
+       ses.where == SES_SHELL && has(sh.p, "REAL SHELL"));
+
+    static const char *PROG[] = {
+        "ip", "netstat", "ping", "traceroute", "ss", "arp", "tcpdump",
+        "svc", "ps", "dmesg", "cat", "man", NULL
+    };
+    bool exists = true, listed = true;
+    for (int i = 0; PROG[i]; i++) {
+        char line[64];
+        snprintf(line, sizeof line, "%s", PROG[i]);
+        if (has(say(&ses, line, &o), "command not found")) {
+            printf("    the shell help names `%s` and the image has no such "
+                   "program\n", PROG[i]);
+            exists = false;
+        }
+        if (!has(sh.p, PROG[i])) {
+            printf("    the shell help stopped naming `%s`\n", PROG[i]);
+            listed = false;
+        }
+    }
+    ck("every program the shell help names is really in the image", exists);
+    ck("and the shell help names every one it is checked for", listed);
+    /* The one that was wrong. It is `ip route` on this machine. */
+    ck("and `route`, which the help used to offer, is honestly not found",
+       has(say(&ses, "route", &o), "command not found") &&
+       !has(sh.p, "  route") && has(sh.p, "ip addr | link | route | neigh"));
+    buf_free(&sh);
+    say(&ses, "unplug", &o);
+
+    /* ---- THE NAME THE GAME PRINTS IS THE NAME THE GAME TAKES. */
+    say(&ses, "go goods", &o);
+    ck("`go MDF` works, and the prompt, `look` and `rooms` all print MDF",
+       has(say(&ses, "go MDF", &o), "you walk") &&
+       ses.b.rooms[ses.room].kind == RM_MDF);
+    say(&ses, "go GOODS", &o);
+    ck("and so does any other room the game shouts at you in capitals",
+       ses.b.rooms[ses.room].kind == RM_GOODS &&
+       has(say(&ses, "go F0.MDF", &o), "you walk") &&
+       ses.b.rooms[ses.room].kind == RM_MDF);
+    ck("a room that really is not there is still refused by name",
+       has(say(&ses, "go NOWHERE", &o), "no room or box called NOWHERE"));
+
+    buf_free(&o);
+    session_end(&ses);
+}
+
 int session_selfcheck(int *passed, int *total)
 {
     check_verbs(passed, total);
+    check_help(passed, total);
     check_walking(passed, total);
     check_reach(passed, total);
     check_goods(passed, total);

@@ -395,6 +395,149 @@ static void check_tenants(const Building *b)
     site_free(&s);
 }
 
+/* =============================================== the money the world takes
+ *
+ * A blind playtester played forty-two days -- a month and a half -- and no
+ * circuit charge was ever taken: `isp` said "500 Mb, 1540 a month" and
+ * `spent` only ever equalled hardware plus copper. A bill that never arrives
+ * is not a price, and the biggest recurring decision in the game (how much
+ * circuit to buy, against how much traffic you keep off it by putting a
+ * server on the floor) cost nothing either way. Their words on the whole
+ * build were that the decisions "felt like mine but did not feel like
+ * decisions that would come back for me."
+ *
+ * So: the circuit is billed, on the day of the month it is billed on, and
+ * the copper is not refundable, because a route you can un-choose for free
+ * is not a route you chose. */
+static void check_bills(const Building *b)
+{
+    printf("\nthe bills, which are what make a decision come back for you\n");
+    Site s;
+    site_new(&s, b, GATE_SEED, 100000);
+    long month = site_isp_price(s.isp_mb);
+    ck("the tower starts with a circuit that has a price on it",
+       s.isp_mb > 0 && month > 0);
+    ck("and `isp` says when the next month is billed, not just what it costs",
+       site_isp_days_to_bill(&s) == 30);
+
+    long had = s.money, spent = s.spent;
+    for (int i = 0; i < 29; i++) site_day(&s, NULL);
+    ck("twenty-nine days pass and no standing charge has landed yet",
+       s.spent == spent && site_isp_days_to_bill(&s) == 1);
+
+    long before = s.money;
+    SiteDay r;
+    site_day(&s, &r);
+    ck("and on the thirtieth the ISP bills the month, to the penny",
+       r.bill == month && s.money == before + r.rent - month &&
+       s.spent == spent + month);
+    printf("    day %d: the %d Mb circuit billed %ld, and %ld had been taken "
+           "in rent\n", s.day, s.isp_mb, r.bill, s.rent_taken);
+
+    /* And it keeps coming. A month and a half is two of them. */
+    long paid = month;
+    for (int i = 0; i < 15; i++) { site_day(&s, &r); paid += r.bill; }
+    ck("nothing about it was a one-off: it is a standing charge",
+       s.spent == spent + paid && paid == month);
+    for (int i = 0; i < 15; i++) { site_day(&s, &r); paid += r.bill; }
+    ck("forty-five days is two months of circuit, not none",
+       paid == month * 2 && s.spent == spent + paid);
+    printf("    %d days played, %ld of circuit paid for, %ld spent in all\n",
+           s.day, paid, s.spent);
+    (void)had;
+
+    /* THE COPPER IS NOT REFUNDABLE. Pulling a cable out gives the port back
+     * and gives nothing else back, so the route somebody chose is a route
+     * they paid for. */
+    int mdf = bld_find(b, 0, RM_MDF);
+    int sw = site_install(&s, SDEV_SWITCH8, mdf, "sw");
+    long m0 = s.money;
+    int l = site_cable(&s, sw, 0, s.uplink, 0, CAB_CAT6);
+    ck("a run costs money the moment it is laid",
+       l >= 0 && s.money == m0 - s.link[l].cost && s.link[l].cost > 0);
+    long m1 = s.money;
+    site_uncable(&s, l);
+    ck("and pulling it out gives the port back and not the money",
+       s.money == m1 && site_link_state(&s, l) == PORT_NOCABLE);
+    site_free(&s);
+}
+
+/* ======================================= two commands, one answer about desks
+ *
+ * Consecutive lines of a real playtest:
+ *
+ *     day 18: 1 in, 0 served, 0/20 desks up, ...
+ *     service:  tenant 2  desks 20  up 20  addr 0
+ *
+ * Both were right and neither said so. The day line counts desks that did
+ * work, which means a port with LINK on it AND an address on the card;
+ * `service` prints link and address as separate columns. So the day line now
+ * says "addressed", `service` explains its own columns, and this builds the
+ * exact state that produced the contradiction -- twenty desks cabled, no
+ * DHCP anywhere -- and then makes it agree by starting one. */
+/* Where a floor's kit goes: the cupboard if there is one, else the riser,
+ * else the room the tenant rents. Same rule core/loadcheck.c builds by. */
+static int comms_on(const Building *b, int floor, int fallback)
+{
+    int r = bld_find(b, floor, RM_COMMS);
+    if (r < 0) r = bld_find(b, floor, RM_RISER);
+    if (r < 0) r = fallback;
+    return r;
+}
+
+static void check_agreement(const Building *b)
+{
+    printf("\n`day` and `service` counting the same desks\n");
+    Site s;
+    site_new(&s, b, GATE_SEED, 100000);
+    site_credit(&s, 200000);
+
+    int mdf = bld_find(b, 0, RM_MDF);
+    int rt = site_install(&s, SDEV_ROUTER, mdf, "rt");
+    site_cable(&s, rt, 0, s.uplink, 0, CAB_CAT6);
+    site_addr(&s, rt, 0, s.wan_you, s.wan_mask);
+    site_addr(&s, rt, 1, net_ip(10, 0, 0, 1), net_mask_bits(16));
+    site_gateway(&s, rt, s.wan_isp);
+    site_forwarding(&s, rt, true);
+
+    /* Run days until somebody has moved in and brought their desks. */
+    for (int i = 0; i < 400 && !s.tenant[0].moved; i++) site_day(&s, NULL);
+    if (!s.tenant[0].moved) { ck("a tenancy moves in", false); site_free(&s); return; }
+
+    int sw = site_install(&s, SDEV_SWITCH24,
+                          comms_on(b, s.tenant[0].floor, s.tenant[0].room), "sw");
+    site_cable(&s, rt, 1, sw, 0, CAB_CAT6);
+    int got = site_serve(&s, 0, sw, CAB_CAT5E);
+    ck("twenty desks are cabled up and nothing is serving addresses",
+       got > 1 && site_tenant_connected(&s, 0) == got &&
+       site_tenant_addressed(&s, 0) == 0);
+
+    Buf d = {0}, sv = {0};
+    site_advance(&s, 1, &d);
+    site_dump_service(&s, &sv);
+    ck("`day` says which of the two numbers it means",
+       d.p && strstr(d.p, "desks addressed") != NULL &&
+       strstr(d.p, "desks up") == NULL);
+    ck("and `service` says what its own two columns are",
+       sv.p && strstr(sv.p, "up is desks whose port has LINK on it") &&
+       strstr(sv.p, "only an addressed desk does any work"));
+    ck("cabled and unaddressed, they disagree the way the words now promise",
+       s.last.connected == 0 && site_tenant_connected(&s, 0) == got);
+
+    /* Start a DHCP server and they agree, because the desks really ask. */
+    site_dhcpd(&s, rt, net_ip(10, 0, 1, 1), 200, net_mask_bits(16),
+               net_ip(10, 0, 0, 1), s.wan_isp);
+    site_day(&s, NULL);
+    int addressed = site_tenant_addressed(&s, 0);
+    ck("give them a dhcp server and the day line's count is the addr column",
+       addressed > 1 && s.last.connected == addressed);
+    printf("    %d desks with link, %d of them addressed, in both places\n",
+           site_tenant_connected(&s, 0), addressed);
+    buf_free(&d);
+    buf_free(&sv);
+    site_free(&s);
+}
+
 /* ------------------------------------------------- flat versus segmented */
 /* THE ONE THAT PROVES ARCHITECTURE MATTERS. The same twenty-one machines,
  * doing the same work, wired two ways. Nothing anywhere decides that a big
@@ -632,6 +775,8 @@ int site_selfcheck(void)
     check_boxes(&b);
     check_power(&b);
     check_tenants(&b);
+    check_bills(&b);
+    check_agreement(&b);
     check_flat(&b);
     check_demand(&b);
     check_shell(&b);
