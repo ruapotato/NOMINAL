@@ -130,10 +130,14 @@ func _body() -> void:
 	_mesh(Vector3(CASE_W, CASE_H, 0.013), Vector3(0, 0, -0.004), Color("#23272c"))
 	_mesh(Vector3(CASE_W + 0.008, CASE_H + 0.008, 0.009), Vector3(0, 0, -0.006),
 		Color("#c8792c"))
-	# a speaker grille and a button, so the top and the bottom are not the same
-	_mesh(Vector3(0.040, 0.004, 0.002), Vector3(0, CASE_H * 0.5 - 0.005, 0.0035),
+	# A speaker grille and a button, so the top and the bottom of the case are
+	# not the same. BEHIND THE SCREEN PLANE, not level with it: at 0.0035 they
+	# sit exactly where the screen quad is and win the depth test against it,
+	# and once the handset is up at your face that is two grey blocks parked
+	# over the middle of the first and last lines of the console.
+	_mesh(Vector3(0.040, 0.004, 0.002), Vector3(0, CASE_H * 0.5 - 0.004, 0.0026),
 		Color("#15181c"))
-	_mesh(Vector3(0.016, 0.016, 0.002), Vector3(0, -CASE_H * 0.5 + 0.008, 0.0035),
+	_mesh(Vector3(0.016, 0.016, 0.002), Vector3(0, -CASE_H * 0.5 + 0.007, 0.0026),
 		Color("#3a4046"))
 	# the plug on the bottom of the case. THE LEAD ITSELF IS NOT DRAWN HERE.
 	#
@@ -149,7 +153,10 @@ func _body() -> void:
 	# _draw_lead() -- with the same sweep and sag every other cable in the
 	# building gets.
 	var g = preload("res://scripts/vgeo.gd").new()
-	g.box(Vector3(-0.010, -CASE_H * 0.5 - 0.026, -0.008),
+	# BEHIND THE SCREEN PLANE, for the same reason as the grille: the screen is
+	# at z 0.0035 and a plug that stands proud of it is a block parked over the
+	# line that tells you how to put the handset down.
+	g.box(Vector3(-0.010, -CASE_H * 0.5 - 0.026, -0.016),
 		Vector3(0.020, 0.028, 0.014), Color("#20242a"), false)
 	add_child(g.node("plug"))
 
@@ -186,8 +193,8 @@ func _make_viewport() -> void:
 	_term.bg = Color("#0d1116")
 	_term.fg = Color("#c9d4dd")
 	_term.accent = Color("#6fdc96")
-	_term.position = Vector2(0, 22)
-	_term.size = Vector2(_vp.size) - Vector2(0, 44)
+	_term.position = Vector2(0, 24)
+	_term.size = Vector2(_vp.size) - Vector2(0, 30)
 	_term.on_command = func(line: String) -> String:
 		return _cmd(line)
 	_term.prompt_fn = func() -> String:
@@ -199,7 +206,11 @@ func _make_viewport() -> void:
 	_hint.add_theme_font_override("font", _mono)
 	_hint.add_theme_font_size_override("font_size", 14)
 	_hint.add_theme_color_override("font_color", Color("#8fa4b6"))
-	_hint.position = Vector2(10, float(_vp.size.y) - 21.0)
+	# ALONG THE TOP, like a title bar. It was along the bottom, and the bottom
+	# of the view at the zoom pose is where whatever you are kneeling in front
+	# of pokes past the case: the line that tells you how to get out was the one
+	# line reliably half covered.
+	_hint.position = Vector2(10, 2.0)
 	_hint.size = Vector2(float(_vp.size.x) - 20.0, 20.0)
 	_serial.add_child(_hint)
 	_vp.add_child(_serial)
