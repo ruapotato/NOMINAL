@@ -622,11 +622,19 @@ void site_dump_dhcpd(const Site *s, int dev, Buf *out)
         buf_printf(out, "%s dhcpd: %s-%s /%d on %s", s->dev[dev].name, a, b,
                    net_mask_len(mask), nm);
         if (vlan) buf_printf(out, " (vlan %d)", vlan);
-        buf_printf(out, ", gw %s, dns %s\n", g, d);
+        int held = net_dhcpd_pool_leases(s->net, node, i);
+        buf_printf(out, ", gw %s, dns %s, %d lease%s out\n", g, d, held,
+                   held == 1 ? "" : "s");
     }
-    buf_printf(out, "  %d lease%s out. It answers on that interface and on no "
-                    "other.\n", net_dhcpd_leases(s->net, node),
-               net_dhcpd_leases(s->net, node) == 1 ? "" : "s");
+    /* The box's total under the per-pool lines, and only when there is more
+     * than one pool for it to be the sum of. */
+    if (np > 1)
+        buf_printf(out, "  %d lease%s out in all. Each pool answers on its own "
+                        "interface and on no other.\n",
+                   net_dhcpd_leases(s->net, node),
+                   net_dhcpd_leases(s->net, node) == 1 ? "" : "s");
+    else
+        buf_puts(out, "  It answers on that interface and on no other.\n");
 }
 bool site_dhcp(Site *s, int dev)
 {
@@ -934,8 +942,11 @@ static void dump_services(const Site *s, int dev, Buf *out)
         int vlan = net_if_get_vlan(s->net, node, ifx);
         buf_printf(out, "  dhcpd  %s-%s on %s", a, b, nm);
         if (vlan) buf_printf(out, " (vlan %d)", vlan);
-        buf_printf(out, ", %d lease%s out\n", net_dhcpd_leases(s->net, node),
-                   net_dhcpd_leases(s->net, node) == 1 ? "" : "s");
+        /* THIS POOL'S LEASES, not the box's. Seven ranges on one router each
+         * printed the box-wide total, so a screen whose whole job is to say
+         * which segment has people on it said the same number seven times. */
+        int held = net_dhcpd_pool_leases(s->net, node, i);
+        buf_printf(out, ", %d lease%s out\n", held, held == 1 ? "" : "s");
     }
     if (ns) buf_puts(out, "  dnsd   answering names for the tower\n");
     if (hp) buf_printf(out, "  httpd  serving its own files on port %d\n", hp);

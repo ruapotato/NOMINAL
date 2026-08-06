@@ -452,6 +452,10 @@ bool  net_dhcpd_pool(const Net *n, int node, int i, int *ifx, uint32_t *first,
  * because that is exactly what net_close_all() is now careful to do. */
 void  net_services_stop(Net *n, int node);
 int   net_dhcpd_leases(const Net *n, int node);
+/* The same count for ONE pool, `i` being its ordinal among the used pools --
+ * the ordinal net_dhcpd_pool() takes. A box with a pool per vlan needs this
+ * to say which of its segments is empty. */
+int   net_dhcpd_pool_leases(const Net *n, int node, int i);
 /* Ask for an address the way a client does: discover, offer, request, ack.
  * Returns true only if a lease was really granted. */
 bool  net_dhcp_client(Net *n, int node, int ifx);

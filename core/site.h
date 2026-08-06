@@ -434,6 +434,31 @@ void site_dump_demand(const Site *s, Buf *out);
  * traffic crosses the ISP circuit whatever anybody does. */
 #define SITE_DESK_FILE_KB 1536
 #define SITE_DESK_WEB_KB   384
+/* HOW MANY OF THOSE ARE OPEN AT ONCE, and this is the number the difficulty
+ * curve actually turns on, so here is the whole of the reasoning.
+ *
+ * A desk used to have exactly one file transfer and one page in the busy
+ * period. That made the demand of a whole building small enough that a
+ * gigabit carried the naive build's one basement server to nine tenancies at
+ * sixty per cent -- the tower stopped falling over at all, once the port
+ * arithmetic was fixed and a port could no longer congest for a reason that
+ * was not on the wire (the model note in port_tx()).
+ *
+ * The lever is NOT the size of the file. It was tried: four times the bytes
+ * in one transfer, and the run fell apart at ONE tenancy on an empty network,
+ * because a single TCP flow across this stack carries about fifteen megabits
+ * and no more -- window over round trip, nothing to do with the building. A
+ * six megabyte file cannot be pulled inside a four second window however
+ * good the network is, so the metric stopped measuring the network. Bytes
+ * per transfer are therefore left where they were, at a document.
+ *
+ * What a person's machine really has open in the busiest four seconds of
+ * their day is more than one thing: the document they asked for, the mail
+ * client, the sync client putting back what they saved. Three concurrent
+ * pulls off the file server, of a document and a half each, is four and a
+ * half megabytes and nine megabits a second per desk sustained -- which is
+ * what a wired desk with a gigabit card in it does, and is why it has one. */
+#define SITE_DESK_FILES     3
 /* What the landlord's circuit carries until somebody buys a bigger one. */
 #define SITE_ISP_MB_DEFAULT 500
 

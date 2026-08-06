@@ -21,6 +21,30 @@
  * IF THE NAIVE BUILD SURVIVES TO NINE FLOORS THE CURVE IS WRONG, and this
  * gate says so out loud and fails, rather than shipping a difficulty curve
  * that is not there.
+ *
+ * WHERE THE DEMAND CAME FROM, because it was recalibrated once and the
+ * reason matters. Until the arithmetic in port_tx() was fixed, a port could
+ * not read above about 39% busy however hard it was pushed, and the naive
+ * tower fell over partly because of that -- the hottest port in the nine
+ * tenancy run read 35% busy and had lost 8,929 frames, which are two numbers
+ * that cannot both be true of the same wire. With the port counting
+ * honestly, the same build carried all nine tenancies at 60% busy and 98% of
+ * the work done: the curve was gone, and it had been resting on a bug.
+ *
+ * What brought it back was demand, and specifically CONCURRENCY rather than
+ * size -- SITE_DESK_FILES in site.h, where the reasoning for the number is.
+ * Bigger files were tried first and were wrong for a reason worth keeping:
+ * one TCP flow across this stack carries about fifteen megabits, so a six
+ * megabyte file cannot be pulled inside the four second window on an EMPTY
+ * network, and the gate stopped measuring the building. Three transfers of a
+ * document and a half, all open at once, is a desk and not a knob.
+ *
+ * AND THE FLOOR COUNT IS THIS BUILDING'S, NOT A TYPICAL ONE'S. The naive
+ * build here stops finishing its work at 96 desks. This generator packs two
+ * and three tenancies onto a floor, so 96 desks is three of ITS floors --
+ * but it is five floors of the twenty-desk floor the target was said in.
+ * Both readings are in the table below, which is why both columns are
+ * printed.
  */
 #include <stdio.h>
 #include <string.h>

@@ -765,7 +765,8 @@ bool site_day(Site *s, SiteDay *rep)
     /* ------------------------------------------------- build the day's work */
     int cap = 0;
     for (int i = 0; i < s->ntenant; i++) if (s->tenant[i].moved) cap += s->tenant[i].ndesk;
-    cap *= 2;                       /* the page and the file, at the same time */
+    /* The page and the files, all at the same time: see SITE_DESK_FILES. */
+    cap *= 1 + SITE_DESK_FILES;
     Xfer *xs = cap ? (Xfer *)nom_alloc(sizeof(Xfer) * (size_t)cap) : NULL;
     int nx = 0;
 
@@ -786,7 +787,7 @@ bool site_day(Site *s, SiteDay *rep)
         int fsd = file_server_for(s, i);
         t->files_dev = fsd;
         uint32_t files = fsd >= 0 ? net_if_get_addr(s->net, s->dev[fsd].node, 0) : 0;
-        for (int j = 0; j < t->ndesk && nx + 1 < cap; j++) {
+        for (int j = 0; j < t->ndesk && nx + SITE_DESK_FILES < cap; j++) {
             int d = t->desk0 + j;
             if (net_port_state(s->net, s->dev[d].node, 0) != PORT_UP) continue;
             if (!net_if_get_addr(s->net, s->dev[d].node, 0)) continue;
@@ -805,13 +806,19 @@ bool site_day(Site *s, SiteDay *rep)
             x->want = (long)SITE_DESK_WEB_KB * 1024;
             x->dst = web;
             x->start = begins;
-            Xfer *y = &xs[nx++];            /* the file, off the nearest srv */
-            memset(y, 0, sizeof *y);
-            y->dev = d; y->tenant = i; y->sock = -1; y->leg = 1;
-            y->kb = SITE_DESK_FILE_KB;
-            y->want = (long)SITE_DESK_FILE_KB * 1024;
-            y->dst = files ? files : web;
-            y->start = begins;
+            /* The files, off the nearest server, all open together -- one
+             * person with more than one thing on the go, which is what a
+             * desk is. They start on the same millisecond as the page for
+             * the same reason the page does: one person sitting down. */
+            for (int k = 0; k < SITE_DESK_FILES; k++) {
+                Xfer *y = &xs[nx++];
+                memset(y, 0, sizeof *y);
+                y->dev = d; y->tenant = i; y->sock = -1; y->leg = 1;
+                y->kb = SITE_DESK_FILE_KB;
+                y->want = (long)SITE_DESK_FILE_KB * 1024;
+                y->dst = files ? files : web;
+                y->start = begins;
+            }
         }
     }
 

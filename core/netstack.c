@@ -283,6 +283,13 @@ typedef struct {
      * player can measure with ping. `qdrops` is what the buffer would not
      * hold. `busy_total` is time on the wire, which is utilisation. */
     uint64_t busy_us, busy_total, qdrops, qpeak_us;
+    /* WHEN INSIDE THIS MILLISECOND THE NEXT FRAME IS HANDED OVER. The world
+     * clock only moves once per tick, so without these two everything a port
+     * is offered in one tick arrives at the same instant -- see the model
+     * note in port_tx(). `offer_tick` is the tick they belong to and
+     * `offered_us` is the wire time handed over so far in it. */
+    uint64_t offer_tick;
+    uint32_t offered_us;
     /* WHY A DROP HAPPENED, kept apart from how many there were.
      *
      * `drops` used to be one number with four causes behind it, and the
@@ -718,6 +725,8 @@ void net_uncable(Net *n, int cable)
     /* The wire is gone, so whatever was still being clocked onto it is gone
      * with it. A port with no cable in it is not busy. */
     n->port[c->a].busy_us = n->port[c->b].busy_us = 0;
+    n->port[c->a].offered_us = n->port[c->b].offered_us = 0;
+    n->port[c->a].offer_tick = n->port[c->b].offer_tick = 0;
     c->used = false;
     stp_recompute(n);
 }
@@ -848,31 +857,52 @@ static void port_tx(Net *n, int p, const uint8_t *data, int len)
     int mb = port_rate_mb(n, p);
     uint64_t now_us = n->now * 1000ull;
     uint64_t serial_us = ((uint64_t)len * 8 + (uint64_t)mb - 1) / (uint64_t)mb;
-    /* THE CEILING THIS MODEL HAS, MEASURED AND WRITTEN DOWN, because the
-     * number it produces gets read as utilisation and acted on.
+
+    /* ------------------------------------------- WHEN THE FRAME IS OFFERED
+     * THE MODEL: A PACED SENDER, NOT A BURSTY ONE. This is a real modelling
+     * choice and the whole load calibration hangs off it, so it is written
+     * down rather than left in the arithmetic.
      *
-     * Every frame handed to a port during one millisecond is offered at the
-     * same instant: `now_us` does not move inside a tick. So a port can only
-     * ever accept one bufferful per tick, whatever is offered to it -- 48 KB,
-     * which is 393us of a gigabit -- and can therefore never read above about
-     * 39% busy however hard it is pushed. In practice it reads far less,
-     * because whatever is handed over last in a tick is what gets dropped:
-     * eighty transfers through one gigabit port measure 8% busy and 75Mb
-     * carried, and adding more transfers moves neither number. A real port
-     * under that load runs at 100%.
+     * The world clock moves one millisecond at a time. Everything a port is
+     * handed inside one tick is therefore handed over at the same instant
+     * unless something here says otherwise -- and that is not a neutral
+     * simplification, it is the claim that every application on the wire
+     * dumps a whole millisecond of traffic into the card at once and then
+     * goes quiet. Under that claim a port can only ever accept one bufferful
+     * per tick -- 48 KB, 393us of a gigabit -- so it could never read above
+     * about 39% busy however hard it was pushed, and in practice read far
+     * less because whatever was handed over last in a tick was always what
+     * got dropped: eighty transfers through one gigabit port measured 8%
+     * busy and 75 Mb carried, and adding transfers moved neither number. A
+     * gigabit port carrying a gigabit printed 39%. That is a measured,
+     * honest-looking number that could not be right.
      *
-     * Letting the arrival instant advance with the wire time already offered
-     * this tick -- a sender paced at line rate rather than one dumping a
-     * buffer at a single instant -- was tried and it works: those same eighty
-     * transfers then measure 32% busy and 296Mb carried, and --loadcheck's
-     * hottest port went from 35% busy with 8,929 frames lost to 60% with
-     * 3,479. It also took the game's difficulty curve with it -- the naive
-     * tower stopped falling over at all and --loadcheck failed three of its
-     * own checks saying so. Which of the two an application really behaves
-     * like is a modelling decision with the whole load calibration hanging
-     * off it, so it is not made quietly in here. */
-    uint64_t start = pt->busy_us > now_us ? pt->busy_us : now_us;
-    uint64_t wait  = start - now_us;
+     * So the offer instant advances with the wire time already handed over
+     * this tick: a sender clocking bits out at line rate, which is what a
+     * NIC driving a wire actually is. Two consequences, both intended:
+     *
+     *   - the same eighty transfers now measure 32% busy and 296 Mb carried,
+     *     and a port that is really full reads full;
+     *   - it is capped at the end of the tick. Nothing may be handed over
+     *     later than the millisecond it was handed over in, so a port can be
+     *     offered at most one millisecond of wire time per millisecond and
+     *     utilisation cannot exceed 100%. Without the cap the offer instant
+     *     and the queue advance in lockstep, nothing ever waits, and a port
+     *     would happily report carrying more than the wire can hold.
+     *
+     * What is still NOT modelled: which sender each frame came from. The
+     * order inside a tick is the order the senders were stepped in, so the
+     * queue is FIFO over that order rather than over real arrival times.
+     * That is visible only as which flow loses a frame when a port overflows,
+     * and TCP's response to a loss is the same either way. */
+    if (pt->offer_tick != n->now) { pt->offer_tick = n->now; pt->offered_us = 0; }
+    uint64_t offer_us = now_us + (pt->offered_us > 1000 ? 1000 : pt->offered_us);
+    /* Counted whether or not it is accepted: a sender that lost a frame in a
+     * full buffer still spent that wire time offering it. */
+    pt->offered_us += (uint32_t)(serial_us > 1000 ? 1000 : serial_us);
+
+    uint64_t start = pt->busy_us > offer_us ? pt->busy_us : offer_us;
+    uint64_t wait  = start - offer_us;
     uint64_t buf_us = ((uint64_t)NET_PORT_BUFFER * 8 + (uint64_t)mb - 1) / (uint64_t)mb;
     /* THE PEAK IS RECORDED BEFORE THE DROP, not after it. Recording it only
      * on the frames that got in meant a port that was dropping because its
@@ -915,7 +945,7 @@ static void port_tx(Net *n, int p, const uint8_t *data, int len)
      * more than it carries adds tens of milliseconds, and that is what a
      * player reads off ping. */
     uint32_t delay = 1 + (uint32_t)(c->metres / 250)
-                       + (uint32_t)((wait + serial_us) / 1000);
+                       + (uint32_t)((start + serial_us - now_us) / 1000);
     /* The ring holds every delay this stack can produce. A frame that
      * somehow wanted longer would land in the wrong millisecond rather than
      * be lost, so it is clamped where the arithmetic is, not hidden. */
@@ -2392,9 +2422,13 @@ int net_traceroute(Net *n, int node, uint32_t dst, uint32_t *hops, int maxhops)
  * about it. The same run now: 8% busy, 81Mb carried, 13 frames lost, longest
  * silence 3ms. --netcheck's `a congested port` section is that measurement.
  *
- * The busy figure is still small and that part is not TCP's: see the note in
- * port_tx() for the millisecond-granularity ceiling that keeps any port in
- * this world under about 39% however hard it is pushed.
+ * The busy figure in that measurement was small and that part was not TCP's:
+ * every frame offered inside a tick arrived at the same instant, which held
+ * any port in this world under about 39% however hard it was pushed. That
+ * ceiling is gone -- see the model note in port_tx() -- and the numbers above
+ * are from before it went, so they read low against what the same run
+ * measures now. What they are evidence of is the SILENCE, 201ms against 3ms,
+ * and that is TCP's and is unchanged.
  *
  * It still does not REASSEMBLE out of order data: the receiver acknowledges
  * what it has and drops what it cannot use, so a retransmission is go-back-N
@@ -3223,6 +3257,33 @@ int net_dhcpd_leases(const Net *n, int node)
     int k = 0;
     for (int i = 0; i < NET_LEASE_MAX; i++)
         if (h->lease[i].used && h->lease[i].expires > n->now) k++;
+    return k;
+}
+/* HOW MANY OF THEM THIS ONE POOL ISSUED. The box-wide figure is the sum and
+ * it is a different question: a router with a pool per vlan printed the same
+ * total against every range it serves, so seven lines said "60 leases out"
+ * when three vlans had every desk on them and four had none, and the screen
+ * that should have shown which segment was empty showed nothing at all.
+ *
+ * The leases were already tagged with the pool that issued them -- the count
+ * simply was not asking. `i` is the caller's ordinal over the used pools, the
+ * same one net_dhcpd_pool() walks, so the two always line up. */
+int net_dhcpd_pool_leases(const Net *n, int node, int i)
+{
+    const Host *h = chost_of(n, node);
+    if (!h || i < 0) return 0;
+    int pi = -1;
+    for (int j = 0; j < NET_POOL_MAX; j++) {
+        if (!h->pool[j].used) continue;
+        if (i--) continue;
+        pi = j;
+        break;
+    }
+    if (pi < 0) return 0;
+    int k = 0;
+    for (int j = 0; j < NET_LEASE_MAX; j++)
+        if (h->lease[j].used && h->lease[j].pool == pi &&
+            h->lease[j].expires > n->now) k++;
     return k;
 }
 uint32_t net_dhcp_lease_of(const Net *n, int node, const uint8_t mac[6])

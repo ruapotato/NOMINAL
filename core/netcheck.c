@@ -244,24 +244,41 @@ static void check_storm(void)
     int a = net_add_host(n, "alpha"), b = net_add_host(n, "bravo");
     net_cable(n, a, 0, s1, 0, 5, CAB_CAT5E);
     net_cable(n, b, 0, s2, 0, 5, CAB_CAT5E);
-    net_cable(n, s1, 6, s2, 6, 20, CAB_CAT6);
-    net_cable(n, s1, 7, s2, 7, 20, CAB_CAT6);
+    /* The trunk between them is the cheap drum, because a pair of unmanaged
+     * switches with no spanning tree in them is the kit that is on it. */
+    net_cable(n, s1, 6, s2, 6, 20, CAB_CAT5);
+    net_cable(n, s1, 7, s2, 7, 20, CAB_CAT5);
     net_if_addr(n, a, 0, net_ip(10, 0, 0, 1), net_mask_bits(24));
     net_if_addr(n, b, 0, net_ip(10, 0, 0, 2), net_mask_bits(24));
 
     /* One ordinary ping. One broadcast ARP request is all it takes. */
     net_ping(n, a, net_ip(10, 0, 0, 2), NULL);
+    /* WHERE A STORM IS VISIBLE. On the ports carrying it, as time on the
+     * wire: the stopwatch on one trunk starts once the ping is answered, so
+     * everything it counts from here is the echo of a conversation that
+     * finished.
+     *
+     * THIS CHECK USED TO ASSERT DROPPED FRAMES and it no longer can, which
+     * is worth writing down rather than quietly retuning. A storm was
+     * visible as drops because every frame a port was offered inside one
+     * millisecond arrived at the same instant, so a port could accept one
+     * bufferful a tick and threw the rest away -- see the model note in
+     * port_tx(). With the offer instant advancing at line rate, these two
+     * switches with two hosts on them circulate about 139 frames a
+     * millisecond, which is half of a hundred megabit run and not more than
+     * it: nothing overflows, and asserting that it did would be asserting an
+     * artefact. What a storm really costs here is the wire, so that is what
+     * is measured -- and it is the number `load` and `netstat -P` print, so
+     * it is a number the player is really looking at. */
+    net_port_busy_reset(n, s1, 6);
     net_step(n, 400);
-    uint64_t load = net_load(n), drops = net_queue_drops(n);
-    /* WHERE A STORM IS VISIBLE. On the ports carrying it: the trunk between
-     * the two switches is offered more frames than a gigabit will clock out
-     * and its egress buffer fills, so the drop is counted on the port and
-     * `netstat -P` prints it with the reason. That is the same counter an
-     * oversubscribed uplink fills, because it is the same fault. */
-    for (int p = 0; p < 8; p++) drops += net_port_qdrops(n, s1, p)
-                                       + net_port_qdrops(n, s2, p);
+    uint64_t load = net_load(n);
+    int stormpct = (int)(net_port_busy_us(n, s1, 6) * 100 / (400 * 1000));
+    char sl[110];
     ck("a loop with no spanning tree storms", load > 200);
-    ck("and the storm is visible as dropped frames", drops > 0);
+    snprintf(sl, sizeof sl, "and the storm is visible on the wire it is going "
+             "round: the trunk is %d%% busy with nobody talking", stormpct);
+    ck(sl, stormpct >= 25);
     ck("and it does not stop on its own", (net_step(n, 400), net_load(n)) > 200);
     net_free(n);
 
@@ -553,32 +570,33 @@ static void check_tcp(void)
 
 /* ------------------------------------------- TCP when the port is full
  *
- * WHAT A PORT THAT IS DROPPING FRAMES DOES TO THE TRANSFERS ACROSS IT. Eight
- * desks pulling files off one server share one gigabit port, and its 48 KB
- * egress buffer cannot hold what will not fit on the wire, so frames are
- * lost. That much was always true here. What happened next was not: a sender
- * that lost a segment had no way to find out except the retransmission
- * timer, so it went silent for 200ms per loss while the wire in front of it
- * sat idle. Measured on this scenario before the stack could do anything
- * else: 5% busy, 49Mb carried, 99 frames lost, and the middle transfer's
- * longest silence was 201ms -- the timer, to the millisecond.
+ * WHAT A PORT THAT IS DROPPING FRAMES DOES TO THE TRANSFERS ACROSS IT. N
+ * desks pull files off one server, and the server is behind a hundred
+ * megabit run, so past a certain number of desks its egress buffer cannot
+ * hold what will not fit on the wire and frames are lost. What used to
+ * happen next was the fault: a sender that lost a segment had no way to find
+ * out except the retransmission timer, so it went silent for 200ms per loss
+ * while the wire in front of it sat idle. Reno -- duplicate acknowledgements
+ * and a fast retransmit on the third of them -- is what answers that, and
+ * these checks are the measurement of it.
  *
- * Now the receiver says again what it is waiting for, the sender resends on
- * the third of those without waiting for anything, and the window it may
- * have on the wire answers to the loss instead of being whatever the peer's
- * buffer happened to be: 8% busy, 81Mb carried, 13 frames lost, longest
- * silence 3ms.
- *
- * The busy figure is still small, and it is not TCP's doing: see the note in
- * port_tx() in netstack.c for the millisecond-granularity ceiling that keeps
- * any port in this world under about 39% however hard it is pushed. What
- * these checks assert is what TCP is responsible for -- the loss signal, the
- * resend that answers it, and the transfers that are no longer silent for a
- * fifth of a second at a time.
+ * WHY THE NUMBERS HERE ARE NOT THE ONES THAT USED TO BE IN THIS COMMENT.
+ * This scenario used to put eight desks behind a GIGABIT port and call it
+ * congested, and it really did drop frames -- for an arithmetic reason
+ * rather than one on the wire. Every frame a port was offered inside one
+ * millisecond arrived at the same instant, so a port could accept one
+ * bufferful a tick, 48 KB, and threw away everything handed over after it;
+ * no port in this world could read above about 39% busy however hard it was
+ * pushed, and this run read 8%. With the offer instant advancing at line
+ * rate (the model note in port_tx()), one gigabit carries sixteen desks
+ * pulling files without losing anything, which is true and is what the game
+ * should say. So the bottleneck is now where it really lives: the cheapest
+ * drum in the catalogue, and the two runs below are the same wire on either
+ * side of what it holds.
  *
  * Everything below is read off the outside of the stack: bytes that really
  * arrived at a desk, a port counter, and the capture a person would take. */
-#define CONG_DESKS 16     /* the busiest run below; the other uses eight   */
+#define CONG_DESKS 16     /* the array is sized for the largest run tried  */
 #define CONG_MS    600
 
 /* READING THE CAPTURE THE WAY A PERSON DOES. One row per direction of one
@@ -657,7 +675,17 @@ static void cong_run(int desks, Cong *r)
     Net *n = net_new(77);
     int sw  = net_add_switch(n, "sw1", 24);
     int srv = net_add_host(n, "files");
-    net_cable(n, srv, 0, sw, 0, 10, CAB_CAT5E);
+    /* THE SERVER IS ON THE OLD COPPER, and that is the whole scenario: the
+     * desks are on gigabit legs and the thing they are all pulling from is
+     * behind a hundred megabit run. It used to be on cat5e here, and back
+     * then a gigabit port congested at eight desks -- but it congested for
+     * an arithmetic reason (everything offered inside a millisecond arrived
+     * at the same instant, so a port could accept one bufferful a tick and
+     * no more) and not for a reason on the wire. With that fixed, one
+     * gigabit really does carry sixteen desks pulling files, which is true
+     * and is what the game should say. So the congestion is put where it
+     * really lives: on the cheapest drum in the catalogue. */
+    net_cable(n, srv, 0, sw, 0, 10, CAB_CAT5);
     net_if_addr(n, srv, 0, net_ip(10, 0, 0, 1), net_mask_bits(24));
     int lsock = net_tcp_listen(n, srv, 8080);
 
@@ -754,36 +782,108 @@ static void cong_run(int desks, Cong *r)
     net_free(n);
 }
 
+/* ------------------------------------- what the utilisation number means
+ *
+ * THE NUMBER `load` PRINTS IS READ AND ACTED ON, so it has to be the thing
+ * it is named after: the fraction of the second that this port spent
+ * clocking bits. This asserts it end to end and in the open -- a known
+ * number of bytes is put on a wire of a known speed, and the busy figure is
+ * compared against the division. It is the one check that would have caught
+ * the ceiling described in port_tx(): under that model a port could not read
+ * above about 39% whatever it was handed, so the second half of this would
+ * have failed by a factor of two and the third by a factor of three. */
+static void check_utilisation(void)
+{
+    printf("\nwhat the utilisation number means\n");
+    char what[128];
+    /* Two boxes, one gigabit run, and datagrams that are simply handed to
+     * the port -- no window, no congestion control, nothing between the
+     * sender and the wire to argue about the rate. */
+    for (int pct = 25; pct <= 100; pct += 25) {
+        Net *n = net_new(9);
+        int a = net_add_host(n, "alpha"), b = net_add_host(n, "bravo");
+        net_cable(n, a, 0, b, 0, 10, CAB_CAT5E);   /* 1000Mb                */
+        net_if_addr(n, a, 0, net_ip(10, 0, 0, 1), net_mask_bits(24));
+        net_if_addr(n, b, 0, net_ip(10, 0, 0, 2), net_mask_bits(24));
+        int s = net_udp_open(n, a, 4000);
+        net_udp_open(n, b, 4000);
+        net_ping(n, a, net_ip(10, 0, 0, 2), NULL);      /* resolve first    */
+        net_port_busy_reset(n, a, 0);
+
+        /* A 1400-byte datagram is a 1442-byte frame, which port_tx clocks
+         * out in 12us of a gigabit. Handing over k of them per millisecond
+         * asks for k*1.2% of the wire; 83 of them is the whole of it. */
+        uint8_t buf[1400];
+        memset(buf, 'x', sizeof buf);
+        int per_ms = (83 * pct) / 100;
+        const int ms = 200;
+        for (int t = 0; t < ms; t++) {
+            for (int k = 0; k < per_ms; k++)
+                net_udp_send(n, s, net_ip(10, 0, 0, 2), 4000, buf, (int)sizeof buf);
+            net_step(n, 1);
+        }
+        int util = (int)(net_port_busy_us(n, a, 0) * 100 / ((uint64_t)ms * 1000));
+        snprintf(what, sizeof what,
+                 "a gigabit port offered %d%% of a gigabit reads %d%% busy",
+                 pct, util);
+        /* Within three points: the frame time is rounded up to the whole
+         * microsecond in port_tx, and per_ms is a whole number of frames. */
+        ck(what, util >= pct - 3 && util <= pct + 1);
+        net_free(n);
+    }
+}
+
 static void check_congestion(void)
 {
     printf("\na congested port, and the loss it really causes\n");
     char what[128];
 
-    /* EIGHT DESKS. Enough to overflow the port's buffer in bursts, which is
-     * the ordinary case: the numbers in the comment above are this run. */
+    /* EIGHT DESKS, WHICH THE WIRE JUST CARRIES. Eight transfers is a little
+     * under a hundred megabits, so the port runs at the top of its range and
+     * TCP finds that rate without losing anything: 98% busy, 93Mb through,
+     * no drops at all. That is the honest shape of a link that is exactly
+     * big enough, and it is worth asserting because for a long time this
+     * stack could not produce it -- a port could not read above 39% however
+     * hard it was pushed, so "full" and "overflowing" were the same picture.
+     * They are two pictures now and this is the first one. */
     Cong a;
     cong_run(8, &a);
     ck("eight desks all have a transfer running off the one file server",
        a.connected == 8);
     snprintf(what, sizeof what,
-             "the port really is dropping frames (%llu of them, %d%% busy)",
-             a.drops, a.util);
-    ck(what, a.drops > 0);
+             "the hundred megabit run they share really fills up (%d%% busy)",
+             a.util);
+    ck(what, a.util >= 90);
     snprintf(what, sizeof what,
-             "and a transfer is not silent for a timer at a time (%dms, was 201ms)",
-             a.median_stall);
-    ck(what, a.median_stall < 50);
+             "and it carries what a hundred megabit run carries (%dMb)", a.mbit);
+    ck(what, a.mbit >= 85 && a.mbit <= 100);
     snprintf(what, sizeof what,
-             "so the same eight desks get more for it (%dMb carried, was 49Mb)",
-             a.mbit);
-    ck(what, a.mbit >= 65);
+             "and a wire that is full but not overflowing loses nothing (%llu drops)",
+             a.drops);
+    ck(what, a.drops == 0);
 
-    /* SIXTEEN DESKS, which is where segments are lost out of the MIDDLE of a
-     * stream often enough to watch the whole signal work end to end: the
-     * receiver asks again, and again, and again, and the missing bytes turn
-     * up milliseconds later rather than when the timer runs out. */
+    /* TWELVE DESKS, WHICH IT DOES NOT. Half as much again as the wire holds
+     * is where segments start being lost out of the MIDDLE of a stream, and
+     * that is the whole signal working end to end: the buffer overflows, the
+     * receiver asks again and again and again, and the missing bytes turn up
+     * milliseconds later rather than when the timer runs out.
+     *
+     * TWELVE AND NOT SIXTEEN, and the reason is measured rather than
+     * convenient. At sixteen desks -- sixty per cent more than the wire
+     * holds -- whole windows go missing, and a sender with nothing left in
+     * flight has no acknowledgements coming back to count, so the
+     * retransmission timer is the only thing that can recover it: the
+     * slowest recovery at sixteen desks is 201ms, which IS the timer, and
+     * every desk's median silence is 204ms. That is correct go-back-N
+     * behaviour under heavy loss and not a fault. Fast retransmit is the
+     * thing being checked here, so the run is the one where the loss is
+     * light enough for duplicate acknowledgements to exist. */
     Cong b;
-    cong_run(16, &b);
+    cong_run(12, &b);
+    snprintf(what, sizeof what,
+             "half as much again as it holds does overflow it (%llu frames lost)",
+             b.drops);
+    ck(what, b.drops > 0);
     snprintf(what, sizeof what,
              "a receiver that cannot use what arrived asks again (%d times over)",
              b.dupack);
@@ -791,7 +891,11 @@ static void check_congestion(void)
     snprintf(what, sizeof what,
              "and asking three times fetches it in %dms, not on the 200ms timer (%d of %d)",
              b.slowest, b.answered, b.asked);
-    ck(what, b.asked > 0 && b.answered > 0 && b.slowest < 200);
+    ck(what, b.asked > 0 && b.answered == b.asked && b.slowest < 200);
+    snprintf(what, sizeof what,
+             "so a transfer is not silent for a timer at a time (%dms, was 201ms)",
+             b.median_stall);
+    ck(what, b.median_stall < 50);
 }
 
 static void check_firewall(void)
@@ -1030,6 +1134,19 @@ static void check_dhcp_scope(void)
        ifx == v11 && first == net_ip(10, 11, 0, 100) &&
        net_dhcpd_pool(n, rt, 1, &ifx, &first, NULL, NULL, NULL, NULL) &&
        ifx == v13 && first == net_ip(10, 13, 0, 200));
+
+    /* AND THE COUNT IS PER POOL. The box holds one lease, and it came out of
+     * the vlan 11 range: the vlan 13 range on the same box has issued nothing
+     * and must say so. Printing the box's total against every range made a
+     * router with a pool per vlan tell a player that seven empty segments each
+     * had every desk in the building on them. */
+    ck("each pool counts the leases IT issued, not the box's",
+       net_dhcpd_leases(n, rt) == 1 &&
+       net_dhcpd_pool_leases(n, rt, 0) == 1 &&
+       net_dhcpd_pool_leases(n, rt, 1) == 0);
+    ck("and a pool that does not exist has issued nothing",
+       net_dhcpd_pool_leases(n, rt, 2) == 0 &&
+       net_dhcpd_pool_leases(n, rt, -1) == 0);
 
     /* AND IT CAN BE SWITCHED OFF, which it could not. A router has no power
      * button, `count 0` is not a way out, and re-pointing a rogue pool at
@@ -1558,6 +1675,7 @@ int net_selfcheck(void)
     check_routing();
     check_nics();
     check_tcp();
+    check_utilisation();
     check_congestion();
     check_firewall();
     check_drop_reasons();
