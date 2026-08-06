@@ -533,8 +533,20 @@ static bool client_line(Client *c)
             "                    broken and nothing on it will run\n"
             "  man <topic>       pkg, ldd, ns, sh ... `man` alone lists them\n"
             "\n"
+            /* THE EDITOR WAS MISSING FROM THE LINE THAT NAMES THE EDITORS.
+             * This said `sed -i` and stopped, which was the whole truth
+             * until ed(1) landed -- and ed is the one that repairs a line
+             * you cannot pattern-match, which is most of what a corrupted
+             * config leaves you. A playtester repaired four mangled bytes
+             * across three lines of a service unit with it, a job `sed -i`
+             * would have needed three substitutions on text nobody can
+             * easily type. */
             "editing: sed -i s/old/new/ <file>   sed -i /text/d <file>\n"
-            "         quotes work: sed -i \"s/enabled: yes/enabled: no/\" f\n");
+            "         quotes work: sed -i \"s/enabled: yes/enabled: no/\" f\n"
+            "         ed <file> ,n              number the lines first\n"
+            "         ed <file> 3c \"new line\" . w    replace line 3, write\n"
+            "         `man ed` is the whole command set. Nothing is written\n"
+            "         until you say `w`.\n");
         return true;
     }
 
