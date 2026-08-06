@@ -718,8 +718,20 @@ void site_dump_events(const Site *s, Buf *out)
     if (!shown) buf_puts(out, "  no box in this building has an operating "
                               "system in it yet.\n");
     buf_puts(out,
-        "\n  disk is how far through its life the disk in that box is, worked\n"
-        "  out from how hard it has actually been used. Past about three\n"
+        /* WHAT THIS SENTENCE USED TO CLAIM. "worked out from how hard it has
+         * actually been used" -- which is half the model. There is a flat
+         * charge for every day the box is switched on, and a playtester who
+         * read this left seven servers running through a forty-eight day
+         * stretch with no tenants in the building, watched them go from 0% to
+         * 33% on no traffic at all, and had to replace five disks. Their
+         * words: "it isn't". Both terms are now named, with the ratio between
+         * them, because the decision the sentence is for -- leave it running
+         * or switch it off -- turns entirely on the flat one. */
+        "\n  disk is how far through its life the disk in that box is. A disk\n"
+        "  ages every day it is SWITCHED ON, and faster on the days it works\n"
+        "  hard: a box at full load wears about five times as fast as one\n"
+        "  that is merely powered. Kit you have built ahead of the tenants is\n"
+        "  ageing in the cupboard. Past about three\n"
         "  quarters it starts saying so in its own /var/log/messages, and a\n"
         "  new one is `disk <box>`. `ups <box>` fits a battery: a box on one\n"
         "  rides a mains failure out instead of coming back with a filesystem\n"

@@ -348,6 +348,21 @@ static void check_disk(void)
     ck("after forty-four days it is worn but has said nothing",
        ses.s.dev[ad].run_days == 44 && !ses.s.dev[ad].warned);
 
+    /* AND THE HELP HAS TO SAY WHY IT WORE. This box has served nobody for
+     * forty-four days -- no tenancy, no desk, no transfer -- so every point
+     * of that wear is the flat charge for being switched on. The `events`
+     * text used to say wear was "worked out from how hard it has actually
+     * been used", and a playtester believed it, left seven idle servers
+     * running through the empty stretch at the start of a run, and paid for
+     * five disks. The number here is the proof the sentence has to match. */
+    ck("an idle box wears one point a day, purely for being switched on",
+       ses.s.dev[ad].wear == 44);
+    {
+        const char *ev = say(&ses, "events", &o);
+        ck("and `events` says so, rather than blaming work it never did",
+           has(ev, "SWITCHED ON") && has(ev, "five times"));
+    }
+
     const char *d45 = say(&ses, "day 1", &o);
     ck("on the forty-fifth its disk starts logging reallocated sectors",
        has(d45, "Its disk is going") && ses.s.dev[ad].warned);
