@@ -17,8 +17,26 @@ That is the whole idea. Everything else follows from it.
 
 ## The loop
 
-1. **Money comes from the floors.** Residents and offices pay for service. More
-   floors, more tenants, more demand.
+1. **Money comes from the floors, and not all of it is the same money.** Four
+   trades take leases, and each one asks the network for a different thing and
+   pays a different rate for the same square metres:
+
+   | trade | what it wants | rent |
+   |---|---|---|
+   | office | throughput at nine, and patient | 100% |
+   | voice | no loss, no jitter. Not bandwidth | 170% |
+   | web host | uptime, and reachable INWARDS | 240% |
+   | studio | sustained UPLOAD, all of it | 300% |
+
+   These are not labels on one behaviour. A call is 172 bytes every 20 ms — a
+   fiftieth of one office desk — so buying bandwidth cannot help a call centre
+   and a queue somebody else fills will ruin it. A web host's traffic arrives
+   from the ISP handoff *inwards*, loading the one direction nothing else
+   loads, and its lease is uptime: a day its site is down hands rent back. A
+   studio pushes sustained upload with a deadline, and still pulls its media
+   off a file server, so it is the one trade that wants a local server and a
+   big circuit at once. `demand` says which is coming, what it will want and
+   what it pays, before you sign.
 2. **Demand outgrows the infrastructure.** A floor of accountants wants a file
    server. A trading office wants latency. Somebody wants their own subnet.
 3. **You buy hardware.** It arrives, and it arrives *somewhere* — goods in on
@@ -47,15 +65,32 @@ That is the whole idea. Everything else follows from it.
    an address, a route, a resolver, a firewall rule, a service. Get it wrong and
    it fails the way a real machine fails, and says so.
 6. **Then a day passes.** Tenants move in on their day, their people do a
-   day's work over what you built — real DNS, real TCP, real files across
-   real copper — and the rent for the work that finished arrives that
-   evening. Four fifths of a tenancy's people getting their work done is a
+   day's work over what you built — real DNS, real TCP, real files and real
+   voice across real copper — and the rent for the work that finished arrives
+   that evening. Four fifths of a tenancy's people getting their work done is a
    day they pay for. Three days without it is a complaint, and complaints from
    a third of your tenancies -- never fewer than three -- end the run, so the
    building gets more slack as you let it rather than less. `service` prints
    the number you are counting against.
 7. **Then it breaks.** Not because a designer hid a fault — because of something
    you did three floors ago and have forgotten.
+8. **And somebody is sitting at every desk.** They are in the rooms their
+   tenancy leases, one per desk the tenancy asked for, and the room shows how
+   their week is going — hands up when nothing has an address, heads down when
+   the tenancy is striking. You can walk over and `sit` at one of their
+   machines, because their complaint is a fact about *that* machine rather
+   than a number in a report:
+
+       desk:t3d0# ping 198.51.100.1     3 sent, 3 received, 0% loss
+       desk:t3d0# voice
+         dir  calls    sent arrived   lost   late concealed
+         in       1     320     300     20      0        20  6.2%
+       verdict: unusable -- 20 packets thrown away on uplink port 0,
+       whose egress buffer is full.
+
+   That machine is healthy. The audio died three hops away, on a port on
+   another floor, and it was the *inbound* half — so a landlord who bought a
+   fatter uplink for the outbound side would have bought the wrong thing.
 
 Step 7 is the game. Step 5 is why it is interesting.
 
@@ -142,8 +177,32 @@ Here the terminal is the machine, and it follows that:
     ./build/bf --health     every pristine machine boots with every service up
     ./build/bf --solve 60   every generated fault is findable and repairable
     ./build/bf --askcheck   the person on the phone never says anything untrue
+    ./build/bf --mancheck   every command example in every manual, package
+                            README and page of the in-game wiki, RUN on a
+                            booted machine -- and every command they name
+                            proved to exist on it
 
-    ./Godot_v4.7.1-stable_linux.x86_64 --path game
+    ./Godot_v4.7.1-stable_linux.x86_64 --path game -- --seed=S
+
+The window takes the same seed the harness does, so `--seed=7008` and
+`--towersh 7008` are the same tower and you can look at the one you played.
+It listens on 127.0.0.1:7373 and takes the same verbs a pipe does: the 3D is a
+view of the session, never a second copy of it.
+
+Verbs worth knowing before you start, because they are the ones that turn
+guessing into deciding:
+
+    demand                  who is coming, when, what trade, and what they pay
+    quote <a> <b>           what a cable run would cost BEFORE it is paid for:
+                            the tray metres, every grade priced off the spool
+                            and as a jack, and what each would come up at over
+                            that distance
+    service                 every tenancy in its own units -- transfers for an
+                            office, calls for a call centre, visitors for a
+                            web host
+    load                    the busiest ports, and which is dropping
+    sit <desk>              their machine, their problem, their tools
+    events                  what the world did to your kit overnight
 
 ## The rule
 
