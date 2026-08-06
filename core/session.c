@@ -74,14 +74,25 @@ static int here_floor(const Session *ses)
 static int room_arg(const Session *ses, const char *spec)
 {
     if (!spec || !*spec) return -1;
-    int r = site_room_by_name(&ses->s, spec);
+    /* HOWEVER THEY SPELLED IT. The prompt says `f0 MDF>`, and `look` and
+     * `rooms` print MDF, so `go MDF` is what a person types -- and it used to
+     * be the one spelling that failed. The box lookup below keeps the letters
+     * it was given, because a box is named by the player and `sw1` and `SW1`
+     * could be two different boxes; a room kind is a word this file owns. */
+    char low[64];
+    size_t li = 0;
+    for (const char *q = spec; *q && li < sizeof low - 1; q++)
+        low[li++] = (*q >= 'A' && *q <= 'Z') ? (char)(*q - 'A' + 'a') : *q;
+    low[li] = 0;
+    int r = site_room_by_name(&ses->s, low);
     if (r >= 0) return r;
     char buf[64];
-    snprintf(buf, sizeof buf, "f%d.%s", here_floor(ses), spec);
+    snprintf(buf, sizeof buf, "f%d.%s", here_floor(ses), low);
     r = site_room_by_name(&ses->s, buf);
     if (r >= 0) return r;
     int d = site_dev_by_name(&ses->s, spec);
     if (d >= 0 && ses->s.dev[d].room != BLD_NOROOM) return ses->s.dev[d].room;
+    spec = low;
 
     /* THE NEAREST ONE, WHEREVER IT IS. `go mdf` worked on the ground floor
      * and failed on the eighth, because there is only one MDF and it is not
@@ -589,20 +600,83 @@ static void do_lift(Session *ses, int f, Buf *out)
     do_look(ses, out);
 }
 
+/* WHAT PUTTING A FLOOR INTO SERVICE COSTS, and it used to be nothing.
+ *
+ * `open` was free, took no time and could be typed from anywhere, so there
+ * was no reason not to open every floor in the tower in the first minute --
+ * which made the one decision in the verb ("can I carry another floor yet?")
+ * not a decision at all. Two things fix it and both are things about the
+ * world rather than rules about the player:
+ *
+ *   - You have to be standing on the floor. Its lift button is not lit,
+ *     which is the game's own rule, so the way up is the stairs and the
+ *     stairs are metres bld_walk_all() already charges.
+ *   - The landlord's fit-out is priced by the square metre of LETTABLE space
+ *     on the floor: lighting, the riser, the fire panel, the lift stopping
+ *     there. Big floors cost more to commission and are worth more in rent,
+ *     which is the same arithmetic a landlord does.
+ *
+ * SITE_OPEN_PER_M2 IS A CHOSEN NUMBER, in the same sense as D25's two: it is
+ * a defensible commissioning rate and nothing downstream of it is tuned. At
+ * two pounds a metre a typical eight-hundred-metre office floor is about
+ * sixteen hundred, against a starting budget of sixty thousand and a switch
+ * at four hundred -- a floor is a real purchase and not a prohibition. */
+#define SITE_OPEN_PER_M2  2
+
+static long open_price(const Session *ses, int floor)
+{
+    double m2 = 0;
+    for (int i = 0; i < ses->b.nrooms; i++)
+        if (ses->b.rooms[i].floor == floor && ses->b.rooms[i].tenant)
+            m2 += bld_room_area(&ses->b.rooms[i]);
+    return (long)(m2 + 0.5) * SITE_OPEN_PER_M2;
+}
+
 static void do_open(Session *ses, Buf *out)
 {
     if (ses->floors >= ses->b.floors) {
         buf_puts(out, "every floor in this tower is already in service.\n");
         return;
     }
-    int f = ses->floors++;
+    int f = ses->floors;
     int lets = 0, drops = 0;
     for (int i = 0; i < ses->b.nrooms; i++)
         if (ses->b.rooms[i].floor == f && ses->b.rooms[i].tenant) lets++;
     for (int i = 0; i < ses->s.ntenant; i++)
         if (ses->s.tenant[i].floor == f) drops += ses->s.tenant[i].drops;
-    buf_printf(out, "floor %d is in service. %d let space%s on it, wanting %d "
-                    "drop%s between them.\n", f, lets, lets == 1 ? "" : "s",
+    long fee = open_price(ses, f);
+
+    /* YOU HAVE TO BE THERE. Not because a rule says so: the lift does not
+     * stop at a floor nobody has opened, so the only way onto it is the
+     * stairwell, and walking up it is metres of building like any other. */
+    if (here_floor(ses) != f) {
+        int up = bld_find(&ses->b, f, RM_STAIR);
+        if (up < 0) up = bld_find(&ses->b, f, RM_LIFTLOBBY);
+        if (up < 0) up = bld_find(&ses->b, f, RM_CORRIDOR);
+        char w[48];
+        room_label(ses, up, w, sizeof w);
+        buf_printf(out, "floor %d is not in service and you are on floor %d. "
+                        "Somebody has to be\n  standing on it to sign it off -- "
+                        "and the lift button is not lit, so that\n  is the "
+                        "stairs: `go #%d` (%s), then `open`.\n",
+                   f, here_floor(ses), up, w);
+        buf_printf(out, "  it will cost %ld: %d let space%s on it and the "
+                        "landlord charges the fit-out\n  by the metre.\n",
+                   fee, lets, lets == 1 ? "" : "s");
+        return;
+    }
+    if (ses->s.money < fee) {
+        buf_printf(out, "the fit-out of floor %d is %ld and you have %ld. A "
+                        "floor comes into\n  service when it has been paid "
+                        "for.\n", f, fee, ses->s.money);
+        return;
+    }
+    ses->s.money -= fee;
+    ses->s.spent += fee;
+    ses->floors++;
+    buf_printf(out, "floor %d is in service, %ld paid for the fit-out, %ld left. "
+                    "%d let space%s\n  on it, wanting %d drop%s between them.\n",
+               f, fee, ses->s.money, lets, lets == 1 ? "" : "s",
                drops, drops == 1 ? "" : "s");
 }
 

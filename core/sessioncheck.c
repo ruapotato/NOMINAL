@@ -45,6 +45,16 @@ static bool has(const char *hay, const char *needle)
 
 #define GATE_SEED  7008ull
 
+/* PUTTING A FLOOR INTO SERVICE IS A WALK AND A BILL, so every check below
+ * that needs the floor above has to do both. See do_open() in session.c. */
+static void open_next_floor(Session *ses, Buf *o)
+{
+    char cmd[64];
+    snprintf(cmd, sizeof cmd, "go #%d", bld_find(&ses->b, ses->floors, RM_STAIR));
+    say(ses, cmd, o);
+    say(ses, "open", o);
+}
+
 /* ------------------------------------------------- the verbs are all there */
 /* A verb that answers "no such command" is a verb a blind tester cannot use,
  * and the 3D shell has an action for every one of these. */
@@ -145,10 +155,33 @@ static void check_walking(int *passed, int *total)
     ck("and a floor the building has not got",
        has(say(&ses, cmd, &o), "does not pass floor"));
 
+    /* A FLOOR COMING INTO SERVICE COSTS SOMETHING AND HAPPENS SOMEWHERE.
+     * `open` used to be free and typeable from anywhere, so there was no
+     * reason not to open the whole tower in the first minute. */
     int before = ses.floors;
+    long had = ses.s.money;
+    ck("`open` from another floor is refused, and says which stairs to take",
+       has(say(&ses, "open", &o), "not in service and you are on floor") &&
+       has(o.p, "the stairs") && has(o.p, "it will cost") &&
+       ses.floors == before && ses.s.money == had);
+
+    snprintf(cmd, sizeof cmd, "go #%d", bld_find(&ses.b, before, RM_STAIR));
+    say(&ses, cmd, &o);
+    ck("and standing on it is a walk up the stairs, charged in metres",
+       ses.b.rooms[ses.room].floor == before && ses.walked > far);
+
+    long walked_up = ses.walked;
     ck("`open` puts the next floor in service and says what is on it",
        has(say(&ses, "open", &o), "in service") && ses.floors == before + 1);
+    ck("and it is paid for: the landlord's fit-out comes out of the budget",
+       ses.s.money < had && ses.s.spent >= had - ses.s.money);
+    printf("    floor %d cost %ld to commission, and %ld m of stairs\n",
+           before, had - ses.s.money, ses.walked - far);
 
+    /* Come back down, so the lift below is a lift ride and not a no-op. */
+    snprintf(cmd, sizeof cmd, "lift 0");
+    say(&ses, cmd, &o);
+    far = walked_up;
     snprintf(cmd, sizeof cmd, "lift %d", before);
     say(&ses, cmd, &o);
     ck("and then the lift takes you to it",
@@ -246,7 +279,7 @@ static void check_goods(int *passed, int *total)
        ses.b.rooms[goods].floor == 0 && goods != ses.room);
 
     /* Order it from the top of the building. It still lands downstairs. */
-    say(&ses, "open", &o);
+    open_next_floor(&ses, &o);
     say(&ses, "lift 2", &o);
     say(&ses, "go comms", &o);
     int up = ses.room;

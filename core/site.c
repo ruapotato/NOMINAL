@@ -611,6 +611,17 @@ int site_dev_by_name(const Site *s, const char *name)
 int site_room_by_name(const Site *s, const char *spec)
 {
     if (!s->b || !spec || !*spec) return -1;
+    /* THE GAME PRINTS "MDF" AND WOULD NOT ACCEPT IT. The prompt, `look` and
+     * `rooms` all spell the room in capitals, and `go MDF` answered "there is
+     * no room or box called MDF" -- a playtester put two boxes down in goods
+     * in before working out that the spelling the game shows is not the
+     * spelling it takes. A room name is a name, not a password. */
+    char low[64];
+    size_t li = 0;
+    for (const char *q = spec; *q && li < sizeof low - 1; q++)
+        low[li++] = (*q >= 'A' && *q <= 'Z') ? (char)(*q - 'A' + 'a') : *q;
+    low[li] = 0;
+    spec = low;
     if (spec[0] == '#') {
         int n = atoi(spec + 1);
         return (n >= 0 && n < s->b->nrooms) ? n : -1;
@@ -623,7 +634,15 @@ int site_room_by_name(const Site *s, const char *spec)
         { "comms", RM_COMMS }, { "mdf", RM_MDF }, { "riser", RM_RISER },
         { "goods", RM_GOODS }, { "lobby", RM_LOBBY }, { "plant", RM_PLANT },
         { "server", RM_SERVER }, { "office", RM_OFFICE },
-        { "residence", RM_RESIDENCE }, { "retail", RM_RETAIL }, { NULL, 0 }
+        { "residence", RM_RESIDENCE }, { "retail", RM_RETAIL },
+        /* THE WAY UP TO A FLOOR NOBODY HAS OPENED. Its lift button is not
+         * lit, so `go f4.stair` is the only spelling that gets a person onto
+         * floor four -- and it answered "no such room" because this table
+         * knew about offices and not about stairwells. One table, and it is
+         * the same list core/session.c walks by. */
+        { "stair", RM_STAIR }, { "stairwell", RM_STAIR },
+        { "liftlobby", RM_LIFTLOBBY }, { "toilet", RM_TOILET },
+        { "corridor", RM_CORRIDOR }, { NULL, 0 }
     };
     for (int i = 0; K[i].n; i++)
         if (strcmp(dot + 1, K[i].n) == 0) return bld_find(s->b, floor, K[i].k);
