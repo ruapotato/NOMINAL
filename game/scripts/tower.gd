@@ -1332,6 +1332,17 @@ func _ses_start() -> void:
 var _st_cache := {}
 var _st_frame := -1
 
+# WHAT TO PRINT IN FRONT OF THE CURSOR, and it is core's answer rather than
+# this file's. session_prompt() knows whether the words a client types are
+# going to the body, to an appliance's management line or to a real shell on a
+# real machine; the wire prints it after every answer, so a socket player can
+# always see which machine they are talking to. See the note in wire.gd.
+func ses_prompt() -> String:
+	if not site_up or not machine.has_method("ses_prompt"):
+		return ""
+	return str(machine.ses_prompt())
+
+
 func ses_state() -> Dictionary:
 	# CACHED FOR THE FRAME. Every read of it parses a dump out of the
 	# extension, and `carrying` is read several times a frame by the HUD and
@@ -3395,6 +3406,38 @@ func command(line: String) -> String:
 		if report_open():
 			s += "\n--- the day's report is up ---\n" + report_text
 		return s + "\n"
+	# POINTING THE CAMERA, which a socket player had no way to do at all.
+	#
+	# A playtester's end-of-run screenshot of the MDF showed a desk and an
+	# empty floor rather than the four racks they had spent an hour filling,
+	# because the body happened to be facing the other way and there was no
+	# `turn`, `face` or `look at` in the game. Screenshots are meant to be a
+	# CHECK on the text -- the one thing a socket client cannot verify by
+	# reading -- and a check you cannot aim is not a check.
+	#
+	# The head-turning itself is aim_at(), which already exists because
+	# `plug core:6` puts the crosshair on that hole. This is the same motion
+	# asked for by name, and it is a view verb: it moves no metres, spends no
+	# money and changes nothing core knows about. That is why it is here and
+	# not in session.c -- the session has no camera.
+	if line == "face" or line == "turn" or line == "look at":
+		return "face what? `face core` a box, `face core:6` a socket on it,\n" \
+			+ "  `face <room>` the middle of a room you are in.\n"
+	if line.begins_with("face ") or line.begins_with("turn ") \
+			or line.begins_with("look at "):
+		var what := line.substr(8 if line.begins_with("look at ") else 5)
+		return _face(what.strip_edges())
+	# AND A KEYSTROKE A SOCKET PLAYER HAS NOT GOT. The day's report is a modal
+	# that only [Esc] dismissed, on a client with no keyboard in the window --
+	# so every line after a `day` went to a session whose report was still up
+	# and stayed up, in every screenshot, over everything behind it.
+	if line == "dismiss" or line == "ok" or line == "esc":
+		if not report_open():
+			return "there is no report up.\n"
+		if run_over:
+			return "the run is over. That panel does not go away.\n"
+		_dismiss_report()
+		return "the report is dismissed and the building is behind it again.\n"
 	var out := ""
 	if line == "day" or line.begins_with("day "):
 		out = advance_day(line)
@@ -3413,6 +3456,62 @@ func command(line: String) -> String:
 	if line.begins_with("plug ") and line.find(":") > 0:
 		_face_port(line.substr(5).strip_edges())
 	return out
+
+
+# FACE A BOX, A SOCKET ON ONE, OR A ROOM. The body does not move and nothing
+# is charged: turning your head is free in a real building too. It answers
+# with what is now in front of the crosshair, because a client that cannot see
+# the screen has to be told the aim took -- "ok" would prove nothing.
+func _face(what: String) -> String:
+	if player == null or player.cam == null:
+		return "there is nobody in the building to turn.\n"
+	if what == "":
+		return "face what?\n"
+	var port := -1
+	var name := what
+	if what.find(":") > 0:
+		var f := what.split(":", false)
+		name = str(f[0])
+		port = int(f[1]) if f.size() > 1 else -1
+	var here := int(ses_state().get("room", -1))
+	for d in site_devs():
+		if str(d.name) != name:
+			continue
+		# A WALL IS A WALL TO A CAMERA TOO. Every device in the tower has a
+		# point in world space, so aiming at one four rooms away succeeds and
+		# photographs the plaster in between. The session's rule is the right
+		# one here as well: you can only see what is in the room with you.
+		if here >= 0 and int(d.room) != here:
+			return "refused: the camera did not move -- %s is in f%d %s #%d " \
+				% [name, int(rooms[int(d.room)].floor),
+					str(rooms[int(d.room)].name), int(d.room)] \
+				+ "and you\n  are not, so there is a wall between you and it. " \
+				+ "`go %s` first.\n" % name
+		var p: Vector3 = _dev_point(int(d.i), max(port, 0))
+		if p == Vector3.INF:
+			return "refused: the camera did not move -- %s is in the building " \
+				% name + "but nothing\n  of it is drawn in this room. `go %s` " \
+				% name + "first.\n"
+		aim_at(p)
+		if port >= 0:
+			return "you look at %s port %d.\n" % [name, port]
+		return "you look at %s, a %s.\n" % [name, str(d.kindname)]
+	# Not a box: a room, spelled the way `go` spells one. The middle of it,
+	# which is what somebody standing in a doorway turns to look at.
+	var want := -1
+	if what.begins_with("#"):
+		want = int(what.substr(1))
+	elif here >= 0 and here < rooms.size():
+		for i in range(rooms.size()):
+			if int(rooms[i].floor) == int(rooms[here].floor) \
+					and str(rooms[i].name).to_lower() == what.to_lower():
+				want = i
+	if want < 0 or want >= rooms.size():
+		return "there is no box or room called %s to look at. `look` says what " \
+			% what + "is in\n  this room, `map` draws the floor.\n"
+	aim_at(room_centre(want))
+	return "you look towards f%d %s #%d.\n" \
+		% [int(rooms[want].floor), str(rooms[want].name), want]
 
 
 func _face_port(spec: String) -> void:

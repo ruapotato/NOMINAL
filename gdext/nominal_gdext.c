@@ -986,6 +986,30 @@ static void m_ses_state(Station *st, const GDExtensionConstTypePtr *args, void *
     buf_free(&o);
 }
 
+/* ses_prompt() -> String — what to print in front of the cursor, and it is
+ * session_prompt(), not a second opinion about it.
+ *
+ * A socket client has no screen. The wire's prompt was derived from the ROOM
+ * alone, so a client that had plugged a serial lead into a server and was
+ * typing `ls /` and `dmesg` at that machine's real shell saw `f0 MDF> ` --
+ * the same three characters as standing in the room doing nothing. A blind
+ * playtester called that the single most dangerous piece of missing state in
+ * the game, and they are right: every word you type is going somewhere else
+ * and nothing on the line says so.
+ *
+ * session_prompt() has always known: `root@files# ` for a shell, `mgmt@core# `
+ * for a management line, `f0 MDF> ` for the body. Reimplementing that in
+ * GDScript would be a second place for it to be wrong, which is the mistake
+ * this whole extension exists to avoid, so it is exported instead. */
+static void m_ses_prompt(Station *st, const GDExtensionConstTypePtr *args, void *ret)
+{
+    (void)args;
+    if (!st->ses_ok) { c_to_gdstring(ret, "> "); return; }
+    char p[96];
+    session_prompt(&st->ses, p, sizeof p);
+    c_to_gdstring(ret, p);
+}
+
 /* ses_here(int room) -> String — the body moved, in the 3D, on its own legs.
  *
  * The session's `go` verb walks you somewhere and charges the metres. A person
@@ -1063,6 +1087,7 @@ static const MethodDef METHODS[] = {
     { "ses_cmd",       m_ses_cmd,       1, { GDEXTENSION_VARIANT_TYPE_STRING }, GDEXTENSION_VARIANT_TYPE_STRING },
     { "ses_state",     m_ses_state,     0, { 0 },                            GDEXTENSION_VARIANT_TYPE_STRING },
     { "ses_here",      m_ses_here,      1, { GDEXTENSION_VARIANT_TYPE_INT }, GDEXTENSION_VARIANT_TYPE_STRING },
+    { "ses_prompt",    m_ses_prompt,    0, { 0 },                            GDEXTENSION_VARIANT_TYPE_STRING },
 };
 #define NMETHODS ((int)(sizeof METHODS / sizeof METHODS[0]))
 

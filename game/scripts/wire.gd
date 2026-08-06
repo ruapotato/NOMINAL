@@ -66,12 +66,34 @@ func _exit_tree() -> void:
 		_srv.stop()
 
 
-# The prompt is the session's own: which floor you are standing on and what
-# the room is. It is the last thing written after every answer, so a client
-# knows the answer is complete without counting bytes.
+# THE PROMPT IS THE SESSION'S OWN, and it has to say WHICH MACHINE.
+#
+# This used to be derived from the room and nothing else: `f0 MDF> ` whether
+# you were standing in the MDF with your hands in your pockets or sitting at a
+# root shell on a server with a serial lead in it. A blind playtester typing
+# `ls /` and `dmesg` down that line had no way to tell that the words were
+# going to a different machine from the one they went to a minute ago -- they
+# called it the single most dangerous piece of missing state in the game, and
+# for a client with no screen that is exactly what it is.
+#
+# core/session.c's session_prompt() has always known the difference:
+#
+#   f0 MDF>        standing in a room, `go` and `carry` and `cable` go here
+#   mgmt@core#     the crash cart's lead in an appliance's management line
+#   root@files#    a real shell on the real operating system in that box
+#   you@desk#      back at the workstation, where the break-fix game is
+#
+# So it is asked, through ses_prompt(), rather than worked out again here.
+# Deriving it a second time in GDScript is how the two came to disagree in the
+# first place. The room fallback below is only for a window with no session in
+# it yet, which is the one case session_prompt() cannot be asked about.
 func prompt() -> String:
 	if tower == null:
 		return "> "
+	if tower.has_method("ses_prompt"):
+		var p := str(tower.ses_prompt())
+		if p != "":
+			return p
 	var r: int = int(tower.ses_state().get("room", -1))
 	if r < 0 or r >= tower.rooms.size():
 		return "> "
@@ -91,7 +113,15 @@ func _process(_dt: float) -> void:
 		var s := _srv.take_connection()
 		var c := {"s": s, "b": ""}
 		_peers.append(c)
+		# THE VERBS THAT ARE THE WINDOW'S AND NOT THE GAME'S. `help` comes out
+		# of core/session.c and cannot name these: there is no camera in a
+		# Session and no report modal in one either. A socket client has no
+		# other way to find out they exist.
 		_send(c, "nominal: the tower, live in the window. `help` lists the verbs.\n")
+		_send(c, "  the window also takes: `hud` for what is on the screen,\n")
+		_send(c, "  `face <box>` / `face <box>:<port>` / `face <room>` to point the\n")
+		_send(c, "  camera before a screenshot, and `dismiss` to close the day's\n")
+		_send(c, "  report -- the panel a player at the keyboard closes with [Esc].\n")
 		_send(c, prompt())
 	var live: Array = []
 	for c in _peers:

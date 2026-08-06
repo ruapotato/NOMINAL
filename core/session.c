@@ -376,7 +376,20 @@ static void dev_line(const Session *ses, int i, Buf *out)
                        net_mask_len(net_if_get_mask(ses->s.net, d->node, 0)));
         } else buf_printf(out, " no address, %d port%s", d->nports,
                           d->nports == 1 ? "" : "s");
-        if (ses->mach[i]) buf_puts(out, "  [an OS is running on it]");
+        /* AN OS IS RUNNING ON IT ONLY IF IT IS SWITCHED ON.
+         *
+         * ses->mach[i] is the allocated Machine. It is non-NULL from the first
+         * power-on until session_end() and power-off never touches it -- so
+         * `look` went on saying "[an OS is running on it]" about a box that had
+         * been off for a week. `show <box>` in core/site.c says the opposite
+         * in the same room in the same second ("It is switched off, so nothing
+         * of it is running"), and a playtester who read the first one would
+         * have walked away believing the box was up. The machine's own answer
+         * is the power state, so ask it. */
+        if (ses->mach[i] && d->powered)
+            buf_puts(out, "  [an OS is running on it]");
+        else if (ses->mach[i])
+            buf_puts(out, "  [SWITCHED OFF -- nothing of it is running]");
     }
     /* A PORT AN AGENT CAN NAME WITHOUT SEEING IT. `plug core:2` is only
      * usable if something printed which sockets are empty. */
@@ -460,6 +473,46 @@ static void do_where(Session *ses, Buf *out)
 }
 
 /* ---------------------------------------------------------------- the help */
+/* WHAT IS ACTUALLY IN THE BUILDING, COUNTED RATHER THAN PROMISED.
+ *
+ * The help used to open with a sentence: *"On day one it holds exactly one
+ * thing: the ISP's socket on the wall of the MDF."* That is true of a session
+ * started over the socket and it is FALSE of the one the 3D window starts,
+ * which pre-orders a router, a switch24 and a server into goods in and has
+ * already spent 2400 of the budget doing it. A blind playtester believed the
+ * sentence, bought a router and a switch24 they already owned, and lost
+ * another 1050 -- and there is no `sell`, so it stayed lost.
+ *
+ * Two starting states and one constant sentence is a claim that cannot be
+ * true of both. So the help does not make the claim: it walks the device
+ * table and prints what is there, which is right in every session because it
+ * is a reading of the session rather than a memory of one. Same rule as
+ * everything else in this file -- the machine is the source, not the prose. */
+static void inventory(const Session *ses, Buf *out)
+{
+    buf_puts(out, "WHAT IS IN THE BUILDING RIGHT NOW -- counted off the device\n"
+                  "table as you read this, not a promise about day one:\n");
+    int n = 0;
+    for (int i = 0; i < ses->s.ndev; i++) {
+        const SiteDev *d = &ses->s.dev[i];
+        if (d->tenant != 0) continue;       /* the tenants' own, not yours */
+        char w[48];
+        room_label(ses, d->room, w, sizeof w);
+        buf_printf(out, "  %-10s %-9s in %-20s ", d->name, site_kind_name(d->kind), w);
+        if (i == ses->s.uplink)
+            buf_puts(out, "the ISP's, on their wall\n");
+        else
+            buf_printf(out, "yours, %d already paid\n", site_kind_price(d->kind));
+        n++;
+    }
+    if (!n) buf_puts(out, "  nothing at all.\n");
+    buf_printf(out, "  %ld of the budget is already spent and %ld is left. THERE "
+                    "IS NO `sell`:\n  money that leaves does not come back, so a "
+                    "box you own and order again is\n  a box you have paid for "
+                    "twice. `look` in goods in before you order.\n",
+               ses->s.spent, ses->s.money);
+}
+
 static void do_help(const Session *ses, Buf *out)
 {
     if (ses->where == SES_SHELL) {
@@ -473,7 +526,29 @@ static void do_help(const Session *ses, Buf *out)
             "  ping <addr>    traceroute <addr>    ss    arp    tcpdump\n"
             "  svc   ps   dmesg\n"
             "  cat /etc/net/interfaces      what its card is configured from\n"
-            "  man                          the manuals it ships with\n"
+            "\n"
+            "AND WHEN THE BOX IS BROKEN RATHER THAN MISCONFIGURED. A mains\n"
+            "failure leaves real damage on a real disk and these are what find\n"
+            "it. A playtester repaired one through this console and said `I only\n"
+            "knew to type fsck because the initrd told me to`:\n"
+            "  fsck /dev/sda1               check and repair the filesystem. This\n"
+            "                               is what the initrd tells you to run\n"
+            "                               when the root will not mount, and the\n"
+            "                               rescue medium (`rescue <box>` from the\n"
+            "                               room) is how you get a shell to run it\n"
+            "  pkg verify                   every shipped file against what is\n"
+            "                               installed: what is MISSING, what has\n"
+            "                               CHANGED, and where\n"
+            "  pkg diff <path>              the shipped file against the one on\n"
+            "                               the disk, line by line\n"
+            "  pkg reinstall <name>         put the shipped ones back. It keeps\n"
+            "                               what was there as a .pkgsave\n"
+            "  netstat -F                   the running packet filter and the\n"
+            "                               per-rule drop counts. `nft` is the\n"
+            "                               daemon that LOADS /etc/nftables.conf,\n"
+            "                               not a way to ask it anything\n"
+            "  man                          the manuals it ships with, `man fsck`\n"
+            "                               and `man pkg` included\n"
             "its address came off its own disk. Edit that file and netd will\n"
             "apply what you wrote, right or wrong.\n"
             "  unplug            take the lead out and stand up again\n",
@@ -492,11 +567,13 @@ static void do_help(const Session *ses, Buf *out)
         return;
     }
     buf_puts(out,
-        "YOU ARE THE IT DEPARTMENT OF A BUILDING. On day one it holds exactly\n"
-        "one thing: the ISP's socket on the wall of the MDF, with nothing\n"
-        "plugged into it. Every switch, every metre of copper and every\n"
-        "address after that is yours. Tenants move in on a schedule, they pay\n"
-        "rent, and what they ask for is what walks you into the limits.\n"
+        "YOU ARE THE IT DEPARTMENT OF A BUILDING. Every switch, every metre of\n"
+        "copper and every address in it is yours to order, carry and configure.\n"
+        "Tenants move in on a schedule, they pay rent, and what they ask for is\n"
+        "what walks you into the limits.\n"
+        "\n");
+    inventory(ses, out);
+    buf_puts(out,
         "\n"
         "WHERE YOU ARE -- and it matters. You can only touch what is in the\n"
         "room with you, and walking is metres of real building.\n"
@@ -529,7 +606,12 @@ static void do_help(const Session *ses, Buf *out)
         "                     up again until you `uncable` it\n"
         "\n"
         "CABLING, which is four things a person does and four things you type:\n"
-        "  spool cat6         take a drum off the shelf. cat5e, cat6, fibre\n"
+        "  spool cat6         take a drum off the shelf. cat5e, cat6, fibre.\n"
+        "                     THE DRUM IS FREE AND THE RUN IS NOT: nothing is\n"
+        "                     charged when you pick a drum up and nothing is\n"
+        "                     refunded by `spool back`. You are billed once, for\n"
+        "                     the metres of tray, at the moment the second end\n"
+        "                     goes in and the link is made\n"
         "  plug <box>:<port>  one end into a socket in THIS room\n"
         "  go <room>          walk to the other end\n"
         "  plug <box>:<port>  the other end in. The run is measured through the\n"
@@ -540,7 +622,11 @@ static void do_help(const Session *ses, Buf *out)
         "  plug <box>:        a bare colon takes the next free port\n"
         "  spool              what is on the drum   `spool back` puts it away\n"
         "  cable <a> <b> [kind]  the four steps above, done and printed. It is\n"
-        "                     a shorthand, not a shortcut: it still walks\n"
+        "                     a shorthand, not a shortcut: it still walks, it\n"
+        "                     charges every metre of the walk, and it WALKS YOU\n"
+        "                     BACK to the room you typed it in -- so six runs\n"
+        "                     out of one comms cupboard are six `cable` lines\n"
+        "                     with nothing in between\n"
         "  uncable <n>        pull one out\n"
         "\n"
         "CONFIGURING. You must be in the room with the box.\n"
@@ -556,6 +642,21 @@ static void do_help(const Session *ses, Buf *out)
         "  router <box> on|off       vlan <box> <port> <n>   (a switch's port)\n"
         "  subif <box> <nic> <vlan> <ip>/<bits>    trunk <box> <port> <v>..\n"
         "  dhcpd <box> <first> <count> <bits> <gw> <dns>     dhcp <box>\n"
+        "                            ONE POOL PER SEGMENT, AND THERE IS NO VLAN\n"
+        "                            IN THIS LINE. The pool lands on whichever\n"
+        "                            interface of that box already has an address\n"
+        "                            inside <first>/<bits> -- eth0, or the subif\n"
+        "                            carrying a tenancy's vlan -- and it answers\n"
+        "                            on that one and no other. If no interface is\n"
+        "                            on that subnet it is REFUSED and prints the\n"
+        "                            interfaces the box does have\n"
+        "                            SO A BOX SERVES SEVERAL VLANS BY BEING TOLD\n"
+        "                            SEVERAL TIMES: `subif` it onto each vlan\n"
+        "                            first, then one `dhcpd` line per subnet, up\n"
+        "                            to eight. That is how the `a segment of its\n"
+        "                            own` tenancies get addresses\n"
+        "                            `dhcpd <box>` alone lists the pools it has,\n"
+        "                            `dhcpd <box> off` stops all of them\n"
         "  ping <box> <ip>   trace <box> <ip>   resolve <box> <name>\n"
         "                     a real echo request, from that box, over the\n"
         "                     copper you laid. Nothing is reachable by default\n"
@@ -571,10 +672,54 @@ static void do_help(const Session *ses, Buf *out)
         "  day [n]            advance the clock. Tenancies whose day has come\n"
         "                     move in, their people work over what you built,\n"
         "                     and rent arrives for the work that finished\n"
+        "\n"
+        "RENT IS PAID FOR A DAY'S WORK, NOT FOR A TENANCY. This is why `status`\n"
+        "can say `0 taken in rent` with eighty addressed desks in the building:\n"
+        "  - rent arrives only when a `day` passes. It is a thirtieth of the\n"
+        "    monthly figure `demand` and `service` print, per served day\n"
+        "  - a tenancy is SERVED on a day when four fifths of the work its\n"
+        "    people attempted actually finished. `service` says how many\n"
+        "    finished; `load` says which port ate the rest\n"
+        "  - a desk only attempts work if it has LINK *and* an ADDRESS. Copper\n"
+        "    with no address earns nothing, and neither does a moved-in tenancy\n"
+        "    you have not cabled at all -- they are waiting, not suffering\n"
+        "\n"
+        "AND THE COMPLAINT CLOCK RUNS ON THE SAME FACT. A tenancy that has\n"
+        "never had a working desk CANNOT be struck: the clock does not start on\n"
+        "the day they move in, it starts the first day their addressed desks\n"
+        "fail that four-fifths test. Then it is three days IN A ROW -- one bad\n"
+        "day, two, and the third files a complaint. A served day resets the\n"
+        "count to zero; a filed complaint never un-files. Three filed\n"
+        "complaints ends the run. `service` prints each tenancy's strike count\n"
+        "and stars the ones that have filed, so nothing here is a surprise you\n"
+        "have to have read this to see.\n"
         "  serve <tenant> <box> [cable] [vlan]\n"
         "                     run copper from a box in THIS room to a tenancy's\n"
-        "                     desks, one cable each, by the metre. Name a vlan\n"
-        "                     and the ports it uses go into it\n"
+        "                     desks, one cable each, by the metre. What it really\n"
+        "                     does, because guessing it costs a rack of ports:\n"
+        "                     - it takes the box's NEXT FREE PORT for each desk\n"
+        "                       that has no cable in it yet, in order, and skips\n"
+        "                       a desk that is already patched\n"
+        "                     - the cable defaults to CAT5E. `serve 4 sw1 cat6`\n"
+        "                       or `serve 4 sw1 fibre` says otherwise\n"
+        "                     - the vlan is the last number: `serve 4 sw1 34` or\n"
+        "                       `serve 4 sw1 cat6 34`. It does NOT need the vlan\n"
+        "                       to exist first and it does not create anything --\n"
+        "                       it makes each port it patches an ACCESS port in\n"
+        "                       that vlan, as it patches it. The trunk back to\n"
+        "                       the router and the router's `subif` are still\n"
+        "                       yours to do\n"
+        "                     - leave the vlan out and every port lands in the\n"
+        "                       untagged default, which for a tenancy that asked\n"
+        "                       for a segment of its own is the wrong answer\n"
+        "                     - if the tenancy has more desks than the box has\n"
+        "                       free holes it patches what fits, STOPS, and says\n"
+        "                       how many have nowhere to go. The copper it did\n"
+        "                       lay is laid and paid for. Buy another switch, put\n"
+        "                       it in that room, and `serve` again -- the desks\n"
+        "                       already patched are skipped\n"
+        "                     it prints `N of M desks have a port`, which is LINK\n"
+        "                     and not service: an address is a separate job\n"
         "  service            every tenancy: desks, how many have LINK, how many\n"
         "                     also have an ADDRESS, what finished, and strikes\n"
         "  status             the day, the money, the frames, the complaints\n"
@@ -613,7 +758,8 @@ static void do_lift(Session *ses, int f, Buf *out)
     /* The button for a floor nobody has opened is not lit. Same rule as
      * lift.gd, same words, because it is the same lift. */
     if (f >= ses->floors) {
-        buf_printf(out, "floor %d is not in service. The button is not lit.\n"
+        buf_printf(out, "refused: the lift does not move -- floor %d is not in "
+                        "service and its\n  button is not lit.\n"
                         "  `open` puts the next floor into service.\n", f);
         return;
     }
@@ -699,9 +845,9 @@ static void do_open(Session *ses, Buf *out)
         return;
     }
     if (ses->s.money < fee) {
-        buf_printf(out, "the fit-out of floor %d is %ld and you have %ld. A "
-                        "floor comes into\n  service when it has been paid "
-                        "for.\n", f, fee, ses->s.money);
+        buf_printf(out, "refused: floor %d is not in service -- its fit-out is %ld "
+                        "and you have %ld.\n  A floor comes into service when it "
+                        "has been paid for.\n", f, fee, ses->s.money);
         return;
     }
     ses->s.money -= fee;
@@ -721,8 +867,9 @@ static void do_plug(Session *ses, const char *what, bool hdmi, Buf *out)
      * things and a person has two hands; this is the only thing stopping a
      * player carrying a server round the building while typing at it. */
     if (ses->carrying >= 0) {
-        buf_printf(out, "you are carrying %s in both hands. Put it down first: "
-                        "`drop`.\n", ses->s.dev[ses->carrying].name);
+        buf_printf(out, "refused: no lead went in -- you are carrying %s in both "
+                        "hands.\n  Put it down first: `drop`.\n",
+                   ses->s.dev[ses->carrying].name);
         return;
     }
     if (!need_here(ses, what, &d, out)) return;
@@ -742,8 +889,9 @@ static void do_plug(Session *ses, const char *what, bool hdmi, Buf *out)
         /* A SERIAL LEAD IS NOT A POWER LEAD. It used to be: the first lead in
          * the back of a box was what installed and booted it, so the crash
          * cart was what put machines on the network. */
-        buf_printf(out, "%s is switched off. A serial lead reads a console; it "
-                        "does not press\n  the button. `power %s on`.\n",
+        buf_printf(out, "refused: no lead went in -- %s is switched off. A serial "
+                        "lead reads a\n  console; it does not press the button. "
+                        "`power %s on`.\n",
                    dev->name, dev->name);
         return;
     }
@@ -802,8 +950,9 @@ static CableKind kind_arg(const char *a, bool *ok)
 static void do_spool(Session *ses, int n, char *t[MAXTOK], Buf *out)
 {
     if (n >= 2 && ses->carrying >= 0 && strcmp(t[1], "back") != 0) {
-        buf_printf(out, "you are carrying %s. A drum of cable takes both hands "
-                        "too: `drop` first.\n", ses->s.dev[ses->carrying].name);
+        buf_printf(out, "refused: the drum stays on the shelf -- you are carrying "
+                        "%s, and a\n  drum of cable takes both hands too: `drop` "
+                        "first.\n", ses->s.dev[ses->carrying].name);
         return;
     }
     /* `spool` on its own: what is in your hands. */
@@ -834,8 +983,9 @@ static void do_spool(Session *ses, int n, char *t[MAXTOK], Buf *out)
     CableKind k = kind_arg(t[1], &ok);
     if (!ok) { buf_printf(out, "no such cable: %s. cat5e, cat6 or fibre.\n", t[1]); return; }
     if (ses->cab_dev >= 0) {
-        buf_printf(out, "you are in the middle of a run -- one end is in %s port "
-                        "%d.\n  Finish it, or `spool back` to pull it out.\n",
+        buf_printf(out, "refused: no fresh drum -- you are in the middle of a run, "
+                        "one end in %s\n  port %d. Finish it, or `spool back` to "
+                        "pull it out.\n",
                    ses->s.dev[ses->cab_dev].name, ses->cab_port);
         return;
     }
@@ -866,7 +1016,8 @@ static void spool_plug(Session *ses, const char *arg, Buf *out)
         return;
     }
     if (ses->spool_kind < 0) {
-        buf_puts(out, "you have no spool in your hands.\n"
+        buf_puts(out, "refused: nothing went into that port -- you have no spool "
+                      "in your hands.\n"
                       "  `spool cat6`      take a drum, then plug an end in\n"
                       "  `plug <box>`      (no port) puts the crash cart's serial "
                       "lead in instead\n");
@@ -875,22 +1026,26 @@ static void spool_plug(Session *ses, const char *arg, Buf *out)
     if (port < 0) {
         port = site_free_port(&ses->s, d);
         if (port < 0) {
-            buf_printf(out, "%s has no free port left -- all %d are used. That is "
-                            "a purchase,\n  not a mistake.\n",
+            buf_printf(out, "refused: nothing went in -- %s has no free port left, "
+                            "all %d are used.\n  That is a purchase, not a "
+                            "mistake.\n",
                        ses->s.dev[d].name, ses->s.dev[d].nports);
             return;
         }
     }
     if (port >= ses->s.dev[d].nports) {
-        buf_printf(out, "%s has %d port%s, numbered 0 to %d. There is no port %d "
-                        "on the back of it.\n", ses->s.dev[d].name,
+        buf_printf(out, "refused: nothing went in -- %s has %d port%s, numbered 0 "
+                        "to %d, and there\n  is no port %d on the back of it. "
+                        "`look` says its next free one.\n",
+                   ses->s.dev[d].name,
                    ses->s.dev[d].nports, ses->s.dev[d].nports == 1 ? "" : "s",
                    ses->s.dev[d].nports - 1, port);
         return;
     }
     if (net_port_state(ses->s.net, ses->s.dev[d].node, port) != PORT_NOCABLE) {
-        buf_printf(out, "%s port %d already has a cable in it. `links` says which, "
-                        "`uncable <n>` pulls it out.\n", ses->s.dev[d].name, port);
+        buf_printf(out, "refused: nothing went in -- %s port %d already has a "
+                        "cable in it.\n  `links` says which, `uncable <n>` pulls "
+                        "it out.\n", ses->s.dev[d].name, port);
         return;
     }
 
@@ -924,10 +1079,13 @@ static void spool_plug(Session *ses, const char *arg, Buf *out)
     int m = (ra == BLD_NOROOM || rb == BLD_NOROOM) ? SITE_PATCH_M
                                                    : site_metres(&ses->s, ra, rb);
     if (m >= 0 && m > ses->spool_left) {
-        buf_printf(out, "the run is %d m through the tray and there are %d m left "
-                        "on the spool.\n  `spool back`, take a fresh drum, and "
-                        "start again -- or put the box somewhere nearer.\n",
-                   m, ses->spool_left);
+        buf_printf(out, "refused: no cable was laid -- the run is %d m through the "
+                        "tray and there\n  are only %d m left on the spool. `spool "
+                        "back`, take a fresh drum, and start\n  again -- or put the "
+                        "box somewhere nearer. The end you already put in is\n  "
+                        "still in %s port %d.\n",
+                   m, ses->spool_left, ses->s.dev[ses->cab_dev].name,
+                   ses->cab_port);
         return;
     }
     int l = site_cable(&ses->s, ses->cab_dev, ses->cab_port, d, port,
@@ -978,7 +1136,11 @@ static void do_cable(Session *ses, int n, char *t[MAXTOK], Buf *out)
                    a < 0 ? abox : bbox);
         return;
     }
-    if (a == b) { buf_puts(out, "both ends of that cable are the same box.\n"); return; }
+    if (a == b) {
+        buf_puts(out, "refused: no cable was run -- both ends of it are the same "
+                      "box.\n");
+        return;
+    }
 
     /* AN END LEFT IN A SOCKET FROM AN EARLIER RUN. `cable` is a macro for
      * four steps, and if one of them refuses, the end is still in the box --
@@ -987,22 +1149,38 @@ static void do_cable(Session *ses, int n, char *t[MAXTOK], Buf *out)
      * edge:0` answer `link 4: core:3 to core:4`, a switch cabled to itself,
      * from a line naming two different boxes. */
     if (ses->cab_dev >= 0) {
-        buf_printf(out, "one end of the spool is already in %s port %d, from a run "
-                        "that did not\n  finish. `spool back` pulls it out, or walk "
-                        "to the other end and `plug` it in.\n",
+        buf_printf(out, "refused: no cable was run -- one end of the spool is "
+                        "already in %s port %d,\n  from a run that did not finish. "
+                        "`spool back` pulls it out, or walk to the\n  other end and "
+                        "`plug` it in.\n",
                    ses->s.dev[ses->cab_dev].name, ses->cab_port);
         return;
     }
     int links_before = ses->s.nlink;
+    /* WHERE YOU WERE STANDING WHEN YOU ASKED, because that is where you will
+     * be standing when it is done.
+     *
+     * `cable` walked you to the far end and left you there, which made the
+     * one thing a socket player most wants to do -- queue a rack's worth of
+     * runs out of one comms cupboard -- impossible: a playtester queued seven
+     * fibre runs from the MDF, the first walked them to f1, and the other six
+     * all answered "you are in neither room". Every run needed an interleaved
+     * `go mdf` that the macro itself had made necessary.
+     *
+     * So it walks back. Not a teleport and not a discount: walk_to() charges
+     * the metres in both directions, which is what a person laying six runs
+     * out of one cupboard really does with their legs. */
+    int started_in = ses->room;
 
-    if (ses->spool_kind < 0 || (n > 3)) {
-        char *sp[MAXTOK]; int sn = 2;
-        char kbuf[16];
-        snprintf(kbuf, sizeof kbuf, "%s", n > 3 ? t[3] : "cat6");
-        sp[0] = (char *)"spool"; sp[1] = kbuf;
-        if (ses->cab_dev < 0) do_spool(ses, sn, sp, out);
-    }
-    /* Start from whichever end you are standing with. */
+    /* THE REFUSALS COME BEFORE THE DRUM COMES OFF THE SHELF, and they used to
+     * come after. `cable a b` typed in a room with neither box in it took a
+     * fresh drum, THEN said "you are in neither room" -- so a line that
+     * refused still left cable in the player's hands, and the next `carry`
+     * was refused because of a drum nobody asked for. A refused line has to
+     * leave the world exactly as it found it, which is what the gate in
+     * sessioncheck.c now measures on every one of them.
+     *
+     * Start from whichever end you are standing with. */
     if (!dev_here(ses, a) && dev_here(ses, b)) {
         char tmp[64];
         snprintf(tmp, sizeof tmp, "%s", aend);
@@ -1014,10 +1192,21 @@ static void do_cable(Session *ses, int n, char *t[MAXTOK], Buf *out)
         char wa[48], wb[48];
         room_label(ses, ses->s.dev[a].room, wa, sizeof wa);
         room_label(ses, ses->s.dev[b].room, wb, sizeof wb);
-        buf_printf(out, "you are in neither room. %s is in %s and %s is in %s --\n"
-                        "  walk to one of them first.\n",
-                   ses->s.dev[a].name, wa, ses->s.dev[b].name, wb);
+        buf_printf(out, "refused: no cable was run -- you are in neither room. %s "
+                        "is in %s and\n  %s is in %s. Walk to one of them first: "
+                        "`go %s`, then the same line\n  again -- it will walk you "
+                        "back here when it is done.\n",
+                   ses->s.dev[a].name, wa, ses->s.dev[b].name, wb,
+                   ses->s.dev[a].name);
         return;
+    }
+
+    if (ses->spool_kind < 0 || (n > 3)) {
+        char *sp[MAXTOK]; int sn = 2;
+        char kbuf[16];
+        snprintf(kbuf, sizeof kbuf, "%s", n > 3 ? t[3] : "cat6");
+        sp[0] = (char *)"spool"; sp[1] = kbuf;
+        if (ses->cab_dev < 0) do_spool(ses, sn, sp, out);
     }
     spool_plug(ses, aend, out);
     if (ses->cab_dev < 0) return;                 /* the first end refused */
@@ -1026,10 +1215,22 @@ static void do_cable(Session *ses, int n, char *t[MAXTOK], Buf *out)
     /* AND IF IT DID NOT MAKE A CABLE, IT LEAVES NOTHING BEHIND. One line, one
      * outcome: either there is a link or the drum is as it was. */
     if (ses->s.nlink == links_before && ses->cab_dev >= 0) {
-        buf_printf(out, "no cable was run. The end comes back out of %s port %d "
-                        "and the spool is\n  whole again.\n",
+        buf_printf(out, "refused: no cable was run. The end comes back out of %s "
+                        "port %d and the\n  spool is whole again.\n",
                    ses->s.dev[ses->cab_dev].name, ses->cab_port);
         ses->cab_dev = -1;
+    }
+    /* AND YOU WALK BACK TO THE END YOU STARTED AT. The next `cable` out of
+     * this cupboard is the whole reason the macro exists. */
+    if (ses->room != started_in) {
+        char w[48];
+        room_label(ses, started_in, w, sizeof w);
+        Buf back = {0};
+        if (walk_to(ses, started_in, &back, true))
+            buf_printf(out, "you walk back to %s, where you started, so the next "
+                            "run comes off the\n  same drum in the same room.\n", w);
+        if (back.len) buf_put(out, back.p, back.len);
+        buf_free(&back);
     }
 }
 
@@ -1212,6 +1413,28 @@ static void intro(Session *ses, Buf *out)
             room_label(ses, g, w, sizeof w);
             buf_printf(out, "anything you order is delivered to %s and you "
                             "carry it from there.\n", w);
+            /* AND WHAT IS ALREADY LYING ON THAT FLOOR, said on the way in.
+             * The 3D window pre-orders three boxes into goods in and used to
+             * say nothing at all about them; a playtester read the help,
+             * believed the building was empty, and bought two of them again.
+             * Counted off the device table, so a session that really does
+             * start empty says nothing here. */
+            int k = 0;
+            for (int i = 0; i < ses->s.ndev; i++)
+                if (ses->s.dev[i].room == g && ses->s.dev[i].tenant == 0) k++;
+            if (k) {
+                buf_printf(out, "AND THERE IS ALREADY A DELIVERY ON THE FLOOR OF "
+                                "IT -- %d box%s, paid for:\n", k,
+                           k == 1 ? "" : "es");
+                for (int i = 0; i < ses->s.ndev; i++) {
+                    const SiteDev *d = &ses->s.dev[i];
+                    if (d->room != g || d->tenant != 0) continue;
+                    buf_printf(out, "  %-10s %-9s %d already paid\n", d->name,
+                               site_kind_name(d->kind), site_kind_price(d->kind));
+                }
+                buf_puts(out, "do not order those again: there is no `sell` and "
+                              "the money does not come back.\n");
+            }
         }
     }
     buf_puts(out, "\n`help` says what you can do, `look` says what is here, "
@@ -1364,17 +1587,21 @@ bool session_line(Session *ses, const char *line, Buf *out)
         int d;
         if (!need_here(ses, t[1], &d, out)) return true;
         if (!site_kind_has_os(ses->s.dev[d].kind)) {
-            buf_printf(out, "%s has no drive to put it in.\n", ses->s.dev[d].name);
+            buf_printf(out, "refused: the stick stays on the cart -- %s has no "
+                            "drive to put it in.\n  `rescue` is for a pc or a "
+                            "server; %s has a management line, so `plug %s`.\n",
+                       ses->s.dev[d].name, ses->s.dev[d].name,
+                       ses->s.dev[d].name);
             return true;
         }
         if (!ses->s.dev[d].powered) {
-            buf_printf(out, "%s is switched off. `power %s on` first.\n",
-                       ses->s.dev[d].name, ses->s.dev[d].name);
+            buf_printf(out, "refused: nothing booted -- %s is switched off. `power %s "
+                            "on` first.\n", ses->s.dev[d].name, ses->s.dev[d].name);
             return true;
         }
         Machine *m = ses->mach[d];
         if (!m) {
-            buf_printf(out, "%s has never been switched on.\n", ses->s.dev[d].name);
+            buf_printf(out, "refused: nothing booted -- %s has never been switched on.\n", ses->s.dev[d].name);
             return true;
         }
         m->sp_media = in;
@@ -1500,13 +1727,19 @@ bool session_line(Session *ses, const char *line, Buf *out)
             return true;
         }
         if (ses->carrying >= 0) {
-            buf_printf(out, "both your hands are on %s. Put it down first: `drop`.\n",
-                       ses->s.dev[ses->carrying].name);
+            buf_printf(out, "refused: %s is still in your hands and both your "
+                            "hands are on it --\n  you did not pick %s up. `drop` "
+                            "puts %s down here, and then\n  `carry %s`.\n",
+                       ses->s.dev[ses->carrying].name, ses->s.dev[d].name,
+                       ses->s.dev[ses->carrying].name, ses->s.dev[d].name);
             return true;
         }
         if (ses->spool_kind >= 0) {
-            buf_puts(out, "you have a drum of cable in your hands. `spool back` "
-                          "puts it on the shelf.\n");
+            buf_printf(out, "refused: you have a drum of cable in your hands, so "
+                            "%s is still on\n  the floor -- you did not pick it up. "
+                            "`spool back` puts the drum on the\n  shelf, and then "
+                            "`carry %s`.\n",
+                       ses->s.dev[d].name, ses->s.dev[d].name);
             return true;
         }
         /* A tenant's computer is a tenant's computer. The model will happily
@@ -1514,9 +1747,10 @@ bool session_line(Session *ses, const char *line, Buf *out)
          * out of a leased floor with the machine somebody works on is not a
          * thing the building's IT department gets to do. */
         if (ses->s.dev[d].tenant != 0) {
-            buf_printf(out, "%s belongs to the tenant on floor %d, not to you. "
-                            "Their kit is\n  theirs; you are here for the wall, "
-                            "the cupboard and the copper.\n",
+            buf_printf(out, "refused: %s belongs to the tenant on floor %d, not "
+                            "to you, and it\n  stays where it is. Their kit is "
+                            "theirs; you are here for the wall, the\n  cupboard "
+                            "and the copper.\n",
                        ses->s.dev[d].name, ses->s.dev[d].floor);
             return true;
         }

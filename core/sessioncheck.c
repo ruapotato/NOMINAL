@@ -694,6 +694,48 @@ static void check_power(int *passed, int *total)
     ck("switched off, it is silent again and its address went with the power",
        !has(say(&ses, "ping uplink 10.0.1.30", &o), "reply") &&
        net_if_get_addr(ses.s.net, ses.s.dev[pc].node, 0) == 0);
+
+    /* AND `look` MUST NOT SAY THE OPPOSITE OF `show` IN THE SAME ROOM.
+     *
+     * dev_line() printed "[an OS is running on it]" whenever ses->mach[i] was
+     * allocated -- which it is from the first power-on until the session ends,
+     * because power-off never frees it. So `look` claimed a box was up while
+     * `show <box>` two lines later said it was switched off and serving
+     * nothing. A playtester who read the first one and not the second would
+     * have gone looking for a network fault on a machine that had no power. */
+    const char *lk = say(&ses, "look", &o);
+    ck("`look` does not claim an OS is running on a box that is switched off",
+       !has(lk, "an OS is running") && has(lk, "SWITCHED OFF"));
+    ck("and `show` says the same thing about the same box in the same room",
+       has(say(&ses, "show probe", &o), "SWITCHED OFF"));
+    say(&ses, "power probe on", &o);
+    ck("switched on again, both of them say it is running",
+       has(say(&ses, "look", &o), "an OS is running") &&
+       !has(say(&ses, "show probe", &o), "SWITCHED OFF"));
+
+    /* THE TOOLS A REPAIR NEEDS, named where somebody holding a serial lead
+     * will read them. The playtester repaired a mains-damaged filesystem
+     * through this console and only knew to type `fsck` because the initrd
+     * had told them to: the console's own help listed ip, netstat, ping and
+     * eight more, and not one of the four that fix a broken box. Both halves
+     * are gated -- named in the help, and really in the image. */
+    say(&ses, "plug probe", &o);
+    Buf sh = {0};
+    buf_puts(&sh, say(&ses, "help", &o));
+    ck("the console help names the four tools a repair actually needs",
+       has(sh.p, "fsck /dev/sda1") && has(sh.p, "pkg verify") &&
+       has(sh.p, "pkg diff") && has(sh.p, "pkg reinstall"));
+    ck("and it says netstat -F is how you read the filter, not `nft`",
+       has(sh.p, "netstat -F") && has(sh.p, "not a way to ask it anything"));
+    ck("and every one of the four is really a program on this machine",
+       !has(say(&ses, "fsck /dev/sda1", &o), "command not found") &&
+       !has(say(&ses, "pkg verify", &o), "command not found") &&
+       !has(say(&ses, "pkg diff /etc/hosts", &o), "command not found") &&
+       !has(say(&ses, "netstat -F", &o), "command not found"));
+    ck("and `man fsck` is a real page, for the one tool the initrd names",
+       !has(say(&ses, "man fsck", &o), "no manual entry"));
+    buf_free(&sh);
+    say(&ses, "unplug", &o);
     buf_free(&o);
     session_end(&ses);
 }
@@ -882,6 +924,407 @@ static void check_help(int *passed, int *total)
     session_end(&ses);
 }
 
+/* ============================ A REFUSAL HAS TO SAY IT REFUSED ==============
+ *
+ * THE BUG. `carry core` with a drum of cable in your hands answered:
+ *
+ *     you have a drum of cable in your hands. `spool back` puts it on the shelf.
+ *
+ * -- a true sentence about the world, a fix to type, and not one word saying
+ * the carry had not happened. A blind playtester read it as a confirmation
+ * twice. The second time they walked to the MDF, `drop` said "you are not
+ * carrying anything", and by then they had cabled `core:1 files:0` to a
+ * server still sitting on the floor of goods in: a wasted 36 m of cat6 and a
+ * link to a box in the wrong room.
+ *
+ * The shape that works was already in the same verb, for a box with a cable
+ * in it: `refused: it has a cable in it -- unplug it first`, then the
+ * diagnostic, then the fix. Three parts, and the FIRST one is the one that
+ * was missing everywhere else.
+ *
+ * So every refusal the tower's own verbs produce is run here and has to say
+ * three things: that it was refused, what the world is instead, and something
+ * to type. And it has to be TRUE that nothing happened -- a message that says
+ * "refused" over a state that changed is worse than the bug it replaced, so
+ * the state is compared on both sides of every line. */
+static void check_refusals(int *passed, int *total)
+{
+    P = passed; T = total;
+    printf("\nevery refusal says the thing did not happen\n");
+    Session ses;
+    if (!session_start(&ses, GATE_SEED, 100000)) { ck("a session starts", false); return; }
+    Buf o = {0};
+
+    say(&ses, "buy switch8 sw1", &o);
+    say(&ses, "buy switch8 sw2", &o);
+    say(&ses, "go goods", &o);
+    say(&ses, "carry sw1", &o); say(&ses, "go mdf", &o); say(&ses, "drop", &o);
+    say(&ses, "go goods", &o);
+    say(&ses, "carry sw2", &o); say(&ses, "go mdf", &o); say(&ses, "drop", &o);
+
+    /* Each line is one the game must refuse, run from the state the setup
+     * before it puts the session in. */
+    static const struct { const char *setup, *line, *why; } R[] = {
+      { "spool cat6",  "carry sw1",
+        "carrying a box with a drum of cable in your hands" },
+      { "spool back|carry sw1", "carry sw2",
+        "carrying a second box when both hands are on the first" },
+      { NULL,          "plug sw2",
+        "putting the cart's lead in while carrying a box" },
+      { NULL,          "spool cat6",
+        "taking a drum while carrying a box" },
+      { "drop",        "plug sw1:0",
+        "putting a cable end in with no drum in your hands" },
+      { "spool cat6",  "plug sw1:99",
+        "a port the box has not got" },
+      { "plug sw1:0",  "spool fibre",
+        "a fresh drum in the middle of a run" },
+      { "spool back|spool cat6|plug sw1:0|plug sw2:0", "plug sw1:0",
+        "a second end into a port that already has a cable" },
+      { NULL,          "lift 9",
+        "the lift to a floor nobody has put in service" },
+      { NULL,          "rescue sw1",
+        "the rescue stick into a box with no drive" },
+      { "spool back|go goods", "cable sw1:2 sw2:2",
+        "`cable` when you are standing in neither room" },
+      { NULL, NULL, NULL }
+    };
+    bool said_no = true, has_fix = true, inert = true;
+    for (int i = 0; R[i].line; i++) {
+        if (R[i].setup) {
+            char sc[160];
+            snprintf(sc, sizeof sc, "%s", R[i].setup);
+            char *p = sc;
+            for (;;) {
+                char *bar = strchr(p, '|');
+                if (bar) *bar = 0;
+                say(&ses, p, &o);
+                if (!bar) break;
+                p = bar + 1;
+            }
+        }
+        /* Everything the line could have changed. */
+        int was_room = ses.room, was_carry = ses.carrying, was_link = ses.s.nlink;
+        int was_spool = ses.spool_kind, was_cab = ses.cab_dev;
+        long was_money = ses.s.money;
+        const char *a = say(&ses, R[i].line, &o);
+        if (!has(a, "refused")) {
+            printf("    `%s` (%s) does not say it refused:\n      %s",
+                   R[i].line, R[i].why, a);
+            said_no = false;
+        }
+        if (!strchr(a, '`')) {
+            printf("    `%s` refuses and names nothing to type instead\n", R[i].line);
+            has_fix = false;
+        }
+        /* The lift and `cable` are allowed to have walked you nowhere; none
+         * of them may have moved a box, laid copper or spent a penny. */
+        if (ses.carrying != was_carry || ses.s.nlink != was_link ||
+            ses.s.money != was_money || ses.spool_kind != was_spool ||
+            ses.cab_dev != was_cab || ses.room != was_room) {
+            printf("    `%s` said no and changed the world anyway\n", R[i].line);
+            inert = false;
+        }
+    }
+    ck("every refusal in the tower's verbs says it was refused", said_no);
+    ck("and every one of them names something to type next", has_fix);
+    ck("and a refused line really did nothing: no box, no copper, no money",
+       inert);
+
+    /* THE ONE FROM THE TRANSCRIPT, end to end, because the harm was not the
+     * wording -- it was walking off believing you had the box. */
+    say(&ses, "go mdf", &o);
+    say(&ses, "spool cat6", &o);
+    const char *r = say(&ses, "carry sw1", &o);
+    ck("the carry that started this says refused, and names the drum and the fix",
+       has(r, "refused") && has(r, "drum of cable") && has(r, "spool back") &&
+       ses.carrying < 0);
+    ck("and the walk afterwards does not pretend you are carrying it",
+       !has(say(&ses, "go goods", &o), "carrying") &&
+       has(say(&ses, "drop", &o), "not carrying anything"));
+
+    buf_free(&o);
+    session_end(&ses);
+}
+
+/* ======================= THE PROMPT SAYS WHICH MACHINE ====================
+ *
+ * A playtester driving the running 3D over the socket: *"Inside a shell on a
+ * box, `ls /` and `dmesg` are now going to a different machine and the prompt
+ * is unchanged. For a text player driving this over a socket with no screen,
+ * that is the single most dangerous piece of missing state."*
+ *
+ * session_prompt() was already right; game/scripts/wire.gd derived its own
+ * from the room alone and never asked. It asks now, through ses_prompt() on
+ * the extension. GDScript cannot be gated from here, so what is gated is the
+ * thing wire.gd now calls: that the four places a line can be going produce
+ * four visibly different prompts, and that each one NAMES the box when the
+ * words are going into a box. If this ever collapses back to one string the
+ * fix in wire.gd silently un-fixes itself. */
+static void check_prompt(int *passed, int *total)
+{
+    P = passed; T = total;
+    printf("\nthe prompt says which machine your words are going to\n");
+    Session ses;
+    if (!session_start(&ses, GATE_SEED, 100000)) { ck("a session starts", false); return; }
+    Buf o = {0};
+    char body[96], mgmt[96], shell[96], desk[96];
+
+    session_prompt(&ses, body, sizeof body);
+    ck("standing in a room, the prompt is the floor and the room",
+       has(body, "MDF") && has(body, "f0"));
+
+    say(&ses, "plug uplink", &o);
+    session_prompt(&ses, mgmt, sizeof mgmt);
+    ck("on an appliance's management line it names the appliance",
+       ses.where == SES_MGMT && has(mgmt, "uplink") && strcmp(mgmt, body) != 0);
+    say(&ses, "unplug", &o);
+
+    say(&ses, "buy pc probe", &o);
+    say(&ses, "go goods", &o); say(&ses, "carry probe", &o);
+    say(&ses, "go mdf", &o); say(&ses, "drop", &o);
+    say(&ses, "power probe on", &o);
+    say(&ses, "plug probe", &o);
+    session_prompt(&ses, shell, sizeof shell);
+    ck("at a real shell on a real machine it names THAT machine",
+       ses.where == SES_SHELL && has(shell, "probe") &&
+       strcmp(shell, body) != 0 && strcmp(shell, mgmt) != 0);
+    printf("    body %-16s mgmt %-16s shell %s\n", body, mgmt, shell);
+
+    /* The exact failure the playtester hit: the words go somewhere else and
+     * the line in front of them is the same three characters. */
+    ck("so a client with no screen can tell a shell from a room",
+       strcmp(shell, body) != 0);
+    say(&ses, "unplug", &o);
+    say(&ses, "desk", &o);
+    session_prompt(&ses, desk, sizeof desk);
+    ck("and the desk is a fourth prompt, not the third one again",
+       strcmp(desk, body) != 0 && strcmp(desk, shell) != 0);
+
+    buf_free(&o);
+    session_end(&ses);
+}
+
+/* ================= THE OPENING TEXT COUNTS, IT DOES NOT PROMISE ===========
+ *
+ * `help` opened with *"On day one it holds exactly one thing: the ISP's
+ * socket on the wall of the MDF."* True of a session started over the socket
+ * and FALSE of the one the 3D window starts, which pre-orders a router, a
+ * switch24 and a server into goods in and has spent 2400 doing it. A
+ * playtester believed the sentence, re-bought two of the three, and lost
+ * another 1050 -- and there is no `sell`, so it stayed lost.
+ *
+ * The fix is not a better sentence: two starting states cannot both be
+ * described by one constant. The help WALKS THE DEVICE TABLE. So this check
+ * runs it in both worlds -- empty, and with the 3D's own three lines typed --
+ * and the answer has to be right in each. */
+static void check_inventory(int *passed, int *total)
+{
+    P = passed; T = total;
+    printf("\nthe opening text counts what is there rather than promising\n");
+    Session ses;
+    if (!session_start(&ses, GATE_SEED, 100000)) { ck("a session starts", false); return; }
+    Buf o = {0};
+
+    const char *h = say(&ses, "help", &o);
+    ck("in a session that really is empty, the help says so and names nothing "
+       "else",
+       has(h, "uplink") && !has(h, "switch24  in") && has(h, "0 of the budget"));
+    ck("and it warns that money does not come back, because there is no `sell`",
+       has(say(&ses, "help", &o), "NO `sell`"));
+
+    /* game/scripts/tower.gd's _ses_start(), line for line. A keyboard player
+     * in the window cannot type `buy`, so the delivery is how they get any
+     * kit at all -- it stays, and the text stops lying about it. */
+    say(&ses, "order router edge", &o);
+    say(&ses, "order switch24 core", &o);
+    say(&ses, "order server files", &o);
+    long spent = ses.s.spent;
+    ck("the 3D window's own starting kit costs 2400 and is already paid for",
+       spent == 2400);
+
+    h = say(&ses, "help", &o);
+    ck("and now the same help names all three, where they are, and what each cost",
+       has(h, "edge") && has(h, "core") && has(h, "files") &&
+       has(h, "goods in") && has(h, "650 already paid") &&
+       has(h, "1350 already paid"));
+    ck("and it says how much of the budget has already gone on them",
+       has(h, "2400 of the budget"));
+
+    /* AND THE PLAYER WHO NEVER TYPES `help`. The intro is the first thing a
+     * blind tester reads and it named goods in without saying what was in it. */
+    say(&ses, "desk", &o);
+    const char *in = say(&ses, "tower", &o);
+    ck("the way in names the delivery already on the floor of goods in",
+       has(in, "ALREADY A DELIVERY") && has(in, "edge") && has(in, "files") &&
+       has(in, "do not order those again"));
+
+    buf_free(&o);
+    session_end(&ses);
+}
+
+/* ==================== `cable` PUTS YOU BACK WHERE YOU ASKED ===============
+ *
+ * *"I queued seven fibre runs from the MDF; the first succeeded and walked me
+ * to f1, and the other six all failed with 'you are in neither room'."*
+ *
+ * `cable` is a macro for four things a person does, and the fourth left them
+ * standing at the far end -- so the macro itself made every subsequent use of
+ * it impossible without an interleaved `go`. It walks back now, and it pays
+ * for the walk both ways, which is what a person laying six runs out of one
+ * cupboard really does with their legs. */
+static void check_cable_batch(int *passed, int *total)
+{
+    P = passed; T = total;
+    printf("\nsix runs out of one cupboard, without a `go` in between\n");
+    Session ses;
+    if (!session_start(&ses, GATE_SEED, 100000)) { ck("a session starts", false); return; }
+    Buf o = {0};
+
+    static const char *SETUP[] = {
+        "buy switch24 core", "go goods", "carry core", "go mdf", "drop", NULL
+    };
+    for (int i = 0; SETUP[i]; i++) say(&ses, SETUP[i], &o);
+    open_next_floor(&ses, &o);
+    say(&ses, "go mdf", &o);
+    int mdf = ses.room;
+
+    /* Three desks upstairs, so the far end is genuinely another room. */
+    int made = 0;
+    for (int i = 0; i < 3; i++) {
+        char nm[16], c[64];
+        snprintf(nm, sizeof nm, "pc%d", i);
+        snprintf(c, sizeof c, "buy pc %s", nm);
+        say(&ses, c, &o);
+        say(&ses, "go goods", &o);
+        snprintf(c, sizeof c, "carry %s", nm);
+        say(&ses, c, &o);
+        say(&ses, "go f1.comms", &o);
+        say(&ses, "drop", &o);
+        made++;
+    }
+    say(&ses, "go mdf", &o);
+    ck("three boxes carried into the cupboard upstairs, and you back in the MDF",
+       made == 3 && ses.room == mdf);
+
+    long walked = ses.walked;
+    bool all = true, home = true;
+    for (int i = 0; i < 3; i++) {
+        char c[64];
+        snprintf(c, sizeof c, "cable core:%d pc%d:0 cat6", i, i);
+        const char *a = say(&ses, c, &o);
+        if (!has(a, "the port comes up")) {
+            printf("    run %d did not come up: %s", i, a);
+            all = false;
+        }
+        if (ses.room != mdf) {
+            printf("    run %d left you in room %d, not the MDF\n", i, ses.room);
+            home = false;
+        }
+    }
+    ck("three runs typed one after another from the MDF, and all three come up",
+       all && ses.s.nlink == 3);
+    ck("because every one of them walks you back to the room you typed it in",
+       home && ses.room == mdf);
+    ck("and the walk back is charged, both ways: it is legs, not a teleport",
+       ses.walked > walked);
+    printf("    three runs out of one cupboard cost %ld m of walking\n",
+           ses.walked - walked);
+
+    buf_free(&o);
+    session_end(&ses);
+}
+
+/* ============ THE HELP'S CLAIMS, AGAINST THE MACHINE THAT MAKES THEM ======
+ *
+ * Five things a playtester had to read the C source to find out, each of
+ * which cost them real time. Documenting them is half the job; the other half
+ * is that the documentation must be TRUE, so where a claim can be run, this
+ * runs it and compares.
+ *
+ * ONE OF THE FIVE WAS WRONG, and it was the playtester's own diagnosis:
+ * *"The three-day clock appears to start when a tenancy moves in... so a
+ * tenancy that arrives on a day you are not standing in its comms cupboard is
+ * one day from a complaint before you can do anything."* It does not. The
+ * strike branch in core/siteday.c is gated on `t->tried > 0 || t->strikes > 0`
+ * and `tried` only counts work attempted by a desk with LINK *and* an
+ * ADDRESS. A tenancy you have never touched cannot be struck at all. That is
+ * checked below by playing it, because the fix was to write the true rule
+ * down and a true rule nobody gates is a rule that drifts. */
+static void check_documented(int *passed, int *total)
+{
+    P = passed; T = total;
+    printf("\nwhat the help now explains, run against the machine\n");
+    Session ses;
+    if (!session_start(&ses, GATE_SEED, 100000)) { ck("a session starts", false); return; }
+    Buf o = {0};
+    Buf h = {0};
+    buf_puts(&h, say(&ses, "help", &o));
+
+    /* ---- `serve`, which was one line for the most important verb in the game. */
+    ck("`serve` explains the ports it takes, the default cable and the vlan",
+       has(h.p, "NEXT FREE PORT") && has(h.p, "defaults to CAT5E") &&
+       has(h.p, "does NOT need the vlan") && has(h.p, "nowhere to go"));
+
+    /* ---- DHCP across vlans, which was unbuildable without reading netstack.c. */
+    ck("`dhcpd` explains that a pool binds to the interface on that subnet",
+       has(h.p, "ONE POOL PER SEGMENT") &&
+       has(h.p, "SEVERAL VLANS BY BEING TOLD"));
+
+    /* ---- The drum. Free to take, charged by the metre when the link is made. */
+    ck("the spool says the drum is free and the run is not",
+       has(h.p, "DRUM IS FREE AND THE RUN IS NOT"));
+    long had = ses.s.money;
+    say(&ses, "spool cat6", &o);
+    ck("and that is true: taking a drum costs nothing", ses.s.money == had);
+    say(&ses, "spool back", &o);
+    ck("and putting it back refunds nothing, because nothing was charged",
+       ses.s.money == had);
+
+    /* ---- Rent, and why `status` can read 0 with the building full of desks. */
+    ck("the help says rent is paid per served day and needs an address",
+       has(h.p, "RENT IS PAID FOR A DAY'S WORK") &&
+       has(h.p, "four fifths") && has(h.p, "LINK *and* an ADDRESS"));
+
+    /* ---- The strike clock. THE CLAIM THAT WAS WRONG, played out. */
+    ck("the help says the clock starts at first failed service, not at move-in",
+       has(h.p, "CANNOT be struck") && has(h.p, "three days IN A ROW"));
+    buf_free(&h);
+
+    /* Run the clock a long way past a move-in with nothing cabled anywhere.
+     * If the playtester's diagnosis were right, this would file complaints. */
+    int ti = -1;
+    for (int guard = 0; guard < 400 && ti < 0; guard++) {
+        say(&ses, "day 1", &o);
+        for (int i = 0; i < ses.s.ntenant; i++)
+            if (ses.s.tenant[i].moved) { ti = i; break; }
+    }
+    if (ti < 0) { ck("a tenancy moves in within four hundred days", false); goto done; }
+    say(&ses, "day 20", &o);
+    {
+        int struck = 0, filed = 0;
+        for (int i = 0; i < ses.s.ntenant; i++) {
+            if (!ses.s.tenant[i].moved) continue;
+            if (ses.s.tenant[i].strikes) struck++;
+            if (ses.s.tenant[i].complained) filed++;
+        }
+        printf("    %d tenancies moved into a building with no copper in it; "
+               "%d have a strike\n", ti + 1, struck);
+        ck("a tenancy you have never cabled takes no strike, however long you "
+           "leave it", struck == 0 && filed == 0);
+        ck("and no complaint is filed, so the run is not lost to a tenancy you "
+           "never met", ses.s.complaints == 0);
+    }
+    /* And rent really is zero, which is the other half of the same fact and
+     * the thing that read as a bug. */
+    ck("and nothing was taken in rent, because nobody did a day's work",
+       ses.s.rent_taken == 0);
+
+done:
+    buf_free(&o);
+    session_end(&ses);
+}
+
 int session_selfcheck(int *passed, int *total)
 {
     check_verbs(passed, total);
@@ -894,5 +1337,10 @@ int session_selfcheck(int *passed, int *total)
     check_tenant_kit(passed, total);
     check_power(passed, total);
     check_services(passed, total);
+    check_refusals(passed, total);
+    check_prompt(passed, total);
+    check_inventory(passed, total);
+    check_cable_batch(passed, total);
+    check_documented(passed, total);
     return 0;
 }
