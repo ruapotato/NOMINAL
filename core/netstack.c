@@ -843,7 +843,8 @@ int net_port_rate_of(const Net *n, int node, int port)
 
 /* What this port really clocks bits at: the circuit if somebody sold us one,
  * otherwise whatever the copper in it negotiated. */
-static int port_rate_mb(const Net *n, int p)
+/* What one END of a link can do: its own card, capped by the cable in it. */
+static int port_end_mb(const Net *n, int p)
 {
     const Port *pt = &n->port[p];
     int cid = pt->cable;
@@ -851,6 +852,31 @@ static int port_rate_mb(const Net *n, int p)
               ? cable_speed_mb(n->cable[cid].kind, n->cable[cid].metres) : 100;
     if (pt->rate_mb > 0 && pt->rate_mb < cab) return pt->rate_mb;
     return cab;
+}
+
+/* AND WHAT THE LINK DOES, which is the slower of the two ends.
+ *
+ * This asked only its own end until now. A playtester cabled the 500 Mb ISP
+ * handoff to a ten gigabit router with cat5e and got two different answers
+ * about one wire: `show uplink` said 500Mb and `show edge` said 1000Mb, with
+ * no qualifier on the router's side -- and `show edge` is the line you read
+ * while diagnosing the router.
+ *
+ * It is not only the printing. This is also what port_tx() clocks bits at,
+ * so the fast end was putting frames on the wire at a rate the far end could
+ * not take them off it. Ethernet negotiates to the slower end; a gigabit card
+ * facing a hundred megabit card is a hundred megabit link in both directions,
+ * and now it is one here too. */
+static int port_rate_mb(const Net *n, int p)
+{
+    int mine = port_end_mb(n, p);
+    int cid = n->port[p].cable;
+    if (cid < 0 || !n->cable[cid].used) return mine;
+    const Cable *c = &n->cable[cid];
+    int other = (c->a == p) ? c->b : c->a;
+    if (other < 0) return mine;
+    int theirs = port_end_mb(n, other);
+    return theirs < mine ? theirs : mine;
 }
 
 /* Put bytes on the wire. This is the only way anything leaves a node, and it
@@ -4376,10 +4402,21 @@ static void dump_ports(const Net *n, int node, Buf *out, bool empties)
              * a circuit and never was. netstack cannot tell the handoff from
              * any other host -- there is no such node kind -- so the wording
              * has to be true of both, and naming the port is true of both. */
-            if (n->port[p].rate_mb > 0 && n->port[p].rate_mb < cable_speed_mb(c->kind, c->metres))
-                buf_printf(out, " (%s carries %dMb; this port does %dMb)",
-                           c->kind == CAB_FIBRE ? "fibre" : "the cable",
-                           cable_speed_mb(c->kind, c->metres), n->port[p].rate_mb);
+            int cabmb = cable_speed_mb(c->kind, c->metres);
+            int endmb = port_end_mb(n, p);
+            if (mb < cabmb) {
+                /* AND WHICH END IS THE LIMIT. Saying only the number left the
+                 * router's side of a link to the 500 Mb handoff reading
+                 * "500Mb" with nothing to explain it, on a box whose own card
+                 * does ten gigabit -- so the player reading `show edge` while
+                 * diagnosing the router had no way to know the constraint was
+                 * at the other end of the wire and not in front of them. */
+                buf_printf(out, " (%s carries %dMb; ",
+                           c->kind == CAB_FIBRE ? "fibre" : "the cable", cabmb);
+                if (endmb <= mb) buf_printf(out, "this port does %dMb)", mb);
+                else buf_printf(out, "this port does %dMb and the far end "
+                                     "does %dMb)", endmb, mb);
+            }
         }
         if (n->port[p].blocked) buf_puts(out, " STP-BLOCKING");
         if (n->node[node].kind == NODE_SWITCH) {

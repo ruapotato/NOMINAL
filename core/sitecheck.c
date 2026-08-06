@@ -278,6 +278,32 @@ static void check_port_speed(const Building *b)
     ck("the same cat6 into a server's card is a gigabit, because the card is",
        l2 >= 0 && mb_srv == 1000);
 
+    /* BOTH ENDS OF A WIRE ARE ONE WIRE. The switch's own port on that link
+     * is a 10 Gb SFP+ cage facing a gigabit server; a playtester read
+     * `show uplink` at 500Mb and `show edge` at 1000Mb for a single link to
+     * the handoff and had no way to tell which number the frames obey.
+     * Ethernet negotiates to the slower end, and this is also the rate
+     * port_tx clocks bits at, so it was a modelling fault and not only a
+     * printing one. */
+    {
+        /* The handoff is rate-limited to the circuit -- 500 Mb here -- and
+         * the router's card does ten gigabit, so this is the one link in the
+         * game whose two ends genuinely disagree about what they can do. */
+        int l4 = site_cable(&s, edge, 0, s.uplink, 0, CAB_CAT5E);
+        int at_isp = net_port_speed(s.net, s.dev[s.uplink].node, 0);
+        int at_rtr = net_port_speed(s.net, s.dev[edge].node, 0);
+        ck("a slow end makes a slow link, and both ends of it say the same "
+           "number",
+           l4 >= 0 && at_isp > 0 && at_isp == at_rtr && at_isp < 1000);
+        Buf sh = {0};
+        site_cmd(&s, "show edge", &sh);
+        ck("and the fast end says the constraint is at the other one",
+           sh.p && strstr(sh.p, "the far end does") != NULL);
+        buf_free(&sh);
+        printf("    the handoff reads %d Mb and the router's end of the same "
+               "wire reads %d Mb\n", at_isp, at_rtr);
+    }
+
     int l3 = site_cable(&s, core, 2, sw8, 0, CAB_FIBRE);
     int mb_8 = net_port_speed(s.net, s.dev[sw8].node, 0);
     ck("and fibre into a cheap eight-port switch is a gigabit too",
