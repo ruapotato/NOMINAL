@@ -136,7 +136,29 @@ func _ready() -> void:
 			push_error("NominalStation is not registered - the GDExtension did not load")
 			return
 		machine = ClassDB.instantiate("NominalStation")
-	build(seed_no)
+	build(_wanted_seed())
+
+
+# WHICH BUILDING. The window always built seed 200 and nothing could change
+# it, so `--towersh 7008` and the window were two different towers -- and a
+# playtester who had spent an hour building one could not look at it:
+#
+#   "The 3D can't be pointed at a seed. --towersh 7008 and the Godot window
+#    are two different buildings, so I could not look at the tower I'd spent
+#    an hour building."
+#
+# That is a testability hole as much as a convenience one. D23 says the 3D is
+# a view of the sim and screenshots are the CHECK on the text; a view that
+# cannot be pointed at the building under test checks nothing. The spelling is
+# the one `wire.gd` already uses for its port, so there is one convention.
+func _wanted_seed() -> int:
+	for a in OS.get_cmdline_user_args():
+		if a.begins_with("--seed="):
+			return int(a.split("=")[1])
+	var env := OS.get_environment("NOMINAL_SEED")
+	if env != "":
+		return int(env)
+	return seed_no
 
 
 # ---------------------------------------------------------------- the data
