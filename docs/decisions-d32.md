@@ -11,12 +11,18 @@ Their verdict:
 > **"There is no way to measure a run before paying for it, so exercising the
 > marginal-copper rule is guess-and-pay at ~110 a guess."**
 
-They were half right. Measured properly, from the MDF, per floor, on the gate
-seed, the *farthest* office is 84 m on floor 1, 90 m on floor 2, 92 m on floor
-3 and 108 m on floor 8 -- so the rule is reachable from floor two up. What they
-could not do was tell which room they were looking at. On this seed's floor
-three, `rooms 3` prints twelve rooms and calls six of them `office`, and the
-tray distance from the MDF to them ranges from **60 m to 95 m**. One of those
+They were half right, and the half they were wrong about was corrected in the
+wrong direction first -- see the withdrawn correction in d28. Those per-floor
+figures were measured with `bld_cable_all()`, the tray distance between two
+rooms, and the game bills `site_run_metres()`, which adds a patch lead at each
+end. Three metres, on every run, missing from every number. `quote` reads the
+billing function, which is the whole point of it, so the numbers below and in
+`quote` agree and the ones in that first correction do not.
+
+The rule is reachable from floor two up. What the playtester could not do was
+tell which room they were looking at. On this seed's floor
+three, `rooms 3` prints twenty-four rooms and calls eleven of them `office`,
+and the billed run from the MDF to them ranges from **60 m to 95 m**. One of those
 is a fine home run and one of them retrains itself to a hundred megabits under
 a floor of desks, and nothing in the game distinguished them until you had
 paid.

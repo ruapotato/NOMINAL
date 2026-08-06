@@ -120,23 +120,40 @@ core in copper** -- and in this seed's building the tray measures such a run
 past ninety metres from floor two upward. Nobody chose ninety. It is what
 `bld_cable_all()` measures.
 
-**CORRECTION, added after the day-62 playtest.** This paragraph said the run
-was 95 m and named "f0 MDF to f3 office" as the measurement. That is wrong,
-and a playtester who went looking for it could not reproduce it: they put a
+**CORRECTION, added after the day-62 playtest -- AND THEN WITHDRAWN. Read
+both halves; the second one is the true one.**
+
+A playtester went looking for this run and could not reproduce it: they put a
 switch in an f3 office and got 66 m, and in an f6 office and got 76 m, and
-concluded the rule was unreachable in this building. Measured properly, from
-the MDF, per floor, on this seed:
+concluded the rule was unreachable in this building. I measured per floor with
+`bld_cable_all()` from the MDF, got a farthest f3 office of 92 m rather than
+95, and wrote here that the 95 m figure was wrong.
 
-    floor 1: 11 offices, farthest  84 m     floor 5: farthest 100 m
-    floor 2: 12 offices, farthest  90 m     floor 6: farthest 104 m
-    floor 3: 11 offices, farthest  92 m     floor 8: farthest 108 m
+**It was not wrong. My measurement was.** `bld_cable_all()` is the tray
+distance between two rooms; what the game CHARGES, and what decides whether a
+run is past its margin, is `site_run_metres()` -- which adds `SITE_PATCH_M`,
+the patch lead at each end of every run. Three metres. Every number in the
+table I wrote was three short, and the original 95 m was the real, charged
+figure for exactly the route it named.
 
-So the rule IS reachable, from floor two up -- but only in the *farthest*
-office on a floor, and floor three ranges from 39 m at the comms cupboard to
-92 m at the far end. The playtester picked a near office both times and had no
-way to know: **there is nothing in the game that prices or measures a run
-before you pay for it.** Their words: "exercising the marginal-copper rule is
-guess-and-pay at ~110 a guess."
+`quote`, which landed in D32 and reads the same function that bills you,
+settles it:
+
+    a run from core:0 in f0 MDF #22 to f3 office #84: 95 m through the tray.
+    a run from core:0 in f0 MDF #22 to f3 comms cupboard #83: 42 m.
+
+The lesson is the one this project keeps relearning, and I walked into it
+while correcting somebody else for the same thing: **a number measured with a
+different function from the one that charges for it is a different number.**
+The tray distance and the billed run are two facts and I compared one against
+the other.
+
+What survives from the playtester's report, and it is the important part: they
+picked a near office both times and had no way to know. Floor three runs from
+42 m at the comms cupboard to 95 m at the far end -- rooms `rooms 3` prints
+identically -- and **there was nothing in the game that priced or measured a
+run before you paid for it.** Their words: "exercising the marginal-copper
+rule is guess-and-pay at ~110 a guess."
 
 That is the real finding, and it is not about this rule. Every cable decision
 D27 built is made blind, which is a strange thing to say about a game whose
