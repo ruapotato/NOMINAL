@@ -36,6 +36,18 @@
 # fact about the hardware, learned by trying it, which is the only kind of
 # teaching this project does.
 
+# PLUGGING IN IS A MODE. The owner played it: "when you select a server with a
+# debugger, it does show a terminal, but you can\'t actually input into it. It
+# should kind of zoom in on your debugger, open the terminal, show a connection
+# to the server. Actually act as an interface to tell you how to escape."
+#
+# So a serial lead going in does three things: the handset comes up to reading
+# distance in the middle of the view, the terminal on it takes the keyboard,
+# and the screen says what it is connected to and that [Esc] lets go. What you
+# type goes to machine.sh_on() -- the same call the socket console makes and
+# the same one game/tests/console_speaks.gd gates -- through terminal.gd, which
+# is the real terminal, with real path completion on Tab.
+
 extends Node3D
 
 var tower: Node3D = null
@@ -45,17 +57,18 @@ var plugged := -1            # device index, -1 = nothing
 var lead := ""               # "serial" | "hdmi"
 var status := "unplugged"
 var lit := false             # is there a lead in something
+var focused := false         # the keyboard is on the handset
 
 var _vp: SubViewport
 var _screen: MeshInstance3D
 var _serial: Control
 var _de: Control = null
-var _lines: PackedStringArray = PackedStringArray()
-var _input := ""
-var _label: Label
+var _term: Control = null
 var _mono: Font
-var _lead: Node3D = null
+var _lead: MeshInstance3D = null
 var _lead_col := Color("#1e6f3a")
+var _prompt := ""
+var _hint: Label = null
 
 
 func _ready() -> void:
@@ -87,8 +100,15 @@ const SCREEN_H := 0.116
 # two fifths of the width of the view, not a postage stamp across a room.
 const POSE_DOWN := Vector3(0.30, -0.30, -0.46)
 const ROT_DOWN := Vector3(-0.55, 0.30, 0.12)
-const POSE_READ := Vector3(0.085, -0.045, -0.190)
+const POSE_READ := Vector3(0.115, -0.070, -0.230)
 const ROT_READ := Vector3(-0.10, 0.06, 0.0)
+# AND UP IN FRONT OF YOUR FACE when you are actually typing on it: square to
+# the eye, centred, and close enough that 900 pixels of screen are about 900
+# pixels of window. This is the "zoom in on your debugger" the owner asked for,
+# and it is a pose rather than a second camera, because it is still the handset
+# in your hand in the room you are standing in.
+const POSE_ZOOM := Vector3(0.0, -0.012, -0.152)
+const ROT_ZOOM := Vector3(0.0, 0.0, 0.0)
 
 
 func _mesh(size: Vector3, pos: Vector3, col: Color) -> void:
@@ -115,42 +135,70 @@ func _body() -> void:
 		Color("#15181c"))
 	_mesh(Vector3(0.016, 0.016, 0.002), Vector3(0, -CASE_H * 0.5 + 0.008, 0.0035),
 		Color("#3a4046"))
-	# the lead, out of the bottom corner and away towards whatever it is in
-	_lead = Node3D.new()
-	add_child(_lead)
+	# the plug on the bottom of the case. THE LEAD ITSELF IS NOT DRAWN HERE.
+	#
+	# It used to be: seven little green boxes stepping away from the corner of
+	# the handset, in the handset\'s own space, going nowhere. The owner saw
+	# exactly what that is -- "when I use a debugger on a server it shows a
+	# bunch of green lines that get towards the left" -- and he was right: they
+	# are not a cable, they are a staircase of blocks hanging in front of the
+	# camera, and they do not touch the thing the lead is supposedly in.
+	#
+	# A lead goes from the handset to the socket it is in. That is a length of
+	# cable between two points in the ROOM, so it is drawn in the room -- see
+	# _draw_lead() -- with the same sweep and sag every other cable in the
+	# building gets.
 	var g = preload("res://scripts/vgeo.gd").new()
-	g.box(Vector3(-0.010, -CASE_H * 0.5 - 0.030, -0.008),
-		Vector3(0.020, 0.032, 0.014), Color("#20242a"), false)
-	for i in range(7):
-		var t := float(i) / 6.0
-		g.box(Vector3(-0.004 - t * 0.16, -CASE_H * 0.5 - 0.030 - t * 0.10,
-				-0.006 - t * 0.30),
-			Vector3(0.008, 0.008, 0.055), _lead_col, false)
-	_lead.add_child(g.node("lead"))
-	_lead.visible = false
+	g.box(Vector3(-0.010, -CASE_H * 0.5 - 0.026, -0.008),
+		Vector3(0.020, 0.028, 0.014), Color("#20242a"), false)
+	add_child(g.node("plug"))
 
 
 func _make_viewport() -> void:
 	_vp = SubViewport.new()
-	# 900 x 562 into 186 x 116 mm at 190 mm: very nearly one texture pixel per
-	# screen pixel at 1080p, which is the point of holding it up to your face.
+	# 900 x 562 into 186 x 116 mm at 152 mm: a shade over one texture pixel per
+	# screen pixel once it is up at your face, which is the whole reason the 2D
+	# on it is legible rather than a postage stamp across a room.
 	_vp.size = Vector2i(900, 562)
 	_vp.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 	_vp.transparent_bg = false
 	_vp.disable_3d = true
+	# The keyboard goes THROUGH here: the terminal below is a real Control with
+	# real focus, and _unhandled_input pushes keys into this viewport when the
+	# handset has the keyboard. Without local handling it has no focus stack of
+	# its own and every key lands nowhere.
+	_vp.handle_input_locally = true
+	_vp.gui_disable_input = false
 	add_child(_vp)
 
 	_serial = ColorRect.new()
 	_serial.color = Color("#0d1116")
 	_serial.set_anchors_preset(Control.PRESET_FULL_RECT)
-	_label = Label.new()
-	_label.position = Vector2(10, 8)
-	_label.size = Vector2(884, 548)
-	_label.add_theme_font_override("font", _mono)
-	_label.add_theme_font_size_override("font_size", 15)
-	_label.autowrap_mode = TextServer.AUTOWRAP_OFF
-	_label.add_theme_color_override("font_color", Color("#c9d4dd"))
-	_serial.add_child(_label)
+	# THE REAL TERMINAL, not a Label with a string in it. terminal.gd is the
+	# one the desktop opens: same drawing, same history, same Tab completion
+	# against the machine\'s own `ls`. A second, worse console on the handset
+	# would be a second thing to keep true.
+	_term = preload("res://scripts/terminal.gd").new()
+	_term.mono = _mono
+	_term.bg = Color("#0d1116")
+	_term.fg = Color("#c9d4dd")
+	_term.accent = Color("#6fdc96")
+	_term.position = Vector2(0, 22)
+	_term.size = Vector2(_vp.size) - Vector2(0, 44)
+	_term.on_command = func(line: String) -> String:
+		return _cmd(line)
+	_term.prompt_fn = func() -> String:
+		return _prompt
+	_serial.add_child(_term)
+	# The strip along the bottom that says what this is and how to put it down.
+	# "Actually act as an interface to tell you how to escape."
+	_hint = Label.new()
+	_hint.add_theme_font_override("font", _mono)
+	_hint.add_theme_font_size_override("font_size", 14)
+	_hint.add_theme_color_override("font_color", Color("#8fa4b6"))
+	_hint.position = Vector2(10, float(_vp.size.y) - 21.0)
+	_hint.size = Vector2(float(_vp.size.x) - 20.0, 20.0)
+	_serial.add_child(_hint)
 	_vp.add_child(_serial)
 
 	_screen = MeshInstance3D.new()
@@ -169,15 +217,52 @@ func _make_viewport() -> void:
 	add_child(_screen)
 
 
-# It comes up to your face when a lead goes in and drops back to your side when
-# it comes out, because that is what a person does with a phone and because a
-# handset parked in the middle of the view is a handset you cannot see past.
+# ------------------------------------------------------------------ the lead
+#
+# From the socket it is in, to the bottom of the handset in your hand. It is
+# drawn in the WORLD, not on the camera, because that is where both of its ends
+# are -- and it gets the same catenary and the same sweep as every other length
+# of copper in the building, because it is one.
+func _draw_lead() -> void:
+	if _lead:
+		_lead.queue_free()
+		_lead = null
+	if tower == null or plugged < 0 or plugged >= tower.devices.size():
+		return
+	var d: Dictionary = tower.devices[plugged]
+	var port: Vector3 = tower._port_point(d, 0)
+	var face: Vector3 = d.face
+	var here: Vector3 = global_transform * Vector3(0.0, -CASE_H * 0.5 - 0.030, 0.0)
+	var g = preload("res://scripts/vgeo.gd").new()
+	var mid := (port + face * 0.08 + here) * 0.5
+	mid.y = min(port.y, here.y) - port.distance_to(here) * 0.22
+	tower._run_cable(g, [port, port + face * 0.05, mid, here], _lead_col, 2)
+	if g.empty():
+		return
+	_lead = MeshInstance3D.new()
+	_lead.name = "DebuggerLead"
+	_lead.mesh = g.mesh()
+	tower.add_child(_lead)
+
+
+# It comes up to your face when a lead goes in, all the way up in front of you
+# when you are typing on it, and back down to your side when the lead comes
+# out -- because that is what a person does with a phone, and because a handset
+# parked in the middle of the view is a handset you cannot see past.
 func _process(dt: float) -> void:
-	var pw := POSE_READ if lit else POSE_DOWN
-	var rw := ROT_READ if lit else ROT_DOWN
+	var pw := POSE_DOWN
+	var rw := ROT_DOWN
+	if focused:
+		pw = POSE_ZOOM
+		rw = ROT_ZOOM
+	elif lit:
+		pw = POSE_READ
+		rw = ROT_READ
 	var k: float = clampf(dt * 12.0, 0.0, 1.0)
 	position = position.lerp(pw, k)
 	rotation = rotation.lerp(rw, k)
+	if lit:
+		_draw_lead()
 
 
 # -------------------------------------------------------------------- plugging
@@ -188,10 +273,82 @@ func plug(dev: int, which_lead: String) -> String:
 	# is in your hand whenever it is the equipped item -- see inventory.gd --
 	# so what this switches is the picture and the lead hanging off it.
 	lit = plugged >= 0
-	if _lead:
-		_lead.visible = lit
+	if not lit:
+		_drop_lead()
 	_relight()
+	# PLUGGING IN IS ENTERING A MODE, so the keyboard comes with it. A console
+	# you cannot type at is a picture of a console. The display lead is not a
+	# console -- there is nothing to type at -- so it hands the keyboard back.
+	if lit and lead == "serial":
+		take_keyboard()
+	else:
+		let_go()
 	return s
+
+
+# ---------------------------------------------------------------- the mode
+#
+# The handset has the keyboard, the world does not, and the screen says both
+# what it is on and how to get out. Esc is the way out -- of this, of the
+# desktop, and of the bag -- and tower.gd routes it.
+
+func take_keyboard() -> void:
+	if focused or plugged < 0 or lead != "serial":
+		return
+	focused = true
+	if tower and tower.player:
+		tower.player.capture(false)
+		tower.player.velocity = Vector3.ZERO
+		tower.player.set_physics_process(false)
+	if tower and tower.hud:
+		tower.hud.visible = false
+	if tower and tower.reticle:
+		tower.reticle.visible = false
+	if _term:
+		_term.call_deferred("take_focus")
+	_relabel()
+
+
+func let_go() -> String:
+	if not focused:
+		return ""
+	focused = false
+	if tower and tower.player:
+		tower.player.set_physics_process(true)
+		tower.player.capture(true)
+	if tower and tower.hud:
+		tower.hud.visible = true
+	if tower and tower.reticle:
+		tower.reticle.visible = true
+	_relabel()
+	return "you lower the handset. The lead is still in %s." % _where()
+
+
+func _where() -> String:
+	if tower == null or plugged < 0 or plugged >= tower.devices.size():
+		return "nothing"
+	return str(tower.devices[plugged].name)
+
+
+# The line along the bottom of the screen: what this is connected to, and the
+# key that gets you out of it. Both facts, on the screen they are about.
+func _relabel() -> void:
+	if _hint == null:
+		return
+	if plugged < 0:
+		_hint.text = "no lead in anything"
+		return
+	if focused:
+		_hint.text = "connected to %s over %s   [Esc] put the handset down   [Tab] completes" \
+			% [_where(), "the serial lead" if lead == "serial" else "the display lead"]
+	else:
+		_hint.text = "lead in %s   [F] pick the handset back up   [U] unplug" % _where()
+
+
+func _drop_lead() -> void:
+	if _lead:
+		_lead.queue_free()
+		_lead = null
 
 
 func _plug(dev: int, which_lead: String) -> String:
@@ -209,11 +366,15 @@ func _plug(dev: int, which_lead: String) -> String:
 		lead = "serial"
 		_lead_col = Color("#1e6f3a")
 		_show_serial()
-		_lines = PackedStringArray()
+		if _term:
+			_term.clear()
+		_prompt = _prompt_for(d)
 		_say("serial lead -> %s" % d.name)
 		_say("")
 		_say(_console_banner(d))
+		_say("")
 		status = "serial console on %s" % d.name
+		_relabel()
 		return status
 	if which_lead == "hdmi":
 		if not d.hdmi:
@@ -226,28 +387,43 @@ func _plug(dev: int, which_lead: String) -> String:
 			plugged = dev
 			lead = "hdmi"
 			_show_nosignal(d)
+			_relabel()
 			return status
 		plugged = dev
 		lead = "hdmi"
 		_lead_col = Color("#20304f")
 		_show_desktop(d)
 		status = "display on %s" % d.name
+		_relabel()
 		return status
 	status = "no such lead: %s" % which_lead
 	return status
 
 
+# WHAT THE PROMPT SAYS IS WHAT THE LINE IS. A managed switch answers on its
+# management line, a machine answers as root on its console, and the prompt is
+# never empty -- terminal.gd swallows keystrokes at an empty prompt, which is
+# how a console once ate five commands in a row and said nothing.
+func _prompt_for(d: Dictionary) -> String:
+	if int(d.which) == -2:
+		return "%s> " % str(d.name)
+	return "root@%s# " % str(d.name).replace(" ", "-")
+
+
 func unplug() -> void:
+	if focused:
+		let_go()
 	plugged = -1
 	lead = ""
 	status = "unplugged"
 	lit = false
-	if _lead:
-		_lead.visible = false
+	_drop_lead()
 	_relight()
-	_lines = PackedStringArray()
 	_show_serial()
+	if _term:
+		_term.clear()
 	_say("[no lead plugged in]")
+	_relabel()
 
 
 # Does this device actually paint a picture right now? The workstation is up
@@ -288,29 +464,39 @@ func _console_banner(d: Dictionary) -> String:
 func type_line(line: String) -> String:
 	if plugged < 0 or lead != "serial":
 		return ""
-	var d: Dictionary = tower.devices[plugged]
-	# The managed boxes answer through site_cmd(), which is the same shell a
-	# blind playtester drives over a pipe. One implementation, two front ends.
-	var out: String = tower.site(line) if d.which == -2 \
-		else str(tower.machine.sh_on(d.which, line))
-	_say("# " + line)
-	for l in out.split("\n"):
-		_say(l)
+	if _term:
+		_term.write(_prompt + line)
+	var out := _cmd(line)
+	if _term:
+		_term.write(out)
 	return out
 
 
+# ONE MACHINE, TWO FRONT ENDS. sh_on() is the same call the socket console
+# makes and the same one game/tests/console_speaks.gd gates: a box that never
+# finished booting refuses in words here exactly as it does there, because it
+# is the same words from the same function. The managed boxes answer through
+# site_cmd(), which is the shell a blind playtester drives over a pipe.
+func _cmd(line: String) -> String:
+	if plugged < 0 or plugged >= tower.devices.size():
+		return ""
+	var d: Dictionary = tower.devices[plugged]
+	if int(d.which) == -2:
+		return tower.site(line)
+	return str(tower.machine.sh_on(int(d.which), line))
+
+
 func _say(s: String) -> void:
-	_lines.append(s)
-	while _lines.size() > 30:
-		_lines.remove_at(0)
-	if _label:
-		_label.text = "\n".join(_lines)
+	if _term:
+		_term.write(s + "\n")
 
 
 func screen_text() -> String:
 	if lead == "hdmi":
 		return "[graphical display]" if _de != null else "[no signal]"
-	return "\n".join(_lines)
+	if _term == null:
+		return ""
+	return "\n".join(_term.lines)
 
 
 # A handset with no lead in it is a handset with a dark screen. That is one
@@ -319,13 +505,11 @@ func screen_text() -> String:
 func _relight() -> void:
 	if _serial == null:
 		return
-	if lit:
-		_serial.color = Color("#0d1116")
-	else:
-		_serial.color = Color("#05070a")
-	if _label:
-		_label.add_theme_color_override("font_color",
-			Color("#c9d4dd") if lit else Color("#3a444d"))
+	_serial.color = Color("#0d1116") if lit else Color("#05070a")
+	if _term:
+		_term.bg = Color("#0d1116") if lit else Color("#05070a")
+		_term.fg = Color("#c9d4dd") if lit else Color("#3a444d")
+		_term.queue_redraw()
 
 
 func _show_serial() -> void:
@@ -339,14 +523,16 @@ func _show_serial() -> void:
 
 func _show_nosignal(_d: Dictionary) -> void:
 	_show_serial()
-	_lines = PackedStringArray()
+	if _term:
+		_term.clear()
 	_say("")   # a monitor with nothing on it says nothing
 
 
 func _show_desktop(_d: Dictionary) -> void:
 	if not with_desktop:
 		_show_serial()
-		_lines = PackedStringArray()
+		if _term:
+			_term.clear()
 		_say("[display attached -- desktop not built in this run]")
 		return
 	if _de != null:
@@ -366,24 +552,16 @@ func _show_desktop(_d: Dictionary) -> void:
 
 
 # ---------------------------------------------------------------- keyboard
-
+#
+# While the handset has the keyboard, every key goes into its viewport and the
+# world sees none of them: you are typing at a shell, and `w` is a letter.
+# Escape is the exception and tower.gd takes it first -- see its _input().
 func _unhandled_input(event: InputEvent) -> void:
-	if plugged < 0 or lead != "serial":
+	if not focused or _vp == null:
 		return
-	if not (event is InputEventKey) or not event.pressed:
+	if not (event is InputEventKey):
 		return
-	var k: InputEventKey = event
-	if k.keycode == KEY_ENTER or k.keycode == KEY_KP_ENTER:
-		var line := _input
-		_input = ""
-		if line.strip_edges() != "":
-			type_line(line)
-		get_viewport().set_input_as_handled()
-	elif k.keycode == KEY_BACKSPACE:
-		_input = _input.substr(0, max(0, _input.length() - 1))
-		get_viewport().set_input_as_handled()
-	elif k.unicode >= 32:
-		_input += String.chr(k.unicode)
-		get_viewport().set_input_as_handled()
-	if _label:
-		_label.text = "\n".join(_lines) + "\n# " + _input + "_"
+	if (event as InputEventKey).keycode == KEY_ESCAPE:
+		return
+	_vp.push_input(event, true)
+	get_viewport().set_input_as_handled()

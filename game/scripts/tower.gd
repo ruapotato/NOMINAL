@@ -1212,6 +1212,7 @@ func _draw_cables() -> void:
 		_cable_node = null
 	var links := site_links()
 	if links.is_empty():
+		_port_lights()
 		return
 	var g = preload("res://scripts/vgeo.gd").new()
 	for l in links:
@@ -1221,46 +1222,260 @@ func _draw_cables() -> void:
 		var b := _dev_point(l.b, l.bport)
 		if a == Vector3.INF or b == Vector3.INF:
 			continue          # a device the view has not drawn has no end to draw to
-		var col: Color = CABLE_COL[l.i % CABLE_COL.size()]
-		if l.state == 2:                 # PORT_TOOLONG: it was laid and it is dead
-			col = Color("#7a3030")
-		var pts: Array
-		if a.distance_to(b) < 2.5:
-			# A PATCH LEAD, between two boxes in the same frame. It does not go
-			# up into the tray to travel 400 mm: it comes out of the front, down
-			# past whatever is between them, and back in. That loop hanging off
-			# the front of a rack is what a rack you have worked on looks like.
-			var fa := _dev_face(l.a)
-			var fb := _dev_face(l.b)
-			var lo: float = min(a.y, b.y) - 0.07 - float(l.i % 4) * 0.022
-			var out: float = 0.10 + float(l.i % 4) * 0.022
-			var a2 := a + fa * out
-			var b2 := b + fb * out
-			pts = [a, a2, Vector3(a2.x, lo, a2.z), Vector3(b2.x, lo, b2.z), b2, b]
-		else:
-			var ya := tray_y(int(a.y / fheight))
-			var yb := tray_y(int(b.y / fheight))
-			pts = [a, Vector3(a.x, ya, a.z), Vector3(b.x, ya, b.z)]
-			if absf(ya - yb) > 0.01:
-				pts.append(Vector3(b.x, yb, b.z))
-			pts.append(b)
-		for i in range(pts.size() - 1):
-			_cable_seg(g, pts[i], pts[i + 1], col)
+		var col: Color = _cable_colour(l)
+		var pts := _cable_route(l.a, l.aport, l.b, l.bport, int(l.i))
+		_run_cable(g, pts, col, int(l.i))
 	_cable_node = MeshInstance3D.new()
 	_cable_node.name = "Cables"
 	_cable_node.mesh = g.mesh()
 	add_child(_cable_node)
+	_port_lights()
 
 
-func _cable_seg(g, a: Vector3, b: Vector3, col: Color) -> void:
-	var mn := Vector3(min(a.x, b.x), min(a.y, b.y), min(a.z, b.z))
-	var mx := Vector3(max(a.x, b.x), max(a.y, b.y), max(a.z, b.z))
-	var t := 0.014
-	var size := mx - mn
-	size.x = max(size.x, t)
-	size.y = max(size.y, t)
-	size.z = max(size.z, t)
-	g.box(mn, size, col, false)
+# ------------------------------------------------------------ string mechanics
+#
+# "Proper string mechanics... once run it should stay in the world as a real
+# slack cable -- a catenary sag between its endpoints, following the tray where
+# it goes through one, not a straight line floating through walls. Cables
+# should look like copper somebody actually ran: colour by kind, a bend radius,
+# a little disorder."
+#
+# Three things make copper look like copper and none of them is the colour:
+#
+#   THE ROUTE. It comes out of the socket along the socket's own axis, goes up
+#   to the containment, travels along the tray through rooms that have one, and
+#   comes down at the other end. _tray_route() is a breadth-first search over
+#   the same metre grid the walls are built from, so a cable never crosses a
+#   wall that a person could not walk through either.
+#
+#   THE CORNERS. Copper has a bend radius -- four times its diameter is the
+#   number on the box -- so every corner is an arc rather than a right angle.
+#
+#   THE SLACK. A span between two supports hangs. Between the tray and a port
+#   the drop is nearly straight; along an unsupported span it sags, by an
+#   amount that grows with the span, and every run gets a couple of centimetres
+#   of its own disorder off its link number so that two cables between the same
+#   two frames are not one cable drawn twice.
+
+const CABLE_R := 0.0032        # 6.4 mm across, which is what cat6 is
+const BEND_R := 0.09           # the radius copper will actually take
+
+
+# The colour of a kind of cable, as core/netstack.h numbers them. Grey for
+# fibre because fibre patch leads are, and the two coppers are the two colours
+# every cabinet in the world is full of.
+const CABLE_KIND_COL := [Color("#3fae6a"), Color("#2f6fd0"), Color("#c9c6bd"),
+	Color("#c8a33a")]
+
+
+func _cable_colour(l: Dictionary) -> Color:
+	if int(l.state) == 2:              # PORT_TOOLONG: it was laid and it is dead
+		return Color("#8a3232")
+	var c: Color = CABLE_KIND_COL[int(l.kind) % CABLE_KIND_COL.size()]
+	# a little disorder: two runs of the same kind are not the same colour to
+	# the millimetre, because two reels are not
+	var j: float = float(int(l.i) % 5) * 0.035
+	return c.lightened(j) if (int(l.i) % 2) == 0 else c.darkened(j)
+
+
+# The waypoints a run passes through, port to port.
+func _cable_route(sa: int, pa: int, sb: int, pb: int, salt: int) -> Array:
+	var a := _dev_point(sa, pa)
+	var b := _dev_point(sb, pb)
+	if a == Vector3.INF or b == Vector3.INF:
+		return []
+	var fa := _dev_face(sa)
+	var fb := _dev_face(sb)
+	# out of the socket, along the socket's own axis: a lead does not leave a
+	# port sideways
+	var a1 := a + fa * 0.05
+	var b1 := b + fb * 0.05
+	if a.distance_to(b) < 2.5:
+		# A PATCH LEAD, between two boxes in the same frame. It does not go up
+		# into the tray to travel 400 mm: it comes out of the front, hangs down
+		# past whatever is between them, and goes back in. That loop off the
+		# front of a rack is what a rack somebody has worked on looks like.
+		var lo: float = min(a.y, b.y) - 0.10 - float(salt % 4) * 0.03
+		var outd: float = 0.09 + float(salt % 4) * 0.025
+		var a2 := a + fa * outd
+		var b2 := b + fb * outd
+		return [a, a1, a2, Vector3(a2.x, lo, a2.z), Vector3(b2.x, lo, b2.z), b2, b1, b]
+	var fa_i := int(floor((a.y + 0.3) / fheight))
+	var fb_i := int(floor((b.y + 0.3) / fheight))
+	var ya := tray_y(fa_i)
+	var yb := tray_y(fb_i)
+	var pts: Array = [a, a1, Vector3(a1.x, ya, a1.z)]
+	var cells := _tray_route(fa_i, Vector2(a1.x, a1.z), fb_i, Vector2(b1.x, b1.z))
+	for c in cells:
+		pts.append(Vector3(c.x, ya, c.y))
+	if absf(ya - yb) > 0.01 and not cells.is_empty():
+		var last: Vector2 = cells[cells.size() - 1]
+		pts.append(Vector3(last.x, yb, last.y))
+	pts.append(Vector3(b1.x, yb, b1.z))
+	pts.append(b1)
+	pts.append(b)
+	return pts
+
+
+# THE TRAY, AS A ROUTE. Breadth-first over the metre grid of the floor, through
+# cells whose room has containment in it -- and through the two endpoint rooms
+# whether they have any or not, because a cable has to be able to get out of
+# the room it starts in. Returns the corners of the route in metres, or an
+# empty list when there is no way through, in which case the caller draws the
+# shortest thing it can and the site model has already priced the real one.
+func _tray_route(fa: int, from: Vector2, fb: int, to: Vector2) -> Array:
+	if fa != fb:
+		# ACROSS FLOORS IT GOES UP THE RISER. Horizontally to the riser on this
+		# floor, vertically, and horizontally again -- which is the answer to
+		# "why is the cable run 33 m when the walk was 78".
+		var r := find_room(fa, K_RISER)
+		if r < 0: r = find_room(fa, K_STAIR)
+		if r < 0:
+			return [to]
+		var c := room_centre(r)
+		var up := _tray_route(fa, from, fa, Vector2(c.x, c.z))
+		var down := _tray_route(fb, Vector2(c.x, c.z), fb, to)
+		return up + down
+	var sx := int(floor(from.x))
+	var sy := int(floor(from.y))
+	var tx := int(floor(to.x))
+	var ty := int(floor(to.y))
+	if sx == tx and sy == ty:
+		return [to]
+	var ra := room_of(fa, sx, sy)
+	var rb := room_of(fa, tx, ty)
+	var prev := PackedInt32Array()
+	prev.resize(bw * bh)
+	prev.fill(-2)
+	var q := PackedInt32Array()
+	q.append(sy * bw + sx)
+	prev[sy * bw + sx] = -1
+	var head := 0
+	var found := false
+	while head < q.size():
+		var cur: int = q[head]
+		head += 1
+		if cur == ty * bw + tx:
+			found = true
+			break
+		var cx: int = cur % bw
+		var cy: int = cur / bw
+		for d in [[1, 0], [-1, 0], [0, 1], [0, -1]]:
+			var nx: int = cx + d[0]
+			var ny: int = cy + d[1]
+			if nx < 0 or ny < 0 or nx >= bw or ny >= bh:
+				continue
+			if prev[ny * bw + nx] != -2:
+				continue
+			var rr := room_of(fa, nx, ny)
+			if rr == NOROOM:
+				continue
+			if rr != ra and rr != rb and not TRAY_KINDS.has(int(rooms[rr].kind)):
+				continue
+			# a doorway or an open edge: a cable goes where a wall is not, the
+			# same test the wall pass itself makes
+			if not _open_edge(fa, cx, cy, nx, ny):
+				continue
+			prev[ny * bw + nx] = cur
+			q.append(ny * bw + nx)
+	if not found:
+		return [to]
+	var path: Array = []
+	var at: int = ty * bw + tx
+	while at >= 0:
+		path.push_front(Vector2(float(at % bw) + 0.5, float(at / bw) + 0.5))
+		at = prev[at]
+	# only the corners: a hundred metre-long segments is the same line with a
+	# hundred times the triangles in it
+	var out: Array = []
+	for i in range(1, path.size() - 1):
+		var p0: Vector2 = path[i - 1]
+		var p1: Vector2 = path[i]
+		var p2: Vector2 = path[i + 1]
+		if absf((p1 - p0).angle_to(p2 - p1)) > 0.01:
+			out.append(p1)
+	out.append(to)
+	return out
+
+
+# Is there a way through between two neighbouring cells: same room, or a door
+# on the edge between them. The same doorset the walls were built from.
+func _open_edge(f: int, x0: int, y0: int, x1: int, y1: int) -> bool:
+	if room_of(f, x0, y0) == room_of(f, x1, y1):
+		return true
+	if x1 > x0: return doorset.has("%d,%d,%d,%d" % [f, x0, y0, 0])
+	if x1 < x0: return doorset.has("%d,%d,%d,%d" % [f, x1, y1, 0])
+	if y1 > y0: return doorset.has("%d,%d,%d,%d" % [f, x0, y0, 1])
+	return doorset.has("%d,%d,%d,%d" % [f, x1, y1, 1])
+
+
+# Waypoints in, copper out: corners rounded to a bend radius, spans given the
+# slack they would really have, and the whole thing swept as one length.
+func _run_cable(g, pts: Array, col: Color, salt := 0) -> void:
+	if pts.size() < 2:
+		return
+	var line := _round_corners(pts, BEND_R)
+	line = _sag(line, salt)
+	for i in range(line.size() - 1):
+		g.tube(line[i], line[i + 1], CABLE_R, col)
+
+
+# A corner is an arc, not a right angle. Four segments of one, which at 90 mm
+# radius is smooth at the distance you look at a cable from.
+func _round_corners(pts: Array, r: float) -> Array:
+	if pts.size() < 3:
+		return pts
+	var out: Array = [pts[0]]
+	for i in range(1, pts.size() - 1):
+		var p0: Vector3 = pts[i - 1]
+		var p1: Vector3 = pts[i]
+		var p2: Vector3 = pts[i + 1]
+		var d0: Vector3 = p1 - p0
+		var d1: Vector3 = p2 - p1
+		var l0 := d0.length()
+		var l1 := d1.length()
+		if l0 < 1e-5 or l1 < 1e-5:
+			continue
+		var rr: float = min(r, min(l0, l1) * 0.45)
+		var a := p1 - d0.normalized() * rr
+		var b := p1 + d1.normalized() * rr
+		out.append(a)
+		for k in range(1, 4):
+			var t := float(k) / 4.0
+			# quadratic through the corner: the arc a length of copper takes
+			out.append(a.lerp(p1, t).lerp(p1.lerp(b, t), t))
+		out.append(b)
+	out.append(pts[pts.size() - 1])
+	return out
+
+
+# THE SLACK. A span hangs between its ends by an amount that grows with the
+# span, and a length of copper in a tray hangs a great deal less than one
+# crossing a rack, because the tray is holding it up. So the droop is applied
+# to spans that are level and not at tray height, and every run gets its own
+# small offset so two cables between the same two frames are not one cable.
+func _sag(line: Array, salt: int) -> Array:
+	if line.size() < 2:
+		return line
+	var out: Array = []
+	for i in range(line.size() - 1):
+		var a: Vector3 = line[i]
+		var b: Vector3 = line[i + 1]
+		out.append(a)
+		var span := Vector2(b.x - a.x, b.z - a.z).length()
+		if span < 0.25 or absf(b.y - a.y) > 0.3:
+			continue                       # a drop does not sag: it hangs straight
+		var lying := absf(a.y - tray_y(int(floor((a.y + 0.3) / fheight)))) < 0.06
+		var drop: float = span * (0.02 if lying else 0.09)
+		drop += float(salt % 3) * 0.004
+		var n := int(clamp(span * 3.0, 3.0, 12.0))
+		for k in range(1, n):
+			var t := float(k) / float(n)
+			var p := a.lerp(b, t)
+			p.y -= drop * 4.0 * t * (1.0 - t)
+			out.append(p)
+	out.append(line[line.size() - 1])
+	return out
 
 
 func _dev_point(site_i: int, port := 0) -> Vector3:
@@ -1548,6 +1763,19 @@ func _workstation(room: int) -> void:
 			0.02, 0.05, Color("#2b2f35"), false)
 	add_child(g.node("Workstation"))
 
+	# --- AND THE DESKTOP IS ON IT, from across the room and before you sit.
+	#
+	# "the monitor does display the 2D desktop that you see when you look at E.
+	# It should show you the desktop as you leave it / come to it."
+	#
+	# So the desktop is not a thing sitting down BOOTS. It is running, on that
+	# machine, on that screen, from the moment the building exists -- one de.gd
+	# in a SubViewport painted onto the glass. Sitting down moves that same
+	# Control onto the window full size and standing up puts it back, so the
+	# session you walk away from is the session you come back to, down to the
+	# window you left open.
+	_desk_screen(fr, mid, y)
+
 	# --- the machine itself, standing on the floor under the desk. This is the
 	# DEVICE: it has a display output and a console, and the leads go into the
 	# back of it, which is why it is a real box in a real place rather than a
@@ -1624,24 +1852,23 @@ func _add_device(dname: String, which: int, hdmi: bool, serial: bool,
 		else:
 			g.box(Vector3(fp.x + (fw if face.x > 0 else -0.006), ly, mn.z + t2),
 				Vector3(0.006, 0.016, 0.016), Color("#7fe08a") if j == 0 else Color("#e0b040"), false)
-	if nports > 0:
-		var along: float = size.x if absf(face.z) > 0.5 else size.z
-		var run: float = along - 0.10
-		var per: float = run / float(nports)
-		var pw: float = min(per * 0.62, 0.022)
-		var ph: float = min(size.y * 0.45, 0.024)
-		var py: float = mn.y + size.y * 0.5 - ph * 0.5
-		for i in range(nports):
-			var t: float = 0.05 + per * (float(i) + 0.5)
-			var pm: Vector3
-			var ps: Vector3
-			if absf(face.z) > 0.5:
-				pm = Vector3(mn.x + t - pw * 0.5, py, fp.z + (fw if face.z > 0 else -0.008))
-				ps = Vector3(pw, ph, 0.008)
-			else:
-				pm = Vector3(fp.x + (fw if face.x > 0 else -0.008), py, mn.z + t - pw * 0.5)
-				ps = Vector3(0.008, ph, pw)
-			g.box(pm, ps, Color("#0e1114"), false)
+	# THE PORTS, AS HOLES. Each one is a real socket in a real place, laid out
+	# by port number, and _port_frames() is the ONLY thing that decides where
+	# port n is -- the geometry below, the end of a cable, the link light and
+	# the crosshair all read the same list, so they cannot disagree about which
+	# hole is `core:6`.
+	var frames := _port_frames(mn, size, face, nports, fw)
+	for pf in frames:
+		# a shroud standing proud of the plate, and the hole sunk into it: that
+		# little step is what makes an RJ45 read as a socket and not a sticker
+		var out: Vector3 = pf.n * 0.004
+		_face_box(g, pf.c + out * 0.5, face, pf.w + 0.004, pf.h + 0.004, 0.005,
+			col.lightened(0.06))
+		_face_box(g, pf.c - pf.n * 0.006, face, pf.w, pf.h * 0.72, 0.012, Color("#090b0e"))
+		# the latch slot in the top of it, which is the shape your eye actually
+		# uses to tell an RJ45 from a square hole
+		_face_box(g, pf.c - pf.n * 0.004 + Vector3(0, pf.h * 0.34, 0), face,
+			pf.w * 0.34, pf.h * 0.30, 0.008, Color("#090b0e"))
 	var n := g.node(dname.replace(" ", "_") + "_%d" % devices.size())
 	add_child(n)
 	# LABELLED, because every rack anybody has ever had to work on is labelled,
@@ -1669,28 +1896,359 @@ func _add_device(dname: String, which: int, hdmi: bool, serial: bool,
 	devices.append({"name": dname, "which": which, "hdmi": hdmi,
 		"serial": serial, "node": n, "pos": mn + size * 0.5, "site": site_i,
 		"face": face, "mn": mn, "size": size, "nports": nports, "fw": fw,
-		"is_desk": false, "use_from": mn + size * 0.5})
+		"ports": frames, "is_desk": false, "use_from": mn + size * 0.5})
+
+
+# ------------------------------------------------------------------ the ports
+#
+# "This game is largely about running Ethernet cables." So a port is not paint:
+# it is a hole, in a place, with a number, and this is the one function that
+# says where. HOW MANY there are is not ours to choose -- core/site.h gives
+# every device kind its port count and core/site.c refuses a port that does not
+# exist ("desk1 has 1 port, numbered 0 to 0"), so `nports` arrives from the
+# model and this only arranges them across the face it has.
+#
+# Two rows past eight of them, because that is what a 24-port 1U switch does:
+# forty millimetres of pitch on one row would need a metre and a half of
+# faceplate, and the frame is 600 mm wide.
+func _port_frames(mn: Vector3, size: Vector3, face: Vector3, nports: int,
+		fw: float) -> Array:
+	var out: Array = []
+	if nports <= 0:
+		return out
+	var across: bool = absf(face.z) > 0.5          # the row runs along x
+	var along: float = size.x if across else size.z
+	var rows: int = 1 if nports <= 8 else 2
+	var cols: int = int(ceil(float(nports) / float(rows)))
+	var margin: float = min(0.05, along * 0.10)
+	var per: float = (along - margin * 2.0) / float(cols)
+	var rowh: float = size.y / float(rows)
+	var pw: float = min(per * 0.66, 0.0135)        # an RJ45 is 13.5 mm wide
+	var ph: float = min(rowh * 0.66, 0.0155)
+	# the plane of the outside of the faceplate, and the direction out of it
+	var nrm := Vector3(0, 0, 0)
+	var plane := 0.0
+	if face.z > 0:
+		nrm = Vector3(0, 0, 1); plane = mn.z + size.z + fw
+	elif face.z < 0:
+		nrm = Vector3(0, 0, -1); plane = mn.z - fw
+	elif face.x > 0:
+		nrm = Vector3(1, 0, 0); plane = mn.x + size.x + fw
+	else:
+		nrm = Vector3(-1, 0, 0); plane = mn.x - fw
+	for i in range(nports):
+		var col: int = i % cols
+		var row: int = i / cols
+		var t: float = margin + per * (float(col) + 0.5)
+		var c := mn + size * 0.5
+		c.y = mn.y + size.y - rowh * (float(row) + 0.5)
+		if across:
+			c.x = mn.x + t
+			c.z = plane
+		else:
+			c.z = mn.z + t
+			c.x = plane
+		out.append({"i": i, "c": c, "n": nrm, "w": pw, "h": ph})
+	return out
+
+
+# THE SCREEN ON THE DESK, live. A SubViewport with the real de.gd in it,
+# painted onto a quad sitting a millimetre proud of the glass. It is the same
+# machine object the serial lead talks to, which is the rule everywhere in this
+# project: two front ends, one Station, no way for them to disagree.
+var desk_vp: SubViewport = null
+var desk_screen: MeshInstance3D = null
+
+const DESK_SCREEN_W := 0.52
+const DESK_SCREEN_H := 0.325
+
+
+var _desk_at := {}
+
+func _desk_screen(fr: Dictionary, mid: float, y: float) -> void:
+	# WHERE the screen is does not depend on whether this run draws a desktop:
+	# --headless gates build the tower with with_desktop off and then ask for
+	# the desktop later, and a monitor whose position was never worked out is a
+	# desk you cannot sit at.
+	var out: Vector3 = fr.out
+	_desk_at = {
+		"pos": fr.org + fr.along * mid + out * 0.2175
+			+ Vector3(0, y + DESK_H + 0.43 - fr.org.y, 0),
+		"yaw": atan2(out.x, out.z)}
+	if with_desktop:
+		_desk_build()
+
+
+# The screen, and the desktop running on it. Called at build time in an
+# ordinary run, and on demand from sit_down() for a run that started without
+# one, so there is exactly one desktop either way.
+func _desk_build() -> void:
+	if desk_de != null or _desk_at.is_empty():
+		return
+	desk_vp = SubViewport.new()
+	desk_vp.name = "DeskScreen"
+	# 1280 x 800 is the size the desktop was designed at and the size the 2D
+	# game runs at, so the layout on the monitor is the layout you sit down to.
+	desk_vp.size = Vector2i(1280, 800)
+	desk_vp.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	desk_vp.transparent_bg = false
+	desk_vp.disable_3d = true
+	desk_vp.handle_input_locally = true
+	add_child(desk_vp)
+	desk_de = preload("res://scripts/de.gd").new()
+	desk_de.machine = machine
+	# _new_ticket() increments before it installs, so this lands on the ticket
+	# that is really in the rack rather than quietly swapping the machine.
+	desk_de.seed_no = seed_no - 1
+	desk_de.set_anchors_preset(Control.PRESET_FULL_RECT)
+	desk_vp.add_child(desk_de)
+
+	desk_screen = MeshInstance3D.new()
+	desk_screen.name = "MonitorGlass"
+	var q := QuadMesh.new()
+	q.size = Vector2(DESK_SCREEN_W, DESK_SCREEN_H)
+	desk_screen.mesh = q
+	var mat := StandardMaterial3D.new()
+	mat.albedo_texture = desk_vp.get_texture()
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR
+	desk_screen.material_override = mat
+	desk_screen.position = _desk_at.pos
+	# A QuadMesh faces +Z; the screen has to face out of the monitor.
+	desk_screen.rotation = Vector3(0, float(_desk_at.yaw), 0)
+	add_child(desk_screen)
+
+
+# A box centred on `c`, `w` across the face, `h` up it and `d` through it.
+func _face_box(g, c: Vector3, face: Vector3, w: float, h: float, d: float,
+		col: Color) -> void:
+	var half: Vector3
+	if absf(face.z) > 0.5:
+		half = Vector3(w * 0.5, h * 0.5, d * 0.5)
+	else:
+		half = Vector3(d * 0.5, h * 0.5, w * 0.5)
+	g.box(c - half, half * 2.0, col, false)
 
 
 # Where a lead actually goes IN: THE PORT, not the middle of the box. A lead
 # into port 7 comes out of the seventh hole, which is the difference between a
 # picture of cabling and a picture of a box with a stripe painted down it.
 func _port_point(d: Dictionary, port: int) -> Vector3:
-	var mn: Vector3 = d.mn
-	var size: Vector3 = d.size
-	var face: Vector3 = d.face
-	var n: int = max(1, int(d.nports))
-	var along: float = size.x if absf(face.z) > 0.5 else size.z
-	var t: float = 0.05 + (along - 0.10) * (float(clampi(port, 0, n - 1)) + 0.5) / float(n)
-	var p := mn + size * 0.5
-	if absf(face.z) > 0.5: p.x = mn.x + t
-	else: p.z = mn.z + t
-	var fw: float = d.fw
-	if face.z > 0: p.z = mn.z + size.z + fw
-	elif face.z < 0: p.z = mn.z - fw
-	elif face.x > 0: p.x = mn.x + size.x + fw
-	else: p.x = mn.x - fw
-	return p
+	var fr: Array = d.get("ports", [])
+	if fr.is_empty():
+		return d.mn + d.size * 0.5
+	var p: Dictionary = fr[clampi(port, 0, fr.size() - 1)]
+	return p.c + p.n * 0.008
+
+
+# WHAT THE MODEL SAYS ABOUT THIS PORT, and nothing else. PortState out of
+# core/netstack.h: 3 is up, 2 is a run past what the copper carries, 1 is
+# nothing plugged in. A port with no link in the site's list has nothing in it,
+# which is what PORT_NOCABLE means, so that is what this returns.
+func port_state(site_i: int, port: int) -> int:
+	if site_i < 0:
+		return 1
+	for l in site_links():
+		if l.state < 0:
+			continue
+		if (l.a == site_i and l.aport == port) or (l.b == site_i and l.bport == port):
+			return int(l.state)
+	return 1
+
+
+var _lights: MeshInstance3D = null
+
+# A LINK LIGHT PER PORT, read out of port_state(). Its own mesh, because it is
+# the one thing on a device that changes: plug a cable in and the light comes
+# on, and nothing else in the room has to be rebuilt for that to be true.
+func _port_lights() -> void:
+	if _lights:
+		_lights.queue_free()
+		_lights = null
+	var g = preload("res://scripts/vgeo.gd").new()
+	for d in devices:
+		var s: int = int(d.get("site", -1))
+		for pf in d.get("ports", []):
+			var st: int = port_state(s, int(pf.i))
+			var col := Color("#1a1f24")           # dark: nothing in it
+			if st == 3: col = Color("#7fe08a")    # PORT_UP
+			elif st == 2: col = Color("#e06a4a")  # PORT_TOOLONG: laid, and dead
+			elif st == 0: col = Color("#4a4a52")  # somebody turned it off
+			_face_box(g, pf.c + pf.n * 0.001 + Vector3(0, pf.h * 0.62, 0), d.face,
+				pf.w * 0.34, pf.h * 0.20, 0.004, col)
+	if g.empty():
+		return
+	_lights = MeshInstance3D.new()
+	_lights.name = "PortLights"
+	_lights.mesh = g.mesh()
+	add_child(_lights)
+
+
+# ------------------------------------------------------------- the crosshair
+#
+# "The center of the screen is missing a dot so it's precisely hit anything...
+# It should show you that you're interacting with the computer or a particular
+# port or a server."
+#
+# So: one ray, out of the middle of the view, and whatever it lands on is what
+# the keys act on. The ray has to be HONEST -- it must hit the thing the player
+# thinks it hit -- so it is tested against the real geometry of the real ports
+# and the real boxes, and then against the world's own collider, so that a
+# server behind a rack upright is not targetable through the steel.
+const REACH := 2.2
+
+
+# Ray against an axis-aligned box: the distance in, or -1.
+static func _ray_box(o: Vector3, dir: Vector3, mn: Vector3, mx: Vector3) -> float:
+	var t0 := -1.0e9
+	var t1 := 1.0e9
+	for a in range(3):
+		var d: float = dir[a]
+		if absf(d) < 1e-9:
+			if o[a] < mn[a] or o[a] > mx[a]:
+				return -1.0
+			continue
+		var ta: float = (mn[a] - o[a]) / d
+		var tb: float = (mx[a] - o[a]) / d
+		if ta > tb:
+			var sw := ta; ta = tb; tb = sw
+		t0 = max(t0, ta)
+		t1 = min(t1, tb)
+		if t0 > t1:
+			return -1.0
+	if t1 < 0.0:
+		return -1.0
+	return max(t0, 0.0)
+
+
+# The box a port presents to the crosshair: the hole, and a couple of
+# centimetres of air in front of it, so aiming at a socket is aiming at a
+# socket and not at the millimetre of faceplate around it.
+func _port_box(d: Dictionary, pf: Dictionary) -> Array:
+	var c: Vector3 = pf.c
+	var n: Vector3 = pf.n
+	var half := Vector3(pf.w * 0.55, pf.h * 0.60, pf.w * 0.55)
+	if absf(n.z) > 0.5: half.z = 0.0
+	else: half.x = 0.0
+	var a: Vector3 = c - half - n * 0.004
+	var b: Vector3 = c + half + n * 0.022
+	return [Vector3(min(a.x, b.x), min(a.y, b.y), min(a.z, b.z)),
+		Vector3(max(a.x, b.x), max(a.y, b.y), max(a.z, b.z))]
+
+
+# What the crosshair is on. {} for nothing.
+func aim() -> Dictionary:
+	if player == null or player.cam == null:
+		return {}
+	var o: Vector3 = player.cam.global_position
+	var dir: Vector3 = -player.cam.global_transform.basis.z
+	var best := {}
+	var bt := REACH
+	for i in range(devices.size()):
+		var d: Dictionary = devices[i]
+		# the ports first: they stand in front of the box they are in, so a
+		# player aiming at a hole means the hole
+		for pf in d.get("ports", []):
+			var bb := _port_box(d, pf)
+			var t: float = _ray_box(o, dir, bb[0], bb[1])
+			if t >= 0.0 and t < bt:
+				bt = t
+				best = {"kind": "port", "dev": i, "port": int(pf.i),
+					"point": o + dir * t}
+		# then the box itself
+		var mn: Vector3 = d.mn
+		var mx: Vector3 = mn + d.size
+		if bool(d.get("is_desk", false)):
+			# YOU AIM AT THE SCREEN, not at the tower unit under the desk: the
+			# monitor is the thing a person looks at and reaches for.
+			var c: Vector3 = d.pos
+			mn = c - Vector3(0.30, 0.22, 0.30)
+			mx = c + Vector3(0.30, 0.22, 0.30)
+		var td: float = _ray_box(o, dir, mn - Vector3(0.01, 0.01, 0.01),
+			mx + Vector3(0.01, 0.01, 0.01))
+		if td >= 0.0 and td < bt:
+			bt = td
+			best = {"kind": "device", "dev": i, "port": -1, "point": o + dir * td}
+	# the lift call plate, which is a thing on a wall you press
+	for l in lifts:
+		var f := player_floor()
+		if not l.floors.has(f):
+			continue
+		var c: Vector3 = l.call_plate_pos(f)
+		var t2: float = _ray_box(o, dir, c - Vector3(0.16, 0.16, 0.16),
+			c + Vector3(0.16, 0.16, 0.16))
+		if t2 >= 0.0 and t2 < bt:
+			bt = t2
+			best = {"kind": "lift", "dev": -1, "port": -1, "point": o + dir * t2}
+	if best.is_empty():
+		return {}
+	# AND THE WORLD IS IN THE WAY OR IT IS NOT. Everything above is arithmetic
+	# on boxes; this is the same collider a walking body hits, so a device on
+	# the far side of a wall or behind a rack upright stops being targetable.
+	var space := get_world_3d().direct_space_state
+	var q := PhysicsRayQueryParameters3D.create(o, o + dir * (bt + 0.02))
+	q.collide_with_areas = false
+	var hit := space.intersect_ray(q)
+	if not hit.is_empty():
+		var hd: float = o.distance_to(hit.position)
+		if hd < bt - 0.06:
+			return {}
+	best["dist"] = bt
+	return best
+
+
+# The name of the thing under the dot, and what the keys would do to it. Every
+# name here comes from the site model or from the device the view drew; the
+# crosshair has no vocabulary of its own.
+func aim_text(a: Dictionary) -> Array:
+	if a.is_empty():
+		return ["", ""]
+	if a.kind == "lift":
+		return ["lift call plate", "[E] call"]
+	var d: Dictionary = devices[int(a.dev)]
+	var s: int = int(d.get("site", -1))
+	if a.kind == "port":
+		var p: int = int(a.port)
+		var st := port_state(s, p)
+		var what := "%s port %d" % [d.name, p]
+		if spool_in_hand():
+			if _cable_from >= 0:
+				return [what, "[LMB] plug this end in"]
+			return [what, "[LMB] plug in"]
+		if st == 3:
+			return [what, "link up"]
+		if st == 2:
+			return [what, "too long: no link"]
+		return [what, "empty  [Tab] spool in hand to cable it"]
+	if bool(d.get("is_desk", false)):
+		return [str(d.name), "[E] sit down"]
+	var hint := "[F] serial"
+	if bool(d.hdmi):
+		hint += "  [H] display"
+	if s >= 0:
+		hint += "  [G] pick up"
+	if not bool(d.serial) and not bool(d.hdmi):
+		hint = "passive: copper and a label"
+	return [str(d.name), hint]
+
+
+func spool_in_hand() -> bool:
+	if bag == null:
+		return false
+	return str(bag.hand(0)) == "spool" or str(bag.hand(1)) == "spool"
+
+
+# What the keys act on: what the crosshair is on if it is on anything, and
+# otherwise the nearest thing within arm's reach. The HUD and the crosshair
+# both name THIS, so what you read is always what the key will do.
+func target() -> Dictionary:
+	var a := aim()
+	if not a.is_empty():
+		return a
+	var n := nearest_device(player.global_position)
+	if n < 0:
+		return {}
+	return {"kind": "device", "dev": n, "port": -1, "dist": -1.0, "far": true}
 
 
 # What you are standing in front of. Distance alone is not enough once things
@@ -1745,40 +2303,48 @@ var desk_de: Control = null
 
 
 func desk_open() -> bool:
-	return desk_de != null
+	return desk_layer != null
 
 
 func sit_down() -> String:
-	if desk_de != null:
+	if desk_layer != null:
 		return "you are already sitting at it."
 	if not with_desktop:
 		return "the desktop is not built in this run."
+	_desk_build()
+	if desk_de == null:
+		return "there is no monitor here to sit at."
+	# THE SAME DESKTOP, MOVED. Not a new one: the Control comes out of the
+	# monitor\'s viewport and onto the window at full size, and goes back when
+	# you stand up. That is what makes the session you walk away from the
+	# session you come back to -- same windows, same terminal, same scrollback
+	# -- and it is what a monitor across a room showing your desktop MEANS.
 	desk_layer = CanvasLayer.new()
 	desk_layer.name = "Desktop"
 	desk_layer.layer = 10
-	desk_de = preload("res://scripts/de.gd").new()
-	desk_de.machine = machine
-	# _new_ticket() increments before it installs, so this lands on the ticket
-	# that is really in the rack rather than quietly swapping the machine.
-	desk_de.seed_no = seed_no - 1
-	desk_de.set_anchors_preset(Control.PRESET_FULL_RECT)
-	desk_layer.add_child(desk_de)
 	add_child(desk_layer)
+	desk_vp.remove_child(desk_de)
+	desk_layer.add_child(desk_de)
+	desk_de.set_anchors_preset(Control.PRESET_FULL_RECT)
 	if player:
 		player.capture(false)
 		player.velocity = Vector3.ZERO
 		player.set_physics_process(false)
 	if hud:
 		hud.visible = false
-	return "you sit down at the workstation.  [Esc] or [E] to stand up."
+	if reticle:
+		reticle.visible = false
+	return "you sit down at the workstation.  [Esc] to stand up."
 
 
 func stand_up() -> String:
-	if desk_de == null:
+	if desk_layer == null:
 		return "you are not sitting at anything."
+	desk_layer.remove_child(desk_de)
+	desk_vp.add_child(desk_de)
+	desk_de.set_anchors_preset(Control.PRESET_FULL_RECT)
 	desk_layer.queue_free()
 	desk_layer = null
-	desk_de = null
 	if player:
 		player.set_physics_process(true)
 		# BACK TO MOUSELOOK. walker.gd releases the pointer on Escape and it
@@ -1787,14 +2353,16 @@ func stand_up() -> String:
 		player.capture(true)
 	if hud:
 		hud.visible = true
-	return "you stand up."
+	if reticle:
+		reticle.visible = true
+	return "you stand up. The desktop is still up on the screen behind you."
 
 
 # What [E] does where you are standing. A workstation is something you USE; a
 # lift landing is something you call. One key, and what it does is whatever is
 # in front of you.
 func use_here(dev: int) -> String:
-	if desk_de != null:
+	if desk_open():
 		return stand_up()
 	if dev >= 0 and bool(devices[dev].get("is_desk", false)):
 		return sit_down()
@@ -1878,8 +2446,9 @@ func lift_car_centre(which := 0) -> Vector3:
 # ------------------------------------------------------------------- the HUD
 
 var hud: Label = null
+var reticle: Control = null
 
-# What is in your hands, and the two slots the mouse buttons use. Tab.
+# What is in your hands, and the two slots the mouse buttons use.
 func _bag() -> void:
 	var layer := CanvasLayer.new()
 	layer.name = "Bag"
@@ -1892,6 +2461,9 @@ func _bag() -> void:
 
 func _hud() -> void:
 	var layer := CanvasLayer.new()
+	layer.layer = 4
+	reticle = preload("res://scripts/reticle.gd").new()
+	layer.add_child(reticle)
 	hud = Label.new()
 	hud.add_theme_font_override("font", preload("res://scripts/uifont.gd").mono())
 	hud.add_theme_font_size_override("font_size", 15)
@@ -2023,20 +2595,89 @@ func cable_here(dev: int) -> String:
 			if int(d.i) == carrying:
 				what = str(d.name)
 		return "you are carrying %s. A drum of cable takes both hands too: put it down first  [G]." % what
+	return cable_at(dev, -1)
+
+
+# THE SAME MECHANIC, AT A PARTICULAR HOLE. `port` of -1 is "the next free one",
+# which is what pressing [C] at a box has always meant; a port number is what
+# the crosshair gives you when you click on an actual socket. Either way the
+# run itself is core's: site_cable() measures it through the building's own
+# cable graph and prices it by the metre, and this only says which two ports
+# the player meant.
+func cable_at(dev: int, port: int) -> String:
+	if dev < 0 or not site_up:
+		return ""
+	if carrying >= 0:
+		var what := "the box"
+		for d in site_devs():
+			if int(d.i) == carrying:
+				what = str(d.name)
+		return "you are carrying %s. A drum of cable takes both hands too: put it down first  [G]." % what
 	var s: int = int(devices[dev].get("site", -1))
 	if s < 0:
 		return "%s is passive. There is nothing to plug into." % devices[dev].name
+	var p: int = port if port >= 0 else _free_port(s)
 	if _cable_from < 0:
 		_cable_from = s
-		return "spool at %s. Walk to the other end and press [C]." % devices[dev].name
-	if _cable_from == s:
+		_cable_port = p
+		_cable_dev = dev
+		return "one end into %s port %d. Walk to the other end and plug it in." \
+			% [devices[dev].name, p]
+	if _cable_from == s and _cable_port == p:
 		_cable_from = -1
+		_cable_dev = -1
+		_drop_trail()
 		return "spool put back."
 	var a := _cable_from
+	var ap := _cable_port
 	_cable_from = -1
-	var out := site("cable %d:%d %d:%d cat6" % [a, _free_port(a), s, _free_port(s)])
+	_cable_dev = -1
+	_drop_trail()
+	var out := site("cable %d:%d %d:%d cat6" % [a, ap, s, p])
 	_draw_cables()
 	return out.strip_edges()
+
+
+# ---------------------------------------------------- the cable in your hands
+#
+# One end is in a socket and the rest of the drum is in your arms, so the
+# copper trails from the port you plugged to your hands as you walk. It is the
+# same length of cable the run will be made of -- same sweep, same sag, same
+# colour -- redrawn every frame from where you are actually standing, so the
+# walk that costs the metres is the walk you can see costing them.
+var _cable_port := -1
+var _cable_dev := -1
+var _trail: MeshInstance3D = null
+
+
+func _drop_trail() -> void:
+	if _trail:
+		_trail.queue_free()
+		_trail = null
+
+
+func _draw_trail() -> void:
+	if _cable_from < 0 or player == null or player.cam == null:
+		_drop_trail()
+		return
+	var a := _dev_point(_cable_from, _cable_port)
+	if a == Vector3.INF:
+		_drop_trail()
+		return
+	var face := _dev_face(_cable_from)
+	var cam: Camera3D = player.cam
+	# where your hands are: down and to the left of the eye, out in front
+	var hands: Vector3 = cam.global_position \
+		+ cam.global_transform.basis * Vector3(-0.22, -0.30, -0.45)
+	var g = preload("res://scripts/vgeo.gd").new()
+	var mid := (a + face * 0.10 + hands) * 0.5
+	mid.y = min(a.y, hands.y) - a.distance_to(hands) * 0.16
+	_run_cable(g, [a, a + face * 0.06, mid, hands], Color("#2f6fd0"), 1)
+	_drop_trail()
+	_trail = MeshInstance3D.new()
+	_trail.name = "CableInHand"
+	_trail.mesh = g.mesh()
+	add_child(_trail)
 
 
 func _free_port(s: int) -> int:
@@ -2056,54 +2697,100 @@ func _free_port(s: int) -> int:
 	return 0
 
 
-# [E] and [Esc] come through here rather than off the polled keyboard, because
-# while the 2D desktop is up the keys belong to whatever has focus in it: a
-# terminal that is taking a command consumes the `e` and this never sees it,
-# which is the difference between typing `netstat` and standing up halfway
-# through the word.
+# ------------------------------------------------------------------ THE KEYS
+#
+# "esc should exit the debugger/de use mode, tab may be overload for terminal."
+#
+# TAB BELONGS TO THE TERMINAL. It is a shell and it completes paths, and
+# terminal.gd has had real completion in it since before the building existed;
+# a key that opened a bag instead was the view stealing a key from the machine.
+# So the inventory is on [I], and Tab goes where Tab goes.
+#
+# ESC LEAVES WHATEVER YOU ARE IN, and it is the same key every time: out of the
+# desktop, out of the handset, out of the bag. It is handled in _input rather
+# than _unhandled_input because a focused terminal consumes every key it is
+# given -- which is correct of a terminal, and would leave a player sitting at
+# a desk with no way back out of it.
+func _input(event: InputEvent) -> void:
+	if player == null:
+		return
+	if not (event is InputEventKey) or not event.pressed or event.is_echo():
+		return
+	if (event as InputEventKey).keycode != KEY_ESCAPE:
+		return
+	if bag and bag.visible:
+		bag.toggle()
+	elif desk_open():
+		print(stand_up())
+	elif phone and phone.focused:
+		print(phone.let_go())
+	else:
+		return
+	get_viewport().set_input_as_handled()
+
+
+# Everything else. It is _unhandled_input rather than a poll of the keyboard
+# because a poll samples once a frame and drops a key that was tapped between
+# two of them -- which is why pressing [F] at a rack sometimes did nothing at
+# all -- and because while the desktop or the handset has focus the keys belong
+# to whatever is typing.
 func _unhandled_input(event: InputEvent) -> void:
 	if player == null:
 		return
+	if desk_open() or (bag and bag.visible) or (phone and phone.focused):
+		return
 	# THE HANDS. Left and right click use whatever is in the left and right
-	# hand, which is inventory.gd's business; what is in reach is this file's.
-	# Only while the mouse is captured, so the first click into the window is
-	# still the one that grabs the pointer.
-	if event is InputEventMouseButton and event.pressed and player.look_free \
-			and not desk_open() and bag and not bag.visible:
+	# hand, which is inventory.gd's business; what is under the crosshair is
+	# this file's. Only while the mouse is captured, so the first click into
+	# the window is still the one that grabs the pointer.
+	var t := target()
+	if event is InputEventMouseButton and event.pressed and player.look_free:
 		var mb: InputEventMouseButton = event
 		var side := -1
 		if mb.button_index == MOUSE_BUTTON_LEFT: side = 0
 		elif mb.button_index == MOUSE_BUTTON_RIGHT: side = 1
-		if side >= 0:
-			var said: String = bag.use(side, nearest_device(player.global_position))
+		if side >= 0 and bag:
+			var said: String = bag.use(side, int(t.get("dev", -1)),
+				int(t.get("port", -1)))
 			if said != "":
 				print(said)
 			get_viewport().set_input_as_handled()
 		return
-	if not (event is InputEventKey) or not event.pressed:
+	if not (event is InputEventKey) or not event.pressed or event.is_echo():
 		return
 	var k: InputEventKey = event
-	if k.keycode == KEY_TAB and bag and not desk_open() and not k.echo:
-		bag.toggle()
-		get_viewport().set_input_as_handled()
-		return
-	if bag and bag.visible:
-		if k.keycode == KEY_ESCAPE:
-			bag.toggle()
-			get_viewport().set_input_as_handled()
-		return
-	if k.echo:
-		return
-	if desk_de != null:
-		if k.keycode == KEY_ESCAPE or k.keycode == KEY_E:
-			print(stand_up())
-			get_viewport().set_input_as_handled()
-		return
-	if k.keycode == KEY_E:
-		var said := use_here(nearest_device(player.global_position))
-		if said != "":
-			print(said)
-		get_viewport().set_input_as_handled()
+	var dev: int = int(t.get("dev", -1))
+	var said2 := ""
+	match k.keycode:
+		KEY_I:
+			if bag: bag.toggle()
+		KEY_E:
+			if t.get("kind", "") == "lift":
+				var l := _lift_landing()
+				said2 = l.call_to(player_floor()) if l != null else ""
+			else:
+				said2 = use_here(dev)
+		KEY_F:
+			if dev >= 0 and phone: said2 = phone.plug(dev, "serial")
+		KEY_H:
+			if dev >= 0 and phone: said2 = phone.plug(dev, "hdmi")
+		KEY_U:
+			if phone: phone.unplug()
+		KEY_C:
+			said2 = cable_at(dev, int(t.get("port", -1)))
+		KEY_G:
+			said2 = carry_here(dev)
+		KEY_O:
+			said2 = open_next_floor()
+		_:
+			var car: Object = lift_in()
+			if car != null and k.keycode >= KEY_0 and k.keycode <= KEY_9:
+				said2 = car.go_to(int(k.keycode) - int(KEY_0))
+			else:
+				return
+	if said2 != "":
+		print(said2)
+	get_viewport().set_input_as_handled()
 
 
 func _hand_name(side: int) -> String:
@@ -2116,7 +2803,7 @@ func _hand_name(side: int) -> String:
 func _process(_dt: float) -> void:
 	if player == null:
 		return
-	if desk_de != null:
+	if desk_open():
 		return                 # the world waits while you are sitting at it
 	# IT IS IN YOUR HAND WHEN IT IS THE EQUIPPED ITEM, and nowhere otherwise.
 	# The crash cart appeared out of the air the moment a lead went in; a
@@ -2127,51 +2814,39 @@ func _process(_dt: float) -> void:
 		var h1: String = str(bag.hand(1))
 		phone.visible = h0 == "serial" or h0 == "display" \
 			or h1 == "serial" or h1 == "display"
+	# The cable trailing out of the port you plugged into, to your hands.
+	_draw_trail()
 	if bag and bag.visible:
+		if reticle:
+			reticle.show_target("", "", false, false)
 		return                 # and while you are looking in the bag
-	var near := nearest_device(player.global_position)
+	var t := target()
+	var dev: int = int(t.get("dev", -1))
 	var car: Object = lift_in()
-	var landing := _lift_landing()
+	if reticle:
+		var nm := aim_text(t)
+		# THE DOT IS BRIGHT WHEN THE RAY IS REALLY ON IT. What the label says
+		# is always what the key will do -- the fallback to whatever is within
+		# arm's reach still names itself -- but the dot is the honest report of
+		# where the ray landed, which is the thing the owner was missing.
+		var on: bool = not t.get("far", false) and not t.is_empty()
+		reticle.show_target(nm[0], nm[1], on,
+			t.get("kind", "") == "port" and spool_in_hand())
 	if hud:
-		var t := where_am_i()
-		if phone:
-			t += "\nphone: " + str(phone.status)
+		var s := where_am_i()
+		if phone and str(phone.status) != "unplugged":
+			s += "\nphone: " + str(phone.status)
 		if _cable_from >= 0:
-			t += "\nspool in hand"
+			s += "\ncable in hand from %s port %d   walk to the other end"  \
+				% [_cable_name(_cable_from), _cable_port]
 		if carrying >= 0:
-			t += "\ncarrying kit in both hands   [G] put it down here"
-		elif near >= 0:
-			if bool(devices[near].get("is_desk", false)):
-				t += "\n%s in reach   [E] sit down at it" % devices[near].name
-			else:
-				t += "\n%s in reach   [F] serial lead   [H] display lead   [U] unplug" % devices[near].name
-			if int(devices[near].get("site", -1)) >= 0:
-				t += "   [C] cable   [G] pick up"
+			s += "\ncarrying kit in both hands   [G] put it down here"
 		if car != null:
-			t += "\nin the lift: press a floor number.  in service: %s" % str(car.serviced())
-		elif landing != null:
-			t += "\n[E] call the lift"
+			s += "\nin the lift: press a floor number.  in service: %s" % str(car.serviced())
 		if bag:
-			t += "\nhands: %s / %s   [Tab] inventory" % [_hand_name(0), _hand_name(1)]
-		t += "\n%d of %d floors in service   [O] open the next one" % [floors_in_service, nfloors]
-		hud.text = t
-	if Input.is_key_pressed(KEY_F) and not _f_down:
-		if near >= 0 and phone:
-			print(phone.plug(near, "serial"))
-	_f_down = Input.is_key_pressed(KEY_F)
-	if Input.is_key_pressed(KEY_H) and not _h_down:
-		if near >= 0 and phone:
-			print(phone.plug(near, "hdmi"))
-	_h_down = Input.is_key_pressed(KEY_H)
-	if Input.is_key_pressed(KEY_U) and not _u_down and phone:
-		phone.unplug()
-	_u_down = Input.is_key_pressed(KEY_U)
-	if Input.is_key_pressed(KEY_C) and not _c_down and near >= 0:
-		print(cable_here(near))
-	_c_down = Input.is_key_pressed(KEY_C)
-	if Input.is_key_pressed(KEY_G) and not _g_down:
-		print(carry_here(near))
-	_g_down = Input.is_key_pressed(KEY_G)
+			s += "\nhands: %s / %s   [I] inventory" % [_hand_name(0), _hand_name(1)]
+		s += "\n%d of %d floors in service   [O] open the next one" % [floors_in_service, nfloors]
+		hud.text = s
 	# WHAT YOU ARE CARRYING IS IN THE ROOM YOU ARE IN, at every step of the
 	# walk -- not in an inventory that resolves when you put it down. The
 	# site is told the moment you cross the threshold, so `show` from a
@@ -2181,15 +2856,13 @@ func _process(_dt: float) -> void:
 		if r != NOROOM and r != _carry_room:
 			_carry_room = r
 			site("move %d #%d" % [carrying, r])
-	if Input.is_key_pressed(KEY_O) and not _o_down:
-		print(open_next_floor())
-	_o_down = Input.is_key_pressed(KEY_O)
-	# The buttons inside the car, on the number row.
-	if car != null:
-		for f in range(min(10, nfloors)):
-			if Input.is_key_pressed(KEY_0 + f) and not _num_down[f]:
-				print(car.go_to(f))
-			_num_down[f] = Input.is_key_pressed(KEY_0 + f)
+
+
+func _cable_name(s: int) -> String:
+	for d in site_devs():
+		if int(d.i) == s:
+			return str(d.name)
+	return "#%d" % s
 
 
 # The call plate you are standing in front of, if you are standing in front of
@@ -2205,10 +2878,3 @@ func _lift_landing() -> Object:
 			return l
 	return null
 
-var _f_down := false
-var _h_down := false
-var _u_down := false
-var _c_down := false
-var _g_down := false
-var _o_down := false
-var _num_down := [false, false, false, false, false, false, false, false, false, false]

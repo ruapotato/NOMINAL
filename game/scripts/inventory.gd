@@ -1,6 +1,8 @@
-# inventory.gd — Tab, and what is in your hands.
+# inventory.gd — [I], and what is in your hands.
 #
 # "I want tab to go to your inventory, Minecraft style, with whatever you have.
+# ... [and later] tab may be overload for terminal."  Tab went back to the
+# shell, where it completes paths; the bag is on [I].
 # You can drag in your inventory items into left and right click so that you
 # can equip, for example, the spool."
 #
@@ -113,15 +115,18 @@ func equip(item: String, side: int) -> String:
 
 # What a mouse button does. `dev` is the device you are standing in front of,
 # which is nearest_device()'s business, not this file's.
-func use(side: int, dev: int) -> String:
+func use(side: int, dev: int, port := -1) -> String:
 	var h := hand(side)
 	match h:
 		"box":
 			return tower.drop_here()
 		"spool":
 			if dev < 0:
-				return "nothing in reach to put the end of the cable in."
-			return tower.cable_here(dev)
+				return "nothing under the crosshair to put the end of the cable in."
+			if port < 0:
+				return "aim at a port. Every socket on the back of a box is a "  \
+					+ "place a cable goes, and which one matters."
+			return tower.cable_at(dev, port)
 		"serial", "display":
 			if dev < 0:
 				if tower.phone and tower.phone.plugged >= 0:
@@ -203,7 +208,7 @@ func _draw() -> void:
 	draw_string(_font, p.position + Vector2(26, 40), "INVENTORY",
 		HORIZONTAL_ALIGNMENT_LEFT, -1, 22, Color("#e8eef4"))
 	draw_string(_font, p.position + Vector2(26, 68),
-		"drag a thing into a hand.  [Tab] closes.", HORIZONTAL_ALIGNMENT_LEFT, -1, 14,
+		"drag a thing into a hand.  [Esc] closes.", HORIZONTAL_ALIGNMENT_LEFT, -1, 14,
 		Color("#8d97a1"))
 
 	var box := carrying_box()

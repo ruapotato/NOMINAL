@@ -426,6 +426,7 @@ func _init() -> void:
 			m = mob.plug(ws, "hdmi")
 			if m.find("display on") < 0: fail("the workstation would not drive a screen: " + m)
 			else: ok("HDMI on the workstation: " + m)
+			mob.unplug()
 
 	# ---- THE INVENTORY IS A PICTURE OF THE SIMULATION, not a second one. The
 	# hands are the rule core/session.c already keeps: both of them are on a box

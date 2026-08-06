@@ -50,6 +50,36 @@ func box(mn: Vector3, size: Vector3, col: Color, collide := true, top: Color = C
 	quad(Vector3(mx.x, mn.y, mn.z), Vector3(mx.x, mx.y, mn.z), Vector3(mx.x, mx.y, mx.z), Vector3(mx.x, mn.y, mx.z), col, collide)
 
 
+# A LENGTH OF CABLE, between two points that are not on an axis. Everything
+# else in this project is an axis-aligned box, and copper is the one thing in a
+# building that is never square to anything: it comes out of a socket, it
+# sags, it turns a corner with a radius on it. So this is a four-sided prism
+# swept along the segment, which at 6 mm across reads as round.
+#
+# The two horizontal faces get the same shading as a box's, so a cable lying in
+# a tray is lit like the tray it is lying in.
+func tube(a: Vector3, b: Vector3, r: float, col: Color) -> void:
+	var ax := b - a
+	var len2 := ax.length()
+	if len2 < 1.0e-5:
+		return
+	ax /= len2
+	var up := Vector3(0, 1, 0)
+	if absf(ax.y) > 0.94:
+		up = Vector3(1, 0, 0)
+	var u := ax.cross(up).normalized() * r
+	var w := ax.cross(u).normalized() * r
+	var ring := [u + w, u - w, -u - w, -u + w]
+	for i in range(4):
+		var p0: Vector3 = ring[i]
+		var p1: Vector3 = ring[(i + 1) % 4]
+		# BOTH WINDINGS. The ring runs one way round and the mesh is back-face
+		# culled, so a sweep along a line that turns a corner shows its inside
+		# on half the bends. A cable is 6 mm thick: there is no inside.
+		quad(a + p0, a + p1, b + p1, b + p0, col, false)
+		quad(a + p0, b + p0, b + p1, a + p1, col, false)
+
+
 func empty() -> bool:
 	return v.size() == 0
 
