@@ -76,7 +76,11 @@ static void check_verbs(int *passed, int *total)
     static const char *VERB[] = {
         "where", "look", "map", "go", "lift", "open", "buy", "carry", "drop",
         "spool", "plug", "unplug", "cable", "uncable", "show", "links", "money",
-        "demand", "rooms", "frames", "help", NULL
+        "demand", "rooms", "frames", "help",
+        /* THE COUNTERPART TO THE SPOOL, which D23 and the README both sold
+         * and the tower did not have: the first blind playtester of it went
+         * looking for the verb and there was none. */
+        "jack", "patch", "jacks", NULL
     };
     bool all = true;
     for (int i = 0; VERB[i]; i++)
@@ -139,7 +143,8 @@ static void check_verbs(int *passed, int *total)
      * allowed to drift without this failing. */
     static const char *LOOP[] = {
         "day", "serve", "service", "status", "load", "isp", "events",
-        "get", "httpd", "dnsd", "ups", "disk", NULL
+        "get", "httpd", "dnsd", "ups", "disk",
+        "jack", "patch", "jacks", NULL
     };
     const char *h = say(&ses, "help", &o);
     Buf help = {0};
@@ -1401,6 +1406,122 @@ static void check_cable_batch(int *passed, int *total)
     session_end(&ses);
 }
 
+/* ------------------------------- the same riser, bought both ways, played
+ *
+ * A playtest that reached day 34 said the thing this feature has to answer:
+ * *"Cable is a bill I paid with a rule, not a bill I sweated. I made the
+ * riser decision on floor 1 and then repeated it on floors 2 and 3 without
+ * thinking."* A jack that is only a dearer cable does not fix that. What
+ * follows is the same run bought both ways by a person over a pipe, and the
+ * assertions are that BOTH answers are wrong somewhere:
+ *
+ *   - the jack is dearer, and it is not there for days, so the floor that
+ *     needed a switch this afternoon wanted the spool;
+ *   - and the spool is charged again every time the box moves, so the floor
+ *     that has been rebuilt twice wanted the jack.
+ *
+ * Neither of those is a number anybody tuned. The first is site_jack_days()
+ * against the same `day` the strike clock runs on; the second is
+ * site_uncable() refunding nothing, which it has done since it was written.
+ */
+static void check_jack_played(int *passed, int *total)
+{
+    P = passed; T = total;
+    printf("\nthe same riser, off the spool and out of the wall\n");
+    Session ses;
+    if (!session_start(&ses, GATE_SEED, 100000)) { ck("a session starts", false); return; }
+    Buf o = {0};
+
+    static const char *SETUP[] = {
+        "buy switch24 core", "go goods", "carry core", "go mdf", "drop", NULL
+    };
+    for (int i = 0; SETUP[i]; i++) say(&ses, SETUP[i], &o);
+    open_next_floor(&ses, &o);
+    say(&ses, "go f1.comms", &o);
+    int cupboard = ses.room;
+    int metres = site_metres(&ses.s, cupboard, ses.s.dev[0].room);
+
+    /* BOOKED FROM THE ROOM IT GOES IN, and both prices printed at the moment
+     * the money leaves -- the same place D27 puts the negotiated speed, for
+     * the same reason: it is the only moment the player is thinking about
+     * this decision. */
+    const char *bought = say(&ses, "jack core:22 cat5e", &o);
+    char spool_price[32], jack_price[32];
+    snprintf(spool_price, sizeof spool_price, "spool is %d",
+             site_cable_price(CAB_CAT5E, metres));
+    snprintf(jack_price, sizeof jack_price, "%d paid",
+             site_jack_price(CAB_CAT5E, metres));
+    ck("`jack` books one from the room you are standing in, priced by distance",
+       ses.s.njack == 1 && has(bought, jack_price));
+    ck("and prints what the same metres would have cost off the spool",
+       has(bought, spool_price) &&
+       site_jack_price(CAB_CAT5E, metres) > site_cable_price(CAB_CAT5E, metres));
+    ck("and says which day it stops being a booking and starts being a socket",
+       has(bought, "the trade comes on day"));
+    ck("`look` in that room says there is copper on the wall",
+       has(say(&ses, "look", &o), "jacks in the wall"));
+
+    /* THE FLOOR THAT NEEDED IT THIS AFTERNOON. This is the wrong answer, and
+     * the player finds out by trying. */
+    static const char *KIT[] = {
+        "buy switch8 fsw", "go goods", "carry fsw", "go f1.comms", "drop", NULL
+    };
+    for (int i = 0; KIT[i]; i++) say(&ses, KIT[i], &o);
+    const char *early = say(&ses, "patch fsw:0", &o);
+    ck("a jack booked today is not a socket today, and says so in days",
+       has(early, "refused") && has(early, "Copper off the spool is in your") &&
+       ses.s.nlink == 0);
+
+    char day[16];
+    snprintf(day, sizeof day, "day %d", site_jack_days(metres));
+    say(&ses, day, &o);
+    long before = ses.s.money;
+    const char *in = say(&ses, "patch fsw:0", &o);
+    ck("once the trade has been, a box in that room plugs in for a lead",
+       has(in, "already in the wall") && ses.s.nlink == 1 &&
+       ses.s.money == before - site_jack_lead_price());
+    ck("and the link is up, on the metres that are in the wall",
+       site_link_state(&ses.s, 0) == PORT_UP && ses.s.link[0].metres == metres);
+
+    /* THE FLOOR THAT GETS REBUILT. Take the switch out, put it back -- which
+     * is a `move`, and a move off the spool is the whole run again. */
+    say(&ses, "uncable 0", &o);
+    ck("the lead comes out and the jack does not",
+       has(o.p, "The jack is still in the wall") && ses.s.njack == 1);
+    say(&ses, "carry fsw", &o);
+    say(&ses, "go mdf", &o);
+    say(&ses, "go f1.comms", &o);
+    say(&ses, "drop", &o);
+    before = ses.s.money;
+    say(&ses, "patch fsw:0", &o);
+    ck("and the box that came back costs a lead, not a run",
+       ses.s.money == before - site_jack_lead_price());
+
+    /* THE ARITHMETIC OF THE WHOLE DECISION, in the money that really left
+     * the account, against the same three connections off the spool. */
+    int jack_way  = site_jack_price(CAB_CAT5E, metres) + site_jack_lead_price() * 3;
+    int spool_way = site_cable_price(CAB_CAT5E, metres) * 3;
+    printf("    %d m riser: three connections cost %d jacked, %d spooled\n",
+           metres, jack_way, spool_way);
+    ck("three connections over the life of the run and the jack was right",
+       jack_way < spool_way);
+    ck("one connection and it was not, by the fit-out and the lead",
+       site_jack_price(CAB_CAT5E, metres) + site_jack_lead_price() >
+       site_cable_price(CAB_CAT5E, metres));
+
+    /* AND THE PORT AT THE FAR END IS NOT A PORT ANY MORE, which is the cost
+     * nobody counts until a floor runs out of holes. */
+    say(&ses, "go mdf", &o);
+    ck("`show` on the core says which socket the jack took for good",
+       has(say(&ses, "show core", &o), "punched down to jack j0"));
+    ck("and `links` separates copper in the wall from money gone",
+       has(say(&ses, "links", &o), "paid to have them put in") &&
+       has(o.p, "a lead in j0"));
+
+    buf_free(&o);
+    session_end(&ses);
+}
+
 /* ---------------------------- a floor server on vlans, across the mains
  *
  * THE WORST THING A PLAYTEST HAS FOUND IN THIS GAME. Every `addr`, `gw` and
@@ -1640,6 +1761,7 @@ int session_selfcheck(int *passed, int *total)
     check_prompt(passed, total);
     check_inventory(passed, total);
     check_cable_batch(passed, total);
+    check_jack_played(passed, total);
     check_vlan_server_reboot(passed, total);
     check_documented(passed, total);
     return 0;

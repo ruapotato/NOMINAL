@@ -1443,6 +1443,137 @@ static void check_reports(const Building *b)
     site_free(&s);
 }
 
+/* =============================================== the other way to buy metres
+ *
+ * D23 sold a permanent jack as the counterpart to the spool and the tower
+ * never had one, which the first blind playtester of it caught: *"It is not
+ * in `help` and no verb I tried creates one."* This is the gate on the thing
+ * that was built instead of the promise.
+ *
+ * What it has to be, or it is only a dearer cable and the day-34 playtest's
+ * verdict stands ("a bill I paid with a rule, not a bill I sweated"):
+ *   - the same metres. bld_cable_all() through site_metres(), so the two
+ *     prices on the screen are prices for one piece of copper;
+ *   - dearer than the spool run, always, so jacking a room that only ever
+ *     holds one box is money burnt and the player can find that out;
+ *   - a fixed point in the ROOM. A lead is what a box costs after that,
+ *     the lead comes out and the jack stays, and the panel port at the far
+ *     end is gone for good -- including from `serve`;
+ *   - and NOT THERE TODAY. Days, on the same clock the strikes are on. */
+static void check_jack(const Building *b)
+{
+    printf("\nthe permanent jack, against the spool it is the counterpart to\n");
+    Site s; Buf o; buf_init(&o);
+    site_new(&s, b, GATE_SEED, 100000);
+    int mdf = bld_find(b, 0, RM_MDF);
+    int up  = a_room(b, 2);
+    int core = site_install(&s, SDEV_SWITCH24, mdf, "core");
+
+    int m = site_metres(&s, up, mdf);
+    ck("a jack is measured on the same tray metres the spool is",
+       m > 0 && site_metres(&s, up, mdf) == m);
+    ck("and priced from them, dearer than running the same metres once",
+       site_jack_price(CAB_CAT5E, m) > site_cable_price(CAB_CAT5E, m));
+    ck("and a lead into it afterwards is cheaper than either",
+       site_jack_lead_price() < site_cable_price(CAB_CAT5E, m));
+    /* THE BREAK-EVEN IS A REAL ONE. One box in that room and the spool won;
+     * three boxes over the life of the run and the jack won. A mechanic
+     * whose answer is the same every time is the one this feature exists to
+     * stop being. */
+    int spool1 = site_cable_price(CAB_CAT5E, m);
+    int jack1  = site_jack_price(CAB_CAT5E, m) + site_jack_lead_price();
+    int spool3 = spool1 * 3;
+    int jack3  = site_jack_price(CAB_CAT5E, m) + site_jack_lead_price() * 3;
+    ck("one box in the room and the spool is the cheaper answer", jack1 > spool1);
+    ck("three boxes over the run and the jack is", jack3 < spool3);
+
+    long before = s.money;
+    int j = site_jack(&s, up, core, 22, CAB_CAT5E);
+    ck("a jack goes in, and is charged in full on the day it is ordered",
+       j == 0 && s.money == before - site_jack_price(CAB_CAT5E, m));
+    ck("it is on the wall of the room, not on a box",
+       s.jack[j].room == up && s.jack[j].metres == m);
+
+    /* THE DAYS. This is the half money cannot buy back, and it is measured
+     * against the same s->day the tenancy strike clock runs on. */
+    ck("it takes the trade days, from the metres they have to pull",
+       site_jack_days(m) >= 2 && s.jack[j].ready == s.day + site_jack_days(m));
+    int sw = site_install(&s, SDEV_SWITCH8, up, "fsw");
+    ck("nothing plugs into it before the trade has been",
+       site_patch(&s, j, sw, 0) < 0 && s.err == SITE_EEARLY);
+    buf_clear(&o);
+    site_cmd(&s, "jacks", &o);
+    ck("and `jacks` says which day it will be a socket",
+       has(o.p, "the trade comes on day"));
+    while (s.day < s.jack[j].ready) site_day(&s, NULL);
+
+    /* THE PANEL PORT IS GONE, from the moment it is ordered -- there is no
+     * hole in it any more, and `serve` must not find one either. */
+    ck("the port at the far end is held, and is not a free port",
+       site_port_jack(&s, core, 22) == j && site_free_port(&s, core) != 22);
+    ck("and copper off the spool cannot be run into it",
+       site_cable(&s, core, 22, sw, 1, CAB_CAT5E) < 0 && s.err == SITE_EJACK);
+
+    /* AND NEITHER END OF IT WALKS OFF. The pair is terminated on that
+     * socket and screwed to a wall in another room, so the far box is where
+     * it lives now -- which is the cost of `for good` and is said at the
+     * moment the money leaves. */
+    ck("the box the run is punched down into does not move again",
+       !site_move(&s, core, a_room(b, 3)) && s.err == SITE_EJACK &&
+       s.dev[core].room == mdf);
+    ck("and both ends of a jack in one box is refused, as a loop is",
+       site_patch(&s, j, core, 3) < 0 && s.err == SITE_EBUSY);
+
+    /* A BOX IN THE ROOM PLUGS IN FOR A LEAD, and it is a real link on the
+     * wire: the same metres, the same grade, the same port state. */
+    before = s.money;
+    int l = site_patch(&s, j, sw, 0);
+    ck("a box standing in that room plugs in for the price of a lead",
+       l >= 0 && s.money == before - site_jack_lead_price());
+    ck("and it is a real link, on the jack's own metres and grade",
+       l >= 0 && s.link[l].metres == m && s.link[l].kind == CAB_CAT5E &&
+       site_link_state(&s, l) == PORT_UP && s.link[l].jack == j);
+
+    /* AND A BOX THAT IS NOT IN THE ROOM DOES NOT, which is the whole of what
+     * makes this a decision about a room rather than a discount. */
+    int away = site_install(&s, SDEV_SWITCH8, a_room(b, 3), "elsewhere");
+    ck("a box in another room cannot reach it, however much it would like to",
+       site_patch(&s, j, away, 0) < 0 && s.err == SITE_ENOROOM);
+
+    /* THE PAYOFF, AND IT IS THE ONLY ONE. The box goes; the copper does not.
+     * The same move off the spool is the whole run again, and site_uncable
+     * has refunded nothing since the day it was written. */
+    long spent_before = s.spent;
+    site_uncable(&s, l);
+    ck("the lead comes out and the jack is still in the wall",
+       s.jack[j].link < 0 && site_port_jack(&s, core, 22) == j);
+    ck("pulling a lead refunds nothing either", s.spent == spent_before);
+    ck("and the box can leave the room now that nothing is in it",
+       site_move(&s, sw, a_room(b, 3)));
+    site_move(&s, sw, up);
+    before = s.money;
+    int l2 = site_patch(&s, j, sw, 1);
+    ck("and the next box in that room is a lead, not a run",
+       l2 >= 0 && s.money == before - site_jack_lead_price() &&
+       site_link_state(&s, l2) == PORT_UP);
+
+    /* WHAT THE PLAYER READS. `links` distinguishes copper in the wall from
+     * money gone, and it has to distinguish this third thing too: copper in
+     * the wall that is still yours. */
+    buf_clear(&o);
+    site_cmd(&s, "links", &o);
+    ck("`links` says how many jacks are in the wall and what they cost",
+       has(o.p, "jack in the wall") && has(o.p, "paid to have them put in"));
+    ck("and marks the runs that are a lead into one",
+       has(o.p, "a lead in j0"));
+    buf_clear(&o);
+    site_cmd(&s, "show core", &o);
+    ck("`show` on the far box says which of its ports is punched down",
+       has(o.p, "punched down to jack j0") && has(o.p, "for good"));
+    buf_free(&o);
+    site_free(&s);
+}
+
 /* Everything above is reachable from a pipe, or a blind playtester cannot
  * find any of it. This builds a working network out of nothing but lines of
  * text, and then asks the machine on floor two what it can see. */
@@ -1539,6 +1670,7 @@ int site_selfcheck(void)
     check_arity(&b);
     check_reports(&b);
     check_tolerance(&b);
+    check_jack(&b);
     check_shell(&b);
     /* AND THAT A PERSON CAN PLAY ALL OF IT OVER A SOCKET, which is the
      * claim that had quietly stopped being true. See core/sessioncheck.c. */

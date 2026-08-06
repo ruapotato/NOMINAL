@@ -509,6 +509,13 @@ static void do_look(Session *ses, Buf *out)
             buf_puts(out, "      -- and it is in your hands, not on the floor\n");
     }
     if (!n) buf_puts(out, "  there is no kit in this room.\n");
+    /* WHAT IS ON THE WALL, which is not kit and does not move. A jack is the
+     * one thing in a room a player can own without there being a box in it,
+     * so a room that looks empty may already have copper in it -- and if
+     * `look` did not say so, the only way to find out would be to pay to
+     * pull the run again. */
+    if (site_room_jack(&ses->s, ses->room, 0, false) >= 0)
+        site_dump_jacks(&ses->s, ses->room, out);
     /* GOODS IN IS WHERE ORDERS LAND, and a player who has not read the help
      * finds that out by standing in it. */
     if (rm->kind == RM_GOODS)
@@ -555,6 +562,23 @@ static void do_where(Session *ses, Buf *out)
     if (ses->plugged >= 0)
         buf_printf(out, "the cart's %s lead is in %s\n", ses->hdmi ? "hdmi" : "serial",
                    ses->s.dev[ses->plugged].name);
+    /* THE COPPER THAT IS ALREADY HERE. Counted off the jack table, in the
+     * room you are standing in, because a jack is a fact about this wall. */
+    {
+        int jn = 0, jfree = 0, jsoon = 0;
+        for (int i = 0; i < ses->s.njack; i++) {
+            if (ses->s.jack[i].room != ses->room) continue;
+            jn++;
+            if (ses->s.day < ses->s.jack[i].ready) jsoon++;
+            else if (ses->s.jack[i].link < 0) jfree++;
+        }
+        if (jn) {
+            buf_printf(out, "%d jack%s on this wall, %d of them empty and ready to "
+                            "`patch`", jn, jn == 1 ? "" : "s", jfree);
+            if (jsoon) buf_printf(out, ", %d not put in yet", jsoon);
+            buf_puts(out, "\n");
+        }
+    }
     if (ses->spool_kind >= 0) {
         buf_printf(out, "%d m of %s on the spool in your hands", ses->spool_left,
                    site_cable_name((CableKind)ses->spool_kind));
@@ -727,6 +751,28 @@ static void do_help(const Session *ses, Buf *out)
         "                     out of one comms cupboard are six `cable` lines\n"
         "                     with nothing in between\n"
         "  uncable <n>        pull one out\n"
+        "\n"
+        "OR HAVE THE RUN PUT IN FOR GOOD, which is the same metres bought the\n"
+        "other way. A jack is a socket on a room's wall with the run behind it\n"
+        "punched down onto one port at the far end. You do not pull it: a trade\n"
+        "does, and that is days rather than a walk.\n"
+        "  jack <box>:<port> [kind]   a jack on THIS room's wall, its far end on\n"
+        "                     that port of that box -- which is then held for\n"
+        "                     good and is not a free port again. Priced on the\n"
+        "                     same tray metres as the spool, plus the fit-out,\n"
+        "                     so it is ALWAYS dearer than running it once. It\n"
+        "                     prints both prices as you buy it\n"
+        "  patch <box>:<port> [j<n>]  a lead from a box in this room into it.\n"
+        "                     That is all a box ever costs after the jack is in\n"
+        "  jacks              every one you have, what is in it, and the day the\n"
+        "                     trade comes for the ones that are still a booking\n"
+        "  uncable <n>        on a lead takes the lead out and LEAVES THE JACK.\n"
+        "                     That is the whole of what you paid the extra for:\n"
+        "                     move the box, replace it, put a second one in the\n"
+        "                     room, and the copper is already there\n"
+        "                     -- and a jack ordered today is not a socket today,\n"
+        "                     so a tenancy already striking is not one you can\n"
+        "                     jack your way out of. `links` prints both\n"
         "\n"
         "CONFIGURING. You must be in the room with the box.\n"
         "  power <box> on|off        a pc and a server arrive switched off, in a\n"
@@ -1238,6 +1284,18 @@ static void spool_plug(Session *ses, const char *arg, Buf *out)
                        (CableKind)ses->spool_kind);
     if (l < 0) {
         buf_printf(out, "refused: %s\n", site_err_text(ses->s.err));
+        /* A HOLE THAT IS NOT A HOLE. The pair is punched down on a panel and
+         * terminated on a wall somewhere else in the building, and the only
+         * thing that goes in this end is the jack's own lead -- so say which
+         * jack, because the player paid for it and may have forgotten. */
+        if (ses->s.err == SITE_EJACK) {
+            int j = site_port_jack(&ses->s, d, port);
+            if (j < 0) j = site_port_jack(&ses->s, ses->cab_dev, ses->cab_port);
+            if (j >= 0)
+                buf_printf(out, "  it is the far end of j%d. `patch <box>:<port> "
+                                "j%d`, from the room that\n  jack is on the wall "
+                                "of, is what goes in it.\n", j, j);
+        }
         if (ses->s.err == SITE_EMONEY)
             buf_printf(out, "  %d m of %s costs %d and you have %ld.\n", m,
                        site_cable_name((CableKind)ses->spool_kind),
@@ -1405,6 +1463,113 @@ static void do_cable(Session *ses, int n, char *t[MAXTOK], Buf *out)
         if (back.len) buf_put(out, back.p, back.len);
         buf_free(&back);
     }
+}
+
+/* ---------------------------------------------------------------- the jack
+ * THE OTHER WAY TO BUY THE SAME METRES, and the one job in this building you
+ * do not do with your own hands. There is no drum here and no walk: you stand
+ * in the room that is to have the socket, name the port at the far end you
+ * want it punched down to, and book somebody to pull it. What that buys is
+ * that the copper belongs to the ROOM -- the next box to stand here, and the
+ * one after that, plug in with a lead.
+ *
+ * What it costs is the two things the spool never costs you. It is dearer
+ * than the same run, up front, on a floor that may only ever hold one box;
+ * and it is not there today. `day` is what makes the second one bite, and a
+ * tenancy three days from a strike is not a tenancy you can jack your way
+ * out of. */
+static void do_jack(Session *ses, int n, char *t[MAXTOK], Buf *out)
+{
+    char box[64];
+    snprintf(box, sizeof box, "%s", t[1]);
+    char *colon = strchr(box, ':');
+    int port = -1;
+    if (colon) { *colon = 0; port = colon[1] ? atoi(colon + 1) : -1; }
+    int home = dev_arg(ses, box);
+    if (home < 0) {
+        buf_printf(out, "there is no box called %s in this building. The far end "
+                        "of a jack is a port\n  on a box you own -- usually the "
+                        "core switch, or the floor's own.\n", box);
+        return;
+    }
+    if (!colon) {
+        buf_printf(out, "jack %s:<port> -- a jack is punched down onto ONE socket "
+                        "at the far end, and\n  that socket is gone for good. "
+                        "`show %s` says which are free.\n",
+                   ses->s.dev[home].name, ses->s.dev[home].name);
+        return;
+    }
+    if (port < 0) {
+        port = site_free_port(&ses->s, home);
+        if (port < 0) {
+            buf_printf(out, "refused: no jack was booked -- %s has no free port "
+                            "left, all %d are used.\n", ses->s.dev[home].name,
+                       ses->s.dev[home].nports);
+            return;
+        }
+    }
+    /* THE TRADE DOES THE PULL, NOT YOU -- but the wall is the wall you are
+     * standing at, because that is the decision: which room is worth
+     * cabling. */
+    char w[48];
+    room_label(ses, ses->room, w, sizeof w);
+    buf_printf(out, "you book the trade for %s.\n", w);
+    char cmd[160];
+    snprintf(cmd, sizeof cmd, "jack #%d %s:%d %s", ses->room,
+             ses->s.dev[home].name, port,
+             n > 2 ? t[2] : site_cable_name(CAB_CAT5E));
+    site_cmd(&ses->s, cmd, out);
+}
+
+/* THE LEAD. A metre of moulded patch cord between a box in this room and the
+ * faceplate on this room's wall, and the only thing anybody pays for after
+ * the jack is in. */
+static void do_patch(Session *ses, int n, char *t[MAXTOK], Buf *out)
+{
+    int d;
+    if (!need_here(ses, t[1], &d, out)) return;
+    int j = -1;
+    if (n > 2) {
+        const char *a = t[2];
+        if (*a == 'j') a++;
+        j = atoi(a);
+        if (j < 0 || j >= ses->s.njack) {
+            buf_printf(out, "there is no jack %s. `jacks` lists them, `look` says "
+                            "which are on this\n  room's wall.\n", t[2]);
+            return;
+        }
+    } else {
+        j = site_room_jack(&ses->s, ses->room, 0, true);
+        if (j < 0) {
+            int any = site_room_jack(&ses->s, ses->room, 0, false);
+            if (any < 0)
+                buf_puts(out, "there is no jack on this wall. `jack <box>:<port>` "
+                              "has one put in --\n  it costs more than the same run "
+                              "off the spool and it takes days, and\n  what you get "
+                              "for that is a run that stays when the box goes.\n");
+            else
+                buf_printf(out, "every jack in this room has a lead in it already. "
+                                "`links` says which,\n  `uncable <n>` takes one "
+                                "out -- and the jack stays in the wall.\n");
+            return;
+        }
+    }
+    /* `patch sw3 j0` and `patch sw3:` both mean the next free socket on the
+     * back of it, the same as one end of the spool does. */
+    const char *colon = strchr(t[1], ':');
+    int port = (colon && colon[1]) ? atoi(colon + 1) : -1;
+    if (port < 0) {
+        port = site_free_port(&ses->s, d);
+        if (port < 0) {
+            buf_printf(out, "refused: nothing went in -- %s has no free port left, "
+                            "all %d are used.\n", ses->s.dev[d].name,
+                       ses->s.dev[d].nports);
+            return;
+        }
+    }
+    char cmd[128];
+    snprintf(cmd, sizeof cmd, "patch %s:%d j%d", ses->s.dev[d].name, port, j);
+    site_cmd(&ses->s, cmd, out);
 }
 
 /* ------------------------------------------- handing a line to site_cmd */
@@ -1960,6 +2125,13 @@ bool session_line(Session *ses, const char *line, Buf *out)
             if (ses->s.err == SITE_EFIXED)
                 buf_puts(out, "  the handoff is the ISP's, on their wall, in their "
                               "conduit.\n");
+            if (ses->s.err == SITE_EJACK)
+                buf_printf(out, "  a jack is punched down onto a socket on the back "
+                                "of %s, and the other\n  end of that run is screwed "
+                                "to a wall in another room. `jacks` says which.\n"
+                                "  That is what `for good` meant when you bought "
+                                "it: this box stays here.\n",
+                           ses->s.dev[d].name);
             return true;
         }
         ses->carrying = d;
@@ -1990,6 +2162,29 @@ bool session_line(Session *ses, const char *line, Buf *out)
     if (strcmp(t[0], "cable") == 0) {
         if (n < 3) { buf_puts(out, "cable <box> <box> [cat5|cat5e|cat6|fibre]\n"); return true; }
         do_cable(ses, n, t, out);
+        return true;
+    }
+    if (strcmp(t[0], "jack") == 0) {
+        if (n < 2) {
+            buf_puts(out, "jack <box>:<port> [cat5|cat5e|cat6|fibre]\n"
+                          "  a permanent socket on THIS room's wall, with the run "
+                          "behind it punched\n  down onto that port at the far end "
+                          "for good. Priced by the same tray\n  metres the spool "
+                          "is, plus the fit-out -- and it takes the trade days.\n"
+                          "  `jacks` lists the ones you have.\n");
+            return true;
+        }
+        do_jack(ses, n, t, out);
+        return true;
+    }
+    if (strcmp(t[0], "patch") == 0) {
+        if (n < 2) {
+            buf_puts(out, "patch <box>:<port> [j<n>]\n"
+                          "  a lead from a box in this room into a jack on this "
+                          "room's wall. `look`\n  says which jacks are here.\n");
+            return true;
+        }
+        do_patch(ses, n, t, out);
         return true;
     }
 
@@ -2039,7 +2234,7 @@ bool session_line(Session *ses, const char *line, Buf *out)
         strcmp(t[0], "rooms") == 0 || strcmp(t[0], "uncable") == 0 ||
         strcmp(t[0], "credit") == 0 || strcmp(t[0], "status") == 0 ||
         strcmp(t[0], "service") == 0 || strcmp(t[0], "load") == 0 ||
-        strcmp(t[0], "events") == 0 ||
+        strcmp(t[0], "events") == 0 || strcmp(t[0], "jacks") == 0 ||
         (strcmp(t[0], "show") == 0)) {
         site_cmd(&ses->s, raw, out);
         return true;

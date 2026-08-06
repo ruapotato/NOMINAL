@@ -149,6 +149,51 @@ int site_cable_price(CableKind k, int metres)
     return (metres * SPOOL[k].per_100m + 99) / 100 + SPOOL[k].ends;
 }
 
+/* ------------------------------------------------------------- the jack */
+/* THE SAME METRES, BOUGHT THE OTHER WAY, and the numbers are chosen so that
+ * the comparison is a real one rather than a tax.
+ *
+ * A jack is the same pull, the same drum and the same person, plus the part
+ * that makes it permanent: a faceplate on the wall, a panel port punched down
+ * and labelled at the far end, and the pair tested and certified. That is
+ * JACK_FIT on top of the spool price of the identical run, so a jack is
+ * ALWAYS dearer than spooling the run once, and there is no reading of the
+ * price list where jacking a room you will only ever put one box in was the
+ * cheap answer.
+ *
+ * What it buys back is JACK_LEAD: a factory patch lead, the price the ends of
+ * a run cost before D27 made them a job. Every box that stands in that room
+ * afterwards -- the second switch when the floor fills, the same switch after
+ * somebody carried it out and back, the server that replaces it -- reaches
+ * the far end for that, for good, because the copper is in the wall and is
+ * not pulled out when the box goes.
+ *
+ * On the 42 m riser D27 measured: 99 off the spool, 189 for a jack, and 12 a
+ * lead after that. One box in that room and the jack cost you 102 for
+ * nothing. Three boxes over the life of the run and the spool cost 297 and
+ * the jack 225. The break-even is between two and three, which is exactly
+ * where a decision about a floor that might grow ought to sit. */
+#define JACK_FIT   90    /* faceplate, panel port, punch down, test, label   */
+#define JACK_LEAD  12    /* a made-up lead off the shelf, both ends moulded  */
+int site_jack_price(CableKind k, int metres)
+{
+    if (k < 0 || k >= CAB_KIND_COUNT || metres < 0) return 0;
+    return site_cable_price(k, metres) + JACK_FIT;
+}
+int site_jack_lead_price(void) { return JACK_LEAD; }
+/* AND THE DAYS, which are the half of this the money cannot reach. Somebody
+ * has to come, and a longer pull is more of their time: a day to book them,
+ * and a day per forty metres of tray. A jack in the room you are standing in
+ * is two days; the 42 m riser is three; a 91 m run across the building is
+ * four. A tenancy moves in, unpacks for three days and files on the sixth --
+ * so a jack ordered the day they move in is a socket in time and a jack
+ * ordered the day they start striking is not. */
+int site_jack_days(int metres)
+{
+    if (metres < 0) metres = 0;
+    return 1 + (metres + 39) / 40;
+}
+
 const char *site_err_text(int e)
 {
     switch (e) {
@@ -179,6 +224,10 @@ const char *site_err_text(int e)
                                "box holds eight pools at most";
     case SITE_EZONE:    return "that name server already holds sixty-four "
                                "names, which is all a zone here has room for";
+    case SITE_EEARLY:   return "the trade has not been yet -- that jack is a "
+                               "day in the diary, not a socket on the wall";
+    case SITE_EJACK:    return "that socket is punched down to a jack and is "
+                               "not a free port -- the pair is terminated";
     }
     return "?";
 }
@@ -480,21 +529,69 @@ bool site_move(Site *s, int dev, int room)
     if (s->dev[dev].kind == SDEV_UPLINK) { s->err = SITE_EFIXED; return false; }
     if (!s->b || room < 0 || room >= s->b->nrooms) { s->err = SITE_ENOROOM; return false; }
     if (site_dev_cabled(s, dev)) { s->err = SITE_ECABLED; return false; }
+    /* AND A BOX WITH A RUN PUNCHED DOWN INTO IT DOES NOT MOVE EITHER, which
+     * is the other half of what permanent means. The pair is terminated on
+     * this box's socket and the other end of it is screwed to a wall
+     * somewhere else in the building; walking off with the box would take
+     * the copper with it, and copper in a ceiling does not do that. This is
+     * why the price says the port is gone for good. */
+    for (int j = 0; j < s->njack; j++)
+        if (s->jack[j].home == dev) { s->err = SITE_EJACK; return false; }
     s->dev[dev].room = (uint16_t)room;
     s->dev[dev].floor = s->b->rooms[room].floor;
     s->dev[dev].tenant = s->b->rooms[room].tenant;
     return true;
 }
 
+int site_port_jack(const Site *s, int dev, int port)
+{
+    for (int j = 0; j < s->njack; j++)
+        if (s->jack[j].home == dev && s->jack[j].hport == port) return j;
+    return -1;
+}
+
+/* A HELD PORT IS NOT A FREE PORT. The far end of a jack is punched down on a
+ * panel: there is no hole to put anything else in, whether or not there is a
+ * lead in the faceplate at the other end today. `serve` walks this too, so a
+ * tenancy's twenty drops cannot quietly eat the riser you paid to have put
+ * in last week. */
 int site_free_port(const Site *s, int dev)
 {
     if (dev < 0 || dev >= s->ndev) return -1;
     for (int p = 0; p < s->dev[dev].nports; p++)
-        if (net_port_state(s->net, s->dev[dev].node, p) == PORT_NOCABLE) return p;
+        if (net_port_state(s->net, s->dev[dev].node, p) == PORT_NOCABLE &&
+            site_port_jack(s, dev, p) < 0) return p;
     return -1;
 }
 
 /* ----------------------------------------------------------------- cable */
+/* THE RUN ITSELF, once, for both ways of buying it. `site_cable` measures the
+ * tray and charges by the metre; `site_patch` hands it metres that are
+ * already in the wall and the price of a lead. Everything after that -- the
+ * netstack cable, the row in `links`, the money -- has to be identical, or
+ * the two halves of the decision would not be comparable. */
+static int cable_run(Site *s, int a, int aport, int b, int bport, CableKind k,
+                     int m, int cost, int jack)
+{
+    if (s->money < cost) { s->err = SITE_EMONEY; return -1; }
+    int cid = net_cable(s->net, s->dev[a].node, aport, s->dev[b].node, bport, m, k);
+    if (cid < 0) { s->err = SITE_EBUSY; return -1; }
+
+    SiteLink *l = &s->link[s->nlink];
+    memset(l, 0, sizeof *l);
+    l->a = (int16_t)a; l->b = (int16_t)b;
+    l->aport = (int16_t)aport; l->bport = (int16_t)bport;
+    l->room_a = (uint16_t)s->dev[a].room; l->room_b = (uint16_t)s->dev[b].room;
+    l->metres = m;
+    l->kind = (uint8_t)k;
+    l->cost = cost;
+    l->cable = cid;
+    l->jack = (int16_t)jack;
+    s->money -= cost;
+    s->spent += cost;
+    return s->nlink++;
+}
+
 int site_cable(Site *s, int a, int aport, int b, int bport, CableKind k)
 {
     s->err = SITE_OK;
@@ -505,32 +602,19 @@ int site_cable(Site *s, int a, int aport, int b, int bport, CableKind k)
     if (aport < 0 || aport >= s->dev[a].nports ||
         bport < 0 || bport >= s->dev[b].nports) { s->err = SITE_ENOPORT; return -1; }
     if (s->nlink >= SITE_MAX_LINK) { s->err = SITE_ESPACE; return -1; }
+    /* AND THE PORT SOMEBODY ALREADY PUNCHED DOWN. It is not empty, it is
+     * terminated, and the thing it is terminated to is on a wall upstairs. */
+    if (site_port_jack(s, a, aport) >= 0 ||
+        site_port_jack(s, b, bport) >= 0) { s->err = SITE_EJACK; return -1; }
 
     int ra = s->dev[a].room, rb = s->dev[b].room;
     int m = (ra == BLD_NOROOM || rb == BLD_NOROOM) ? SITE_PATCH_M
                                                    : site_metres(s, ra, rb);
     if (m < 0) { s->err = SITE_ENOROUTE; return -1; }
-    int cost = site_cable_price(k, m);
-    if (s->money < cost) { s->err = SITE_EMONEY; return -1; }
-
-    int cid = net_cable(s->net, s->dev[a].node, aport, s->dev[b].node, bport, m, k);
-    if (cid < 0) { s->err = SITE_EBUSY; return -1; }
-
-    SiteLink *l = &s->link[s->nlink];
-    memset(l, 0, sizeof *l);
-    l->a = (int16_t)a; l->b = (int16_t)b;
-    l->aport = (int16_t)aport; l->bport = (int16_t)bport;
-    l->room_a = (uint16_t)ra; l->room_b = (uint16_t)rb;
-    l->metres = m;
-    l->kind = (uint8_t)k;
-    l->cost = cost;
-    l->cable = cid;
-    s->money -= cost;
-    s->spent += cost;
     /* Note what is NOT here: any check that the run is short enough. The
      * cable is bought, laid and paid for, and whether it carries anything is
      * a question for the copper. */
-    return s->nlink++;
+    return cable_run(s, a, aport, b, bport, k, m, site_cable_price(k, m), -1);
 }
 
 void site_uncable(Site *s, int link)
@@ -538,6 +622,95 @@ void site_uncable(Site *s, int link)
     if (link < 0 || link >= s->nlink) return;
     if (s->link[link].cable >= 0) net_uncable(s->net, s->link[link].cable);
     s->link[link].cable = -1;
+    /* A LEAD COMES OUT OF A JACK; THE JACK STAYS IN THE WALL. That is the
+     * whole difference between the two ways of paying for these metres, and
+     * it is one line: the faceplate is free for the next box, the panel port
+     * is still held, and nothing is refunded either way. */
+    int j = s->link[link].jack;
+    if (j >= 0 && j < s->njack && s->jack[j].link == link) s->jack[j].link = -1;
+}
+
+/* ------------------------------------------------------------- the jack */
+int site_jack(Site *s, int room, int home, int hport, CableKind k)
+{
+    s->err = SITE_OK;
+    if (home < 0 || home >= s->ndev) { s->err = SITE_ENODEV; return -1; }
+    if (!s->b || room < 0 || room >= s->b->nrooms) { s->err = SITE_ENOROOM; return -1; }
+    if (hport < 0 || hport >= s->dev[home].nports) { s->err = SITE_ENOPORT; return -1; }
+    if (s->njack >= SITE_MAX_JACK) { s->err = SITE_ESPACE; return -1; }
+    if (k < 0 || k >= CAB_KIND_COUNT) { s->err = SITE_ENODEV; return -1; }
+    /* The panel end has to be a socket nobody is using and nobody else has
+     * punched down, because the trade is going to terminate it. */
+    if (site_port_jack(s, home, hport) >= 0) { s->err = SITE_EJACK; return -1; }
+    if (net_port_state(s->net, s->dev[home].node, hport) != PORT_NOCABLE) {
+        s->err = SITE_EBUSY; return -1;
+    }
+    /* THE SAME METRES THE SPOOL WOULD HAVE COST. bld_cable_all() through
+     * site_metres(), so the two prices in front of the player are prices for
+     * the same piece of copper up the same riser. */
+    int hroom = s->dev[home].room;
+    int m = (hroom == BLD_NOROOM) ? SITE_PATCH_M : site_metres(s, room, hroom);
+    if (m < 0) { s->err = SITE_ENOROUTE; return -1; }
+    int cost = site_jack_price(k, m);
+    if (s->money < cost) { s->err = SITE_EMONEY; return -1; }
+
+    SiteJack *j = &s->jack[s->njack];
+    memset(j, 0, sizeof *j);
+    j->room = (uint16_t)room;
+    j->home = (int16_t)home;
+    j->hport = (int16_t)hport;
+    j->metres = m;
+    j->kind = (uint8_t)k;
+    j->cost = cost;
+    j->ordered = s->day;
+    j->ready = s->day + site_jack_days(m);
+    j->link = -1;
+    s->money -= cost;
+    s->spent += cost;
+    return s->njack++;
+}
+
+int site_patch(Site *s, int jack, int dev, int port)
+{
+    s->err = SITE_OK;
+    if (jack < 0 || jack >= s->njack) { s->err = SITE_ENODEV; return -1; }
+    if (dev < 0 || dev >= s->ndev) { s->err = SITE_ENODEV; return -1; }
+    SiteJack *j = &s->jack[jack];
+    if (port < 0 || port >= s->dev[dev].nports) { s->err = SITE_ENOPORT; return -1; }
+    if (s->nlink >= SITE_MAX_LINK) { s->err = SITE_ESPACE; return -1; }
+    /* NOT UNTIL THE TRADE HAS BEEN. */
+    /* Both ends of the run in one box is a loop with no spanning tree in it,
+     * exactly as it is off the spool. */
+    if (dev == j->home) { s->err = SITE_EBUSY; return -1; }
+    if (s->day < j->ready) { s->err = SITE_EEARLY; return -1; }
+    /* A JACK IS A FIXED POINT IN A ROOM. The box has to be standing in that
+     * room, because a lead is two metres long and the faceplate is on that
+     * wall. This is the rule that makes a jack pay off when a floor churns
+     * and cost when it does not. */
+    if (s->dev[dev].room != j->room) { s->err = SITE_ENOROOM; return -1; }
+    if (j->link >= 0) { s->err = SITE_EBUSY; return -1; }
+    if (net_port_state(s->net, s->dev[dev].node, port) != PORT_NOCABLE) {
+        s->err = SITE_EBUSY; return -1;
+    }
+    if (site_port_jack(s, dev, port) >= 0) { s->err = SITE_EJACK; return -1; }
+    int l = cable_run(s, j->home, j->hport, dev, port, (CableKind)j->kind,
+                      j->metres, JACK_LEAD, jack);
+    if (l < 0) return -1;
+    j->link = l;
+    j->leads++;
+    j->lead_spend += JACK_LEAD;
+    return l;
+}
+
+int site_room_jack(const Site *s, int room, int nth, bool free_only)
+{
+    int seen = 0;
+    for (int i = 0; i < s->njack; i++) {
+        if (s->jack[i].room != room) continue;
+        if (free_only && s->jack[i].link >= 0) continue;
+        if (seen++ == nth) return i;
+    }
+    return -1;
 }
 
 PortState site_link_state(const Site *s, int link)
@@ -1024,7 +1197,7 @@ void site_dump(const Site *s, Buf *out)
         }
         buf_putc(out, '\n');
     }
-    if (s->nlink) { buf_putc(out, '\n'); site_dump_links(s, out); }
+    if (s->nlink || s->njack) { buf_putc(out, '\n'); site_dump_links(s, out); }
 }
 
 /* WHAT THE TABLE IS FOR: finding a run to pull. A pulled run is not a run,
@@ -1041,6 +1214,41 @@ void site_dump(const Site *s, Buf *out)
  * AND WHAT IT COST. Copper is not refunded when it comes out -- a cheap run
  * you have to redo is meant to hurt -- so the live runs are not the spend.
  * Both numbers are here, each saying which it is. */
+/* WHAT IS IN THE WALL, as against what is lying in the tray. A jack is the
+ * one thing a player buys in this game that survives everything else: the box
+ * goes, the lead comes out, the room is re-let, and the copper is still
+ * there. So it is listed separately from the runs, with the day the trade
+ * comes for the ones that are still a booking. */
+void site_dump_jacks(const Site *s, int room, Buf *out)
+{
+    int n = 0;
+    for (int i = 0; i < s->njack; i++) {
+        const SiteJack *j = &s->jack[i];
+        if (room != BLD_NOROOM && j->room != room) continue;
+        if (!n++) buf_puts(out, "  jacks in the wall\n");
+        char w[48], h[40];
+        if (s->b && j->room < s->b->nrooms) {
+            const Room *r = &s->b->rooms[j->room];
+            snprintf(w, sizeof w, "f%d %s #%d", r->floor, bld_kind_name(r->kind),
+                     j->room);
+        } else snprintf(w, sizeof w, "?");
+        snprintf(h, sizeof h, "%s:%d", s->dev[j->home].name, j->hport);
+        buf_printf(out, "  j%-2d %-21s to %-12s %4d m  %-6s %4d  ", i, w, h,
+                   j->metres, site_cable_name((CableKind)j->kind), j->cost);
+        if (s->day < j->ready)
+            buf_printf(out, "the trade comes on day %d, in %d day%s\n", j->ready,
+                       j->ready - s->day, j->ready - s->day == 1 ? "" : "s");
+        else if (j->link >= 0)
+            buf_printf(out, "%s:%d is in it\n", s->dev[s->link[j->link].b].name,
+                       s->link[j->link].bport);
+        else
+            buf_printf(out, "empty -- `patch <box>:<port> j%d`\n", i);
+    }
+    if (!n && room == BLD_NOROOM)
+        buf_puts(out, "  no jacks. Every metre of copper here is off the spool "
+                      "and comes out with the box.\n");
+}
+
 void site_dump_links(const Site *s, Buf *out)
 {
     int total = 0, cost = 0, dead = 0, deadm = 0, deadc = 0;
@@ -1051,9 +1259,15 @@ void site_dump_links(const Site *s, Buf *out)
         char a[40], b[40];
         snprintf(a, sizeof a, "%s:%d", s->dev[l->a].name, l->aport);
         snprintf(b, sizeof b, "%s:%d", s->dev[l->b].name, l->bport);
-        buf_printf(out, "  %2d  %-16s %-16s %4d m  %-6s %4d  %s\n", i, a, b,
+        buf_printf(out, "  %2d  %-16s %-16s %4d m  %-6s %4d  %s", i, a, b,
                    l->metres, site_cable_name((CableKind)l->kind), l->cost,
                    pstate(site_link_state(s, i)));
+        /* AND WHERE THE METRES CAME FROM. A lead into a jack is a run like
+         * any other on the wire and 12 on the invoice, and a player reading
+         * this table has to be able to tell which of their runs they are
+         * still paying for and which are already in the wall. */
+        if (l->jack >= 0) buf_printf(out, ", a lead in j%d", l->jack);
+        buf_putc(out, '\n');
         total += l->metres; cost += l->cost;
     }
     if (!total && !dead) buf_puts(out, "  none\n");
@@ -1062,6 +1276,27 @@ void site_dump_links(const Site *s, Buf *out)
         buf_printf(out, "  %d pulled run%s not on it: %d m, %d gone. "
                         "%d spent on cable in all -- pulling it refunds nothing\n",
                    dead, dead == 1 ? "" : "s", deadm, deadc, cost + deadc);
+    /* THE COPPER THAT IS NOT GOING ANYWHERE. It is money spent, like the
+     * pulled runs, and unlike them it is still an asset -- so it gets its own
+     * line and its own sentence, and the sentence is the reason to buy one. */
+    if (s->njack) {
+        int jm = 0, jc = 0, leads = 0, leadc = 0, live = 0, waiting = 0;
+        for (int i = 0; i < s->njack; i++) {
+            jm += s->jack[i].metres; jc += s->jack[i].cost;
+            leads += s->jack[i].leads; leadc += s->jack[i].lead_spend;
+            if (s->jack[i].link >= 0) live++;
+            if (s->day < s->jack[i].ready) waiting++;
+        }
+        buf_printf(out, "  %d jack%s in the wall: %d of those metres, %d paid to "
+                        "have them put in, %d in use",
+                   s->njack, s->njack == 1 ? "" : "s", jm, jc, live);
+        if (waiting) buf_printf(out, ", %d not put in yet", waiting);
+        buf_printf(out, "\n  %d lead%s into them since, %d in all -- a lead comes "
+                        "out and the run stays\n",
+                   leads, leads == 1 ? "" : "s", leadc);
+        buf_puts(out, "\n");
+        site_dump_jacks(s, BLD_NOROOM, out);
+    }
 }
 
 void site_dump_rooms(const Site *s, int floor, Buf *out)
@@ -1217,6 +1452,27 @@ static void dump_dev(Site *s, int dev, Buf *out, bool empties)
                ? " -- SWITCHED OFF, and nothing of it is on the network" : "");
     if (empties) net_dump_ports(s->net, d->node, out);
     else net_dump_ports_used(s->net, d->node, out);
+    /* THE SOCKETS THAT ARE NOT SOCKETS ANY MORE. netstack knows this box has
+     * a port with no cable in it; it cannot know that somebody punched the
+     * pair down onto a panel and screwed a faceplate to a wall two floors up.
+     * A player counting free holes on a core switch has to be told, or they
+     * will count a port they cannot use -- and `serve` will not use it
+     * either. */
+    for (int j = 0; j < s->njack; j++) {
+        if (s->jack[j].home != dev) continue;
+        char w[48];
+        if (s->b && s->jack[j].room < s->b->nrooms) {
+            const Room *r = &s->b->rooms[s->jack[j].room];
+            snprintf(w, sizeof w, "f%d %s #%d", r->floor, bld_kind_name(r->kind),
+                     s->jack[j].room);
+        } else snprintf(w, sizeof w, "?");
+        buf_printf(out, "port %-2d is punched down to jack j%d, %d m of %s to "
+                        "%s -- it holds\n        that port for good%s\n",
+                   s->jack[j].hport, j, s->jack[j].metres,
+                   site_cable_name((CableKind)s->jack[j].kind), w,
+                   s->day < s->jack[j].ready ? ", and the trade has not been yet"
+                   : s->jack[j].link >= 0 ? "" : ", and nothing is in the faceplate");
+    }
     if (site_kind_is_switch(d->kind)) {
         net_dump_fdb(s->net, d->node, out);
     } else {
@@ -1357,6 +1613,14 @@ static const struct { const char *verb; int need; const char *usage; } VERB[] = 
     { "move",     3, "move <box> <room>     rooms: #41, f3.comms, f0.mdf" },
     { "cable",    3, "cable <box>:<port> <box>:<port> [cat5e|cat6|fibre|cat5]" },
     { "uncable",  2, "uncable <n>           `links` numbers them" },
+    { "jack",     3, "jack <room> <box>:<port> [cat5e|cat6|fibre|cat5]\n"
+                     "                      have a permanent socket put in that\n"
+                     "                      room, with the run behind it punched\n"
+                     "                      down on that port. Priced by the tray\n"
+                     "                      metres, and it takes the trade days" },
+    { "patch",    3, "patch <box>:<port> j<n>   a lead from a box into a jack in\n"
+                     "                      the room it is standing in" },
+    { "jacks",    1, "jacks                 every jack in the building" },
     { "serve",    3, "serve <tenant> <box> [cat5|cat5e|cat6|fibre] [vlan]" },
     { "addr",     3, "addr <box>[:<nic>] <ip>/<bits>" },
     { "power",    3, "power <box> on|off" },
@@ -1415,6 +1679,18 @@ bool site_cmd(Site *s, const char *line, Buf *out)
             "                               f0.mdf, f2.office\n"
             "cable <dev>:<port> <dev>:<port> [cat5|cat5e|cat6|fibre]\n"
             "uncable <n>                    pull one out\n"
+            "jack <room> <dev>:<port> [cat5|cat5e|cat6|fibre]\n"
+            "                               the other way to buy the same metres:\n"
+            "                               a socket on that room's wall, with the\n"
+            "                               run punched down on that port for good.\n"
+            "                               It costs more than the spool run and it\n"
+            "                               takes the trade days -- and after that\n"
+            "                               a lead into it is a lead\n"
+            "patch <dev>:<port> j<n>        that lead. The box has to be standing\n"
+            "                               in the jack's room\n"
+            "jacks                          every jack, what is in it, and the day\n"
+            "                               the trade comes for the ones that are\n"
+            "                               still a booking\n"
             "addr <dev>[:<nic>] <ip>/<bits> an address on a card. `addr rt 1.2.3.4/30`\n"
             "                               is the first socket, `addr rt:1 ...` the\n"
             "                               second -- which is how a router gets a WAN\n"
@@ -1644,6 +1920,10 @@ bool site_cmd(Site *s, const char *line, Buf *out)
                 buf_puts(out, "  `links` says which cable, `uncable <n>` pulls "
                               "it out. The copper is\n  bought and paid for and "
                               "you will be buying it again.\n");
+            if (s->err == SITE_EJACK)
+                buf_puts(out, "  a jack is punched down into it and the far end "
+                              "of that run is on a wall\n  in another room. "
+                              "`jacks` says which. A jack does not move.\n");
             return true;
         }
         /* The metres a PERSON walks carrying it, which is not the metres a
@@ -1680,10 +1960,88 @@ bool site_cmd(Site *s, const char *line, Buf *out)
         return true;
     }
     if (strcmp(t[0], "uncable") == 0 && n >= 2) {
-        site_uncable(s, atoi(t[1]));
-        buf_puts(out, "pulled out\n");
+        int l = atoi(t[1]);
+        int j = (l >= 0 && l < s->nlink) ? s->link[l].jack : -1;
+        site_uncable(s, l);
+        if (j >= 0)
+            buf_printf(out, "the lead comes out of j%d. The jack is still in the "
+                            "wall and the panel port\n  is still its own: `patch "
+                            "<box>:<port> j%d` puts the next box in it for %d.\n",
+                       j, j, JACK_LEAD);
+        else buf_puts(out, "pulled out\n");
         return true;
     }
+    /* ---------------------------------------------------------- the jack */
+    if (strcmp(t[0], "jack") == 0 && n >= 3) {
+        int room = site_room_by_name(s, t[1]);
+        if (room < 0) { buf_printf(out, "no such room: %s\n", t[1]); return true; }
+        int home, hport;
+        if (!port_arg(s, t[2], &home, &hport)) {
+            buf_puts(out, "jack <room> <box>:<port> [cat5e|cat6|fibre|cat5]\n");
+            return true;
+        }
+        CableKind k = n > 3 ? cable_arg(t[3]) : CAB_CAT5E;
+        int j = site_jack(s, room, home, hport, k);
+        if (j < 0) { buf_printf(out, "refused: %s\n", site_err_text(s->err)); return true; }
+        const SiteJack *jk = &s->jack[j];
+        buf_printf(out, "j%d: a jack on the wall of %s #%d, %d m of %s back to "
+                        "%s:%d, %d paid, %ld left.\n",
+                   j, bld_kind_name(s->b->rooms[room].kind), room, jk->metres,
+                   site_cable_name((CableKind)jk->kind), s->dev[home].name, hport,
+                   jk->cost, s->money);
+        /* THE OTHER PRICE, SAID AT THE MOMENT THE MONEY LEAVES. The same
+         * metres off the spool are on the screen next to what you just paid,
+         * because a trade-off nobody can see the other half of is not a
+         * decision -- it is a tax. */
+        buf_printf(out, "  the same run off the spool is %d. You have paid %d "
+                        "more for copper that\n  stays when the box goes, and a "
+                        "lead into it after that is %d.\n",
+                   site_cable_price(k, jk->metres),
+                   jk->cost - site_cable_price(k, jk->metres), JACK_LEAD);
+        buf_printf(out, "  the trade comes on day %d, in %d day%s. Nothing plugs "
+                        "into it before then.\n", jk->ready, jk->ready - s->day,
+                   jk->ready - s->day == 1 ? "" : "s");
+        buf_printf(out, "  %s:%d is not a free port any more, and %s does not "
+                        "move again while a run\n  is punched down into it.\n",
+                   s->dev[home].name, hport, s->dev[home].name);
+        return true;
+    }
+    if (strcmp(t[0], "patch") == 0 && n >= 3) {
+        int dev, port;
+        if (!port_arg(s, t[1], &dev, &port)) {
+            buf_puts(out, "patch <box>:<port> j<n>\n");
+            return true;
+        }
+        const char *ja = t[2];
+        if (*ja == 'j') ja++;
+        int j = atoi(ja);
+        if (j < 0 || j >= s->njack) {
+            buf_printf(out, "no such jack: %s. `jacks` lists them.\n", t[2]);
+            return true;
+        }
+        int l = site_patch(s, j, dev, port);
+        if (l < 0) {
+            buf_printf(out, "refused: %s\n", site_err_text(s->err));
+            if (s->err == SITE_EEARLY)
+                buf_printf(out, "  j%d is a socket on day %d. It is day %d. Copper "
+                                "off the spool is in your\n  hands now, and that is "
+                                "what it is for.\n", j, s->jack[j].ready, s->day);
+            if (s->err == SITE_ENOROOM)
+                buf_printf(out, "  j%d is on the wall of #%d and %s is in #%d. A "
+                                "jack is a fixed point in\n  one room: carry the "
+                                "box to it, or run copper off the spool.\n",
+                           j, s->jack[j].room, s->dev[dev].name, s->dev[dev].room);
+            return true;
+        }
+        const SiteLink *lk = &s->link[l];
+        buf_printf(out, "link %d: %s:%d to %s:%d through j%d, %d m of %s already "
+                        "in the wall,\n  %d paid for the lead, %s. %ld left.\n",
+                   l, s->dev[lk->a].name, lk->aport, s->dev[lk->b].name, lk->bport,
+                   j, lk->metres, site_cable_name((CableKind)lk->kind), lk->cost,
+                   pstate(site_link_state(s, l)), s->money);
+        return true;
+    }
+    if (strcmp(t[0], "jacks") == 0) { site_dump_jacks(s, BLD_NOROOM, out); return true; }
     if (strcmp(t[0], "addr") == 0 && n >= 3) {
         /* `addr edge 198.51.100.2/30` is the first card, and `addr edge:1
          * 10.0.1.1/24` is the second one. The colon is the spelling `cable`

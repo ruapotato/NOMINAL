@@ -51,6 +51,7 @@
 #define SITE_MAX_DEV     400
 #define SITE_MAX_LINK    600
 #define SITE_MAX_TENANT  200
+#define SITE_MAX_JACK    200
 #define SITE_PATCH_M       3     /* a patch lead at each end of every run   */
 
 /* ---------------------------------------------------------- the catalogue */
@@ -97,6 +98,18 @@ int   site_kind_port_mb(int kind, int port);
  * Which is why the route matters and why the number of runs matters. */
 int   site_cable_price(CableKind k, int metres);
 const char *site_cable_name(CableKind k);
+/* AND THE OTHER WAY OF PAYING FOR THE SAME METRES. A jack is that run pulled
+ * once, terminated into a faceplate on the wall and punched down on a panel
+ * port at the far end, and left there. It costs the copper, the labour and a
+ * fit-out premium on top -- so it is always dearer than the same run off the
+ * spool -- and what it buys is that the NEXT box in that room reaches the far
+ * end for the price of a patch lead. See the long note above site_jack(). */
+int   site_jack_price(CableKind k, int metres);
+int   site_jack_lead_price(void);
+/* How many days the trade takes, from the metres they have to pull. This is
+ * the half of the decision that money cannot buy back: the spool is in your
+ * hands now and a jack is not there until the day it is there. */
+int   site_jack_days(int metres);
 
 /* Why an operation refused. The player reads these, so they are the whole
  * vocabulary of "you cannot do that". */
@@ -120,6 +133,8 @@ typedef enum {
     SITE_ESEG,        /* no interface of that box is on that pool's subnet   */
     SITE_EPOOL,       /* a pool of no addresses, or no room for another one  */
     SITE_EZONE,       /* that name server's zone is full                     */
+    SITE_EEARLY,      /* the trade has not been yet: the jack is not a socket */
+    SITE_EJACK,       /* that port is punched down to a jack, for good        */
     SITE_ERR_COUNT
 } SiteErr;
 const char *site_err_text(int e);
@@ -177,7 +192,44 @@ typedef struct {
      * See core/siteday.c. */
     int      errs;
     uint8_t  slow;
+    /* THE RUN WAS ALREADY IN THE WALL. -1 is copper you pulled yourself off
+     * the spool and paid for by the metre; anything else is the jack this
+     * lead is plugged into, and `cost` is then the lead and not the run. */
+    int16_t  jack;
 } SiteLink;
+
+/* A PERMANENT JACK: a socket on the wall of a room, and the run behind it.
+ *
+ * D23 promised this and the tower never had it, so the first blind playtester
+ * of the tower went looking for a verb that did not exist. The reason it is
+ * worth having is that it is not a more expensive cable: it is a cable that
+ * belongs to the ROOM instead of to the box. The run is pulled once, the far
+ * end is punched down on a panel port that is then gone for good, and every
+ * box that ever stands in that room afterwards reaches the far end for the
+ * price of a factory patch lead.
+ *
+ * So the trade-off has two teeth and neither of them is money alone:
+ *   - it costs MORE than the same run off the spool, and it costs it up
+ *     front, on a floor that may never hold a second box;
+ *   - and it is not there today. Somebody has to come and pull it, and that
+ *     is site_jack_days() of the clock -- which is the same clock a tenancy's
+ *     three days of fit-out and three strikes are counted on.
+ * A player six days from a complaint cannot jack their way out of it, and a
+ * player who spools every riser pays for every riser again the first time a
+ * floor grows a second switch or a box moves. */
+typedef struct {
+    uint16_t room;             /* the wall the faceplate is on              */
+    int16_t  home;             /* the box the far end is punched down into  */
+    int16_t  hport;            /* and the port it holds, for good           */
+    int      metres;           /* tray metres: bld_cable_all(), as the spool*/
+    int      cost;             /* what the install cost. Never refunded.    */
+    uint8_t  kind;             /* CableKind                                 */
+    int      ordered;          /* the day the trade was booked              */
+    int      ready;            /* the day it is a socket rather than a plan */
+    int      link;             /* the lead in it now, as a site link, or -1 */
+    int      leads;            /* leads bought for it over the whole run    */
+    int      lead_spend;       /* and what they came to                     */
+} SiteJack;
 
 /* A tenancy, and what it wants. Derived from the building's own Room.tenant
  * and from the seed, so the same tower always fills the same way. */
@@ -285,9 +337,10 @@ typedef struct {
     const Building *b;         /* borrowed: the caller owns the tower       */
     Net     *net;
     uint64_t seed;
-    int      ndev, nlink;
+    int      ndev, nlink, njack;
     SiteDev  dev[SITE_MAX_DEV];
     SiteLink link[SITE_MAX_LINK];
+    SiteJack jack[SITE_MAX_JACK];
     int      uplink;           /* the device that exists on day one         */
     uint32_t wan_isp, wan_you, wan_mask;
     long     money, spent;
@@ -362,6 +415,33 @@ void site_uncable(Site *s, int link);
 PortState site_link_state(const Site *s, int link);
 /* The tray distance between two rooms, patch leads included, or -1. */
 int  site_metres(const Site *s, int room_a, int room_b);
+
+/* ------------------------------------------------------------- the jack */
+/* HAVE A JACK PUT IN. `room` gets a faceplate; the run behind it goes to
+ * `home`:`hport`, which is held by the jack from this moment and is not a
+ * free socket again for the rest of the run -- you have bought a punched-down
+ * panel port, not a cable you can move. Charged now, in full, at
+ * site_jack_price() of the tray metres. Returns the jack, or -1 with s->err.
+ *
+ * IT IS NOT A SOCKET UNTIL `ready`. Nothing plugs into it before that day,
+ * which is the whole point: cable off the spool is in your hands and a trade
+ * is in the diary. */
+int  site_jack(Site *s, int room, int home, int hport, CableKind k);
+/* Plug a box that is standing in the jack's room into it, with a lead. Makes
+ * a real link, on the jack's own metres and grade, for site_jack_lead_price()
+ * -- and `uncable` on that link leaves the jack in the wall. Returns the
+ * link, or -1 with s->err. */
+int  site_patch(Site *s, int jack, int dev, int port);
+/* Is that socket on the back of that box punched down to a jack? A held port
+ * is not a free port: site_free_port, site_cable and `serve` all step over
+ * it, because the pair is terminated on a panel and there is no hole. */
+int  site_port_jack(const Site *s, int dev, int port);   /* jack, or -1 */
+/* The jacks on the wall of one room, in order. `nth` counts from 0; -1 when
+ * there is no such one. `free_only` skips the ones with a lead in them. */
+int  site_room_jack(const Site *s, int room, int nth, bool free_only);
+/* Every jack in the building, or the ones in one room when `room` is not
+ * BLD_NOROOM: what it cost, what is in it, and when the trade finishes. */
+void site_dump_jacks(const Site *s, int room, Buf *out);
 
 /* THE POWER BUTTON, and it is the join between the box and the wire.
  *

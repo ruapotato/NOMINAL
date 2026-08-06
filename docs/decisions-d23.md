@@ -32,8 +32,8 @@ The game becomes an IT-infrastructure game set in a growing building, in the
 lineage of Tower Networking Inc. -- with the difference that their command line
 is a prop and ours is an emulated operating system. You order hardware, take
 delivery, carry it where it goes, run cable from a spool priced by the metre or
-pay for a permanent jack priced by distance (INTENDED, NOT YET BUILT -- see the
-note at the end of this record), and configure the same OS on the
+pay for a permanent jack priced by distance (BUILT IN D29 -- see the note at
+the end of this record), and configure the same OS on the
 other end of every cable. Floors fill with tenants, tenants pay, demand outgrows
 the infrastructure, and you build more.
 
@@ -125,3 +125,64 @@ floors up, which is what this whole pivot was for.
 Recording it as unbuilt rather than deleting it, because the reasoning survives the
 absence of the feature -- and because a design document that describes things the
 machine does not do is the same failure as a man page that does.
+
+## Addendum, 2026-08-06: it exists
+
+`jack`, `patch` and `jacks` are verbs in the tower and in `help`, and
+`--sitecheck` fails without them. The note above stands as the reasoning; what
+follows is what was actually built, because the reasoning did not decide the
+hard part.
+
+**A jack that is only a dearer cable would have been worth nothing.** The
+day-34 playtest is the reason: *"Cable is a bill I paid with a rule, not a bill
+I sweated. I made the riser decision on floor 1 and then repeated it on floors
+2 and 3 without thinking."* A second price for one outcome is another rule to
+apply once. So the jack had to differ in KIND, and three levers were on the
+table -- days, re-charging on every move, and belonging to the room.
+
+**The lever chosen is that a jack belongs to the ROOM, not to the box**, with
+the days as the price of that permanence rather than as a separate mechanic.
+`site_jack()` puts a socket on a room's wall and holds a panel port at the far
+end for good; `site_patch()` connects whatever is standing in that room for the
+price of a lead; `site_uncable()` on that lead leaves the jack in the wall.
+That is the one thing a player can buy in this game that survives the box
+being carried out. And the trade takes `1 + metres/40` days -- a 42 m riser is
+three -- on the same clock a tenancy's three days of fit-out and three strikes
+are counted on, so a floor that needs a switch this afternoon cannot be jacked
+and has to be spooled.
+
+Both directions of wrong are reachable and neither is a difficulty number:
+
+- the jack is always dearer than the same run off the spool (the spool price
+  of the identical `bld_cable_all()` metres, plus a flat fit-out), so a room
+  that only ever holds one box is money the player will not get back --
+  `site_uncable` has refunded nothing since it was written and this refunds
+  nothing either;
+- the spool is charged again every time the box moves, and a floor that fills
+  up or gets rebuilt pays the whole riser again for the second switch;
+- and the panel port at the far end stops being a port. `site_free_port`
+  steps over it, so `serve` will not spend it on a desk -- which is a cost
+  that only lands the day a core switch runs out of holes.
+
+The break-even on the gate seed's 35 m riser: 95 to spool it once, 185 to jack
+it, 12 a lead after that. One connection and the spool won by 102. Three and
+the jack won by 64. `jack` prints both numbers at the moment the money leaves,
+which is where D27 put the negotiated port speed for the same reason.
+
+**Why the other two levers were not taken as the primary.** Re-charging on
+every move is already true of the spool and needed no new verb -- it is the
+consequence of the room lever, not an alternative to it. Days alone would have
+made the jack a cable with a delay, which is a tax on the impatient rather than
+a decision: with nothing else different, waiting is free once the player learns
+to order early, and the mechanic evaporates. The room lever is the one that
+cannot be learned away, because it turns on something the player cannot know
+when they buy it -- whether that room will hold a second box.
+
+**What was NOT done.** `serve` does not run desks off jacks: a jack per desk
+is twenty faceplates and twenty panel ports, and the verb belongs to
+`core/siteday.c`, which was out of scope. There is no way to take a jack out
+again, deliberately -- permanence is what it is for -- and therefore no way to
+recover a panel port spent on one. And no scenario in `--loadcheck` uses a
+jack, so nothing yet measures a sixty-day tower built the tidy way against one
+built off the drum; that is the measurement to widen next, and it is a
+playthrough rather than a gate.

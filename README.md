@@ -33,6 +33,16 @@ That is the whole idea. Everything else follows from it.
    distance are different numbers -- you take the corridor and the stairs, the
    copper goes up the riser -- so running one cable from the MDF to the floor
    three comms cupboard is 91 m of your legs and 42 m of cat5e.
+   Or you pay for a **permanent jack** instead, priced on those same tray
+   metres: a socket on that room's wall, with the run behind it punched down
+   onto one port at the far end for good. It costs more than pulling the run
+   once, and it is not there today -- somebody has to come and pull it, which
+   is a day plus a day for every forty metres -- and after that every box
+   that ever stands in that room plugs into it with a lead. The lead comes
+   out when the box goes and the copper stays. Cheap and immediate against
+   dearer and permanent, and neither is the right answer twice: a room that
+   only ever holds one box was money burnt, and a riser you run off the spool
+   three times you have paid for three times.
 5. **You make it work.** The box boots the same OS everything else runs. Give it
    an address, a route, a resolver, a firewall rule, a service. Get it wrong and
    it fails the way a real machine fails, and says so.
