@@ -12,3 +12,4 @@ build/
 # GitHub refuses anything over 100 MB, and it does not belong in history.
 Godot_v*_linux.x86_64
 Godot_v*
+__pycache__/
