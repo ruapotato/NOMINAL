@@ -46,6 +46,43 @@ static void publish(void)
     g_close(fd);
 }
 
+/* IS THIS A SOCKET THE MACHINE REALLY HAS, AND NOT THE FIRST ONE?
+ *
+ * The kernel found the cards; udev's one rule names the first of them. So a
+ * config naming the second socket on the back of a two-socket server is
+ * describing something real, while a config whose FIRST card has been renamed
+ * -- the fault this whole check is here to catch -- always names the device at
+ * the head of the kernel's own list, which this refuses. Subinterfaces are
+ * skipped: a card is what has no dot in it. */
+static int later_socket(const char *card)
+{
+    static char ifs[8192];
+    if (!card[0]) return 0;
+    i64 n = g_netinfo(NETINFO_IFACE, ifs, sizeof ifs);
+    if (n <= 0) return 0;
+    ifs[n < (i64)sizeof ifs ? n : (i64)sizeof ifs - 1] = 0;
+    int idx = 0;
+    char *q = ifs;
+    while (*q) {
+        char *nl = q; while (*nl && *nl != '\n') nl++;
+        char save = *nl; *nl = 0;
+        if (*q != ' ' && *q != '\t') {          /* a device line, not a detail */
+            static char nm[64];
+            u64 k = 0;
+            while (q[k] && q[k] != ':' && q[k] != ' ' && k < sizeof nm - 1) {
+                nm[k] = q[k]; k++;
+            }
+            nm[k] = 0;
+            if (q[k] == ':' && !g_contains(nm, ".")) {
+                if (idx > 0 && g_streq(nm, card)) { *nl = save; return 1; }
+                idx++;
+            }
+        }
+        *nl = save; q = *nl ? nl + 1 : nl;
+    }
+    return 0;
+}
+
 static const char *KEY = "iface";
 void _start(void)
 {
@@ -87,9 +124,29 @@ void _start(void)
      * decides what interfaces are called. Configuring eth0 on a machine where
      * udev has named the device something else fails in a way that looks like
      * nothing at all is wrong -- both files are valid, both are what somebody
-     * intended, and they disagree. */
+     * intended, and they disagree.
+     *
+     * WHAT AN `iface` LINE NAMES IS NOT ALWAYS A CARD, and reading it as if it
+     * always were is what made every floor server built the way D27 recommends
+     * a landmine armed for its next reboot. `iface eth0.12` names a TAGGED
+     * SUBINTERFACE of eth0: writing it down is what says the card underneath
+     * carries vlan 12, so naming it names eth0 as surely as `iface eth0` does.
+     * A server addressed only on vlans -- the whole point of a per-floor vlan
+     * server -- has no `iface eth0` stanza at all, and this refused to start on
+     * it, on a box with a clean `pkg verify` and nothing whatever wrong. So the
+     * card is the part before the dot.
+     *
+     * AND A SECOND SOCKET IS NOT A WRONG NAME EITHER. udev's one net rule
+     * names this machine's FIRST network device; a box with two sockets in the
+     * back really has an eth1, the kernel found it, and a config that names it
+     * is describing a card that is there. So a name that is not the one udev
+     * gives is still refused -- that is the fault this check exists for, and a
+     * config edited to name a card the box does not have has to fail loudly --
+     * unless the kernel itself is holding a device by that name and it is not
+     * the first one, which no rename can produce and only a real second socket
+     * can. */
     {
-        static char rules[2048], want[64];
+        static char rules[2048], want[64], card[64];
         want[0] = 0;
         /* the name from our own config: "iface eth0" */
         {
@@ -111,6 +168,14 @@ void _start(void)
                 *nl = save; q = *nl ? nl + 1 : nl;
                 if (want[0]) break;
             }
+        }
+        /* the card underneath it: eth0.12 rides on eth0, eth0 is itself */
+        {
+            u64 k = 0;
+            while (want[k] && want[k] != '.' && k < sizeof card - 1) {
+                card[k] = want[k]; k++;
+            }
+            card[k] = 0;
         }
         if (want[0] &&
             g_slurp("/etc/udev/rules.d/50-default.rules", rules, sizeof rules) >= 0) {
@@ -139,11 +204,16 @@ void _start(void)
                 *nl = save; q = *nl ? nl + 1 : nl;
                 if (named[0]) break;
             }
-            if (named[0] && !g_streq(named, want)) {
+            if (named[0] && !g_streq(named, card) && !later_socket(card)) {
                 g_puts("netd: ");
                 g_puts(CONF[0]);
                 g_puts(": configures ");
                 g_puts(want);
+                if (!g_streq(want, card)) {
+                    g_puts(" (a subinterface of ");
+                    g_puts(card);
+                    g_puts(")");
+                }
                 g_puts(", but udev names this machine's network device ");
                 g_puts(named);
                 g_putln("");

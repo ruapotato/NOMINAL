@@ -1678,6 +1678,145 @@ static void check_vlan_server_reboot(int *passed, int *total)
     session_end(&ses);
 }
 
+/* ------------------- a server addressed ONLY on vlans, twice across the mains
+ *
+ * A playtester reached day 62 and reported the thing that turned a six-box
+ * repair morning into six repairs and six workarounds: every floor server
+ * built the way D27 recommends -- addressed on tagged subinterfaces and
+ * nothing else -- would not come back from a power cut. Nothing was damaged.
+ * `pkg verify` was clean on all of them. sync_disk writes no stanza for a
+ * card that has no address, quite rightly, so the first line of the file was
+ * `iface eth0.12`, and netd took that as the name of a CARD, compared it
+ * against the name udev gives the machine's device, and refused to start:
+ *
+ *     netd: /etc/net/interfaces: configures eth0.12, but udev names this
+ *           machine's network device eth0
+ *       refusing to start: there is no such interface
+ *     [DOWN at services]
+ *
+ * The only fix available in the game was to open the file and insert a bare
+ * `iface eth0` above it -- and the NEXT tower-side verb rewrote the file and
+ * took it out again, so the workaround did not survive the thing it was a
+ * workaround for. That is why the second half of this is here: a power cut,
+ * then a config verb, then another power cut.
+ *
+ * The fault was netd's, not sync_disk's. `eth0.12` is a tagged subinterface
+ * OF eth0 and naming it names the card underneath it; the file was telling
+ * the truth and the daemon was misreading it. The second socket on the back
+ * of a two-socket server is the same mistake in another spelling, so it is
+ * checked here too -- while `iface eth1` on a box that HAS one socket must
+ * still fail, because that is a fault the breaker deals and a repair the
+ * player has to be able to find. */
+static void check_vlan_only_server(int *passed, int *total)
+{
+    P = passed; T = total;
+    printf("\na server addressed only on vlans, across two power cuts\n");
+    Session ses;
+    if (!session_start(&ses, GATE_SEED, 100000)) { ck("a session starts", false); return; }
+    Buf o = {0};
+    static const char *SCRIPT[] = {
+        "buy switch24 core", "buy server srv6", "buy pc desk1",
+        "go goods", "carry core",  "go mdf", "drop",
+        "go goods", "carry srv6",  "go mdf", "drop",
+        "go goods", "carry desk1", "go mdf", "drop",
+        "cable core:1 srv6:0 cat6",
+        "cable core:2 desk1:0 cat6",
+        "power srv6 on",
+        "power desk1 on",
+        "subif srv6 0 12 10.12.0.1/24",
+        "gw srv6 10.12.0.254",
+        "trunk core 1 12",
+        "vlan core 2 12",
+        "dhcpd srv6 10.12.0.100 20 24 10.12.0.1 10.12.0.1",
+        "httpd srv6",
+        NULL
+    };
+    for (int i = 0; SCRIPT[i]; i++) say(&ses, SCRIPT[i], &o);
+
+    say(&ses, "plug srv6", &o);
+    const char *conf = say(&ses, "cat /etc/net/interfaces", &o);
+    ck("its whole configuration is one subinterface, with no card stanza at all",
+       has(conf, "iface eth0.12") && !has(conf, "iface eth0\n"));
+    say(&ses, "unplug", &o);
+    ck("and it serves a desk on that vlan while it is up",
+       has(say(&ses, "dhcp desk1", &o), "10.12.0.100"));
+
+    /* ONE. The mains goes, and the box has to come back off its own disk. */
+    say(&ses, "power srv6 off", &o);
+    say(&ses, "power srv6 on", &o);
+    const char *boot = say(&ses, "plug srv6", &o);
+    ck("after the power cut it finishes booting",
+       has(boot, "[UP at target]") && !has(boot, "DOWN at services"));
+    ck("and netd is running, not dead in a respawn loop",
+       has(say(&ses, "svc", &o), "net              running"));
+    ck("and its own kernel has the subinterface and the address back",
+       has(say(&ses, "ip addr", &o), "eth0.12") && has(o.p, "10.12.0.1/24"));
+    say(&ses, "unplug", &o);
+    ck("and the tower sees it addressed",
+       has(say(&ses, "show srv6", &o), "10.12.0.1/24"));
+    ck("and it is serving the pool that was riding on the vlan",
+       has(say(&ses, "dhcp desk1", &o), "10.12.0.10"));  /* .100 or .101: the
+                                                          * pool is what
+                                                          * matters here, not
+                                                          * which lease */
+
+    /* TWO. A tower-side verb rewrites the whole file -- which is what erased
+     * the playtester's hand-edited workaround -- and then the mains goes
+     * again. This is the half that makes the difference between a fix and a
+     * thing the player has to retype after every command they use. */
+    say(&ses, "resolver srv6 198.51.100.1", &o);
+    say(&ses, "plug srv6", &o);
+    ck("a config verb rewrites the file and it still names only the vlan",
+       has(say(&ses, "cat /etc/net/interfaces", &o), "iface eth0.12"));
+    say(&ses, "unplug", &o);
+    say(&ses, "power srv6 off", &o);
+    say(&ses, "power srv6 on", &o);
+    const char *boot2 = say(&ses, "plug srv6", &o);
+    ck("and after the config verb and a second power cut it still boots",
+       has(boot2, "[UP at target]") && !has(boot2, "DOWN at services"));
+    ck("with netd running and the resolver the tower gave it",
+       has(say(&ses, "svc", &o), "net              running") &&
+       has(say(&ses, "cat /etc/resolv.conf", &o), "198.51.100.1"));
+    say(&ses, "unplug", &o);
+    ck("and still serving the desk, which is what the box is for",
+       has(say(&ses, "dhcp desk1", &o), "10.12.0.10"));
+
+    /* THE SECOND SOCKET, same mistake in another spelling: a floor server
+     * cabled into port 1 and addressed there is describing a card the kernel
+     * really found, whatever udev's one rule names. */
+    say(&ses, "buy server srv7", &o);
+    say(&ses, "spool back", &o);
+    say(&ses, "go goods", &o); say(&ses, "carry srv7", &o);
+    say(&ses, "go mdf", &o); say(&ses, "drop", &o);
+    say(&ses, "cable core:4 srv7:1 cat6", &o);
+    say(&ses, "power srv7 on", &o);
+    say(&ses, "addr srv7:1 10.0.7.10/24", &o);
+    say(&ses, "power srv7 off", &o);
+    say(&ses, "power srv7 on", &o);
+    const char *b3 = say(&ses, "plug srv7", &o);
+    ck("a box addressed on its second socket comes back up too",
+       has(b3, "[UP at target]") && !has(b3, "DOWN at services"));
+    ck("and its config names that socket and nothing else",
+       has(say(&ses, "cat /etc/net/interfaces", &o), "iface eth1") &&
+       has(o.p, "10.0.7.10"));
+    /* AND THE FAULT THIS CHECK EXISTS FOR IS STILL A FAULT. Edit the config
+     * to name a card this box does not have and netd must refuse, or the
+     * breaker's renamed-interface fault becomes undiagnosable. */
+    say(&ses, "ed /etc/net/interfaces 1c \"iface eth9\" . w", &o);
+    say(&ses, "unplug", &o);
+    say(&ses, "power srv7 off", &o);
+    const char *b4 = say(&ses, "power srv7 on", &o);
+    ck("but a card the machine does not have still stops the boot, loudly",
+       has(b4, "DOWN at services") && has(b4, "eth9") &&
+       has(b4, "there is no such interface"));
+    ck("and the box is really down, not down only in the boot log",
+       has(say(&ses, "plug srv7", &o), "DOWN at services"));
+    say(&ses, "unplug", &o);
+
+    buf_free(&o);
+    session_end(&ses);
+}
+
 /* ============ THE HELP'S CLAIMS, AGAINST THE MACHINE THAT MAKES THEM ======
  *
  * Five things a playtester had to read the C source to find out, each of
@@ -1804,6 +1943,7 @@ int session_selfcheck(int *passed, int *total)
     check_cable_batch(passed, total);
     check_jack_played(passed, total);
     check_vlan_server_reboot(passed, total);
+    check_vlan_only_server(passed, total);
     check_documented(passed, total);
     return 0;
 }

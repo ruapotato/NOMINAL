@@ -216,7 +216,20 @@ static void sync_disk(Session *ses, int dev)
         /* A bare socket with no address is not worth a stanza: it is a hole
          * in the back of the box whether or not anybody writes it down. A
          * SUBINTERFACE with no address IS, because nothing else in the world
-         * remembers that the player made it. */
+         * remembers that the player made it.
+         *
+         * SO A SERVER ADDRESSED ONLY ON VLANS -- the build D27 recommends --
+         * has `iface eth0.12` as the first line of its file and no stanza for
+         * the card at all, and that is correct: a tagged subinterface names
+         * the card it rides on. netd used to read that first name as a CARD,
+         * compare it against the name udev gives the device, and refuse to
+         * start, so every such box was a landmine armed for its next reboot
+         * and the only fix -- inserting a bare `iface eth0` by hand -- was
+         * erased by the next verb through here. That was netd's misreading,
+         * and guest/netd.c now takes the part before the dot. Writing a
+         * stanza for an empty card to work around it would have put a card
+         * nobody configured into the one file that is supposed to say only
+         * what somebody decided. */
         if (!ia && i < nports) continue;
         char nm[24];
         net_if_name(n, node, i, nm, sizeof nm);
