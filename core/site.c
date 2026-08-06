@@ -431,7 +431,7 @@ PortState site_link_state(const Site *s, int link)
 static void power_down(Site *s, int dev)
 {
     int node = s->dev[dev].node;
-    net_close_all(s->net, node);
+    net_services_stop(s->net, node);
     net_dhcpd_stop(s->net, node);
     net_route_clear(s->net, node);
     net_arp_flush(s->net, node);
@@ -962,7 +962,13 @@ bool site_cmd(Site *s, const char *line, Buf *out)
         return true;
     }
     if (strcmp(t[0], "show") == 0) {
-        if (n > 1) site_dump_dev(s, dev_arg(s, t[1]), out);
+        /* THE SOCKETS WITH SOMETHING IN THEM. A 24-port switch with two
+         * links in it printed twenty-two lines of `no link` above the two
+         * that mattered, on the screen a player goes to when something is
+         * wrong. The empties are still counted -- "22 more sockets on the
+         * back of it, with nothing in them" is what a person wants to know
+         * about a free port -- they are just not twenty-two lines. */
+        if (n > 1) site_dump_dev_brief(s, dev_arg(s, t[1]), out);
         else site_dump(s, out);
         return true;
     }
@@ -1317,17 +1323,30 @@ bool site_cmd(Site *s, const char *line, Buf *out)
         else {
             /* `HTTP -1, 0 bytes` IS NOT A STATUS. There was no reply, and the
              * interesting question is how far it got -- so ask the wire the
-             * same way a person would, with a ping, and say which of the two
-             * different faults this is. */
+             * same way a person would, with a ping, and SAY WHAT CAME BACK.
+             *
+             * What it must not do is name a fault it has not established. It
+             * used to answer a failed ping with "this is a routing or
+             * addressing fault, not a web one" -- and a playtester read that
+             * over a network whose routing and addressing were provably
+             * correct, because the far box was simply filtering icmp. A
+             * confident sentence that contradicts the machine costs more
+             * than no sentence at all: it sends somebody to re-cable a riser
+             * that was never wrong. Two observations and the next question,
+             * and the player draws the conclusion. */
             char a[20];
             net_fmt_ip(ip, a, sizeof a);
             int rtt = 0;
             PingResult pr = net_ping(s->net, s->dev[d].node, ip, &rtt);
             buf_printf(out, "no reply from %s port 80\n", a);
             if (pr != PING_OK)
-                buf_printf(out, "  and %s does not answer a ping either: %s.\n"
-                                "  This is a routing or addressing fault, not a "
-                                "web one.\n", a, net_ping_text(pr));
+                buf_printf(out, "  and a ping to %s came back: %s.\n"
+                                "  So nothing has been shown to reach it -- but a "
+                                "box that filters icmp\n  looks exactly like this "
+                                "too. `trace %s %s` says how far the packets\n"
+                                "  get, and `show` the far box says whether it has "
+                                "an address at all.\n",
+                           a, net_ping_text(pr), t[1], a);
             else
                 buf_printf(out, "  %s answers a ping in %d ms, so the copper and "
                                 "the routing are fine.\n  Nothing accepted the "
