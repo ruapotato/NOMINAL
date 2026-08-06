@@ -907,18 +907,20 @@ func _init() -> void:
 		ok("tenant %d moved in on floor %d: %d desks, %d up"
 			% [int(row.tenant), int(row.floor), int(row.desks), int(row.up)])
 		# their computers are DRAWN, in the room they rent
-		var troom: int = t.tenant_room(int(row.tenant))
+		# Across every room they rent, for the same reason as the seats
+		# below: their twenty computers are spread over their whole suite.
 		var drawn := 0
 		for d in t.devices:
 			var df: int = int(floor((d.pos.y + 0.3) / t.fheight))
-			if t.room_of(df, int(floor(d.pos.x)), int(floor(d.pos.z))) == troom:
+			var dr: int = t.room_of(df, int(floor(d.pos.x)), int(floor(d.pos.z)))
+			if t.room_rented_by(dr, int(row.tenant)):
 				drawn += 1
 		if drawn < int(row.desks):
-			fail("the tenancy has %d desks and the view draws %d of them in their room"
+			fail("the tenancy has %d desks and the view draws %d of them across the rooms they rent"
 				% [int(row.desks), drawn])
 		else:
-			ok("%d of their computers stand in the %s (%d devices, was %d)"
-				% [drawn, t.rooms[troom].name, t.devices.size(), was_dev])
+			ok("%d of their computers stand in the rooms they rent (%d devices, was %d)"
+				% [drawn, t.devices.size(), was_dev])
 		# ---- AND SOMEBODY IS SITTING AT EVERY ONE OF THEM.
 		#
 		# A person per desk device, in the room the tenancy rents, derived from
@@ -960,7 +962,13 @@ func _init() -> void:
 			var sx: int = int(floor(s.x))
 			var sz: int = int(floor(s.z))
 			var sr: int = t.room_of(sf, sx, sz)
-			if sr != t.tenant_room(int(st.tenant)):
+			# ANY room this tenancy rents, not "the" one. A tenancy holds up
+			# to eleven rooms and its desks are apportioned across all of
+			# them by area, so asking tenant_room() -- which returns the
+			# FIRST -- called ten rooms out of eleven a misplacement. The
+			# claim worth keeping is that nobody is seated in a doorway, a
+			# rack aisle, or somebody else's office.
+			if not t.room_rented_by(sr, int(st.tenant)):
 				seat_bad += 1
 				fail("somebody of tenant %d is sitting at (%.1f, %.1f), which is not the room their tenancy rents"
 					% [int(st.tenant), s.x, s.z])
@@ -982,10 +990,15 @@ func _init() -> void:
 		if seat_bad == 0 and not seats.is_empty():
 			ok("all %d of them are in their own room, clear of every doorway"
 				% seats.size())
-		# ---- AND YOU CAN STILL WALK THE ROOM THEY ARE IN. Twenty desks, twenty
-		# chairs and twenty people between the door and the far wall: the
-		# chequerboard is what leaves a way through, and this is a real body
-		# walking it rather than the arithmetic that says it should fit.
+		# ---- AND YOU CAN STILL WALK THE ROOM THEY ARE IN. Desks, chairs and
+		# people between the door and the far wall: the chequerboard is what
+		# leaves a way through, and this is a real body walking it rather than
+		# the arithmetic that says it should fit.
+		#
+		# Their FIRST room, which since the desks were apportioned across a
+		# tenancy's whole suite is no longer the whole of it -- but it is a
+		# real room with real furniture in it, which is what this walk needs.
+		var troom: int = t.tenant_room(int(row.tenant))
 		var oroom: Dictionary = t.rooms[troom]
 		var od: Array = t.room_doors(troom)
 		if not od.is_empty():

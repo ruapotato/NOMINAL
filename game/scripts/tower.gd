@@ -3909,6 +3909,21 @@ func tenant_room(t: int) -> int:
 	return -1
 
 
+# DOES THIS TENANCY RENT THIS ROOM? tenant_room() above answers "which room",
+# singular, and a tenancy holds as many as eleven of them -- it returns the
+# first. That was harmless while every desk of a tenancy was installed into
+# that first room; since desks are apportioned across every room a tenancy
+# leases, "the room they rent" is the wrong question and this is the right
+# one.
+func room_rented_by(room_i: int, t: int) -> bool:
+	if room_i < 0:
+		return false
+	for r in rooms:
+		if int(r.i) == room_i:
+			return int(r.tenant) == t
+	return false
+
+
 # WHO IS WAITING, WITHOUT TYPING A VERB.
 #
 # A tenancy that has moved in and has no ports is the player's whole job, and
