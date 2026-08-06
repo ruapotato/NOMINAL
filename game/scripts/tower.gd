@@ -576,6 +576,135 @@ func _ramp(a: Vector3, b: Vector3, c: Vector3, d: Vector3) -> void:
 # for U positions out of these frames, so a box in the game is a box in a rack
 # and its height off the floor is the U it was mounted at.
 
+# THE DOORWAY DECIDES. A row of frames placed on a fixed grid put six racks
+# across the only door of the MDF, and the room the day starts in was a room
+# you could not leave. So nothing here picks a wall by "the long axis": it asks
+# the building where the doors are, throws away every wall a door is in, keeps
+# 1.5 m of floor clear in front of each opening, and leaves a working aisle in
+# front of the frames and room to get behind them.
+const RACK_BACK := 0.60      # behind a frame, because things are cabled there
+const RACK_AISLE := 1.20     # in front: a person and a 42U box on a trolley
+const DOOR_CLEAR := 1.50     # floor kept clear inside the room, at every door
+const ROW_MARGIN := 0.30     # a shoulder at each end of a row
+
+
+# Every doorway of this room: which wall of the room it is in (0 = the y0 wall,
+# 1 = y1, 2 = x0, 3 = x1) and the rectangle of floor inside the room that has
+# to stay walkable for the door to be usable.
+func room_doors(ri: int) -> Array:
+	var r: Dictionary = rooms[ri]
+	var out: Array = []
+	for d in doors:
+		if d.floor != r.floor:
+			continue
+		if d.a != ri and d.b != ri:
+			continue
+		if d.dir == 0:
+			var px := float(d.x + 1)
+			if absf(px - float(r.x0)) < 0.01:
+				out.append({"wall": 2, "clear": Rect2(px, d.y, DOOR_CLEAR, 1.0),
+					"gate": Vector2(px, float(d.y) + 0.5), "out": Vector2(-1, 0)})
+			elif absf(px - float(r.x1)) < 0.01:
+				out.append({"wall": 3, "clear": Rect2(px - DOOR_CLEAR, d.y, DOOR_CLEAR, 1.0),
+					"gate": Vector2(px, float(d.y) + 0.5), "out": Vector2(1, 0)})
+		else:
+			var py := float(d.y + 1)
+			if absf(py - float(r.y0)) < 0.01:
+				out.append({"wall": 0, "clear": Rect2(d.x, py, 1.0, DOOR_CLEAR),
+					"gate": Vector2(float(d.x) + 0.5, py), "out": Vector2(0, -1)})
+			elif absf(py - float(r.y1)) < 0.01:
+				out.append({"wall": 1, "clear": Rect2(d.x, py - DOOR_CLEAR, 1.0, DOOR_CLEAR),
+					"gate": Vector2(float(d.x) + 0.5, py), "out": Vector2(0, 1)})
+	return out
+
+
+static func _rect_gap(a: Rect2, b: Rect2) -> float:
+	var dx: float = max(0.0, max(a.position.x - b.end.x, b.position.x - a.end.x))
+	var dy: float = max(0.0, max(a.position.y - b.end.y, b.position.y - a.end.y))
+	return sqrt(dx * dx + dy * dy)
+
+
+# A strip of floor `depth` deep, set `back` off a wall of this room, with
+# `aisle` of clear floor in front of it, that no doorway needs. Returns the
+# strip and the free run along it, or {} if the room cannot hold one.
+#
+# `want_len` is how much run the caller would like: a wall that gives it all is
+# not improved by giving more, so past that the tie is broken by how far the
+# strip keeps out of the way of the doors.
+func _wall_band(ri: int, depth: float, back: float, aisle: float,
+		want_len: float, avoid: Array = []) -> Dictionary:
+	var r: Dictionary = rooms[ri]
+	var dl := room_doors(ri)
+	var need := back + depth + aisle
+	var best := {}
+	var best_score := -1.0
+	for side in range(4):
+		if avoid.has(side):
+			continue
+		var in_wall := false
+		for d in dl:
+			if int(d.wall) == side:
+				in_wall = true
+		if in_wall:
+			continue                      # you do not park a rack over a door
+		var band: Rect2
+		var face: Vector3
+		match side:
+			0:
+				if float(r.y1 - r.y0) < need: continue
+				band = Rect2(r.x0, float(r.y0) + back, r.x1 - r.x0, depth)
+				face = Vector3(0, 0, 1)
+			1:
+				if float(r.y1 - r.y0) < need: continue
+				band = Rect2(r.x0, float(r.y1) - back - depth, r.x1 - r.x0, depth)
+				face = Vector3(0, 0, -1)
+			2:
+				if float(r.x1 - r.x0) < need: continue
+				band = Rect2(float(r.x0) + back, r.y0, depth, r.y1 - r.y0)
+				face = Vector3(1, 0, 0)
+			_:
+				if float(r.x1 - r.x0) < need: continue
+				band = Rect2(float(r.x1) - back - depth, r.y0, depth, r.y1 - r.y0)
+				face = Vector3(-1, 0, 0)
+		var along_x: bool = (side == 0 or side == 1)
+		var segs: Array = [[
+			(band.position.x if along_x else band.position.y) + ROW_MARGIN,
+			(band.end.x if along_x else band.end.y) - ROW_MARGIN]]
+		for d in dl:
+			var c: Rect2 = d.clear
+			if not c.intersects(band):
+				continue
+			var a: float = (c.position.x if along_x else c.position.y) - ROW_MARGIN
+			var b: float = (c.end.x if along_x else c.end.y) + ROW_MARGIN
+			var nxt: Array = []
+			for s in segs:
+				if b <= s[0] or a >= s[1]:
+					nxt.append(s)
+					continue
+				if a - s[0] > 0.1: nxt.append([s[0], a])
+				if s[1] - b > 0.1: nxt.append([b, s[1]])
+			segs = nxt
+		var run_lo := 0.0
+		var run_hi := 0.0
+		for s in segs:
+			if s[1] - s[0] > run_hi - run_lo:
+				run_lo = s[0]
+				run_hi = s[1]
+		if run_hi - run_lo < 0.5:
+			continue
+		var clearance := 99.0
+		for d in dl:
+			clearance = min(clearance, _rect_gap(band, d.clear))
+		var score: float = min(run_hi - run_lo, want_len) * 2.0 + min(clearance, 6.0)
+		if score > best_score:
+			best_score = score
+			best = {"side": side, "band": band, "along_x": along_x, "face": face,
+				"lo": run_lo, "hi": run_hi}
+	return best
+
+
+const RACK_PITCH := 0.90
+
 func _plan_racks() -> void:
 	racks.clear()
 	for r in rooms:
@@ -585,27 +714,25 @@ func _plan_racks() -> void:
 			K_COMMS: n = 1
 			K_SERVER: n = 3
 			_: continue
-		var wx: int = r.x1 - r.x0
-		var wy: int = r.y1 - r.y0
-		var along_x: bool = wx >= wy
-		var span: int = wx if along_x else wy
-		# A rack needs 600 mm and a person needs to get past it.
-		n = min(n, int((span - 1.4) / 0.90))
-		# CENTRED ON THE ROOM, with a gap between frames. A row shoved into one
-		# corner is a row you only ever see end-on, which is what the first
-		# screenshot of this was: two black cages edge-on across an empty floor.
-		var pitch := 0.90
-		var run: float = float(n - 1) * pitch + RACK_W
-		var mid: float = (r.x0 + r.x1) * 0.5 if along_x else (r.y0 + r.y1) * 0.5
+		var want: float = float(n - 1) * RACK_PITCH + RACK_W
+		var b := _wall_band(r.i, RACK_D, RACK_BACK, RACK_AISLE, want)
+		if b.is_empty():
+			continue                      # no wall in this room can hold a row
+		var L: float = b.hi - b.lo
+		n = min(n, int(floor((L - RACK_W) / RACK_PITCH)) + 1)
+		if n < 1:
+			continue
+		var run: float = float(n - 1) * RACK_PITCH + RACK_W
+		var start: float = b.lo + (L - run) * 0.5
 		for i in range(n):
-			var d := {"room": r.i, "floor": r.floor, "along_x": along_x,
-					"next_u": 36, "x": 0.0, "z": 0.0}
-			if along_x:
-				d.x = mid - run * 0.5 + i * pitch
-				d.z = r.y0 + 0.35
+			var d := {"room": r.i, "floor": r.floor, "along_x": bool(b.along_x),
+					"face": b.face, "next_u": 36, "x": 0.0, "z": 0.0}
+			if b.along_x:
+				d.x = start + i * RACK_PITCH
+				d.z = b.band.position.y
 			else:
-				d.x = r.x0 + 0.35
-				d.z = mid - run * 0.5 + i * pitch
+				d.x = b.band.position.x
+				d.z = start + i * RACK_PITCH
 			racks.append(d)
 
 
@@ -625,16 +752,23 @@ func _rack_geom(i: int) -> void:
 	# The two punched rails at the front, and the U holes in them. The holes
 	# are what makes it read as a rack rather than a wardrobe: they give the
 	# eye a repeat at 1.75 inches, which is the size everything else is in.
-	var front := 0.0 if k.along_x else d - 0.06
-	if k.along_x: front = d - 0.06
-	for s in [0.10, w - 0.13]:
+	#
+	# WHICH SIDE THE FRONT IS ON is now the row's business, not this one's:
+	# a row against the far wall faces back into the room, so the rails and the
+	# gear go on the -z / -x side of the frame instead.
+	var f: Vector3 = k.get("face", Vector3(0, 0, 1))
+	var pos: bool = (f.z > 0.0) if k.along_x else (f.x > 0.0)
+	var deep: float = d if k.along_x else w
+	var front: float = (deep - 0.06) if pos else 0.0
+	var hole: float = 0.055 if pos else -0.007
+	for s in [0.10, w - 0.13] if k.along_x else [0.10, d - 0.13]:
 		var rm := o + (Vector3(s, RACK_BASE, front) if k.along_x else Vector3(front, RACK_BASE, s))
 		var rs := Vector3(0.03, RACK_U * U, 0.06) if k.along_x else Vector3(0.06, RACK_U * U, 0.03)
 		_box(rm, rs, RACK_RAIL, false)
 		for uu in range(0, RACK_U, 3):
 			var hm := rm + Vector3(0, uu * U + U * 0.35, 0)
-			if k.along_x: hm.z += 0.055
-			else: hm.x += 0.055
+			if k.along_x: hm.z += hole
+			else: hm.x += hole
 			var hs := Vector3(0.03, 0.012, 0.012) if k.along_x else Vector3(0.012, 0.012, 0.03)
 			_box(hm, hs, Color("#8d949c"), false)
 
@@ -650,11 +784,14 @@ func _rack_slot(i: int, nu: int) -> Dictionary:
 	racks[i] = k
 	var y: float = k.floor * fheight + RACK_BASE + float(top - nu) * U
 	var h: float = float(nu) * U
+	var f: Vector3 = k.get("face", Vector3(0, 0, 1))
 	if k.along_x:
-		return {"mn": Vector3(k.x + 0.06, y, k.z + RACK_D - 0.74),
-				"size": Vector3(RACK_W - 0.12, h, 0.68), "face": Vector3(0, 0, 1)}
-	return {"mn": Vector3(k.x + RACK_D - 0.74, y, k.z + 0.06),
-			"size": Vector3(0.68, h, RACK_W - 0.12), "face": Vector3(1, 0, 0)}
+		var z: float = (k.z + RACK_D - 0.74) if f.z > 0.0 else (k.z + 0.06)
+		return {"mn": Vector3(k.x + 0.06, y, z),
+				"size": Vector3(RACK_W - 0.12, h, 0.68), "face": f}
+	var x: float = (k.x + RACK_D - 0.74) if f.x > 0.0 else (k.x + 0.06)
+	return {"mn": Vector3(x, y, k.z + 0.06),
+			"size": Vector3(0.68, h, RACK_W - 0.12), "face": f}
 
 
 # A box standing on the floor of a room, in a row along the low wall, front
@@ -665,17 +802,26 @@ func _floor_slot(room: int, k: int, nu: int) -> Dictionary:
 	var r: Dictionary = rooms[room]
 	var h: float = max(0.12, float(nu) * U)
 	var y: float = r.floor * fheight + 0.02
-	var along_x: bool = (r.x1 - r.x0) >= (r.y1 - r.y0)
-	var step: float = 0.85
-	if along_x:
-		var x: float = float(r.x0) + 0.9 + float(k) * step
-		x = min(x, float(r.x1) - 1.0)
-		return {"mn": Vector3(x, y, float(r.y0) + 0.7),
-				"size": Vector3(0.62, h, 0.62), "face": Vector3(0, 0, 1)}
-	var z: float = float(r.y0) + 0.9 + float(k) * step
-	z = min(z, float(r.y1) - 1.0)
-	return {"mn": Vector3(float(r.x0) + 0.7, y, z),
-			"size": Vector3(0.62, h, 0.62), "face": Vector3(1, 0, 0)}
+	# The same rule as a rack row, at delivery scale: against a wall with no
+	# door in it, out of the clear floor every doorway needs. A pallet dumped
+	# across the roller door is the same bug as a rack across the MDF door.
+	var b := _wall_band(room, 0.62, 0.20, 0.90, 0.62 + float(k) * 0.85)
+	var step := 0.85
+	if b.is_empty():
+		var along_x: bool = (r.x1 - r.x0) >= (r.y1 - r.y0)
+		if along_x:
+			var xf: float = min(float(r.x0) + 0.9 + float(k) * step, float(r.x1) - 1.0)
+			return {"mn": Vector3(xf, y, float(r.y0) + 0.7),
+					"size": Vector3(0.62, h, 0.62), "face": Vector3(0, 0, 1)}
+		var zf: float = min(float(r.y0) + 0.9 + float(k) * step, float(r.y1) - 1.0)
+		return {"mn": Vector3(float(r.x0) + 0.7, y, zf),
+				"size": Vector3(0.62, h, 0.62), "face": Vector3(1, 0, 0)}
+	var t: float = min(b.lo + float(k) * step, b.hi - 0.62)
+	if b.along_x:
+		return {"mn": Vector3(t, y, b.band.position.y),
+				"size": Vector3(0.62, h, 0.62), "face": b.face}
+	return {"mn": Vector3(b.band.position.x, y, t),
+			"size": Vector3(0.62, h, 0.62), "face": b.face}
 
 
 func racks_in(room: int) -> Array:
@@ -1051,13 +1197,32 @@ func spawn_point() -> Vector3:
 				break
 	var r: Dictionary = rooms[i]
 	var p := room_centre(i)
-	# The racks line the low edge of the short axis; stand square in front of
-	# the middle of the row, far enough back to see the whole frame.
-	if (r.x1 - r.x0) >= (r.y1 - r.y0):
-		p.z = min(float(r.y1) - 0.9, r.y0 + 0.35 + RACK_D + 2.4)
-	else:
-		p.x = min(float(r.x1) - 0.9, r.x0 + 0.35 + RACK_D + 2.4)
+	# IN THE AISLE, looking at the row. Which wall the row is against is the
+	# doors' decision now, so this reads it off the frames rather than assuming
+	# the low edge of the short axis.
+	var mine := racks_in(i)
+	if not mine.is_empty():
+		var mid := Vector3.ZERO
+		var face: Vector3 = racks[mine[0]].get("face", Vector3(0, 0, 1))
+		for m in mine:
+			mid += _rack_front(m)
+		mid /= float(mine.size())
+		p = mid + face * 1.9
+		p.x = clampf(p.x, float(r.x0) + 0.6, float(r.x1) - 0.6)
+		p.z = clampf(p.z, float(r.y0) + 0.6, float(r.y1) - 0.6)
 	p.y = 0.1
+	return p
+
+
+# The middle of the front face of frame `i`, at chest height, in metres.
+func _rack_front(i: int) -> Vector3:
+	var k: Dictionary = racks[i]
+	var f: Vector3 = k.get("face", Vector3(0, 0, 1))
+	var w: float = RACK_W if k.along_x else RACK_D
+	var d: float = RACK_D if k.along_x else RACK_W
+	var p := Vector3(k.x + w * 0.5, k.floor * fheight + 1.0, k.z + d * 0.5)
+	if k.along_x: p.z = k.z + (d if f.z > 0.0 else 0.0)
+	else: p.x = k.x + (w if f.x > 0.0 else 0.0)
 	return p
 
 
@@ -1071,9 +1236,10 @@ func spawn_yaw() -> float:
 		return 0.0
 	var mid := Vector3.ZERO
 	for m in mine:
-		mid += Vector3(racks[m].x + 0.3, 0, racks[m].z + 0.5)
+		mid += _rack_front(m)
 	mid /= float(mine.size())
 	var to := mid - spawn_point()
+	to.y = 0.0
 	# -Z is forward for a Godot camera, so the yaw that looks along `to` is this.
 	return atan2(-to.x, -to.z)
 

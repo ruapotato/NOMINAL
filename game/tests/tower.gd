@@ -84,6 +84,58 @@ func _init() -> void:
 	else:
 		ok("%d racks in the MDF" % t.racks_in(mdf).size())
 
+	# ---- YOU CAN LEAVE THE ROOM YOU START IN. Six racks were placed on a fixed
+	# grid across the only door of the MDF and the first playtest of the tower
+	# ended in the room it began in: "there's no way to actually leave the
+	# server room." Reachability in the room graph said everything was fine,
+	# because the room graph does not know a rack is 2 m of steel. So this is a
+	# WALK, with the same physics as the stair climb: spawn, cross the room,
+	# through the doorway, into the corridor.
+	var mdf_doors: Array = t.room_doors(mdf)
+	if mdf_doors.is_empty():
+		fail("the MDF has no door at all")
+	else:
+		var g: Dictionary = mdf_doors[0]
+		var gate: Vector2 = g.gate
+		var outv: Vector2 = g.out
+		var inside := gate - outv * 1.3
+		var outside := gate + outv * 1.6
+		t.teleport(sp + Vector3(0, 0.3, 0))
+		for i in range(20):
+			await process_frame
+		var legs: Array = [inside, gate + outv * 0.1, outside]
+		var got := true
+		for w in legs:
+			if not await _walk_to(self, t, w, 600):
+				got = false
+				break
+		var here: int = t.player_room()
+		if not got or here == t.NOROOM:
+			fail("walked from the spawn towards the MDF door and got stuck at (%.1f, %.1f)"
+				% [t.player.global_position.x, t.player.global_position.z])
+		elif here == mdf:
+			fail("walked through the MDF doorway and came out still in the MDF at (%.1f, %.1f) -- something is standing in the way"
+				% [t.player.global_position.x, t.player.global_position.z])
+		else:
+			ok("walked out of the MDF into the %s" % t.rooms[here].name)
+
+	# ---- AND NOTHING IS PARKED IN A DOORWAY, on any floor. A rack row is
+	# planned off the room's doors; this is that claim checked as data, so a
+	# room the physics walk does not visit cannot regress quietly.
+	var fouled := 0
+	for i in range(t.racks.size()):
+		var k: Dictionary = t.racks[i]
+		var w: float = t.RACK_W if k.along_x else t.RACK_D
+		var d: float = t.RACK_D if k.along_x else t.RACK_W
+		var foot := Rect2(k.x, k.z, w, d)
+		for dd in t.room_doors(int(k.room)):
+			if foot.intersects(dd.clear):
+				fouled += 1
+				fail("a rack in the %s stands in the clear floor of its door"
+					% t.rooms[int(k.room)].name)
+	if fouled == 0:
+		ok("all %d racks stand clear of every doorway" % t.racks.size())
+
 	# ---- THE LIFT. It has to physically carry a body between floors, and it
 	# has to refuse a floor that is not in service -- which is the whole of how
 	# this tower grows.
@@ -350,6 +402,29 @@ func _init() -> void:
 
 	print("tower: %d failures" % bad)
 	quit(1 if bad else 0)
+
+
+# Walk there. Steers every frame and drives forward under the same physics the
+# stair climb uses -- no teleporting, no ignoring walls. False if it never
+# arrives, which is what a rack across the route looks like from in here.
+func _walk_to(tree: SceneTree, t: Node3D, target: Vector2, budget: int) -> bool:
+	t.player.drive_active = true
+	t.player.drive = Vector2(0, 1)
+	var arrived := false
+	for i in range(budget):
+		var p: Vector3 = t.player.global_position
+		var to := target - Vector2(p.x, p.z)
+		if to.length() < 0.35:
+			arrived = true
+			break
+		# -Z is forward, so this is the yaw that points at the target.
+		t.player.look_at_yaw(atan2(-to.x, -to.y))
+		await tree.process_frame
+	t.player.drive_active = false
+	t.player.drive = Vector2.ZERO
+	for i in range(4):
+		await tree.process_frame
+	return arrived
 
 
 func _device(t: Node3D, want: String) -> int:
