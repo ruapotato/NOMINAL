@@ -1509,6 +1509,17 @@ bool session_line(Session *ses, const char *line, Buf *out)
                           "puts it on the shelf.\n");
             return true;
         }
+        /* A tenant's computer is a tenant's computer. The model will happily
+         * move it -- it is not cabled and not fixed to a wall -- but walking
+         * out of a leased floor with the machine somebody works on is not a
+         * thing the building's IT department gets to do. */
+        if (ses->s.dev[d].tenant != 0) {
+            buf_printf(out, "%s belongs to the tenant on floor %d, not to you. "
+                            "Their kit is\n  theirs; you are here for the wall, "
+                            "the cupboard and the copper.\n",
+                       ses->s.dev[d].name, ses->s.dev[d].floor);
+            return true;
+        }
         if (!site_move(&ses->s, d, ses->room)) {
             buf_printf(out, "refused: %s\n", site_err_text(ses->s.err));
             if (ses->s.err == SITE_ECABLED)

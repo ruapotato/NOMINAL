@@ -542,6 +542,60 @@ static void check_build(int *passed, int *total)
     session_end(&ses);
 }
 
+/* ----------------------------------------- whose computer that is */
+/* `carry t3d0` used to work. The model had no objection -- a desk is not
+ * cabled and not bolted to a wall -- and site_move() reassigns ownership to
+ * whatever room the thing lands in, so walking a tenant's computer down to
+ * the MDF quietly made it the landlord's. You are the building's IT, not
+ * theirs; the copper is yours and the machine on the desk is not. */
+static void check_tenant_kit(int *passed, int *total)
+{
+    P = passed; T = total;
+    printf("\na tenant's computer is a tenant's computer\n");
+    Session ses;
+    if (!session_start(&ses, GATE_SEED, 100000)) { ck("a session starts", false); return; }
+    Buf o = {0};
+
+    /* Run the clock until somebody has moved in and put desks in a room. */
+    int ti = -1;
+    for (int guard = 0; guard < 400 && ti < 0; guard++) {
+        say(&ses, "day 1", &o);
+        for (int i = 0; i < ses.s.ntenant; i++)
+            if (ses.s.tenant[i].moved && ses.s.tenant[i].ndesk > 0) { ti = i; break; }
+    }
+    if (ti < 0) { ck("a tenancy moves in within four hundred days", false); goto done; }
+
+    {
+        int d = ses.s.tenant[ti].desk0;
+        int floor = ses.s.dev[d].floor;
+        const char *nm = ses.s.dev[d].name;
+
+        /* Walk to it. This matters: without it the refusal you get is the
+         * reachability one -- "you are not standing in front of it" -- and
+         * the check would pass while proving nothing about ownership. */
+        char line[64];
+        snprintf(line, sizeof line, "go %s", nm);
+        say(&ses, line, &o);
+        int room = ses.s.dev[d].room;
+        ck("you can walk to a tenant's desk: their floor is not sealed off",
+           ses.room == room);
+
+        snprintf(line, sizeof line, "carry %s", nm);
+        const char *r = say(&ses, line, &o);
+        ck("but their desk is not yours to pick up",
+           ses.carrying < 0 && !has(r, "you pick"));
+        ck("and the refusal is about whose it is, not about where you stand",
+           has(r, "belongs to the tenant") && !has(r, "and you are not"));
+        ck("and it stays in their room, still theirs",
+           ses.s.dev[d].room == (uint16_t)room && ses.s.dev[d].tenant != 0);
+        (void)floor;
+    }
+
+done:
+    buf_free(&o);
+    session_end(&ses);
+}
+
 /* ------------------------------------------- a run that did not happen */
 /* `cable` is a macro for four things a person does, and when the fourth
  * refused it left the first end in a socket. The NEXT `cable` picked it up
@@ -837,6 +891,7 @@ int session_selfcheck(int *passed, int *total)
     check_goods(passed, total);
     check_build(passed, total);
     check_dangling(passed, total);
+    check_tenant_kit(passed, total);
     check_power(passed, total);
     check_services(passed, total);
     return 0;
