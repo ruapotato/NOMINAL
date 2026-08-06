@@ -3,7 +3,7 @@
 # A blind playtester cannot navigate 3D from screenshots, so everything the
 # 3D shell can do has to be checkable here: the geometry is non-empty, the
 # player spawns standing on a floor and not inside a wall, the stairs actually
-# carry a walking body from one floor to the next, and the crash cart's two
+# carry a walking body from one floor to the next, and the mobile debugger's two
 # leads behave the way the hardware they model behaves.
 #
 # The stair check is a PHYSICS check, not an arithmetic one. Steps that a
@@ -355,11 +355,13 @@ func _init() -> void:
 	if blocked: fail("%d doors did not make it into the wall pass" % blocked)
 	else: ok("%d doorways, all of them openings" % t.doors.size())
 
-	# ---- THE CRASH CART. The leads are the lesson: serial talks to a machine
-	# that never booted, HDMI does not, and a patch panel has no ports.
-	var cart: Node3D = t.cart
-	if cart == null:
-		fail("no crash cart")
+	# ---- THE MOBILE DEBUGGER. The leads are the lesson, and they are the same
+	# lesson whether they hang off a trolley or a handset: serial talks to a
+	# machine that never booted, the display lead does not, and a patch panel
+	# has no ports at all.
+	var mob: Node3D = t.phone
+	if mob == null:
+		fail("no mobile debugger")
 	else:
 		var ws := _device(t, "workstation")
 		var srv := _device(t, "rack server")
@@ -368,17 +370,17 @@ func _init() -> void:
 			fail("expected a workstation, a rack server and a patch panel; got %d devices"
 				% t.devices.size())
 		else:
-			var m: String = cart.plug(pp, "serial")
+			var m: String = mob.plug(pp, "serial")
 			if m.find("passive") < 0: fail("the patch panel pretended to have a console: " + m)
 			else: ok("patch panel refuses a serial lead: " + m)
 
-			m = cart.plug(srv, "hdmi")
+			m = mob.plug(srv, "hdmi")
 			if m.find("no display output") < 0:
 				fail("a rack server produced a picture: " + m)
 			else: ok("rack server has no display output: " + m)
 
-			m = cart.plug(srv, "serial")
-			var screen: String = cart.screen_text()
+			m = mob.plug(srv, "serial")
+			var screen: String = mob.screen_text()
 			if screen.strip_edges() == "":
 				fail("the serial lead said nothing at all")
 			elif t.machine.booted():
@@ -391,14 +393,105 @@ func _init() -> void:
 				else: ok("serial: the boot stopped where it really stopped")
 			# and a command on the end of it goes through the same sh_on() the
 			# desktop terminal uses
-			var out: String = cart.type_line("uname -a")
+			var out: String = mob.type_line("uname -a")
 			if out.strip_edges() == "":
 				fail("`uname -a` down the serial lead said nothing")
 			else:
 				ok("serial `uname -a`: " + out.split("\n")[0].substr(0, 60))
-			m = cart.plug(ws, "hdmi")
+			m = mob.plug(ws, "hdmi")
 			if m.find("display on") < 0: fail("the workstation would not drive a screen: " + m)
 			else: ok("HDMI on the workstation: " + m)
+
+	# ---- THE INVENTORY IS A PICTURE OF THE SIMULATION, not a second one. The
+	# hands are the rule core/session.c already keeps: both of them are on a box
+	# you are carrying, so the spool cannot be in one at the same time, and the
+	# refusal a player reads has to be that rule rather than a new one.
+	var bag: Control = t.bag
+	if bag == null:
+		fail("no inventory")
+	else:
+		if bag.hand(0) == "" or bag.hand(1) == "":
+			fail("nothing is in either hand at the start: %s / %s"
+				% [bag.hand(0), bag.hand(1)])
+		else:
+			ok("hands start as %s / %s" % [bag.hand(0), bag.hand(1)])
+		if bag.equip("spool", 0) != "":
+			fail("could not put the spool in a free hand")
+		elif bag.hand(0) != "spool":
+			fail("the spool went into a hand and did not stay there")
+		else:
+			ok("dragged the spool into the left hand")
+		# now fill both hands with a box and try again
+		t.teleport(t.room_centre(goods) + Vector3(0, 0.4, 0))
+		for i in range(10):
+			await process_frame
+		var carry := -1
+		for i in range(t.devices.size()):
+			if int(t.devices[i].get("site", -1)) >= 0 and t.devices[i].name == "edge":
+				carry = i
+		if carry < 0:
+			fail("nothing left in goods in to pick up")
+		else:
+			t.carry_here(carry)
+			if t.carrying < 0:
+				fail("could not pick a second box up")
+			elif bag.hand(0) != "box" or bag.hand(1) != "box":
+				fail("carrying a box and the hands say %s / %s"
+					% [bag.hand(0), bag.hand(1)])
+			else:
+				ok("carrying a box puts it in BOTH hands: %s / %s"
+					% [bag.hand(0), bag.hand(1)])
+			var no: String = bag.equip("spool", 0)
+			if no.find("both hands") < 0:
+				fail("the inventory let a spool into a full hand: '%s'" % no)
+			else:
+				ok("and refuses the spool: " + no)
+			# and the refusal is not decoration: the cable verb refuses too
+			var no2: String = t.cable_here(carry if carry < t.devices.size() else 0)
+			if no2.find("both hands") < 0:
+				fail("cable_here ran a cable with both hands full: '%s'" % no2)
+			else:
+				ok("and so does running a cable, in core's words")
+			t.drop_here()
+
+	# ---- [E] AT THE WORKSTATION IS THE 2D DESKTOP. Walk to it -- so a desk
+	# nobody can reach fails here rather than looking fine in a screenshot --
+	# and open it. This is last because de.gd installs a ticket when it starts.
+	var wsi := _device(t, "workstation")
+	if wsi < 0:
+		fail("there is no workstation in the MDF")
+	else:
+		var seat: Vector3 = t.devices[wsi].use_from
+		t.teleport(t.room_centre(mdf) + Vector3(0, 0.4, 0))
+		for i in range(20):
+			await process_frame
+		var walked: bool = await _walk_to(self, t, Vector2(seat.x, seat.z), 900)
+		if not walked:
+			fail("could not walk to the workstation in the MDF")
+		else:
+			ok("walked to the workstation and stood at it")
+		var near: int = t.nearest_device(t.player.global_position)
+		if near != wsi:
+			fail("standing at the desk and what is in reach is %s"
+				% ("nothing" if near < 0 else str(t.devices[near].name)))
+		else:
+			ok("the workstation is what is in reach from the seat")
+		t.with_desktop = true
+		var sat: String = t.use_here(wsi)
+		if not t.desk_open():
+			fail("[E] at the workstation did not open the desktop: " + sat)
+		else:
+			await process_frame
+			await process_frame
+			if t.desk_de.get_child_count() == 0:
+				fail("the desktop came up empty")
+			else:
+				ok("[E] at the workstation: " + sat.strip_edges())
+			var up: String = t.stand_up()
+			if t.desk_open():
+				fail("could not stand up again: " + up)
+			else:
+				ok("and [Esc] stands you back up")
 
 	print("tower: %d failures" % bad)
 	quit(1 if bad else 0)

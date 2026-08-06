@@ -102,7 +102,8 @@ var doors: Array = []
 var stairs: Array = []         # per stair run: {floor,lo,hi,axis,c0,c1,room}
 
 var player: CharacterBody3D = null
-var cart: Node3D = null
+var phone: Node3D = null
+var bag: Control = null          # inventory.gd: what is in your hands
 var devices: Array = []
 
 # THE TOWER GROWS. The generator makes the whole building up front and that is
@@ -206,8 +207,9 @@ func build(s: int) -> bool:
 	_draw_cables()
 	if with_player:
 		_spawn_player()
-		_spawn_cart()
+		_spawn_phone()
 		_hud()
+		_bag()
 	_light()
 	return true
 
@@ -354,6 +356,7 @@ func _build_mesh() -> void:
 		_slabs(f)
 		_walls(f)
 		_trays(f)
+		_troffers(f)
 	for s in stairs:
 		_stair_run(s)
 	for i in range(racks.size()):
@@ -885,6 +888,89 @@ func _trays(f: int) -> void:
 			x = x2
 
 
+# ------------------------------------------------------------ the tube lights
+#
+# "I'd like to add in some of those tube lights that you find in office
+# buildings." Recessed twin-tube troffers in the ceiling grid: a 1200 x 300 mm
+# steel tray sunk into the slab with two tubes and a slotted reflector between
+# them, on the 3 m pitch a real ceiling grid puts them on.
+#
+# NOT REAL LIGHTS. tower.gd bakes its shading into vertex colours -- see
+# _shade() -- so that a headless test and a window render exactly the same
+# geometry and a test can assert what a player sees. Adding a DirectionalLight
+# or an OmniLight per fitting would make the two disagree and would put several
+# hundred lights in a building that has no shadow budget for them. So a tube is
+# geometry with a colour brighter than white: _shade() multiplies a downward
+# face by 0.62, and a tube given 1/0.62 comes out at full white on the face you
+# see it from, which is what a lit tube looks like against a grey slab.
+#
+# The lighting MODEL is unchanged: still one flat ambient, still no shadow, and
+# every headless test that passed before this passes after it.
+
+const TROFFER_KINDS := [K_CORRIDOR, K_LIFTLOBBY, K_LOBBY, K_MDF, K_COMMS,
+	K_GOODS, K_SERVER, K_PLANT, K_OFFICE, K_RETAIL]
+const TROF_L := 1.20        # a 4 ft fitting, because that is the size they are
+const TROF_W := 0.30
+const TROF_PITCH := 3.0
+const TUBE_COL := Color(1.61, 1.60, 1.52)   # white, through _shade()'s 0.62
+const TROF_BODY := Color("#e9e6df")
+
+
+func _troffers(f: int) -> void:
+	# In the slab, not hanging off it: the tray top sits flush with the
+	# underside of the ceiling and the tubes hang 40 mm below it.
+	var y: float = f * fheight + fheight - SLAB_T - 0.06
+	var g := 0
+	for r in rooms:
+		if r.floor != f or not TROFFER_KINDS.has(int(r.kind)):
+			continue
+		var w: int = r.x1 - r.x0
+		var h: int = r.y1 - r.y0
+		# the fittings run along the long axis of the room, as they do in a
+		# real ceiling, and are laid out from the middle so a narrow corridor
+		# gets a line down the centre of it rather than one down one edge
+		var along_x: bool = w >= h
+		var nx: int = max(1, int(round(float(w) / TROF_PITCH)))
+		var ny: int = max(1, int(round(float(h) / TROF_PITCH)))
+		for ix in range(nx):
+			for iy in range(ny):
+				var cx: float = float(r.x0) + float(w) * (float(ix) + 0.5) / float(nx)
+				var cz: float = float(r.y0) + float(h) * (float(iy) + 0.5) / float(ny)
+				var lx: float = TROF_L if along_x else TROF_W
+				var lz: float = TROF_W if along_x else TROF_L
+				if lx > float(w) - 0.3 or lz > float(h) - 0.3:
+					continue
+				_troffer(Vector3(cx - lx * 0.5, y, cz - lz * 0.5), lx, lz, along_x)
+				g += 1
+
+
+func _troffer(mn: Vector3, lx: float, lz: float, along_x: bool) -> void:
+	# the steel tray, recessed: a shallow open box with its mouth downwards
+	_box(mn, Vector3(lx, 0.06, lz), TROF_BODY, false)
+	# two tubes, in from the long edges, hanging under the tray
+	var tw := 0.05
+	for k in [0.26, 0.74]:
+		var tm := mn
+		if along_x:
+			tm.z += lz * k - tw * 0.5
+			tm.x += 0.06
+			_box(Vector3(tm.x, mn.y - 0.045, tm.z), Vector3(lx - 0.12, 0.045, tw),
+				TUBE_COL, false)
+		else:
+			tm.x += lx * k - tw * 0.5
+			tm.z += 0.06
+			_box(Vector3(tm.x, mn.y - 0.045, tm.z), Vector3(tw, 0.045, lz - 0.12),
+				TUBE_COL, false)
+	# the reflector between them, which is what makes it read as a fitting
+	# rather than as two glowing sticks stuck to the ceiling
+	if along_x:
+		_box(Vector3(mn.x + 0.04, mn.y - 0.022, mn.z + lz * 0.44),
+			Vector3(lx - 0.08, 0.022, lz * 0.12), Color("#f6f3ea"), false)
+	else:
+		_box(Vector3(mn.x + lx * 0.44, mn.y - 0.022, mn.z + 0.04),
+			Vector3(lx * 0.12, 0.022, lz - 0.08), Color("#f6f3ea"), false)
+
+
 # -------------------------------------------------------------- the lifts
 #
 # One car per shaft. The shafts are already vertically aligned on every floor
@@ -1310,7 +1396,7 @@ func _place_devices() -> void:
 
 	if mdf >= 0:
 		_workstation(mdf)
-		# the customer's machine, racked: 4U of it, and the crash cart's whole
+		# the customer's machine, racked: 4U of it, and the phone's whole
 		# lesson lives on the back of it -- serial yes, display no.
 		var frames := racks_in_fill_order(mdf)
 		if not frames.is_empty():
@@ -1457,7 +1543,9 @@ func _workstation(room: int) -> void:
 	var d: Dictionary = devices[devices.size() - 1]
 	d.pos = fr.org + fr.along * mid + fr.out * 0.30 + Vector3(0, DESK_H + 0.40, 0)
 	d.is_desk = true
-	d.use_from = fr.org + fr.along * mid + fr.out * 1.05 + Vector3(0, 0.1, 0)
+	# BEHIND THE CHAIR. The chair is a real body you cannot walk through, so
+	# the place a person stands to use this is the far side of it, not the seat.
+	d.use_from = fr.org + fr.along * mid + fr.out * 1.55 + Vector3(0, 0.1, 0)
 	devices[devices.size() - 1] = d
 
 
@@ -1607,16 +1695,13 @@ func nearest_device(from: Vector3, radius := 2.2) -> int:
 	return best
 
 
-func _spawn_cart() -> void:
-	# CARRIED, not pushed. An inventory holds more than a real person does, and
-	# a trolley that has to be shoved through every doorway is physics work
-	# that teaches nothing about a network. It hangs off the camera and comes
-	# up in front of you when a lead goes in.
-	cart = preload("res://scripts/crashcart.gd").new()
-	cart.tower = self
-	cart.with_desktop = with_desktop
-	cart.position = Vector3(0.30, -1.30, -0.82)
-	player.cam.add_child(cart)
+func _spawn_phone() -> void:
+	# IN YOUR POCKET, not on a trolley. It hangs off the camera, down at your
+	# side, and comes up to your face when a lead goes into something.
+	phone = preload("res://scripts/phone.gd").new()
+	phone.tower = self
+	phone.with_desktop = with_desktop
+	player.cam.add_child(phone)
 
 
 # ---------------------------------------------------- sitting down at the desk
@@ -1767,6 +1852,17 @@ func lift_car_centre(which := 0) -> Vector3:
 
 var hud: Label = null
 
+# What is in your hands, and the two slots the mouse buttons use. Tab.
+func _bag() -> void:
+	var layer := CanvasLayer.new()
+	layer.name = "Bag"
+	layer.layer = 5
+	bag = preload("res://scripts/inventory.gd").new()
+	bag.tower = self
+	layer.add_child(bag)
+	add_child(layer)
+
+
 func _hud() -> void:
 	var layer := CanvasLayer.new()
 	hud = Label.new()
@@ -1889,6 +1985,17 @@ func _place_one(s: int) -> void:
 func cable_here(dev: int) -> String:
 	if dev < 0 or not site_up:
 		return ""
+	# BOTH HANDS ARE ON THE BOX. core/session.c has refused this since the
+	# socket session existed -- "you are carrying %s. A drum of cable takes
+	# both hands too" -- and the 3D shell let you do it anyway, because until
+	# the inventory there were no hands in here to be full. There is one rule
+	# and this is it, not a second one.
+	if carrying >= 0:
+		var what := "the box"
+		for d in site_devs():
+			if int(d.i) == carrying:
+				what = str(d.name)
+		return "you are carrying %s. A drum of cable takes both hands too: put it down first  [G]." % what
 	var s: int = int(devices[dev].get("site", -1))
 	if s < 0:
 		return "%s is passive. There is nothing to plug into." % devices[dev].name
@@ -1928,9 +2035,36 @@ func _free_port(s: int) -> int:
 # which is the difference between typing `netstat` and standing up halfway
 # through the word.
 func _unhandled_input(event: InputEvent) -> void:
-	if player == null or not (event is InputEventKey) or not event.pressed:
+	if player == null:
+		return
+	# THE HANDS. Left and right click use whatever is in the left and right
+	# hand, which is inventory.gd's business; what is in reach is this file's.
+	# Only while the mouse is captured, so the first click into the window is
+	# still the one that grabs the pointer.
+	if event is InputEventMouseButton and event.pressed and player.look_free \
+			and not desk_open() and bag and not bag.visible:
+		var mb: InputEventMouseButton = event
+		var side := -1
+		if mb.button_index == MOUSE_BUTTON_LEFT: side = 0
+		elif mb.button_index == MOUSE_BUTTON_RIGHT: side = 1
+		if side >= 0:
+			var said: String = bag.use(side, nearest_device(player.global_position))
+			if said != "":
+				print(said)
+			get_viewport().set_input_as_handled()
+		return
+	if not (event is InputEventKey) or not event.pressed:
 		return
 	var k: InputEventKey = event
+	if k.keycode == KEY_TAB and bag and not desk_open() and not k.echo:
+		bag.toggle()
+		get_viewport().set_input_as_handled()
+		return
+	if bag and bag.visible:
+		if k.keycode == KEY_ESCAPE:
+			bag.toggle()
+			get_viewport().set_input_as_handled()
+		return
 	if k.echo:
 		return
 	if desk_de != null:
@@ -1945,18 +2079,27 @@ func _unhandled_input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 
 
+func _hand_name(side: int) -> String:
+	var h: String = str(bag.hand(side))
+	if h == "": return "empty"
+	if h == "box": return "both on the box"
+	return str(bag.KIT[h].label)
+
+
 func _process(_dt: float) -> void:
 	if player == null:
 		return
 	if desk_de != null:
 		return                 # the world waits while you are sitting at it
+	if bag and bag.visible:
+		return                 # and while you are looking in the bag
 	var near := nearest_device(player.global_position)
 	var car: Object = lift_in()
 	var landing := _lift_landing()
 	if hud:
 		var t := where_am_i()
-		if cart:
-			t += "\ncart: " + str(cart.status)
+		if phone:
+			t += "\nphone: " + str(phone.status)
 		if _cable_from >= 0:
 			t += "\nspool in hand"
 		if carrying >= 0:
@@ -1972,18 +2115,20 @@ func _process(_dt: float) -> void:
 			t += "\nin the lift: press a floor number.  in service: %s" % str(car.serviced())
 		elif landing != null:
 			t += "\n[E] call the lift"
+		if bag:
+			t += "\nhands: %s / %s   [Tab] inventory" % [_hand_name(0), _hand_name(1)]
 		t += "\n%d of %d floors in service   [O] open the next one" % [floors_in_service, nfloors]
 		hud.text = t
 	if Input.is_key_pressed(KEY_F) and not _f_down:
-		if near >= 0 and cart:
-			print(cart.plug(near, "serial"))
+		if near >= 0 and phone:
+			print(phone.plug(near, "serial"))
 	_f_down = Input.is_key_pressed(KEY_F)
 	if Input.is_key_pressed(KEY_H) and not _h_down:
-		if near >= 0 and cart:
-			print(cart.plug(near, "hdmi"))
+		if near >= 0 and phone:
+			print(phone.plug(near, "hdmi"))
 	_h_down = Input.is_key_pressed(KEY_H)
-	if Input.is_key_pressed(KEY_U) and not _u_down and cart:
-		cart.unplug()
+	if Input.is_key_pressed(KEY_U) and not _u_down and phone:
+		phone.unplug()
 	_u_down = Input.is_key_pressed(KEY_U)
 	if Input.is_key_pressed(KEY_C) and not _c_down and near >= 0:
 		print(cable_here(near))

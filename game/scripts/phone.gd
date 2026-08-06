@@ -1,9 +1,19 @@
-# crashcart.gd — the crash cart you carry, and plug into things.
+# phone.gd — the mobile debugger. A phone, not a trolley.
 #
-# You have it on you: an inventory holds more than a real person, and a trolley
-# shoved through doorways and into lifts is physics work that teaches nothing.
-# It comes up in front of you when a lead is plugged in and goes away when it
-# is not.
+# It was a crash cart: a metre of steel shelving that appeared in front of your
+# face when a lead went in. The owner: "your mobile debugger which should look
+# mostly like a phone that plugs into a server and gives you a 2D interface
+# that you look at and can operate similar to the 2D interface that
+# workstations should have. Sort of like your mobile workstation."
+#
+# So it is a handheld: a slab you hold up at reading distance in your right
+# hand, with a screen that fills most of it and a short lead out of the bottom
+# into whatever you are standing at. You equip it in the inventory and it is in
+# your hand; it lights up when a lead is in something and goes dark when it is
+# not.
+#
+# WHAT IT DOES IS UNCHANGED, and deliberately so. Everything below this line
+# is the crash cart's model, because the model was the honest part:
 #
 # This is `rcon connect` made physical. Today the player types an address at a
 # desk; here they walk to the rack, pick a lead and plug it in, and the two
@@ -13,14 +23,14 @@
 #           booting, which is the entire reason a serial lead exists: you get
 #           the firmware, the boot log, and on a machine with no userland the
 #           same "[no shell here ...]" block the socket console prints. Same
-#           call, sh_on(), so the cart and the desktop terminal cannot
+#           call, sh_on(), so the phone and the desktop terminal cannot
 #           disagree about what a machine says.
 #
-#   HDMI    gets you the graphical desktop, and ONLY from a machine that has a
+#   DISPLAY gets you the graphical desktop, and ONLY from a machine that has a
 #           display output and finished booting. A rack server has no display
-#           connector; plugging HDMI into it gets you nothing, and that is not
-#           a failure of the cart, it is what the back of a rack server looks
-#           like. A passive patch panel has no ports at all.
+#           connector; plugging the display lead into it gets you nothing, and
+#           that is not a failure of the phone, it is what the back of a rack
+#           server looks like. A passive patch panel has no ports at all.
 #
 # The failure cases matter as much as the success case: each one is a true
 # fact about the hardware, learned by trying it, which is the only kind of
@@ -34,6 +44,7 @@ var with_desktop := true
 var plugged := -1            # device index, -1 = nothing
 var lead := ""               # "serial" | "hdmi"
 var status := "unplugged"
+var lit := false             # is there a lead in something
 
 var _vp: SubViewport
 var _screen: MeshInstance3D
@@ -43,17 +54,43 @@ var _lines: PackedStringArray = PackedStringArray()
 var _input := ""
 var _label: Label
 var _mono: Font
+var _lead: Node3D = null
+var _lead_col := Color("#1e6f3a")
 
 
 func _ready() -> void:
+	position = POSE_DOWN
+	rotation = ROT_DOWN
 	_mono = preload("res://scripts/uifont.gd").mono()
 	_body()
 	_make_viewport()
 	_show_serial()
+	_say("[no lead plugged in]")
+	_relight()
 	visible = false
 
 
-# ------------------------------------------------------------------ the cart
+# ----------------------------------------------------------------- the handset
+#
+# The whole thing is 190 x 120 mm of case with a 176 x 110 mm screen in it, and
+# it hangs off the camera at 380 mm -- reading distance for something you are
+# holding up. That is what makes the 2D on it legible: a small screen you look
+# at closely, rather than a monitor across a room.
+
+const CASE_W := 0.200
+const CASE_H := 0.130
+const SCREEN_W := 0.186
+const SCREEN_H := 0.116
+
+# Where it sits relative to your eye. Down at your side when there is no lead
+# in anything, and up at reading distance when there is -- which is the whole
+# reason the 2D on it is legible: 186 mm of screen at 190 mm from your eye is
+# two fifths of the width of the view, not a postage stamp across a room.
+const POSE_DOWN := Vector3(0.30, -0.30, -0.46)
+const ROT_DOWN := Vector3(-0.55, 0.30, 0.12)
+const POSE_READ := Vector3(0.085, -0.045, -0.190)
+const ROT_READ := Vector3(-0.10, 0.06, 0.0)
+
 
 func _mesh(size: Vector3, pos: Vector3, col: Color) -> void:
 	var mi := MeshInstance3D.new()
@@ -69,21 +106,36 @@ func _mesh(size: Vector3, pos: Vector3, col: Color) -> void:
 
 
 func _body() -> void:
-	_mesh(Vector3(0.62, 0.06, 0.46), Vector3(0, 0.10, 0), Color("#4a4f57"))   # lower shelf
-	_mesh(Vector3(0.62, 0.06, 0.46), Vector3(0, 0.78, 0), Color("#5a606a"))   # worktop
-	for sx in [-0.26, 0.26]:
-		for sz in [-0.18, 0.18]:
-			_mesh(Vector3(0.05, 0.78, 0.05), Vector3(sx, 0.39, sz), Color("#31353b"))
-	_mesh(Vector3(0.40, 0.02, 0.16), Vector3(0, 0.82, 0.12), Color("#d5d2c8"))  # keyboard
-	_mesh(Vector3(0.56, 0.36, 0.03), Vector3(0, 1.05, -0.14), Color("#1b1e22")) # bezel
-	# the two leads, coiled on the shelf
-	_mesh(Vector3(0.14, 0.05, 0.14), Vector3(-0.18, 0.16, 0), Color("#1e6f3a"))  # serial
-	_mesh(Vector3(0.14, 0.05, 0.14), Vector3(0.18, 0.16, 0), Color("#20304f"))   # hdmi
+	# the case, and a rubber bumper round it, because a thing carried round a
+	# building in a pocket has a rubber bumper round it
+	_mesh(Vector3(CASE_W, CASE_H, 0.013), Vector3(0, 0, -0.004), Color("#23272c"))
+	_mesh(Vector3(CASE_W + 0.008, CASE_H + 0.008, 0.009), Vector3(0, 0, -0.006),
+		Color("#c8792c"))
+	# a speaker grille and a button, so the top and the bottom are not the same
+	_mesh(Vector3(0.040, 0.004, 0.002), Vector3(0, CASE_H * 0.5 - 0.005, 0.0035),
+		Color("#15181c"))
+	_mesh(Vector3(0.016, 0.016, 0.002), Vector3(0, -CASE_H * 0.5 + 0.008, 0.0035),
+		Color("#3a4046"))
+	# the lead, out of the bottom corner and away towards whatever it is in
+	_lead = Node3D.new()
+	add_child(_lead)
+	var g = preload("res://scripts/vgeo.gd").new()
+	g.box(Vector3(-0.010, -CASE_H * 0.5 - 0.030, -0.008),
+		Vector3(0.020, 0.032, 0.014), Color("#20242a"), false)
+	for i in range(7):
+		var t := float(i) / 6.0
+		g.box(Vector3(-0.004 - t * 0.16, -CASE_H * 0.5 - 0.030 - t * 0.10,
+				-0.006 - t * 0.30),
+			Vector3(0.008, 0.008, 0.055), _lead_col, false)
+	_lead.add_child(g.node("lead"))
+	_lead.visible = false
 
 
 func _make_viewport() -> void:
 	_vp = SubViewport.new()
-	_vp.size = Vector2i(1024, 640)
+	# 900 x 562 into 186 x 116 mm at 190 mm: very nearly one texture pixel per
+	# screen pixel at 1080p, which is the point of holding it up to your face.
+	_vp.size = Vector2i(900, 562)
 	_vp.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 	_vp.transparent_bg = false
 	_vp.disable_3d = true
@@ -94,21 +146,22 @@ func _make_viewport() -> void:
 	_serial.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_label = Label.new()
 	_label.position = Vector2(10, 8)
-	_label.size = Vector2(1004, 624)
+	_label.size = Vector2(884, 548)
 	_label.add_theme_font_override("font", _mono)
 	_label.add_theme_font_size_override("font_size", 15)
+	_label.autowrap_mode = TextServer.AUTOWRAP_OFF
 	_label.add_theme_color_override("font_color", Color("#c9d4dd"))
 	_serial.add_child(_label)
 	_vp.add_child(_serial)
 
 	_screen = MeshInstance3D.new()
 	var q := QuadMesh.new()
-	q.size = Vector2(0.52, 0.325)
+	q.size = Vector2(SCREEN_W, SCREEN_H)
 	_screen.mesh = q
-	# A QuadMesh faces +Z, and +Z on the cart is the side you stand at. Turning
-	# it round showed the back of the screen -- which is culled, so the picture
-	# was a black rectangle that looked exactly like a monitor that is off.
-	_screen.position = Vector3(0, 1.05, -0.122)
+	# A QuadMesh faces +Z, and +Z on the handset is the side you are looking at.
+	# Turning it round showed the back of the screen -- which is culled, so the
+	# picture was a black rectangle that looked exactly like a phone that is off.
+	_screen.position = Vector3(0, 0, 0.0035)
 	var mat := StandardMaterial3D.new()
 	mat.albedo_texture = _vp.get_texture()
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
@@ -117,12 +170,28 @@ func _make_viewport() -> void:
 	add_child(_screen)
 
 
+# It comes up to your face when a lead goes in and drops back to your side when
+# it comes out, because that is what a person does with a phone and because a
+# handset parked in the middle of the view is a handset you cannot see past.
+func _process(dt: float) -> void:
+	var pw := POSE_READ if lit else POSE_DOWN
+	var rw := ROT_READ if lit else ROT_DOWN
+	var k: float = clampf(dt * 12.0, 0.0, 1.0)
+	position = position.lerp(pw, k)
+	rotation = rotation.lerp(rw, k)
+
+
 # -------------------------------------------------------------------- plugging
 
 func plug(dev: int, which_lead: String) -> String:
 	var s := _plug(dev, which_lead)
-	# The cart is only in your hands while a lead is in something.
-	visible = plugged >= 0
+	# The screen is only lit while a lead is in something. The handset itself
+	# is in your hand whenever it is the equipped item -- see inventory.gd --
+	# so what this switches is the picture and the lead hanging off it.
+	lit = plugged >= 0
+	if _lead:
+		_lead.visible = lit
+	_relight()
 	return s
 
 
@@ -139,6 +208,7 @@ func _plug(dev: int, which_lead: String) -> String:
 			return status
 		plugged = dev
 		lead = "serial"
+		_lead_col = Color("#1e6f3a")
 		_show_serial()
 		_lines = PackedStringArray()
 		_say("serial lead -> %s" % d.name)
@@ -160,6 +230,7 @@ func _plug(dev: int, which_lead: String) -> String:
 			return status
 		plugged = dev
 		lead = "hdmi"
+		_lead_col = Color("#20304f")
 		_show_desktop(d)
 		status = "display on %s" % d.name
 		return status
@@ -171,7 +242,10 @@ func unplug() -> void:
 	plugged = -1
 	lead = ""
 	status = "unplugged"
-	visible = false
+	lit = false
+	if _lead:
+		_lead.visible = false
+	_relight()
 	_lines = PackedStringArray()
 	_show_serial()
 	_say("[no lead plugged in]")
@@ -228,7 +302,7 @@ func type_line(line: String) -> String:
 
 func _say(s: String) -> void:
 	_lines.append(s)
-	while _lines.size() > 38:
+	while _lines.size() > 30:
 		_lines.remove_at(0)
 	if _label:
 		_label.text = "\n".join(_lines)
@@ -238,6 +312,21 @@ func screen_text() -> String:
 	if lead == "hdmi":
 		return "[graphical display]" if _de != null else "[no signal]"
 	return "\n".join(_lines)
+
+
+# A handset with no lead in it is a handset with a dark screen. That is one
+# fact, shown once, rather than a black rectangle that could equally be a
+# rendering fault.
+func _relight() -> void:
+	if _serial == null:
+		return
+	if lit:
+		_serial.color = Color("#0d1116")
+	else:
+		_serial.color = Color("#05070a")
+	if _label:
+		_label.add_theme_color_override("font_color",
+			Color("#c9d4dd") if lit else Color("#3a444d"))
 
 
 func _show_serial() -> void:
