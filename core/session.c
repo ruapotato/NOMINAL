@@ -227,10 +227,15 @@ static void sync_disk(Session *ses, int dev)
      * decision of exactly the same kind, so it goes on the disk beside it
      * and netd starts it again. `dhcpd <box> off` takes the line out, which
      * is why an empty file is written rather than none. */
-    char svc[256];
-    int sl = snprintf(svc, sizeof svc,
-                      "# what this box serves. netd starts it; the tower "
-                      "wrote it.\n");
+    /* A Buf, not a fixed 256 bytes: a name server with a zone in it writes a
+     * line per name, and sixty-four names do not fit in a stack buffer that
+     * was sized for a pool and a word. Worse, the old code accumulated
+     * snprintf's return into `sl` without clamping it, so the first file
+     * that did not fit would have passed a negative size to the next
+     * snprintf -- a silent overflow waiting for the feature below. */
+    Buf svc = {0};
+    buf_puts(&svc, "# what this box serves. netd starts it; the tower "
+                   "wrote it.\n");
     for (int i = 0; i < NET_POOL_MAX; i++) {
         int ifx = 0, count = 0;
         uint32_t first = 0, mk = 0, pg = 0, pd = 0;
@@ -240,13 +245,28 @@ static void sync_disk(Session *ses, int dev)
         net_fmt_ip(first, a, sizeof a);
         net_fmt_ip(pg, gg, sizeof gg);
         net_fmt_ip(pd, dd, sizeof dd);
-        sl += snprintf(svc + sl, sizeof svc - (size_t)sl,
-                       "dhcpd %s %d %d %s %s\n", a, count, net_mask_len(mk),
-                       gg, dd);
+        buf_printf(&svc, "dhcpd %s %d %d %s %s\n", a, count, net_mask_len(mk),
+                   gg, dd);
     }
-    if (net_dnsd_running(n, node))
-        sl += snprintf(svc + sl, sizeof svc - (size_t)sl, "dnsd\n");
-    vfs_write(&m->disk, "/etc/net/services", svc, strlen(svc));
+    if (net_dnsd_running(n, node)) {
+        buf_puts(&svc, "dnsd\n");
+        /* AND ITS ZONE. A name the player gave a name server is a decision of
+         * exactly the same kind as an address, and it lived in the stack and
+         * nowhere else -- so a server that had been the tower's resolver for
+         * a fortnight came back from a power cut answering `no such host` to
+         * every name in the building, with `svc` on the box saying it was
+         * fine. The forwarder needs no line here: it is this box's own
+         * resolver, and that is already in /etc/resolv.conf above. */
+        for (int i = 0; ; i++) {
+            char nm[64], a[20];
+            uint32_t rip = 0;
+            if (!net_dns_record_at(n, node, i, nm, sizeof nm, &rip)) break;
+            net_fmt_ip(rip, a, sizeof a);
+            buf_printf(&svc, "record %s %s\n", nm, a);
+        }
+    }
+    vfs_write(&m->disk, "/etc/net/services", svc.p, svc.len);
+    buf_free(&svc);
     /* Whatever it had applied is now stale. */
     m->net_cfg = 0;
 }
@@ -674,7 +694,14 @@ static void do_help(const Session *ses, Buf *out)
         "                     copper you laid. Nothing is reachable by default\n"
         "  get <box> <ip> <path>     fetch a page over TCP, from that box\n"
         "  httpd <box> [port]        it serves its own files over real TCP\n"
-        "  dnsd <box>                and answers names for the tower\n"
+        "  dnsd <box>                and answers names for the tower. It says\n"
+        "                            how many names it holds and where it sends\n"
+        "                            what it has not got\n"
+        "  dns <box> <name> <ip>     one name in that server's zone, written onto\n"
+        "                            the box's disk beside its address. A name it\n"
+        "                            has not got is forwarded to whatever\n"
+        "                            `resolver <box> <ip>` set, so a floor's own\n"
+        "                            server resolves the internet too\n"
         "  ups <box>          a battery under it, so a mains failure is not a\n"
         "                     filesystem to check in the morning\n"
         "  disk <box>         a new one, cloned off the old one\n"
@@ -1255,7 +1282,7 @@ static const char *DEVVERB[] = {
     "addr", "gw", "router", "subif", "vlan", "trunk", "dhcpd", "dhcp",
     "resolver", "ping", "trace", "resolve", "get", "show",
     /* A service is something you start ON a box, so you are at the box. */
-    "httpd", "dnsd",
+    "httpd", "dnsd", "dns",
     /* And so are a battery and a disk: both are something somebody carries
      * to the rack and fits, not something that happens from the MDF. */
     "ups", "disk", NULL
@@ -1286,7 +1313,11 @@ static bool is_config(const char *v)
             * it is written onto the box -- see sync_disk. Without these two
             * the disk kept saying "serving" after `dhcpd <box> off`, and the
             * next boot started a pool the player had switched off. */
-           strcmp(v, "dhcpd") == 0 || strcmp(v, "dnsd") == 0;
+           strcmp(v, "dhcpd") == 0 || strcmp(v, "dnsd") == 0 ||
+           /* And a name in a zone, which is config in exactly the way an
+            * address is: without this the tower's own resolver came back
+            * from a reboot with an empty zone. */
+           strcmp(v, "dns") == 0;
 }
 
 static void after_config(Session *ses, const char *verb, int dev, Buf *out)
@@ -1294,6 +1325,25 @@ static void after_config(Session *ses, const char *verb, int dev, Buf *out)
     if (!is_config(verb) && strcmp(verb, "router") != 0) return;
     if (dev < 0 || dev >= ses->s.ndev) return;
     if (ses->mach[dev]) sync_disk(ses, dev);
+    /* WHETHER THAT WILL SURVIVE THE POWER GOING OFF, said out loud, because
+     * for a name server it sometimes will not. A zone goes into
+     * /etc/net/services on the box's own disk and netd reads it back -- but
+     * only a box with an operating system in it HAS a disk. A router or a
+     * switch running dnsd holds its zone in memory and nowhere else, and a
+     * player who is not told that finds out during a mains failure. */
+    if ((strcmp(verb, "dns") == 0 || strcmp(verb, "dnsd") == 0) &&
+        net_dnsd_running(ses->s.net, ses->s.dev[dev].node)) {
+        if (ses->mach[dev] || site_kind_has_os(ses->s.dev[dev].kind))
+            buf_puts(out, "  (on its disk, in /etc/net/services: netd starts "
+                          "the server and reads the\n  zone back when it "
+                          "boots)\n");
+        else
+            buf_printf(out, "  NOT ON ANY DISK. %s has no operating system in "
+                            "it, so its zone is in memory\n  and a power cut "
+                            "loses it. A name server the tower depends on "
+                            "belongs on a\n  box with a disk.\n",
+                       ses->s.dev[dev].name);
+    }
     /* `set` IS NOT A CONFIRMATION. site_cmd answers a configuration line
      * with one word, which tells a player who cannot see the box nothing at
      * all -- not what was set, not on which card, not what it now is. Say

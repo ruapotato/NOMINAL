@@ -108,6 +108,7 @@ typedef enum {
     SITE_ENOBTN,      /* an appliance has no power button                   */
     SITE_ESEG,        /* no interface of that box is on that pool's subnet   */
     SITE_EPOOL,       /* a pool of no addresses, or no room for another one  */
+    SITE_EZONE,       /* that name server's zone is full                     */
     SITE_ERR_COUNT
 } SiteErr;
 const char *site_err_text(int e);
@@ -372,6 +373,16 @@ void site_dump_dhcpd(const Site *s, int dev, Buf *out);
 bool site_dhcp(Site *s, int dev);          /* ask for a lease, for real     */
 bool site_resolver(Site *s, int dev, uint32_t ns);
 bool site_dnsd(Site *s, int dev);
+/* ONE NAME ON A NAME SERVER OF YOUR OWN. Without this, `dnsd <box>` started
+ * a server with an empty zone and no way to fill it, which could only ever
+ * answer "no such host" -- so the only working resolver in the tower was the
+ * ISP's, and every lookup on every floor hairpinned through the router to
+ * reach it. Setting a name that is already served changes where it points.
+ * Refused, with SITE_EZONE, when the zone is full. */
+bool site_dns(Site *s, int dev, const char *name, uint32_t ip);
+/* What that box will answer, and where it sends what it cannot: for
+ * `dnsd <box>` and for `show`. */
+void site_dump_dnsd(const Site *s, int dev, Buf *out);
 bool site_httpd(Site *s, int dev, int port);
 
 /* How many machines a mask has room for: 254 on a /24, 6 on a /29, and the

@@ -1223,6 +1223,103 @@ static void check_dns(void)
     net_free(n);
 }
 
+/* ------------------------------------------------------- a server of ours */
+/* WHAT `dnsd <box>` PRODUCED BEFORE THIS: a name server with an empty zone,
+ * no verb anywhere in the tower to put a record in it, and no forwarder --
+ * so it answered NXDOMAIN to every query in the building for the rest of the
+ * run, and the only working resolver was the ISP's, out through the router.
+ * A playtester at day 85 concluded the firewall was eating udp/53. It was
+ * not; there was simply nothing to answer with. */
+static void check_dns_server(void)
+{
+    printf("a name server of the player's own\n");
+    Lan l = lan_new(23);
+    Net *n = l.n;
+    /* alpha is the client, bravo is our floor's resolver, and up is the
+     * upstream one bravo forwards to -- three real machines on real copper. */
+    int up = net_add_host(n, "isp");
+    net_cable(n, up, 0, l.sw, 2, 9, CAB_CAT5E);
+    net_if_addr(n, up, 0, net_ip(10, 0, 0, 9), net_mask_bits(24));
+    net_dnsd(n, up);
+    net_dns_record(n, up, "wiki.nomnix.org", net_ip(10, 0, 2, 20));
+
+    net_dnsd(n, l.b);
+    net_dns_record(n, l.b, "files.floor3", net_ip(10, 0, 0, 50));
+    net_set_resolver(n, l.a, net_ip(10, 0, 0, 2));
+
+    uint32_t ip = 0;
+    ck("a record the tower gave it is served",
+       net_resolve(n, l.b == -1 ? l.a : l.a, "files.floor3", &ip) &&
+       ip == net_ip(10, 0, 0, 50));
+    ck("a name it has not got, with no forwarder, is NXDOMAIN and not silence",
+       net_resolve_ex(n, l.a, "wiki.nomnix.org", &ip) == RESOLVE_NXDOMAIN);
+
+    /* THE HALF THAT MAKES A FLOOR'S OWN RESOLVER WORTH HAVING. Give it
+     * somewhere to ask and the same query comes back answered, off the
+     * upstream server, over the wire, with no client anywhere reconfigured. */
+    net_set_resolver(n, l.b, net_ip(10, 0, 0, 9));
+    ck("the forwarder is the resolver that box was configured with",
+       net_dns_forwarder(n, l.b) == net_ip(10, 0, 0, 9));
+    ip = 0;
+    ck("and a name it has not got now comes back from upstream",
+       net_resolve(n, l.a, "wiki.nomnix.org", &ip) && ip == net_ip(10, 0, 2, 20));
+    ck("a name nobody has is still NXDOMAIN, forwarded and relayed back",
+       net_resolve_ex(n, l.a, "nowhere.example", &ip) == RESOLVE_NXDOMAIN);
+    ck("its own records still win without leaving the box",
+       net_resolve(n, l.a, "files.floor3", &ip) && ip == net_ip(10, 0, 0, 50));
+
+    /* A BOX POINTED AT ITSELF IS NOT A FORWARDER, and if it were it would
+     * ask itself the question it could not answer until the world stopped. */
+    net_set_resolver(n, l.b, net_ip(10, 0, 0, 2));
+    ck("a resolver pointed at its own address forwards nowhere",
+       net_dns_forwarder(n, l.b) == 0);
+    ck("and answers NXDOMAIN rather than looping",
+       net_resolve_ex(n, l.a, "wiki.nomnix.org", &ip) == RESOLVE_NXDOMAIN);
+
+    /* The upstream is there and cannot be reached. The client sees silence,
+     * which is what a forwarder with nowhere to go really produces. */
+    net_set_resolver(n, l.b, net_ip(10, 0, 0, 200));
+    ck("a forwarder that is not there times the client out",
+       net_resolve_ex(n, l.a, "wiki.nomnix.org", &ip) == RESOLVE_TIMEOUT);
+
+    /* A zone is a set of names, not a log of them: the tower writes this
+     * file out and reads it back at every boot. */
+    net_dns_record(n, l.b, "files.floor3", net_ip(10, 0, 0, 51));
+    ck("setting a name twice changes it and does not duplicate it",
+       net_dns_record_count(n, l.b) == 1);
+    char nm[64] = "";
+    uint32_t rip = 0;
+    ck("and the zone reads back, which is how it reaches a disk",
+       net_dns_record_at(n, l.b, 0, nm, sizeof nm, &rip) &&
+       strcmp(nm, "files.floor3") == 0 && rip == net_ip(10, 0, 0, 51) &&
+       !net_dns_record_at(n, l.b, 1, nm, sizeof nm, &rip));
+    net_dnsd_stop(n, l.b);
+    ck("stopping the server takes the zone with it, as a power cut would",
+       !net_dnsd_running(n, l.b) && net_dns_record_count(n, l.b) == 0);
+    net_free(n);
+}
+
+/* WHAT A BOX HAS THROWN AWAY, which is the counter a diagnostic needs to be
+ * able to say "the far end refused it" without guessing. It counts the rules
+ * that drop, and not the ones that accept -- `net_fw_hits` counts both, and
+ * a hint built on that would call an accepted packet a refusal. */
+static void check_fw_drops(void)
+{
+    printf("the drop counter a diagnostic can read\n");
+    Lan l = lan_new(24);
+    Net *n = l.n;
+    net_fw_add(n, l.b, FW_IN, IP_PROTO_TCP, 22, 0, 0, FW_ACCEPT);
+    net_fw_add(n, l.b, FW_IN, FW_ANY_PROTO, FW_ANY_PORT, 0, 0, FW_DROP);
+    ck("nothing has been dropped yet", net_fw_drops(n, l.b) == 0);
+    net_tcp_close(n, net_tcp_connect_wait(n, l.a, net_ip(10, 0, 0, 2), 22));
+    ck("a port it serves is accepted and counts as no drop",
+       net_fw_drops(n, l.b) == 0);
+    net_ping(n, l.a, net_ip(10, 0, 0, 2), NULL);
+    ck("an echo it did not ask for is dropped, and counted",
+       net_fw_drops(n, l.b) >= 1);
+    net_free(n);
+}
+
 static void check_http(void)
 {
     printf("HTTP over the TCP above\n");
@@ -1682,6 +1779,8 @@ int net_selfcheck(void)
     check_dhcp();
     check_dhcp_scope();
     check_dns();
+    check_dns_server();
+    check_fw_drops();
     check_http();
     check_determinism();
     check_visible();

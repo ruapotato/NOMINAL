@@ -267,6 +267,7 @@ static void bind_services(Net *n, Machine *m, int node)
  *
  *     dhcpd <first> <count> <bits> <gw> <dns>
  *     dnsd
+ *     record <name> <ip>
  *
  * The pool is scoped by netstack to the interface whose address is inside
  * it, so a box that comes back with a different address does not come back
@@ -311,6 +312,19 @@ static void start_services(Net *n, Machine *m, int node)
                 net_dhcpd(n, node, first, count, net_mask_bits(bits), gw, dns);
         } else if (strcmp(verb, "dnsd") == 0) {
             net_dnsd(n, node);
+        } else if (strcmp(verb, "record") == 0) {
+            /* A NAME THIS BOX SERVES. Same argument as the pool above: a
+             * zone the player typed lived in the stack and nowhere else, so
+             * a reboot turned the tower's own resolver into a box that
+             * answered `no such host` about every machine in the building.
+             * A record line with no `dnsd` line before it starts nothing,
+             * which is the honest reading of a zone with no server. */
+            char nm[64], a[24];
+            uint32_t rip = 0;
+            q = next_word(q, nl, nm, sizeof nm);
+            q = next_word(q, nl, a, sizeof a);
+            if (nm[0] && net_parse_ip(a, &rip) && net_dnsd_running(n, node))
+                net_dns_record(n, node, nm, rip);
         }
         p = nl < end ? nl + 1 : nl;
     }
@@ -403,6 +417,10 @@ static int attach(Machine *m)
      * make a line somebody deleted invisible, which is the same fault as
      * leaving the old address on. */
     net_dhcpd_stop(n, node);
+    /* And the zone, for the same reason: the file below is what puts the
+     * names back, so a record somebody deleted disappears instead of living
+     * on in a daemon nothing restarted. */
+    net_dnsd_stop(n, node);
 
     /* NO NETWORK DAEMON, NO NETWORK. netd is what applies the config; if it
      * refused to start -- because the file is missing, or names an interface

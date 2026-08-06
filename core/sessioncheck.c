@@ -880,6 +880,36 @@ static void check_services(int *passed, int *total)
     ck("and the page comes back too: the tower serves what the box says it "
        "serves", has(say(&ses, "get desk1 10.0.1.10 /", &o), "HTTP"));
 
+    /* A ZONE IS A DECISION, AND A DECISION GOES ON THE DISK.
+     *
+     * `dnsd <box>` used to start a name server nothing could fill: no verb
+     * anywhere put a record in it, so it answered `no such host` to every
+     * query in the building for the rest of the run. Now there is a verb --
+     * and a name given to a server has to survive the power going off in
+     * exactly the way an address does, or the tower's own resolver comes
+     * back from a mains failure denying every machine in the building. */
+    ck("`dns <box> <name> <ip>` gives that server a name of its own",
+       has(say(&ses, "dns files store.floor1 10.0.1.77", &o),
+           "store.floor1 -> 10.0.1.77"));
+    ck("and says where it went, because for some boxes there is no disk",
+       has(o.p, "/etc/net/services"));
+    ck("`dnsd <box>` says what it will serve rather than the word `serving`",
+       has(say(&ses, "dnsd files", &o), "serves 1 name"));
+    say(&ses, "resolver desk1 10.0.1.10", &o);
+    ck("a desk pointed at it resolves that name over real copper",
+       has(say(&ses, "resolve desk1 store.floor1", &o), "10.0.1.77"));
+    say(&ses, "power files off", &o);
+    say(&ses, "power files on", &o);
+    ck("and after the power cut the zone is still there, off the disk",
+       has(say(&ses, "dnsd files", &o), "store.floor1") &&
+       has(o.p, "10.0.1.77"));
+    ck("and the desk still resolves it, having been told nothing",
+       has(say(&ses, "resolve desk1 store.floor1", &o), "10.0.1.77"));
+    /* NXDOMAIN IS AN ANSWER, AND IT IS NOT SILENCE. */
+    ck("a name that server has never held is `no such name`, not `no answer`",
+       has(say(&ses, "resolve desk1 nowhere.example", &o), "no such name") &&
+       !has(o.p, "no answer"));
+
     /* And the other direction: stopping it has to survive too, or the next
      * boot starts a pool the player switched off. */
     say(&ses, "dhcpd files off", &o);

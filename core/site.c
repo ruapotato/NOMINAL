@@ -107,6 +107,8 @@ const char *site_err_text(int e)
                                "is standing on";
     case SITE_EPOOL:    return "a pool of no addresses serves nobody, and a "
                                "box holds eight pools at most";
+    case SITE_EZONE:    return "that name server already holds sixty-four "
+                               "names, which is all a zone here has room for";
     }
     return "?";
 }
@@ -656,6 +658,60 @@ bool site_dnsd(Site *s, int dev)
     net_dnsd(s->net, s->dev[dev].node);
     return true;
 }
+bool site_dns(Site *s, int dev, const char *name, uint32_t ip)
+{
+    s->err = SITE_OK;
+    if (!live_dev(s, dev)) return false;
+    if (!net_dns_record(s->net, s->dev[dev].node, name, ip)) {
+        s->err = SITE_EZONE;
+        return false;
+    }
+    return true;
+}
+/* WHAT A NAME SERVER WILL ACTUALLY ANSWER. `dnsd <box>` used to print the
+ * word `serving`, which was true and useless: a server with an empty zone
+ * and no forwarder is also `serving`, and it NXDOMAINs the world. Say the
+ * two numbers that decide whether it is worth pointing a floor at. */
+void site_dump_dnsd(const Site *s, int dev, Buf *out)
+{
+    if (dev < 0 || dev >= s->ndev) return;
+    int node = s->dev[dev].node;
+    const char *me = s->dev[dev].name;
+    if (!net_dnsd_running(s->net, node)) {
+        buf_printf(out, "%s is not a name server. `dnsd %s` starts one.\n", me, me);
+        return;
+    }
+    int nr = net_dns_record_count(s->net, node);
+    uint32_t up = net_dns_forwarder(s->net, node);
+    uint32_t res = net_get_resolver(s->net, node);
+    char f[20];
+    net_fmt_ip(up, f, sizeof f);
+    buf_printf(out, "%s serves %d name%s and forwards the rest %s%s.\n",
+               me, nr, nr == 1 ? "" : "s",
+               up ? "to " : "nowhere", up ? f : "");
+    for (int i = 0; ; i++) {
+        char nm[64], a[20];
+        uint32_t ip = 0;
+        if (!net_dns_record_at(s->net, node, i, nm, sizeof nm, &ip)) break;
+        net_fmt_ip(ip, a, sizeof a);
+        buf_printf(out, "  %-32s %s\n", nm, a);
+    }
+    if (!nr)
+        buf_printf(out, "  It holds no names of its own. `dns %s <name> <ip>` "
+                        "gives it one.\n", me);
+    if (!up) {
+        if (!res)
+            buf_printf(out, "  AND IT HAS NOWHERE TO ASK: anything not in that "
+                            "list is answered\n  `no such host`. `resolver %s "
+                            "<ip>` is the address it forwards to.\n", me);
+        else
+            buf_printf(out, "  Its own resolver is itself, which is not "
+                            "somewhere to forward to:\n  anything not in that "
+                            "list is answered `no such host`. `resolver %s "
+                            "<ip>`\n  with the address of a resolver that is "
+                            "not this box.\n", me);
+    }
+}
 bool site_httpd(Site *s, int dev, int port)
 {
     s->err = SITE_OK;
@@ -882,6 +938,54 @@ void site_dump_rooms(const Site *s, int floor, Buf *out)
     }
 }
 
+/* WHICH BOX IN THIS BUILDING ANSWERS TO THIS ADDRESS, or -1 for an address
+ * that is somebody else's. Every interface of every box, because the address
+ * a diagnostic was aimed at is as likely to be a subinterface carrying a
+ * tenancy's vlan as it is to be eth0. */
+static int dev_by_ip(const Site *s, uint32_t ip)
+{
+    if (!ip) return -1;
+    for (int d = 0; d < s->ndev; d++)
+        for (int i = 0; i < NET_IF_MAX; i++)
+            if (net_if_exists(s->net, s->dev[d].node, i) &&
+                net_if_get_addr(s->net, s->dev[d].node, i) == ip)
+                return d;
+    return -1;
+}
+
+/* NOTHING CAME BACK, AND A COUNTER ON THE FAR BOX WENT UP.
+ *
+ * `ping edge 10.0.0.10` printing `no answer` is true and it is the whole
+ * story of a wire that is fine and a filter that is doing its job -- the
+ * shipped ruleset is `policy drop` plus 22 and 80, and an echo request it
+ * did not ask for has no socket. Two playtesters lost ten minutes each to
+ * that silence, and one of them re-cut a trunk to fix a routing fault that
+ * did not exist.
+ *
+ * So: read the far box's drop counter before and after. If it went up, say
+ * so -- as a MEASUREMENT, not a diagnosis. It names no fault and repairs
+ * nothing; it points at the counter, which the player could have read
+ * themselves by walking to the box, and that is the right amount of help.
+ * If the counter did not move, this says nothing at all, because a confident
+ * sentence that contradicts the machine costs more than silence. */
+static uint64_t fw_drops_of(const Site *s, int dev)
+{
+    if (dev < 0 || dev >= s->ndev) return 0;
+    return net_fw_drops(s->net, s->dev[dev].node);
+}
+static void fw_blame(const Site *s, int dev, uint64_t before, const char *what,
+                     Buf *out)
+{
+    if (dev < 0 || dev >= s->ndev) return;
+    uint64_t now = fw_drops_of(s, dev);
+    if (now <= before) return;
+    unsigned long long d = (unsigned long long)(now - before);
+    buf_printf(out, "  %s is a box in this building, and its packet filter "
+                    "counted %llu more\n  drop%s while that %s was out. "
+                    "`netstat -F` on %s says which rule matched.\n",
+               s->dev[dev].name, d, d == 1 ? "" : "s", what, s->dev[dev].name);
+}
+
 /* IS ANY OF THIS BOX ACTUALLY ON THE NETWORK? A machine is on the network
  * when it is running, has a lead in a socket that came up, and has an
  * address on the card that lead is in. Anything less and it is a beige box
@@ -948,7 +1052,17 @@ static void dump_services(const Site *s, int dev, Buf *out)
         int held = net_dhcpd_pool_leases(s->net, node, i);
         buf_printf(out, ", %d lease%s out\n", held, held == 1 ? "" : "s");
     }
-    if (ns) buf_puts(out, "  dnsd   answering names for the tower\n");
+    if (ns) {
+        /* NOT "ANSWERING NAMES FOR THE TOWER", which a server with an empty
+         * zone and no forwarder is not. Two numbers, both of them read off
+         * the daemon. */
+        int nr = net_dns_record_count(s->net, node);
+        uint32_t up = net_dns_forwarder(s->net, node);
+        char f[20];
+        net_fmt_ip(up, f, sizeof f);
+        buf_printf(out, "  dnsd   %d name%s of its own, forwarding the rest %s%s\n",
+                   nr, nr == 1 ? "" : "s", up ? "to " : "nowhere", up ? f : "");
+    }
     if (hp) buf_printf(out, "  httpd  serving its own files on port %d\n", hp);
 }
 
@@ -1118,6 +1232,7 @@ static const struct { const char *verb; int need; const char *usage; } VERB[] = 
     { "dhcp",     2, "dhcp <box>            ask for a lease, for real" },
     { "httpd",    2, "httpd <box> [port]" },
     { "dnsd",     2, "dnsd <box>" },
+    { "dns",      4, "dns <box> <name> <ip>" },
     { "resolver", 3, "resolver <box> <ip>" },
     { "ping",     3, "ping <box> <ip>" },
     { "trace",    3, "trace <box> <ip>" },
@@ -1183,6 +1298,11 @@ bool site_cmd(Site *s, const char *line, Buf *out)
             "ping <dev> <ip>                a real ICMP echo over the wire\n"
             "trace <dev> <ip>               traceroute, counted by ttl\n"
             "resolve <dev> <name>           a real DNS query\n"
+            "dnsd <dev>                     a name server on that box, and what\n"
+            "                               it will answer\n"
+            "dns <dev> <name> <ip>          one name in that server's zone. A name\n"
+            "                               it has not got goes to the resolver\n"
+            "                               that box is configured with\n"
             "get <dev> <ip> <path>          fetch a page over TCP\n"
             "\n"
             "day [n]                        advance the clock. Tenants move in on\n"
@@ -1570,11 +1690,24 @@ bool site_cmd(Site *s, const char *line, Buf *out)
     if (strcmp(t[0], "dhcp") == 0 && n >= 2) {
         int d = dev_arg(s, t[1]);
         if (d < 0) { buf_puts(out, "?\n"); return true; }
+        /* A DISCOVER IS A BROADCAST, so there is no one box to watch. Watch
+         * every box that is running a pool: a server whose filter is eating
+         * udp/67 is silent in exactly the way an empty pool is. */
+        int srv[16], nsrv = 0;
+        uint64_t was[16];
+        for (int i = 0; i < s->ndev && nsrv < 16; i++)
+            if (i != d && net_dhcpd_pools(s->net, s->dev[i].node) > 0) {
+                srv[nsrv] = i;
+                was[nsrv] = fw_drops_of(s, i);
+                nsrv++;
+            }
         bool got = site_dhcp(s, d);
         char ip[20];
         net_fmt_ip(net_if_get_addr(s->net, s->dev[d].node, 0), ip, sizeof ip);
         buf_printf(out, "%s\n", got ? ip
                    : "no lease: nothing answered, or the pool is empty");
+        if (!got)
+            for (int i = 0; i < nsrv; i++) fw_blame(s, srv[i], was[i], "discover", out);
         return true;
     }
     /* THE SERVICES A BOX RUNS. There was no verb for either of these, so a
@@ -1590,7 +1723,29 @@ bool site_cmd(Site *s, const char *line, Buf *out)
     if (strcmp(t[0], "dnsd") == 0 && n >= 2) {
         int d = dev_arg(s, t[1]);
         if (d < 0) { buf_puts(out, "?\n"); return true; }
-        buf_printf(out, "%s\n", site_dnsd(s, d) ? "serving" : site_err_text(s->err));
+        if (!site_dnsd(s, d)) { buf_printf(out, "%s\n", site_err_text(s->err)); return true; }
+        site_dump_dnsd(s, d, out);
+        return true;
+    }
+    /* A NAME OF YOUR OWN, ON A NAME SERVER OF YOUR OWN. */
+    if (strcmp(t[0], "dns") == 0 && n >= 4) {
+        int d = dev_arg(s, t[1]);
+        uint32_t ip;
+        if (d < 0 || !net_parse_ip(t[3], &ip)) { buf_puts(out, "?\n"); return true; }
+        if (!site_dns(s, d, t[2], ip)) {
+            buf_printf(out, "%s\n", site_err_text(s->err));
+            return true;
+        }
+        char a[20];
+        net_fmt_ip(ip, a, sizeof a);
+        buf_printf(out, "%s -> %s\n", t[2], a);
+        if (!net_dnsd_running(s->net, s->dev[d].node))
+            buf_printf(out, "  %s is holding that name and is NOT answering "
+                            "queries: `dnsd %s` starts\n  the server. Until it "
+                            "does, nothing can look it up.\n",
+                       s->dev[d].name, s->dev[d].name);
+        else
+            site_dump_dnsd(s, d, out);
         return true;
     }
     if (strcmp(t[0], "resolver") == 0 && n >= 3) {
@@ -1605,10 +1760,13 @@ bool site_cmd(Site *s, const char *line, Buf *out)
         uint32_t ip;
         if (d < 0 || !net_parse_ip(t[2], &ip)) { buf_puts(out, "?\n"); return true; }
         int rtt = 0;
+        int far = dev_by_ip(s, ip);
+        uint64_t was = fw_drops_of(s, far);
         PingResult r = net_ping(s->net, s->dev[d].node, ip, &rtt);
         buf_printf(out, "%s", net_ping_text(r));
         if (r == PING_OK) buf_printf(out, " in %d ms", rtt);
         buf_putc(out, '\n');
+        if (r != PING_OK && far != d) fw_blame(s, far, was, "ping", out);
         return true;
     }
     if (strcmp(t[0], "trace") == 0 && n >= 3) {
@@ -1628,11 +1786,50 @@ bool site_cmd(Site *s, const char *line, Buf *out)
         int d = dev_arg(s, t[1]);
         uint32_t a = 0;
         if (d < 0) { buf_puts(out, "?\n"); return true; }
-        if (net_resolve(s->net, s->dev[d].node, t[2], &a)) {
-            char h[20];
-            net_fmt_ip(a, h, sizeof h);
-            buf_printf(out, "%s\n", h);
-        } else buf_puts(out, "no answer\n");
+        /* `no answer` FOR BOTH OF THESE WAS A LIE OF OMISSION. A server that
+         * is not there and a server that is there and has never heard of the
+         * name look identical from here and have nothing in common: one is a
+         * network fault, the other is a missing record. netstack has known
+         * the difference all along -- rcode 3 -- and the tower threw it
+         * away. */
+        uint32_t ns = net_get_resolver(s->net, s->dev[d].node);
+        int nsd = dev_by_ip(s, ns);
+        uint64_t was = fw_drops_of(s, nsd);
+        char h[20];
+        net_fmt_ip(ns, h, sizeof h);
+        switch (net_resolve_ex(s->net, s->dev[d].node, t[2], &a)) {
+        case RESOLVE_OK: {
+            char b[20];
+            net_fmt_ip(a, b, sizeof b);
+            buf_printf(out, "%s\n", b);
+            break;
+        }
+        case RESOLVE_NXDOMAIN:
+            buf_printf(out, "no such name: %s answered, and there is no record "
+                            "for %s.\n  The server is up and it is reachable. "
+                            "This is not a network fault -- the name\n  does "
+                            "not exist as far as that server can tell.\n",
+                       h, t[2]);
+            break;
+        case RESOLVE_NODATA:
+            buf_printf(out, "no address: %s answered about %s and gave no A "
+                            "record.\n", h, t[2]);
+            break;
+        case RESOLVE_NO_RESOLVER:
+            buf_printf(out, "no resolver on %s: it has nothing to ask. "
+                            "`resolver %s <ip>` sets one.\n",
+                       s->dev[d].name, s->dev[d].name);
+            break;
+        case RESOLVE_TIMEOUT:
+            buf_printf(out, "no answer from %s: nothing came back before the "
+                            "query timed out.\n  A name server that is not "
+                            "there sounds like this, and so does one that is\n"
+                            "  there and cannot reach its own forwarder. "
+                            "`ping %s %s` separates them.\n",
+                       h, s->dev[d].name, h);
+            fw_blame(s, nsd, was, "query", out);
+            break;
+        }
         return true;
     }
     if (strcmp(t[0], "get") == 0 && n >= 4) {
@@ -1640,6 +1837,8 @@ bool site_cmd(Site *s, const char *line, Buf *out)
         uint32_t ip;
         if (d < 0 || !net_parse_ip(t[2], &ip)) { buf_puts(out, "?\n"); return true; }
         Buf page = {0};
+        int far = dev_by_ip(s, ip);
+        uint64_t was = fw_drops_of(s, far);
         int st = net_http_get(s->net, s->dev[d].node, ip, 80, t[3], &page);
         if (st >= 100) buf_printf(out, "HTTP %d, %u bytes\n", st, (unsigned)page.len);
         else {
@@ -1675,6 +1874,7 @@ bool site_cmd(Site *s, const char *line, Buf *out)
                                 "connection: either no service is listening on\n"
                                 "  port 80, or a filter is dropping it. `show` the "
                                 "far box.\n", a, rtt);
+            if (far != d) fw_blame(s, far, was, "fetch", out);
         }
         buf_free(&page);
         return true;

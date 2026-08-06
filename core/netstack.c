@@ -223,6 +223,27 @@ typedef struct {
     bool     used;
 } Record;
 
+/* A QUERY THIS NAME SERVER IS ASKING SOMEBODY ELSE.
+ *
+ * A resolver that only answers out of its own zone is a resolver that says
+ * "no such host" about the entire internet, so the useful half of `dnsd` is
+ * this: a name it does not hold goes to its own forwarder, and the answer
+ * comes back to whoever asked. That cannot block -- dnsd_poll runs INSIDE
+ * net_step and the upstream answer arrives in a later step -- so the query
+ * in flight is state, with its own client socket, and the reply is relayed
+ * when it turns up. A forwarder with no state would have to stop the world
+ * to wait, which is exactly the thing this stack refuses to do. */
+#define NET_DNS_FWD_MAX   4
+#define NET_DNS_FWD_MS  400      /* how long we hold a query we forwarded    */
+typedef struct {
+    bool     used;
+    int      sock;         /* our own ephemeral socket toward the forwarder */
+    uint32_t client;       /* who asked us, and gets the answer            */
+    uint16_t cport;
+    uint16_t id;           /* the query id, relayed unchanged              */
+    uint64_t sent;
+} DnsFwd;
+
 /* A host. Kept deliberately flat and fixed: this is the structure a tower
  * with three hundred machines pays for, once per machine. */
 typedef struct {
@@ -239,6 +260,7 @@ typedef struct {
     Lease    lease[NET_LEASE_MAX];
     bool     dnsd;
     Record   zone[NET_ZONE_MAX];
+    DnsFwd   dnsfwd[NET_DNS_FWD_MAX];
     uint32_t resolver;
     bool     httpd;
     uint16_t http_port;
@@ -1935,6 +1957,15 @@ uint64_t net_fw_hits(const Net *n, int node, int rule)
     if (!h || rule < 0 || rule >= NET_FW_MAX || !h->fw[rule].used) return 0;
     return h->fw[rule].hits;
 }
+uint64_t net_fw_drops(const Net *n, int node)
+{
+    const Host *h = chost_of(n, node);
+    if (!h) return 0;
+    uint64_t k = 0;
+    for (int i = 0; i < NET_FW_MAX; i++)
+        if (h->fw[i].used && h->fw[i].action != FW_ACCEPT) k += h->fw[i].hits;
+    return k;
+}
 int net_fw_count(const Net *n, int node)
 {
     const Host *h = chost_of(n, node);
@@ -2476,7 +2507,8 @@ void net_release_host(Net *n, int node)
     /* The services go BEFORE the sockets do: net_close_all reopens what this
      * host is still serving, and a host being released is serving nothing. */
     pools_clear(h);
-    h->dnsd = h->httpd = false;
+    net_dnsd_stop(n, node);
+    h->httpd = false;
     net_close_all(n, node);
     for (int i = 0; i < NET_ROUTE_MAX; i++) h->rt[i].used = false;
     for (int i = 0; i < NET_ARP_MAX; i++)   h->arp[i].used = false;
@@ -3208,7 +3240,8 @@ void net_services_stop(Net *n, int node)
     Host *h = host_of(n, node);
     if (!h) return;
     pools_clear(h);
-    h->dnsd = h->httpd = false;
+    net_dnsd_stop(n, node);
+    h->httpd = false;
     net_close_all(n, node);
 }
 int net_dhcpd_stop(Net *n, int node)
@@ -3582,17 +3615,88 @@ void net_dnsd(Net *n, int node)
     int s = net_udp_open(n, node, 53);
     if (s >= 0) n->sock[s].service = SVC_DNSD;
 }
-void net_dns_record(Net *n, int node, const char *name, uint32_t ip)
+bool net_dns_record(Net *n, int node, const char *name, uint32_t ip)
 {
     Host *h = host_of(n, node);
-    if (!h) return;
+    if (!h || !name || !*name) return false;
+    /* A NAME IS A KEY, NOT A LINE IN A LOG. Appending blindly meant that a
+     * zone written onto a disk and read back at every reconfiguration grew a
+     * duplicate record per boot until sixty-four of them were the same name,
+     * and then the next real name would not fit. Setting a name that is
+     * already served changes what it points at, which is also what a person
+     * typing the verb twice means by it. */
+    for (int i = 0; i < NET_ZONE_MAX; i++)
+        if (h->zone[i].used && strcmp(h->zone[i].name, name) == 0) {
+            h->zone[i].ip = ip;
+            return true;
+        }
     for (int i = 0; i < NET_ZONE_MAX; i++)
         if (!h->zone[i].used) {
             h->zone[i].used = true;
             snprintf(h->zone[i].name, sizeof h->zone[i].name, "%s", name);
             h->zone[i].ip = ip;
-            return;
+            return true;
         }
+    return false;
+}
+int net_dns_record_count(const Net *n, int node)
+{
+    const Host *h = chost_of(n, node);
+    if (!h) return 0;
+    int k = 0;
+    for (int i = 0; i < NET_ZONE_MAX; i++) if (h->zone[i].used) k++;
+    return k;
+}
+bool net_dns_record_at(const Net *n, int node, int i, char *name, size_t cap,
+                       uint32_t *ip)
+{
+    const Host *h = chost_of(n, node);
+    if (!h || i < 0) return false;
+    for (int k = 0; k < NET_ZONE_MAX; k++) {
+        if (!h->zone[k].used) continue;
+        if (i--) continue;
+        if (name && cap) snprintf(name, cap, "%s", h->zone[k].name);
+        if (ip) *ip = h->zone[k].ip;
+        return true;
+    }
+    return false;
+}
+/* Every query we have out to the forwarder goes with the service. */
+static void dns_fwd_drop(Net *n, Host *h)
+{
+    for (int i = 0; i < NET_DNS_FWD_MAX; i++)
+        if (h->dnsfwd[i].used) {
+            net_sock_free(n, h->dnsfwd[i].sock);
+            h->dnsfwd[i].used = false;
+        }
+}
+void net_dnsd_stop(Net *n, int node)
+{
+    Host *h = host_of(n, node);
+    if (!h) return;
+    h->dnsd = false;
+    dns_fwd_drop(n, h);
+    for (int i = 0; i < NET_ZONE_MAX; i++) h->zone[i].used = false;
+    for (int i = 0; i < NET_SOCK_MAX; i++)
+        if (n->sock[i].used && n->sock[i].node == node &&
+            n->sock[i].service == SVC_DNSD)
+            net_sock_free(n, i);
+}
+uint32_t net_dns_forwarder(const Net *n, int node)
+{
+    const Host *h = chost_of(n, node);
+    if (!h || !h->resolver) return 0;
+    /* A BOX POINTED AT ITSELF IS NOT A FORWARDER. resolv.conf saying
+     * `nameserver <my own address>` is an ordinary and correct thing for the
+     * machine that runs the resolver to say -- it is how the server resolves
+     * names for itself -- and forwarding to it would be this daemon asking
+     * itself the question it could not answer, for ever. */
+    for (int i = 0; i < NET_IF_MAX; i++)
+        if (h->ifc[i].used && h->ifc[i].ip == h->resolver) return 0;
+    for (int i = 0; i < NET_ALIAS_MAX; i++)
+        if (n->alias[i].used && n->alias[i].node == node &&
+            n->alias[i].ip == h->resolver) return 0;
+    return h->resolver;
 }
 void net_set_resolver(Net *n, int node, uint32_t server)
 {
@@ -3632,9 +3736,81 @@ static int dns_get_name(const uint8_t *p, int len, int off, char *out, int cap)
     return off + 1;
 }
 
+/* THE OTHER HALF OF BEING A NAME SERVER: what came back from upstream, on
+ * its way to whoever asked us. Run on every poll, before any new query, so a
+ * forwarded answer is relayed in the step after it arrives. A query that
+ * upstream never answers is dropped when it ages out, and the client sees
+ * exactly what it would see if we had never existed -- silence, which is
+ * what a resolver that cannot reach its forwarder really gives you. */
+static void dns_fwd_poll(Net *n, int sock)
+{
+    Sock *s = &n->sock[sock];
+    Host *h = host_of(n, s->node);
+    if (!h) return;
+    for (int i = 0; i < NET_DNS_FWD_MAX; i++) {
+        DnsFwd *f = &h->dnsfwd[i];
+        if (!f->used) continue;
+        /* THE SOCKET MAY NOT BE OURS ANY MORE. net_close_all runs on a
+         * reconfiguration and on a power cut, and a slot that has been
+         * freed and handed out again would deliver somebody else's
+         * datagram to somebody else's client. */
+        if (f->sock < 0 || f->sock >= NET_SOCK_MAX ||
+            !n->sock[f->sock].used || n->sock[f->sock].node != s->node ||
+            n->sock[f->sock].proto != IP_PROTO_UDP) {
+            f->used = false;
+            continue;
+        }
+        uint8_t r[512];
+        int rl = net_udp_recv(n, f->sock, r, sizeof r, NULL, NULL);
+        if (rl >= 12 && get16(r) == f->id) {
+            trace(n, "%s dns forwarded answer -> client", n->node[s->node].name);
+            net_udp_send(n, sock, f->client, f->cport, r, rl);
+            net_sock_free(n, f->sock);
+            f->used = false;
+            continue;
+        }
+        if (n->now - f->sent > NET_DNS_FWD_MS) {
+            trace(n, "%s dns forwarder did not answer", n->node[s->node].name);
+            net_sock_free(n, f->sock);
+            f->used = false;
+        }
+    }
+}
+
+/* Ask the forwarder, on this box's behalf, for a name this box does not
+ * hold. True when the question is on the wire and an answer may yet come. */
+static bool dns_forward(Net *n, int sock, const uint8_t *m, int len,
+                        uint32_t client, uint16_t cport)
+{
+    Sock *s = &n->sock[sock];
+    int node = s->node;
+    Host *h = host_of(n, node);
+    uint32_t up = net_dns_forwarder(n, node);
+    if (!h || !up) return false;
+    for (int i = 0; i < NET_DNS_FWD_MAX; i++) {
+        DnsFwd *f = &h->dnsfwd[i];
+        if (f->used) continue;
+        int c = net_udp_open(n, node, 0);
+        if (c < 0) return false;
+        if (net_udp_send(n, c, up, 53, m, len) < 0) {
+            net_sock_free(n, c);
+            return false;
+        }
+        f->used = true;
+        f->sock = c;
+        f->client = client;
+        f->cport = cport;
+        f->id = get16(m);
+        f->sent = n->now;
+        return true;
+    }
+    return false;      /* four queries already out: this one is dropped */
+}
+
 static void dnsd_poll(Net *n, int sock)
 {
     Sock *s = &n->sock[sock];
+    dns_fwd_poll(n, sock);
     if (!s->dgram_len) return;
     Host *h = host_of(n, s->node);
     uint8_t m[512];
@@ -3655,6 +3831,15 @@ static void dnsd_poll(Net *n, int sock)
     uint32_t ip = 0;
     for (int i = 0; i < NET_ZONE_MAX; i++)
         if (h->zone[i].used && strcmp(h->zone[i].name, qname) == 0) { ip = h->zone[i].ip; break; }
+
+    /* NOT IN OUR ZONE IS NOT THE SAME AS NOT IN THE WORLD. A server with a
+     * forwarder asks it, and says nothing here -- the answer is relayed by
+     * dns_fwd_poll when it arrives. Only a server with nowhere to ask is
+     * entitled to tell the client the name does not exist. */
+    if (!ip && dns_forward(n, sock, m, len, from, fport)) {
+        trace(n, "%s dns %s -> forwarded", n->node[s->node].name, qname);
+        return;
+    }
 
     uint8_t r[512];
     int rl = 0;
@@ -3682,12 +3867,12 @@ static void dnsd_poll(Net *n, int sock)
     net_udp_send(n, sock, from, fport, r, rl);
 }
 
-bool net_resolve(Net *n, int node, const char *name, uint32_t *out)
+ResolveResult net_resolve_ex(Net *n, int node, const char *name, uint32_t *out)
 {
     Host *h = host_of(n, node);
-    if (!h || !h->resolver) return false;
+    if (!h || !h->resolver) return RESOLVE_NO_RESOLVER;
     int s = net_udp_open(n, node, 0);
-    if (s < 0) return false;
+    if (s < 0) return RESOLVE_TIMEOUT;
     uint16_t id = (uint16_t)(rng_next(&n->rng) & 0xffff);
     uint8_t m[512];
     put16(m + 0, id);
@@ -3698,7 +3883,10 @@ bool net_resolve(Net *n, int node, const char *name, uint32_t *out)
     put16(m + ml, 1); ml += 2;
     put16(m + ml, 1); ml += 2;
     trace(n, "%s dns query %s", n->node[node].name, name);
-    if (net_udp_send(n, s, h->resolver, 53, m, ml) < 0) { net_sock_free(n, s); return false; }
+    if (net_udp_send(n, s, h->resolver, 53, m, ml) < 0) {
+        net_sock_free(n, s);
+        return RESOLVE_TIMEOUT;
+    }
 
     for (int i = 0; i < 600; i++) {
         net_step(n, 1);
@@ -3706,7 +3894,17 @@ bool net_resolve(Net *n, int node, const char *name, uint32_t *out)
         int rl = net_udp_recv(n, s, r, sizeof r, NULL, NULL);
         if (rl < 12 || get16(r) != id) continue;
         int an = get16(r + 6);
-        if (!an) { net_sock_free(n, s); return false; }
+        /* WHAT THE SERVER SAID ABOUT THE NAME. rcode 3 is NXDOMAIN: it
+         * answered, it is the authority as far as this client is concerned,
+         * and the name does not exist. An empty answer with rcode 0 is the
+         * other one -- the name exists and has no address of this type.
+         * Neither is silence, and reporting all three as "no answer" sent a
+         * playtester looking for a dead server that was up and talking. */
+        if (!an) {
+            int rcode = get16(r + 2) & 0xf;
+            net_sock_free(n, s);
+            return rcode == 3 ? RESOLVE_NXDOMAIN : RESOLVE_NODATA;
+        }
         char qn[128];
         int qend = dns_get_name(r, rl, 12, qn, sizeof qn);
         if (qend < 0) break;
@@ -3720,7 +3918,7 @@ bool net_resolve(Net *n, int node, const char *name, uint32_t *out)
             if (type == 1 && rdl == 4) {
                 if (out) *out = get32(r + off);
                 net_sock_free(n, s);
-                return true;
+                return RESOLVE_OK;
             }
             off += rdl;
         }
@@ -3730,7 +3928,12 @@ bool net_resolve(Net *n, int node, const char *name, uint32_t *out)
      * why "name resolution takes five seconds and then fails" is the sound
      * of a dead nameserver and not of a wrong one. */
     net_sock_free(n, s);
-    return false;
+    return RESOLVE_TIMEOUT;
+}
+
+bool net_resolve(Net *n, int node, const char *name, uint32_t *out)
+{
+    return net_resolve_ex(n, node, name, out) == RESOLVE_OK;
 }
 
 /* --------------------------------------------------------------- HTTP    */

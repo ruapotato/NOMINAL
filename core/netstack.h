@@ -423,6 +423,11 @@ void  net_fw_add(Net *n, int node, FwChain c, int proto, uint16_t dport,
 void  net_fw_clear(Net *n, int node);
 uint64_t net_fw_hits(const Net *n, int node, int rule);
 int   net_fw_count(const Net *n, int node);
+/* EVERYTHING THIS BOX HAS THROWN AWAY, summed over the rules that throw
+ * things away. A diagnostic that came back with nothing can compare this
+ * across the attempt and say whether the far end refused it -- which is a
+ * fact off the counter, not a diagnosis. */
+uint64_t net_fw_drops(const Net *n, int node);
 
 /* -------------------------------------------------------------- services */
 /* A POOL IS SCOPED TO THE SEGMENT IT SERVES, and the segment is not a
@@ -462,13 +467,48 @@ bool  net_dhcp_client(Net *n, int node, int ifx);
 uint32_t net_dhcp_lease_of(const Net *n, int node, const uint8_t mac[6]);
 
 void  net_dnsd(Net *n, int node);
+/* Stop being a name server: the socket goes, the zone goes, and any query
+ * this box had out to its forwarder goes with them. The zone is config in
+ * exactly the way a DHCP pool is, so it comes back the way a pool does --
+ * off the disk, replayed by netd -- and not by surviving in the stack. */
+void  net_dnsd_stop(Net *n, int node);
 /* What this box is serving, for anything that has to say so out loud. A
  * tower that cannot print the services a box runs is a tower where a service
  * can quietly stop running. */
 bool  net_dnsd_running(const Net *n, int node);
 int   net_httpd_port(const Net *n, int node);   /* 0 when it serves nothing */
-void  net_dns_record(Net *n, int node, const char *name, uint32_t ip);
+/* GIVE A NAME SERVER A NAME. Setting a name that is already in the zone
+ * overwrites it rather than adding a second answer, so replaying a zone off
+ * a disk twice leaves one record and not two. Returns false only when the
+ * zone is full. */
+bool  net_dns_record(Net *n, int node, const char *name, uint32_t ip);
+/* And read it back, which is how the tower prints a zone and how it writes
+ * one onto a disk. `i` runs over the used records, densely. */
+int   net_dns_record_count(const Net *n, int node);
+bool  net_dns_record_at(const Net *n, int node, int i, char *name, size_t cap,
+                        uint32_t *ip);
 void  net_set_resolver(Net *n, int node, uint32_t server);
+/* WHERE A NAME SERVER SENDS WHAT IT DOES NOT KNOW. A resolver with a zone
+ * and no forwarder answers NXDOMAIN to the whole internet, which is why an
+ * internal DNS server that is not a forwarder is worse than none: every desk
+ * pointed at it loses the world. The forwarder is this box's own resolver --
+ * the one line in its own resolv.conf -- because a box that has been told
+ * where to ask has been told where to ask. Zero when it has no forwarder,
+ * and zero when the forwarder is one of this box's own addresses, which is
+ * a loop and is not a forwarder. */
+uint32_t net_dns_forwarder(const Net *n, int node);
+/* WHAT CAME BACK, not merely whether something did. rcode 3 is NXDOMAIN and
+ * it is an ANSWER: the server is up, it is authoritative, and the name does
+ * not exist. Silence is a server that is not there. The two have completely
+ * different repairs, so the two have different values here. */
+typedef enum {
+    RESOLVE_OK = 0,
+    RESOLVE_NXDOMAIN,      /* the server answered: no such name              */
+    RESOLVE_NODATA,        /* the name exists and has no address record      */
+    RESOLVE_TIMEOUT,       /* nothing came back before the client gave up    */
+    RESOLVE_NO_RESOLVER    /* nothing to ask: no nameserver configured       */
+} ResolveResult;
+ResolveResult net_resolve_ex(Net *n, int node, const char *name, uint32_t *out);
 /* A real query over UDP to the configured resolver. */
 bool  net_resolve(Net *n, int node, const char *name, uint32_t *out);
 

@@ -722,6 +722,162 @@ static void check_demand(const Building *b)
     site_free(&c);
 }
 
+/* ---------------------------------------- a name server the player can use
+ *
+ * `dnsd <box>` used to start a server with an empty zone, no verb anywhere
+ * in the tower to put a name in it and no forwarder, and answer the word
+ * `serving`. Every query it ever got was NXDOMAIN, so the only working
+ * resolver in the building was the ISP's -- out through the router, which is
+ * the hairpin this game exists to teach people to avoid.
+ */
+static void check_dns_verbs(const Building *b)
+{
+    printf("\na name server of the player's own, in the words they type\n");
+    Site s;
+    site_new(&s, b, GATE_SEED, 100000);
+    site_credit(&s, 200000);
+    Buf o = {0};
+    static const char *SCRIPT[] = {
+        "order router edge",  "move edge f0.mdf",
+        "order server dns1",  "move dns1 f0.mdf",
+        "cable edge:1 dns1:0 cat6",
+        "cable edge:0 uplink:0 cat6",
+        "addr edge 198.51.100.2/30",
+        "gw edge 198.51.100.1",
+        "addr edge:1 10.0.0.1/24",
+        "router edge on",
+        "power dns1 on",
+        "addr dns1 10.0.0.10/24",
+        "gw dns1 10.0.0.1",
+        NULL
+    };
+    for (int i = 0; SCRIPT[i]; i++) site_cmd(&s, SCRIPT[i], &o);
+
+    /* THE WORD `serving` TOLD A PLAYER NOTHING. What matters about a name
+     * server is how many names it holds and where it sends the rest, and
+     * both of those are zero and nowhere on the day it starts. */
+    buf_clear(&o);
+    site_cmd(&s, "dnsd dns1", &o);
+    ck("`dnsd` says what it will serve, not the bare word `serving`",
+       has(o.p, "serves 0 names") && has(o.p, "forwards the rest nowhere") &&
+       has(o.p, "NOWHERE TO ASK"));
+
+    /* THE VERB THAT DID NOT EXIST. */
+    buf_clear(&o);
+    site_cmd(&s, "dns dns1 files.floor3 10.0.0.50", &o);
+    ck("`dns <box> <name> <ip>` puts a name in the zone",
+       has(o.p, "files.floor3 -> 10.0.0.50") && has(o.p, "serves 1 name"));
+
+    buf_clear(&o);
+    site_cmd(&s, "resolver edge 10.0.0.10", &o);
+    buf_clear(&o);
+    site_cmd(&s, "resolve edge files.floor3", &o);
+    ck("and a box pointed at it resolves that name over the wire",
+       has(o.p, "10.0.0.50"));
+
+    /* NXDOMAIN IS AN ANSWER. It used to print `no answer`, which is what a
+     * server that is not there prints, and the two repairs have nothing in
+     * common. */
+    buf_clear(&o);
+    site_cmd(&s, "resolve edge nowhere.example", &o);
+    ck("a name that does not exist says so, and says the server answered",
+       has(o.p, "no such name") && has(o.p, "not a network fault") &&
+       !has(o.p, "no answer"));
+
+    /* THE HALF THAT STOPS THE HAIRPIN: give the floor's server somewhere to
+     * ask, and it resolves the internet for the floor. */
+    buf_clear(&o);
+    site_cmd(&s, "resolver dns1 198.51.100.1", &o);
+    buf_clear(&o);
+    site_cmd(&s, "dnsd dns1", &o);
+    ck("`dnsd` names the resolver it forwards to",
+       has(o.p, "forwards the rest to 198.51.100.1"));
+    buf_clear(&o);
+    site_cmd(&s, "resolve edge wiki.nomnix.org", &o);
+    ck("and a name it has never held comes back, forwarded and relayed",
+       has(o.p, "10.0.2.20"));
+
+    /* A resolver that is not there is silence, and silence says so. */
+    buf_clear(&o);
+    site_cmd(&s, "resolver edge 10.0.0.77", &o);
+    buf_clear(&o);
+    site_cmd(&s, "resolve edge wiki.nomnix.org", &o);
+    ck("a resolver that is not there times out, and is not called NXDOMAIN",
+       has(o.p, "timed out") && !has(o.p, "no such name"));
+
+    buf_clear(&o);
+    site_cmd(&s, "resolver edge 0.0.0.0", &o);
+    buf_clear(&o);
+    site_cmd(&s, "resolve edge wiki.nomnix.org", &o);
+    ck("and a box with no resolver at all says that instead of timing out",
+       has(o.p, "no resolver on edge"));
+
+    buf_free(&o);
+    site_free(&s);
+}
+
+/* ------------------------------------------ a drop counter, pointed at
+ *
+ * `ping edge 10.0.0.10` printing `no answer` when the far box's filter ate
+ * the echo cost two playtesters ten minutes each, and one of them re-cut a
+ * trunk to repair a routing fault that did not exist. The drop is correct
+ * and documented; the silence about it was not.
+ */
+static void check_ping_blames_the_filter(const Building *b)
+{
+    printf("\nwhat a ping says when the far end refused it\n");
+    Site s;
+    site_new(&s, b, GATE_SEED, 100000);
+    site_credit(&s, 200000);
+    Buf o = {0};
+    static const char *SCRIPT[] = {
+        "order router edge",  "move edge f0.mdf",
+        "order server files", "move files f0.mdf",
+        "cable edge:1 files:0 cat6",
+        "addr edge:1 10.0.0.1/24",
+        "router edge on",
+        "power files on",
+        "addr files 10.0.0.10/24",
+        "gw files 10.0.0.1",
+        NULL
+    };
+    for (int i = 0; SCRIPT[i]; i++) site_cmd(&s, SCRIPT[i], &o);
+
+    /* The shipped ruleset on a booted box: policy drop, plus 22 and 80. */
+    int node = s.dev[site_dev_by_name(&s, "files")].node;
+    net_fw_add(s.net, node, FW_IN, IP_PROTO_TCP, 22, 0, 0, FW_ACCEPT);
+    net_fw_add(s.net, node, FW_IN, FW_ANY_PROTO, FW_ANY_PORT, 0, 0, FW_DROP);
+
+    buf_clear(&o);
+    site_cmd(&s, "ping files 10.0.0.1", &o);
+    ck("the box with the filter can still ping out, which is what confused "
+       "everybody",
+       has(o.p, "reply in"));
+
+    buf_clear(&o);
+    site_cmd(&s, "ping edge 10.0.0.10", &o);
+    ck("a ping the far end dropped names the box and its counter",
+       has(o.p, "no answer") && has(o.p, "files") &&
+       has(o.p, "packet filter counted") && has(o.p, "netstat -F"));
+
+    /* AND IT SAYS NOTHING WHEN IT HAS NOTHING TO SAY. An address nobody has
+     * is not a filter, and a diagnostic that blamed one would be worse than
+     * the silence it replaced. */
+    buf_clear(&o);
+    site_cmd(&s, "ping edge 10.0.0.66", &o);
+    ck("a ping to an address nobody holds blames no filter",
+       !has(o.p, "packet filter counted"));
+
+    net_fw_clear(s.net, node);
+    buf_clear(&o);
+    site_cmd(&s, "ping edge 10.0.0.10", &o);
+    ck("and with the filter gone the same ping is answered",
+       has(o.p, "reply in") && !has(o.p, "packet filter counted"));
+
+    buf_free(&o);
+    site_free(&s);
+}
+
 /* ------------------------------------------------- a pool, and a way out of it
  *
  * The same fault as the netcheck above, in the words a player types, plus
@@ -1056,6 +1212,8 @@ int site_selfcheck(void)
     check_flat(&b);
     check_demand(&b);
     check_dhcp_scope(&b);
+    check_dns_verbs(&b);
+    check_ping_blames_the_filter(&b);
     check_arity(&b);
     check_reports(&b);
     check_shell(&b);
