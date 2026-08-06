@@ -743,7 +743,16 @@ func _draw_report() -> void:
 	for i in range(rscroll, mini(report.size(), rscroll + vis)):
 		var line: String = str(report[i])
 		var col := INK
-		if line.begins_with("FAIL") or line.find("MISSING") >= 0 or line.find("CHANGED") >= 0:
+		# Every word `pkg verify` can put in its status column. It grew
+		# TRUNCATED (a file that is the shipped bytes and then stops, which is
+		# what an interrupted write leaves) and got MODE back after a bug had
+		# been printing that column blank -- and this list knew neither, so
+		# the archive manager listed those findings without marking them. A
+		# view that quietly downgrades a finding is worse than one that shows
+		# nothing, because the player reads the absence as good news.
+		if line.begins_with("FAIL") or line.find("MISSING") >= 0 \
+				or line.find("CHANGED") >= 0 or line.find("TRUNCATED") >= 0 \
+				or line.find("MODE") >= 0:
 			col = RED
 		elif line.begins_with("  ok"):
 			col = GREEN

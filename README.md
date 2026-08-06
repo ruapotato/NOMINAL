@@ -31,8 +31,8 @@ That is the whole idea. Everything else follows from it.
    have a spool: you plug one end in, walk to the other end, and the metres come
    off the drum and out of the budget as you go. Walking distance and cable
    distance are different numbers -- you take the corridor and the stairs, the
-   copper goes up the riser -- so a run can cost 78 m of your legs and 33 m of
-   cat6.
+   copper goes up the riser -- so running one cable from the MDF to the floor
+   three comms cupboard is 91 m of your legs and 42 m of cat5e.
 5. **You make it work.** The box boots the same OS everything else runs. Give it
    an address, a route, a resolver, a firewall rule, a service. Get it wrong and
    it fails the way a real machine fails, and says so.
@@ -40,8 +40,10 @@ That is the whole idea. Everything else follows from it.
    day's work over what you built — real DNS, real TCP, real files across
    real copper — and the rent for the work that finished arrives that
    evening. Four fifths of a tenancy's people getting their work done is a
-   day they pay for. Three days without it is a complaint. Three complaints
-   ends the run.
+   day they pay for. Three days without it is a complaint, and complaints from
+   a third of your tenancies -- never fewer than three -- end the run, so the
+   building gets more slack as you let it rather than less. `service` prints
+   the number you are counting against.
 7. **Then it breaks.** Not because a designer hid a fault — because of something
    you did three floors ago and have forgotten.
 
@@ -71,12 +73,22 @@ subnet, cheap copper, a switch per floor with a second daisy-chained off it
 when the floor fills up, and one file server in the basement holding
 everybody's files — it is comfortable on its first floor, visibly working
 hard by the third, and has fallen over well before the fifth. Built with a
-vlan per floor, fibre to every floor switch and a server in each floor's own
-cupboard holding that floor's files, it carries all nine tenancies it has
-been grown to — five floors and a hundred and seventy-six desks. The
-difference is not a number anybody tuned. It is where the frames go: in the
-first tower the busiest thing in the building is the one gigabit port on the
-one server everybody's files are behind, and `load` names it.
+vlan per floor and a server in each floor's own cupboard holding that floor's
+files, it carries all nine tenancies it has been grown to — five floors and a
+hundred and seventy-six desks. The difference is not a number anybody tuned.
+It is where the frames go: in the first tower the busiest thing in the
+building is the one gigabit port on the one server everybody's files are
+behind, and `load` names it.
+
+Note what is NOT doing the work there. Fibre up the risers is not: a floor
+switch's access port clocks a gigabit whatever you land on it, so a 42 m
+riser costs 450 in fibre and 99 in cat5e and both of them carry a gigabit,
+and the binding port in a planned tower is the floor server's own gigabit card
+rather than the riser. Fibre is bought here for reach and for ten gigabit:
+copper of any grade stops carrying anything at all past 100 m, and cat6
+negotiates down from ten gigabit to one past 55 m, while fibre runs 2 km.
+Buying it for riser bandwidth nobody is using is one of the ways this game
+will take your money and tell you it has.
 
 ## Why a real OS matters
 
