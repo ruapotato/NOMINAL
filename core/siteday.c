@@ -763,9 +763,21 @@ static void the_disks(Site *s, Rng *rng)
                            d->name, d->lost,
                            d->lost == 2 ? "nd" : d->lost == 3 ? "rd" : "th");
                 else
+                /* AND SAY WHY THE PERCENTAGE IS ABOUT TO GO DOWN. A
+                 * playtester watched srv2 read 88% on day 27 and 75% on day
+                 * 30 -- the morning it lost a sector -- and asked why a disk
+                 * appears to get better by failing. It is honest: the drive
+                 * reallocated into its spares and is measurably further from
+                 * the next loss than it was yesterday. But "the number went
+                 * down" is the opposite of the signal you want after a loss,
+                 * and a number nobody can interpret is a number nobody
+                 * watches. */
                 ev_add(s, SEV_DISK_FAIL, i,
                        "the disk in %s lost a sector after %d days. It had been "
-                       "warning.", d->name, d->run_days);
+                       "warning. Its reading drops back now -- it reallocated "
+                       "into its spares, so it is further from the NEXT loss "
+                       "and no further from the end. Only `disk %s` resets it "
+                       "for good.", d->name, d->run_days, d->name);
                 /* It has lost what it was going to lose. The disk keeps
                  * running -- and keeps being a disk that has run out of
                  * spares, which is why the wear does not reset until
@@ -1369,11 +1381,33 @@ bool site_advance(Site *s, int days, Buf *out)
                             "%d/%d transfers finished, %ld taken, %ld in hand\n",
                        r.day, r.tenants_in, r.tenants_served, r.connected,
                        r.desks, r.finished, r.sessions, r.rent, s->money);
-            if (r.hot[0])
-                buf_printf(out, "        busiest port %s at %d%%%s\n", r.hot,
-                           r.hot_util,
-                           r.drops ? "; something is dropping -- `load`, then "
-                                     "`show <box>`" : "");
+            if (r.hot[0]) {
+                /* A DROP IS NOT NEWS; A DROP RATE IS.
+                 *
+                 * This warned on r.drops != 0, so it fired from day three of
+                 * a tower whose every tenancy finished all its work, and a
+                 * playtester said "by day 40 I had stopped reading it, which
+                 * is a bad habit for the game to teach given how much else it
+                 * wants me to read." They were right, and a warning nobody
+                 * reads is worse than none: it is the line that is supposed
+                 * to send them to `load` on the day it matters.
+                 *
+                 * A real network drops a frame now and then and nothing is
+                 * wrong. One in a thousand is where a burst stops being a
+                 * burst, and the rate is printed rather than the adjective,
+                 * so the player can watch it climb instead of being told
+                 * twice that something is happening. */
+                bool loud = r.frames && r.drops * 1000 > r.frames;
+                if (loud)
+                    buf_printf(out, "        busiest port %s at %d%%; %llu of "
+                                    "%llu frames dropped -- `load`, then "
+                                    "`show <box>`\n", r.hot, r.hot_util,
+                               (unsigned long long)r.drops,
+                               (unsigned long long)r.frames);
+                else
+                    buf_printf(out, "        busiest port %s at %d%%\n",
+                               r.hot, r.hot_util);
+            }
             if (r.bill)
                 buf_printf(out, "        the ISP bills the month: %ld for the "
                                 "%d Mb circuit. %ld in hand\n",

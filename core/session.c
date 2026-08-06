@@ -24,13 +24,27 @@ void netsite_pin(Machine *m, struct Net *n, int node);
 void netsite_apply(Machine *m);
 void netsite_stale(Machine *m);
 
-#define MAXTOK 12
+/* TWELVE WAS A SILENT CEILING ON WHAT A PLAYER MAY TYPE.
+ *
+ * The same number in core/site.c cost a playtester two of the complaints that
+ * end a run: `trunk core 22 11 12 ... 23` is sixteen words, the parser kept
+ * twelve, the verb answered `set`, and a floor was quietly broken for eight
+ * days. That was fixed there and this is the same cap in the same shape --
+ * from the room the raw line goes to site_cmd and is safe, but on a
+ * management line (`plug core`) a devverb is rebuilt from THESE tokens, so
+ * the twelfth word was still the last one that counted.
+ *
+ * Sixty-four, because a vlan per tenancy on the fullest seed is thirty-nine
+ * words, and -1 for a line that would not fit rather than its first twelve.
+ * A parser that drops input has to say so. */
+#define MAXTOK 64
 
 static int split(char *line, char *tok[MAXTOK])
 {
     int n = 0;
     char *p = line;
-    while (*p && n < MAXTOK) {
+    while (*p) {
+        if (n >= MAXTOK) return -1;
         while (*p == ' ' || *p == '\t') p++;
         /* '#' STARTS A COMMENT, AND '#41' IS A ROOM.
          *
@@ -1826,6 +1840,16 @@ bool session_line(Session *ses, const char *line, Buf *out)
     char raw[NOM_ARG_MAX];
     snprintf(raw, sizeof raw, "%s", line);
     int n = split(buf, t);
+    if (n < 0) {
+        buf_printf(out, "that line has more than %d words in it, and none of it "
+                        "has been done.\n  Nothing here needs that many: the "
+                        "longest is a trunk, and a vlan per\n  tenancy on the "
+                        "fullest building is under forty. If you meant a "
+                        "trunk,\n  set it from the tower rather than the "
+                        "management line, or split it in two --\n  `trunk` adds "
+                        "to what a port already carries.\n", MAXTOK);
+        return true;
+    }
 
     /* AT THE DESK THE BREAK-FIX GAME OWNS EVERY WORD. One verb gets you out
      * of the chair; anything else is somebody else's line, and taking it

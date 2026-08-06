@@ -116,9 +116,33 @@ The first one is honest and is meant to be almost never: a desk pulls ten
 megabits and a long run to one is a bad idea that takes half a year to become a
 problem. The second is the shape of a real mistake -- **the floor's switch put
 in the office with the desks rather than in the comms cupboard, home-run to the
-core in copper** -- and in this seed's building the tray measures that run at
-95 m. Nobody chose ninety-five. It is `bld_cable_all()` measuring f0 MDF to f3
-office.
+core in copper** -- and in this seed's building the tray measures such a run
+past ninety metres from floor two upward. Nobody chose ninety. It is what
+`bld_cable_all()` measures.
+
+**CORRECTION, added after the day-62 playtest.** This paragraph said the run
+was 95 m and named "f0 MDF to f3 office" as the measurement. That is wrong,
+and a playtester who went looking for it could not reproduce it: they put a
+switch in an f3 office and got 66 m, and in an f6 office and got 76 m, and
+concluded the rule was unreachable in this building. Measured properly, from
+the MDF, per floor, on this seed:
+
+    floor 1: 11 offices, farthest  84 m     floor 5: farthest 100 m
+    floor 2: 12 offices, farthest  90 m     floor 6: farthest 104 m
+    floor 3: 11 offices, farthest  92 m     floor 8: farthest 108 m
+
+So the rule IS reachable, from floor two up -- but only in the *farthest*
+office on a floor, and floor three ranges from 39 m at the comms cupboard to
+92 m at the far end. The playtester picked a near office both times and had no
+way to know: **there is nothing in the game that prices or measures a run
+before you pay for it.** Their words: "exercising the marginal-copper rule is
+guess-and-pay at ~110 a guess."
+
+That is the real finding, and it is not about this rule. Every cable decision
+D27 built is made blind, which is a strange thing to say about a game whose
+central resource is priced by the metre. Recorded here rather than fixed
+because the verb that would fix it lives in a file another agent held at the
+time.
 
 Played in the gate: named in `events` on day 25, retrained on day 34, the floor
 behind it stopped getting its work done on day 35, and `uncable` plus a fibre
