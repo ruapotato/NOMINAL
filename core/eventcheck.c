@@ -56,13 +56,48 @@ static bool has(const char *hay, const char *needle)
 }
 
 #define EV_SEED 7008ull
-/* Seed 7008's first tenancy moves in on day 19 and the building loses the
+/* Seed 7008's first tenancy moves in on day 1 and the building loses the
  * mains on days 30, 52 and 78. The gate names those numbers rather than
  * searching for them, because "deterministic from the seed" means a test
- * can. */
+ * can.
+ *
+ * TENANT_IN WAS 19 UNTIL D27, when the letting queue in site.c replaced a
+ * schedule whose first tenancy on this seed could not arrive before day
+ * nineteen. Nothing about these scenarios needed the wait; they needed a
+ * tenancy in before the blackout on day thirty, and they still have one. */
 #define CUT_ONE   30
 #define CUT_TWO   52
-#define TENANT_IN 19
+#define TENANT_IN 1
+
+/* DAYS PASS, AND THE TENANCIES THIS GATE IS NOT ABOUT ARE FORGIVEN.
+ *
+ * This file measures what the WEATHER does to a machine: a blackout, a dirty
+ * filesystem, a worn disk. It builds one small tower with one tenancy cabled
+ * to it and then runs the clock for weeks. Since D27 the letting queue keeps
+ * signing leases while that clock runs, and a tenancy nobody has cabled is
+ * struck after its fit-out -- so three of them file, the lease is not
+ * renewed, and `day` stops advancing halfway to the blackout. That is the
+ * game working correctly and it is not what this gate is measuring.
+ *
+ * So the clock is turned one day at a time and the strikes belonging to
+ * tenancies this scenario never promised anything to are cleared, exactly as
+ * `keep_measuring` does in core/loadcheck.c and for the same reason. The
+ * tenancy the scenario DID cable keeps everything: its work, its rent and
+ * its strikes are whatever the network really gave it, which is the number
+ * the blackout checks read. */
+static void days(Session *ses, int n, Buf *o)
+{
+    for (int d = 0; d < n; d++) {
+        say(ses, "day 1", o);
+        ses->s.over = 0;
+        ses->s.complaints = 0;
+        for (int i = 0; i < ses->s.ntenant; i++)
+            if (site_tenant_connected(&ses->s, i) == 0) {
+                ses->s.tenant[i].strikes = 0;
+                ses->s.tenant[i].complained = 0;
+            }
+    }
+}
 
 /* Run a script and shout about anything that refused, the way check_build in
  * core/sessioncheck.c does. */
@@ -202,16 +237,13 @@ static void check_blackout(void)
        ses.s.money == before - site_ups_price());
 
     /* The tenancy moves in on day 19 and their desks get copper. */
-    char cmd[64];
-    snprintf(cmd, sizeof cmd, "day %d", TENANT_IN);
-    say(&ses, cmd, &o);
+    days(&ses, TENANT_IN, &o);
     say(&ses, "serve 1 core", &o);
     ck("a tenancy is in and their desks are on the switch",
        site_tenant_connected(&ses.s, 0) > 10);
 
     /* Up to the night before. Nothing has happened to the kit yet. */
-    snprintf(cmd, sizeof cmd, "day %d", CUT_ONE - 1 - TENANT_IN);
-    say(&ses, cmd, &o);
+    days(&ses, CUT_ONE - 1 - TENANT_IN, &o);
     int fd = site_dev_by_name(&ses.s, "files");
     int sd = site_dev_by_name(&ses.s, "spare");
     ck("on the night before, every box is up and nothing has been logged",
@@ -344,7 +376,7 @@ static void check_disk(void)
     ck("a box, on a battery, left running", script(&ses, BUILD, &o));
     int ad = site_dev_by_name(&ses.s, "arc");
 
-    say(&ses, "day 44", &o);
+    days(&ses, 44, &o);
     ck("after forty-four days it is worn but has said nothing",
        ses.s.dev[ad].run_days == 44 && !ses.s.dev[ad].warned);
 
@@ -379,7 +411,8 @@ static void check_disk(void)
     /* FIFTEEN DAYS OF NOTICE. That is the whole of "avoidable by good play":
      * `disk arc` at any point in here costs a hundred and forty pounds and
      * this never happens. */
-    const char *d60 = say(&ses, "day 15", &o);
+    days(&ses, 14, &o);
+    const char *d60 = say(&ses, "day 1", &o);
     ck("fifteen days later it loses one, and the day says so",
        has(d60, "lost a sector"));
 
@@ -504,7 +537,7 @@ static void check_determinism(void)
             NULL
         };
         script(&ses, BUILD, &o);
-        say(&ses, "day 50", &o);
+        days(&ses, 50, &o);
         Buf ev = {0};
         site_dump_events(&ses.s, &ev);
         if (pass == 0) snprintf(first, sizeof first, "%s", ev.p ? ev.p : "");

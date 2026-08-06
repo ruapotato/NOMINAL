@@ -1393,13 +1393,24 @@ static void check_documented(int *passed, int *total)
        has(h.p, "RENT IS PAID FOR A DAY'S WORK") &&
        has(h.p, "four fifths") && has(h.p, "LINK *and* an ADDRESS"));
 
-    /* ---- The strike clock. THE CLAIM THAT WAS WRONG, played out. */
-    ck("the help says the clock starts at first failed service, not at move-in",
-       has(h.p, "CANNOT be struck") && has(h.p, "three days IN A ROW"));
+    /* ---- The strike clock.
+     *
+     * THIS SCENARIO USED TO ASSERT THE OPPOSITE, and it was rewritten in D27
+     * rather than weakened. It ran the clock twenty days past a move-in with
+     * no copper anywhere in the building and checked that NOTHING happened:
+     * "a tenancy you have never cabled takes no strike, however long you
+     * leave it". That was the code's behaviour and it made the service half
+     * of the game optional -- an agent ran two hundred days with seven
+     * tenancies moved in and unserved, drew no complaint, and had to go
+     * overdrawn deliberately to see a run end. So the rule changed: a
+     * tenancy gets three days of fit-out and is then struck like anybody
+     * else. What is asserted here is strictly more than before -- the grace
+     * period is real AND it ends AND the ending is a complaint. */
+    ck("the help says a tenancy nobody cabled is struck after its fit-out",
+       has(h.p, "THREE\nDAYS of fit-out") && has(h.p, "strikes IN A ROW") &&
+       has(h.p, "sixth day after they move"));
     buf_free(&h);
 
-    /* Run the clock a long way past a move-in with nothing cabled anywhere.
-     * If the playtester's diagnosis were right, this would file complaints. */
     int ti = -1;
     for (int guard = 0; guard < 400 && ti < 0; guard++) {
         say(&ses, "day 1", &o);
@@ -1407,20 +1418,26 @@ static void check_documented(int *passed, int *total)
             if (ses.s.tenant[i].moved) { ti = i; break; }
     }
     if (ti < 0) { ck("a tenancy moves in within four hundred days", false); goto done; }
-    say(&ses, "day 20", &o);
     {
-        int struck = 0, filed = 0;
-        for (int i = 0; i < ses.s.ntenant; i++) {
-            if (!ses.s.tenant[i].moved) continue;
-            if (ses.s.tenant[i].strikes) struck++;
-            if (ses.s.tenant[i].complained) filed++;
-        }
+        /* The morning they move in, and for their fit-out, nobody is on the
+         * phone. Their move-in day is the day the session is on right now. */
+        int in_day = ses.s.tenant[ti].day;
+        ck("the day they move in, a tenancy nobody has cabled has no strike",
+           ses.s.day == in_day && ses.s.tenant[ti].strikes == 0);
+        say(&ses, "day 3", &o);
+        ck("and three days of fit-out later it still has none",
+           ses.s.tenant[ti].strikes == 0 && ses.s.tenant[ti].complained == 0);
+        say(&ses, "day 1", &o);
+        ck("the fourth day with not one desk able to work is a strike",
+           ses.s.tenant[ti].strikes == 1);
+        say(&ses, "day 2", &o);
+        ck("and the sixth day is a complaint, so ignoring a tenancy costs",
+           ses.s.tenant[ti].complained == 1 && ses.s.complaints >= 1);
+        int struck = 0;
+        for (int i = 0; i < ses.s.ntenant; i++)
+            if (ses.s.tenant[i].moved && ses.s.tenant[i].strikes) struck++;
         printf("    %d tenancies moved into a building with no copper in it; "
                "%d have a strike\n", ti + 1, struck);
-        ck("a tenancy you have never cabled takes no strike, however long you "
-           "leave it", struck == 0 && filed == 0);
-        ck("and no complaint is filed, so the run is not lost to a tenancy you "
-           "never met", ses.s.complaints == 0);
     }
     /* And rent really is zero, which is the other half of the same fact and
      * the thing that read as a bug. */

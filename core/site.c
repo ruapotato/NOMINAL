@@ -16,20 +16,55 @@
  * limit a growing floor hits first, before addresses and long before
  * bandwidth, and it is the one the player can see coming and still fails to
  * plan for. */
-static const struct { const char *name; int ports; int price; } KIT[SDEV_KIND_COUNT] = {
-    { "uplink",   1,    0 },   /* the ISP's socket. Not for sale.          */
-    { "switch8",  8,  120 },
-    { "switch24", 24, 400 },
-    { "router",   4,  650 },   /* four sockets; as many vlans as you like  */
-    { "pc",       1,  480 },
-    { "server",   2, 1350 },
+/* AND WHAT THE SOCKETS ON THE BACK OF IT WILL CLOCK, which until D27 nothing
+ * in this game had an opinion about: the link speed came from the CABLE
+ * alone, so a cat 6 patch lead to a desk negotiated ten gigabit because the
+ * run was under fifty-five metres. A playtester named the consequence
+ * exactly: *"Port speed is decided by cable grade, and cat6 gives 10 Gb
+ * ports at these distances. That makes the desk-cable choice feel free."*
+ *
+ * It is free because it is wrong. A link runs at the slowest of the three
+ * things in it -- the port at each end and the copper between -- and the
+ * ports are a property of the box somebody bought. A desk has a gigabit card
+ * in it. A four hundred pound twenty-four port switch is a gigabit switch
+ * with an SFP+ PAIR on the end of it, and that pair is the only ten gigabit
+ * copper or glass in this catalogue apart from the router's own sockets.
+ *
+ * `slow_mb` is what an ordinary socket on this box does, and `nfast` is how
+ * many of the TOP-numbered ones are the ten gigabit uplinks. netstack takes
+ * the minimum of the port rate and the cable, so nothing here can make a
+ * link faster than the copper -- only slower, which is what a real port
+ * does. And the decision this restores is a real one: ten gigabit has to be
+ * BOUGHT and it has to be LANDED ON THE RIGHT HOLE. Cat 6 into a desk is
+ * money burnt; cat 6 between a router and a core switch's uplink is ten
+ * gigabit for a third of the price of fibre, right up until the run passes
+ * fifty-five metres and it quietly becomes a gigabit. */
+static const struct {
+    const char *name; int ports; int price; int slow_mb; int nfast;
+} KIT[SDEV_KIND_COUNT] = {
+    /* the ISP's socket. Not for sale, and site_isp() rate-limits it to the
+     * circuit the landlord has actually bought. */
+    { "uplink",   1,    0, 10000, 0 },
+    { "switch8",  8,  120,  1000, 0 },  /* a cheap access switch, all copper */
+    { "switch24", 24, 400,  1000, 2 },  /* ...and its SFP+ pair, 22 and 23   */
+    { "router",   4,  650, 10000, 0 },  /* four sockets; as many vlans as you like  */
+    { "pc",       1,  480,  1000, 0 },
+    { "server",   2, 1350,  1000, 0 },  /* a gigabit NIC, and it is the one
+                                         * a flat tower falls over on        */
     /* A DESK IS NOT FOR SALE. It is the tenant's own computer and it costs
      * the landlord nothing; what the landlord sells is the port it is
      * plugged into and the network behind that port. It is here in the
      * catalogue anyway because it is a device in the site with a card in it
      * and a name, and everything else in this file has to be able to say so. */
-    { "desk",     1,    0 },
+    { "desk",     1,    0,  1000, 0 },
 };
+
+int site_kind_port_mb(int kind, int port)
+{
+    if (kind < 0 || kind >= SDEV_KIND_COUNT) return 1000;
+    if (port >= KIT[kind].ports - KIT[kind].nfast) return 10000;
+    return KIT[kind].slow_mb;
+}
 
 const char *site_kind_name(int kind)
 {
@@ -60,14 +95,49 @@ int site_kind_by_name(const char *name)
 
 /* Cable is priced by the metre, which is the whole reason the two distances
  * in building.h are different numbers: the player is choosing between
- * carrying the box further and paying for more copper. */
+ * carrying the box further and paying for more copper.
+ *
+ * AND BY THE RUN, which is where most of the money in a real building goes
+ * and where none of it went until D27. A playtester closed a run with 94,087
+ * in hand having spent 28,927 of which cable was 22%, and said: *"I never
+ * once had to choose the cheaper run."* They were right, and the reason is
+ * that this table priced the DRUM. A drum is the cheap part. What costs is
+ * the person: pulling the run, terminating both ends, punching it down and
+ * testing it, and that cost lands per RUN and not per metre -- which is why
+ * `ends` is now the larger half of a desk drop and why fibre, whose ends are
+ * a pair of optics rather than a plug, is dear before it is a metre long.
+ *
+ * AND THE LABOUR IS THE SAME WHATEVER IS ON THE DRUM, which is what puts the
+ * grade decision where it belongs. Pulling and terminating a run costs a
+ * person the same hour whether the jacket says 5 or 6, so the three copper
+ * grades have almost the same `ends` and differ almost entirely by the
+ * metre. The consequence is the point: on a twenty metre desk drop the
+ * cheapest copper saves about a seventh, which is not worth the risk and
+ * should not be -- a desk pulls nine megabits and a hundred megabit drop
+ * carries it fine, so a game that punished cat 5 at a desk would be lying.
+ * On an eighty metre riser it saves nearly a third, and that is the run
+ * where a hundred megabit takes a floor of desks down with it. Cheap copper
+ * is a temptation exactly where it is a mistake, and free where it is not.
+ *
+ * So all three halves of the decision now cost. How FAR the box is from the
+ * desks is the per-metre. How MANY runs the topology needs -- a second
+ * switch on the floor against twenty drops home-run to the basement -- is
+ * the ends. WHICH GRADE is the per-metre again, on the runs that are long.
+ * And `site_uncable` still refunds nothing, so a run laid badly is paid for
+ * twice. */
 static const struct { const char *name; int per_100m; int ends; } SPOOL[CAB_KIND_COUNT] = {
-    { "cat5e",  38, 12 },
-    { "cat6",   66, 16 },
-    { "fibre", 210, 90 },
+    { "cat5e",  55,  75 },
+    { "cat6",   95,  80 },
+    /* Fibre's ends are not a plug: they are a pair of optics, and that is
+     * most of what a fibre run costs before it is a metre long. */
+    { "fibre", 260, 340 },
     /* The cheapest drum on the shelf, and a hundred megabit for the rest of
-     * its life. Buying the tower out in this is a decision that comes back. */
-    { "cat5",   21,  9 },
+     * its life. The saving is in the metres, so it is a rounding error on a
+     * desk drop and real money on a riser -- which is the one place it takes
+     * a floor of desks with it. This file's own load gate has measured a
+     * hundred megabit run under two floors of desks filling to 97% since
+     * D25; until D27 no player could buy the drum that does it. */
+    { "cat5",   20,  70 },
 };
 const char *site_cable_name(CableKind k)
 {
@@ -233,19 +303,61 @@ bool site_new(Site *s, const Building *b, uint64_t seed, long budget)
         t->wants_server = (uint8_t)(rooms >= 3 && rng_range(&r, 0, 99) < 45);
         t->own_segment  = (uint8_t)(n >= 6 || rng_range(&r, 0, 99) < 25);
         t->rent = (int)(area * (rm->kind == RM_RESIDENCE ? 14 : 26));
-        t->day = rng_range(&r, 1, 40) + rm->floor * 12;
+        t->day = 0;                        /* the queue below decides this   */
     }
-    /* In the order they arrive. An insertion sort, because it is stable and
-     * because a schedule that depended on qsort's tie-breaking would stop
-     * reproducing from a seed. */
+
+    /* ------------------------------------------------- WHEN THEY MOVE IN
+     *
+     * THE LETTING QUEUE, and it replaces a draw that produced a dead zone.
+     * Each tenancy used to take an independent day -- `rng(1,40) + floor*12`
+     * -- which has two faults a playtest found the hard way. Twelve days a
+     * floor means a tower whose lowest let floor is the fourth cannot have a
+     * tenant before day forty-nine, and the gate seed is exactly that: a
+     * player reached day eighty-five having finished the whole building by
+     * day twenty-five and then pressed `day` twenty-four times into an empty
+     * tower. Their words: *"the optimal play is to build everything up front
+     * and then switch it off, which is the opposite of demand outgrowing the
+     * infrastructure."* And independent draws bunch: two tenancies can land
+     * on the same day and then nothing for a fortnight, so the rate the
+     * player feels is noise rather than pressure.
+     *
+     * A letting agent does not work like that. Floors come into service from
+     * the bottom, viewings are booked back to back, and the next lease is
+     * signed as soon as the last one is. So the schedule is a QUEUE: floor
+     * order, first lease within the first few days, and the gap to the next
+     * one is how long that lease takes to fit out -- a day plus a day per
+     * six desks, plus nought to two days of slippage. A one-drop studio is
+     * signed a day or two after the last; a twenty-desk office buys the
+     * player four to six days.
+     *
+     * THE POINT OF THE ARITHMETIC IS THAT IT OUTPACES A COMFORTABLE BUILD.
+     * Ordering, carrying, cabling and configuring for twenty desks is more
+     * than four days of the player's attention if they do it tidily, so the
+     * queue is always slightly ahead of them -- which is the loop the owner
+     * asked for and not a difficulty constant, because every term in it is
+     * this seed's own building.
+     *
+     * Floor order first, so a tower fills from the bottom the way a building
+     * really lets. An insertion sort on (floor, room): stable, and a
+     * schedule that depended on qsort's tie-breaking would stop reproducing
+     * from a seed. */
     for (int i = 1; i < s->ntenant; i++) {
         SiteTenant key = s->tenant[i];
         int j = i - 1;
-        while (j >= 0 && s->tenant[j].day > key.day) {
+        while (j >= 0 && (s->tenant[j].floor > key.floor ||
+                          (s->tenant[j].floor == key.floor &&
+                           s->tenant[j].room > key.room))) {
             s->tenant[j + 1] = s->tenant[j];
             j--;
         }
         s->tenant[j + 1] = key;
+    }
+    int when = rng_range(&r, 1, 3);
+    for (int i = 0; i < s->ntenant; i++) {
+        s->tenant[i].day = when;
+        /* How long the next lease takes to be ready: the fit-out is the
+         * tenancy's own size, and the slippage is the world. */
+        when += 1 + (s->tenant[i].drops + 3) / 6 + rng_range(&r, 0, 2);
     }
     return true;
 }
@@ -305,6 +417,13 @@ int site_install(Site *s, int kind, int room, const char *name)
               ? net_add_switch(s->net, d->name, d->nports)
               : net_add_host_nics(s->net, d->name, d->nports);
     if (d->node < 0) { s->err = SITE_ESPACE; return -1; }
+    /* AND WHAT THOSE PORTS WILL CLOCK. A link runs at the slowest of the two
+     * ports and the cable, and until D27 only the cable had a say -- so a
+     * cat 6 lead to a desk came up at ten gigabit because the run was short,
+     * and the desk-cable choice was free. The ports are the box you bought.
+     * netstack takes the minimum, so this can only ever slow a link down. */
+    for (int p = 0; p < d->nports; p++)
+        net_port_rate(s->net, d->node, p, site_kind_port_mb(kind, p));
     s->money -= site_kind_price(kind);
     s->spent += site_kind_price(kind);
     return s->ndev++;
@@ -1218,7 +1337,7 @@ static const struct { const char *verb; int need; const char *usage; } VERB[] = 
     { "move",     3, "move <box> <room>     rooms: #41, f3.comms, f0.mdf" },
     { "cable",    3, "cable <box>:<port> <box>:<port> [cat5e|cat6|fibre|cat5]" },
     { "uncable",  2, "uncable <n>           `links` numbers them" },
-    { "serve",    3, "serve <tenant> <box> [cat5e|cat6|fibre] [vlan]" },
+    { "serve",    3, "serve <tenant> <box> [cat5|cat5e|cat6|fibre] [vlan]" },
     { "addr",     3, "addr <box>[:<nic>] <ip>/<bits>" },
     { "power",    3, "power <box> on|off" },
     { "gw",       3, "gw <box> <ip>" },
@@ -1273,7 +1392,7 @@ bool site_cmd(Site *s, const char *line, Buf *out)
             "move <dev> <room>              carry it there. Refused while it has a\n"
             "                               cable in it. rooms: #41, f3.comms,\n"
             "                               f0.mdf, f2.office\n"
-            "cable <dev>:<port> <dev>:<port> [cat5e|cat6|fibre]\n"
+            "cable <dev>:<port> <dev>:<port> [cat5|cat5e|cat6|fibre]\n"
             "uncable <n>                    pull one out\n"
             "addr <dev>[:<nic>] <ip>/<bits> an address on a card. `addr rt 1.2.3.4/30`\n"
             "                               is the first socket, `addr rt:1 ...` the\n"

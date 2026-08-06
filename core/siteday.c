@@ -154,6 +154,16 @@ long site_isp_price(int mb)
  * halves of the account use one calendar. */
 #define SITE_MONTH_DAYS  30
 
+/* HOW LONG A NEW TENANT GIVES YOU BEFORE THEY START RINGING. They moved in
+ * this morning; they are unpacking, and nobody expects the network on day
+ * one. Three days later they expect it, and a day after that with not one
+ * desk able to work is a strike -- so a tenancy left with no ports at all
+ * files a complaint on the sixth day after their lease started. It is a
+ * chosen number, in the same sense as the fit-out rate and the two demand
+ * numbers in site.h, and it is chosen to be shorter than the schedule's gap
+ * between leases so that falling behind compounds. */
+#define SITE_FITOUT_DAYS  3
+
 int site_isp_days_to_bill(const Site *s)
 {
     return SITE_MONTH_DAYS - (s->day % SITE_MONTH_DAYS);
@@ -930,15 +940,33 @@ bool site_day(Site *s, SiteDay *rep)
      * that worked, because nobody pays for a day the network did not give
      * them.
      *
-     * A tenancy that has never had a working day is WAITING, not suffering:
-     * they have no service yet, they pay nothing, and they do not complain
-     * about a network nobody has promised them. Strikes only start once
-     * somebody has been connected -- so a complaint is always about service
-     * that got worse, which is what the player can actually be held to. */
+     * A TENANCY WITH NOBODY PLUGGED IN IS NOT WAITING PATIENTLY, and this
+     * file used to say it was. The rule read: strikes only start once
+     * somebody has been connected, so *"a complaint is always about service
+     * that got worse"*. It sounds careful and it made the whole service half
+     * of the game optional -- an agent ran two hundred days with SEVEN
+     * tenancies moved in and unserved and never drew a single complaint, and
+     * had to go overdrawn on purpose to see the run end at all. Every ounce
+     * of pressure in the game was money.
+     *
+     * A tenancy that has moved in has signed a lease. The desks are in the
+     * room. Nobody promised them a slow network and nobody promised them no
+     * network either, and of the two the second is worse. So they get a
+     * FIT-OUT WINDOW -- SITE_FITOUT_DAYS, the few days in which a new tenant
+     * expects to be finding the kettle rather than the file server -- and
+     * after that a day with not one desk able to work is a strike like any
+     * other. Three of those is a complaint, so ignoring a tenancy costs the
+     * player a complaint on the sixth day after they moved in, and three
+     * ignored tenancies end the run exactly as three badly served ones do.
+     *
+     * Note what is still true: a tenancy the schedule has not brought in yet
+     * cannot strike, and a day the player fixes it resets the count. */
     for (int i = 0; i < s->ntenant; i++) {
         SiteTenant *t = &s->tenant[i];
         if (!t->moved) continue;
         bool served = t->tried > 0 && t->finished * 5 >= t->tried * 4;
+        bool ignored = t->tried == 0 && t->strikes == 0 &&
+                       s->day - t->day > SITE_FITOUT_DAYS;
         if (served) {
             r.tenants_served++;
             long day_rent = t->rent / 30;
@@ -946,8 +974,10 @@ bool site_day(Site *s, SiteDay *rep)
             s->rent_taken += day_rent;
             r.rent += day_rent;
             t->strikes = 0;
-        } else if (t->tried > 0 || t->strikes > 0) {
-            /* They have people plugged in and the work is not finishing. */
+        } else if (t->tried > 0 || t->strikes > 0 || ignored) {
+            /* They have people plugged in and the work is not finishing --
+             * or they have people and no ports at all, which is the same
+             * complaint with a shorter phone call. */
             if (t->strikes < 255) t->strikes++;
             if (t->strikes >= 3 && !t->complained) {
                 t->complained = 1;

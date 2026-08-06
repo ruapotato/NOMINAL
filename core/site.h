@@ -83,7 +83,18 @@ bool  site_kind_is_switch(int kind);
  * into. A pc and a server are computers, and a computer that nobody has
  * switched on is not on the network. */
 bool  site_kind_has_os(int kind);
-/* Cable, by the metre, which is why the route matters. */
+/* WHAT ONE SOCKET ON THE BACK OF THAT BOX WILL CLOCK, in megabits. A link
+ * runs at the slowest of the port at each end and the cable between them,
+ * and this is the port half -- which nothing in this game had an opinion
+ * about until D27, so a cat 6 patch lead to a desk negotiated ten gigabit
+ * and the cable grade was a free choice. Desks, PCs, servers and the cheap
+ * eight-port switch are gigabit; a twenty-four port switch is gigabit with
+ * an SFP+ pair on ports 22 and 23; a router's four sockets are ten gigabit.
+ * So ten gigabit is bought, and it is landed on the right hole. */
+int   site_kind_port_mb(int kind, int port);
+/* Cable, by the metre AND by the run -- the ends of a run are terminated and
+ * tested by a person, and that is the larger half of what a desk drop costs.
+ * Which is why the route matters and why the number of runs matters. */
 int   site_cable_price(CableKind k, int metres);
 const char *site_cable_name(CableKind k);
 

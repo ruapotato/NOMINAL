@@ -241,6 +241,74 @@ static void check_copper(const Building *b)
     site_free(&s);
 }
 
+/* -------------------------------------- and the speed you have not bought
+ *
+ * A LINK RUNS AT THE SLOWEST OF THREE THINGS: the port at each end and the
+ * cable between them. Until D27 only the cable had a say, so a cat 6 patch
+ * lead to a desk negotiated ten gigabit because the run was short, and a
+ * playtester said the obvious thing: *"cat6 gives 10 Gb ports at these
+ * distances. That makes the desk-cable choice feel free."*
+ *
+ * These are short runs in one room -- a patch lead, three metres -- so
+ * distance is out of the argument and what is left is the box somebody
+ * bought. Every number below is read off `net_port_speed`, which is what
+ * `show` prints. */
+static void check_port_speed(const Building *b)
+{
+    printf("\nthe speed is the port, not just the cable\n");
+    int mdf = bld_find(b, 0, RM_MDF);
+    Site s;
+    site_new(&s, b, GATE_SEED, 200000);
+    int core = site_install(&s, SDEV_SWITCH24, mdf, "core");
+    int edge = site_install(&s, SDEV_ROUTER, mdf, "edge");
+    int srv  = site_install(&s, SDEV_SERVER, mdf, "files");
+    int sw8  = site_install(&s, SDEV_SWITCH8, mdf, "little");
+    if (core < 0 || edge < 0 || srv < 0 || sw8 < 0) {
+        ck("four boxes in the MDF", false); site_free(&s); return;
+    }
+    int last = site_kind_ports(SDEV_SWITCH24) - 1;   /* the SFP+ pair       */
+
+    int l = site_cable(&s, edge, 1, core, last, CAB_CAT6);
+    int mb_up = net_port_speed(s.net, s.dev[edge].node, 1);
+    ck("cat6 between a router and a core switch's uplink is ten gigabit",
+       l >= 0 && mb_up == 10000);
+
+    int l2 = site_cable(&s, core, 1, srv, 0, CAB_CAT6);
+    int mb_srv = net_port_speed(s.net, s.dev[srv].node, 0);
+    ck("the same cat6 into a server's card is a gigabit, because the card is",
+       l2 >= 0 && mb_srv == 1000);
+
+    int l3 = site_cable(&s, core, 2, sw8, 0, CAB_FIBRE);
+    int mb_8 = net_port_speed(s.net, s.dev[sw8].node, 0);
+    ck("and fibre into a cheap eight-port switch is a gigabit too",
+       l3 >= 0 && mb_8 == 1000);
+    printf("    the same room, the same three metres: %d Mb to the router, "
+           "%d Mb to the server\n", mb_up, mb_srv);
+
+    /* AND THE MONEY SAYS THE SAME THING. Fibre into a gigabit box costs
+     * several times what the copper that does the identical gigabit costs,
+     * which is the whole of "a wrong answer you can afford to make". */
+    ck("and the fibre that bought no extra speed cost more than the cat6 that "
+       "bought none either", s.link[l3].cost > s.link[l2].cost);
+    printf("    %d for the fibre run, %d for the cat6 run, both at %d Mb\n",
+           s.link[l3].cost, s.link[l2].cost, mb_8);
+
+    /* CHEAP COPPER IS A ROUNDING ERROR ON A DROP AND REAL MONEY ON A RISER,
+     * because the ends are a person and the metres are the drum. A game that
+     * charged half price for cat 5 at a desk would be selling a saving with
+     * no cost attached to it: a desk pulls nine megabits and a hundred
+     * megabit drop carries that fine. */
+    int drop5  = site_cable_price(CAB_CAT5, 20),  drop5e = site_cable_price(CAB_CAT5E, 20);
+    int riser5 = site_cable_price(CAB_CAT5, 80), riser5e = site_cable_price(CAB_CAT5E, 80);
+    ck("cat5 saves under a fifth on a twenty metre desk drop",
+       drop5 * 5 > drop5e * 4 && drop5 < drop5e);
+    ck("and over a quarter on an eighty metre riser, which is where it bites",
+       riser5 * 4 < riser5e * 3);
+    printf("    20 m drop: cat5 %d, cat5e %d.   80 m riser: cat5 %d, cat5e %d\n",
+           drop5, drop5e, riser5, riser5e);
+    site_free(&s);
+}
+
 /* ------------------------------------------- the box says the same thing
  * twice */
 /* A server was sold with two sockets, `site` printed two, and the network
@@ -414,6 +482,29 @@ static void check_tenants(const Building *b)
  * So: the circuit is billed, on the day of the month it is billed on, and
  * the copper is not refundable, because a route you can un-choose for free
  * is not a route you chose. */
+/* A DAY WITH NOBODY SERVED, WHICH IS WHAT THIS SCENARIO IS ABOUT.
+ *
+ * This tower has a circuit and no network in it at all: the question is
+ * whether the standing charge lands on the thirtieth day, and nothing else.
+ * Since D27 a tenancy that has moved in and has no port at all is struck
+ * after its fit-out, so on a site with no copper anywhere the third
+ * complaint arrives in the first fortnight and `site_day` stops advancing --
+ * which is the game working and is not the bill. So the strikes of
+ * tenancies nobody promised anything to are cleared as the days turn,
+ * exactly as `keep_measuring` does in core/loadcheck.c. The money, the rent
+ * and the bill are untouched. */
+static bool unserved_day(Site *s, SiteDay *r)
+{
+    bool v = site_day(s, r);
+    s->over = 0;
+    s->complaints = 0;
+    for (int i = 0; i < s->ntenant; i++) {
+        s->tenant[i].strikes = 0;
+        s->tenant[i].complained = 0;
+    }
+    return v;
+}
+
 static void check_bills(const Building *b)
 {
     printf("\nthe bills, which are what make a decision come back for you\n");
@@ -426,13 +517,13 @@ static void check_bills(const Building *b)
        site_isp_days_to_bill(&s) == 30);
 
     long had = s.money, spent = s.spent;
-    for (int i = 0; i < 29; i++) site_day(&s, NULL);
+    for (int i = 0; i < 29; i++) unserved_day(&s, NULL);
     ck("twenty-nine days pass and no standing charge has landed yet",
        s.spent == spent && site_isp_days_to_bill(&s) == 1);
 
     long before = s.money;
     SiteDay r;
-    site_day(&s, &r);
+    unserved_day(&s, &r);
     ck("and on the thirtieth the ISP bills the month, to the penny",
        r.bill == month && s.money == before + r.rent - month &&
        s.spent == spent + month);
@@ -441,10 +532,10 @@ static void check_bills(const Building *b)
 
     /* And it keeps coming. A month and a half is two of them. */
     long paid = month;
-    for (int i = 0; i < 15; i++) { site_day(&s, &r); paid += r.bill; }
+    for (int i = 0; i < 15; i++) { unserved_day(&s, &r); paid += r.bill; }
     ck("nothing about it was a one-off: it is a standing charge",
        s.spent == spent + paid && paid == month);
-    for (int i = 0; i < 15; i++) { site_day(&s, &r); paid += r.bill; }
+    for (int i = 0; i < 15; i++) { unserved_day(&s, &r); paid += r.bill; }
     ck("forty-five days is two months of circuit, not none",
        paid == month * 2 && s.spent == spent + paid);
     printf("    %d days played, %ld of circuit paid for, %ld spent in all\n",
@@ -1204,6 +1295,7 @@ int site_selfcheck(void)
     check_ports(&b);
     check_addresses(&b);
     check_copper(&b);
+    check_port_speed(&b);
     check_boxes(&b);
     check_power(&b);
     check_tenants(&b);

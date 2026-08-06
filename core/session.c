@@ -638,7 +638,13 @@ static void do_help(const Session *ses, Buf *out)
         "                     up again until you `uncable` it\n"
         "\n"
         "CABLING, which is four things a person does and four things you type:\n"
-        "  spool cat6         take a drum off the shelf. cat5e, cat6, fibre.\n"
+        "  spool cat6         take a drum off the shelf. cat5, cat5e, cat6, fibre.\n"
+        "                     A LINK RUNS AT THE SLOWEST OF THREE THINGS: the\n"
+        "                     port at each end and the cable between. cat5 is a\n"
+        "                     hundred megabit for good; cat6 does ten gigabit\n"
+        "                     under 55 m and only into a port that has ten\n"
+        "                     gigabit behind it -- a desk, a server and an\n"
+        "                     eight-port switch are gigabit whatever you plug in.\n"
         "                     THE DRUM IS FREE AND THE RUN IS NOT: nothing is\n"
         "                     charged when you pick a drum up and nothing is\n"
         "                     refunded by `spool back`. You are billed once, for\n"
@@ -721,17 +727,20 @@ static void do_help(const Session *ses, Buf *out)
         "    finished; `load` says which port ate the rest\n"
         "  - a desk only attempts work if it has LINK *and* an ADDRESS. Copper\n"
         "    with no address earns nothing, and neither does a moved-in tenancy\n"
-        "    you have not cabled at all -- they are waiting, not suffering\n"
+        "    you have not cabled at all\n"
         "\n"
-        "AND THE COMPLAINT CLOCK RUNS ON THE SAME FACT. A tenancy that has\n"
-        "never had a working desk CANNOT be struck: the clock does not start on\n"
-        "the day they move in, it starts the first day their addressed desks\n"
-        "fail that four-fifths test. Then it is three days IN A ROW -- one bad\n"
-        "day, two, and the third files a complaint. A served day resets the\n"
-        "count to zero; a filed complaint never un-files. Three filed\n"
-        "complaints ends the run. `service` prints each tenancy's strike count\n"
-        "and stars the ones that have filed, so nothing here is a surprise you\n"
-        "have to have read this to see.\n"
+        "AND THE COMPLAINT CLOCK RUNS ON TWO FACTS, NOT ONE. A tenancy that\n"
+        "has addressed desks is struck on any day fewer than four fifths of\n"
+        "their work finishes. A tenancy you have not cabled at all gets THREE\n"
+        "DAYS of fit-out and is then struck every day it still has no desk\n"
+        "able to work -- they signed a lease, the desks are in the room, and\n"
+        "no network at all is worse than a slow one. Either way it is three\n"
+        "strikes IN A ROW: one bad day, two, and the third files a complaint,\n"
+        "so a tenancy nobody has cabled files on the sixth day after they move\n"
+        "in. A served day resets the count to zero; a filed complaint never\n"
+        "un-files. Three filed complaints ends the run. `service` prints each\n"
+        "tenancy's strike count and stars the ones that have filed, so nothing\n"
+        "here is a surprise you have to have read this to see.\n"
         "  serve <tenant> <box> [cable] [vlan]\n"
         "                     run copper from a box in THIS room to a tenancy's\n"
         "                     desks, one cable each, by the metre. What it really\n"
@@ -739,8 +748,10 @@ static void do_help(const Session *ses, Buf *out)
         "                     - it takes the box's NEXT FREE PORT for each desk\n"
         "                       that has no cable in it yet, in order, and skips\n"
         "                       a desk that is already patched\n"
-        "                     - the cable defaults to CAT5E. `serve 4 sw1 cat6`\n"
-        "                       or `serve 4 sw1 fibre` says otherwise\n"
+        "                     - the cable defaults to CAT5E. `serve 4 sw1 cat5`\n"
+        "                       or `serve 4 sw1 cat6` says otherwise. A desk has\n"
+        "                       a gigabit card in it, so cat6 to one buys\n"
+        "                       nothing and cat5 costs it 900 Mb\n"
         "                     - the vlan is the last number: `serve 4 sw1 34` or\n"
         "                       `serve 4 sw1 cat6 34`. It does NOT need the vlan\n"
         "                       to exist first and it does not create anything --\n"
@@ -976,12 +987,20 @@ static void do_plug(Session *ses, const char *what, bool hdmi, Buf *out)
  * between them every time they decide where to put a box. */
 #define SPOOL_DRUM_M  305     /* what is on a drum of it                    */
 
+/* AND THE CHEAPEST DRUM IS ON THE SHELF TOO. `cat5` -- a hundred megabit,
+ * for good -- has existed in the catalogue and in the netstack since the
+ * pivot, and this function refused the word, so the one genuinely regrettable
+ * cable in the game could not be bought by anybody playing it. The load gate
+ * has measured a floor of desks filling a hundred megabit run to 97% since
+ * D25; a player could not make that mistake, which meant "cheap copper" was
+ * a sin the game named and did not sell. */
 static CableKind kind_arg(const char *a, bool *ok)
 {
     *ok = true;
     if (strcmp(a, "cat5e") == 0) return CAB_CAT5E;
     if (strcmp(a, "cat6") == 0)  return CAB_CAT6;
     if (strcmp(a, "fibre") == 0) return CAB_FIBRE;
+    if (strcmp(a, "cat5") == 0)  return CAB_CAT5;
     *ok = false;
     return CAB_CAT6;
 }
@@ -998,7 +1017,7 @@ static void do_spool(Session *ses, int n, char *t[MAXTOK], Buf *out)
     if (n < 2) {
         if (ses->spool_kind < 0) {
             buf_puts(out, "your hands are empty. `spool cat6` takes a drum off "
-                          "the shelf --\n  cat5e, cat6 or fibre, and the run is "
+                          "the shelf --\n  cat5, cat5e, cat6 or fibre, and the run is "
                           "charged by the metre when you\n  finish it.\n");
             return;
         }
@@ -1020,7 +1039,7 @@ static void do_spool(Session *ses, int n, char *t[MAXTOK], Buf *out)
     }
     bool ok;
     CableKind k = kind_arg(t[1], &ok);
-    if (!ok) { buf_printf(out, "no such cable: %s. cat5e, cat6 or fibre.\n", t[1]); return; }
+    if (!ok) { buf_printf(out, "no such cable: %s. cat5, cat5e, cat6 or fibre.\n", t[1]); return; }
     if (ses->cab_dev >= 0) {
         buf_printf(out, "refused: no fresh drum -- you are in the middle of a run, "
                         "one end in %s\n  port %d. Finish it, or `spool back` to "
@@ -1141,12 +1160,39 @@ static void spool_plug(Session *ses, const char *arg, Buf *out)
     PortState st = site_link_state(&ses->s, l);
     ses->spool_left -= lk->metres;
     buf_printf(out, "link %d: %s:%d to %s:%d, %d m of %s through the tray, %d "
-                    "paid, %s.\n", l, ses->s.dev[ses->cab_dev].name, ses->cab_port,
+                    "paid, %s", l, ses->s.dev[ses->cab_dev].name, ses->cab_port,
                ses->s.dev[d].name, port, lk->metres,
                site_cable_name((CableKind)lk->kind), lk->cost,
                st == PORT_UP ? "the port comes up" :
                st == PORT_TOOLONG ? "TOO LONG -- it does not come up" :
                "the port does not come up");
+    /* WHAT IT CAME UP AT, said at the moment the money leaves, because that
+     * is where the cable decision is made and it is the only moment the
+     * player is thinking about it. A run that negotiated slower than the
+     * drum it came off says which end held it back -- a gigabit box will not
+     * clock ten gigabit however good the copper is, and a player who has
+     * just paid cat 6 rates for a desk drop should find that out here rather
+     * than six floors later. */
+    if (st == PORT_UP) {
+        /* The SLOWER of the two ends, because that is what the link carries
+         * -- the ISP handoff is rate-limited to the circuit and a run into
+         * it is not a gigabit however good the drum was. */
+        int na = net_port_speed(ses->s.net, ses->s.dev[ses->cab_dev].node,
+                                ses->cab_port);
+        int nb = net_port_speed(ses->s.net, ses->s.dev[d].node, port);
+        int neg = na < nb ? na : nb;
+        buf_printf(out, " at %d Mb", neg);
+        int ka = site_kind_port_mb(ses->s.dev[ses->cab_dev].kind, ses->cab_port);
+        int kb = site_kind_port_mb(ses->s.dev[d].kind, port);
+        int kit = ka < kb ? ka : kb;
+        if (neg == kit && (lk->kind == CAB_CAT6 || lk->kind == CAB_FIBRE))
+            buf_printf(out, ", which is what port %d of %s does whatever you "
+                            "plug into it",
+                       ka <= kb ? ses->cab_port : port,
+                       ka <= kb ? ses->s.dev[ses->cab_dev].name
+                                : ses->s.dev[d].name);
+    }
+    buf_puts(out, ".\n");
     if (st == PORT_TOOLONG)
         buf_puts(out, "  copper carries a hundred metres. Nothing refused the run; "
                       "you have\n  paid for a cable that does not work.\n");
@@ -1854,7 +1900,7 @@ bool session_line(Session *ses, const char *line, Buf *out)
         return true;
     }
     if (strcmp(t[0], "cable") == 0) {
-        if (n < 3) { buf_puts(out, "cable <box> <box> [cat5e|cat6|fibre]\n"); return true; }
+        if (n < 3) { buf_puts(out, "cable <box> <box> [cat5|cat5e|cat6|fibre]\n"); return true; }
         do_cable(ses, n, t, out);
         return true;
     }
@@ -1870,7 +1916,7 @@ bool session_line(Session *ses, const char *line, Buf *out)
      * comes out of, because somebody is standing at that box with a drum. */
     if (strcmp(t[0], "serve") == 0) {
         if (n < 3) {
-            buf_puts(out, "serve <tenant> <box> [cat5e|cat6|fibre] [vlan]\n"
+            buf_puts(out, "serve <tenant> <box> [cat5|cat5e|cat6|fibre] [vlan]\n"
                           "  one cable from that box to each of the tenancy's "
                           "desks, by the metre.\n  Name a vlan and every port it "
                           "patches goes into it as it is patched.\n");
