@@ -119,6 +119,31 @@ func _init() -> void:
 		else:
 			ok("walked out of the MDF into the %s" % t.rooms[here].name)
 
+	# AND BEHIND THE FRAMES, WHICH IS WHERE YOU CABLE THEM.
+	#
+	# Arithmetic said 0.60 m was a gap. The player capsule is 0.56 m across, so
+	# it was two centimetres a side, and the owner reported that he could not get
+	# behind the servers. He reported this room as sealed twice -- once for the
+	# doorway, once for this -- so it walks a real body down the rear aisle
+	# rather than measuring it, because measuring it is what got it wrong.
+	var zs: Array = []
+	var rx := 1.0e9
+	for k in t.racks:
+		if int(k.room) == mdf:
+			zs.append(float(k.z))
+			rx = min(rx, float(k.x))
+	if zs.size() >= 2:
+		zs.sort()
+		t.teleport(Vector3(rx * 0.5, 0.3, zs[0] - 1.2))
+		for i in range(12):
+			await process_frame
+		var goal: float = zs[zs.size() - 1] + 1.2
+		if await _walk_to(self, t, Vector2(rx * 0.5, goal), 900):
+			ok("walked the rear aisle behind every frame")
+		else:
+			fail("blocked behind the frames at (%.1f, %.1f), heading for z %.1f"
+				% [t.player.global_position.x, t.player.global_position.z, goal])
+
 	# ---- AND NOTHING IS PARKED IN A DOORWAY, on any floor. A rack row is
 	# planned off the room's doors; this is that claim checked as data, so a
 	# room the physics walk does not visit cannot regress quietly.

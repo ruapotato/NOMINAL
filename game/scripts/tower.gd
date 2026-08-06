@@ -585,7 +585,16 @@ func _ramp(a: Vector3, b: Vector3, c: Vector3, d: Vector3) -> void:
 # the building where the doors are, throws away every wall a door is in, keeps
 # 1.5 m of floor clear in front of each opening, and leaves a working aisle in
 # front of the frames and room to get behind them.
-const RACK_BACK := 0.60      # behind a frame, because things are cabled there
+# BEHIND A FRAME, WHERE A PERSON HAS TO STAND TO CABLE IT.
+#
+# This was 0.60 m. The player capsule is 0.28 m in RADIUS -- 0.56 m across --
+# so there were two centimetres of clearance on each side and the owner
+# reported, correctly, that he could not fit behind the servers. A gap that is
+# passable in arithmetic and impassable in play is not a gap.
+#
+# A real rear aisle in a plant room is 900-1200 mm, for exactly this reason:
+# somebody has to stand there with both hands on a cable.
+const RACK_BACK := 1.00
 const RACK_AISLE := 1.20     # in front: a person and a 42U box on a trolley
 const DOOR_CLEAR := 1.50     # floor kept clear inside the room, at every door
 const ROW_MARGIN := 0.30     # a shoulder at each end of a row
@@ -707,6 +716,17 @@ func _wall_band(ri: int, depth: float, back: float, aisle: float,
 
 
 const RACK_PITCH := 0.90
+# CLEARANCE AT THE ENDS OF THE ROW, NOT JUST IN FRONT OF IT.
+#
+# The row was centred in the whole length of the wall, so a six-rack run in a
+# 6 m room left 0.45 m at each end. There is a working aisle in front and 0.6 m
+# behind, and none of that helps: 0.45 m is not a gap a person walks through,
+# so the row reads as a wall and the room reads as sealed. The owner played it
+# and reported exactly that -- twice, because the first fix only moved the racks
+# out of the doorway and this is a different problem in the same room.
+#
+# 0.9 m is a doorway. Anything narrower is decoration.
+const RACK_END := 0.90
 
 func _plan_racks() -> void:
 	racks.clear()
@@ -721,12 +741,15 @@ func _plan_racks() -> void:
 		var b := _wall_band(r.i, RACK_D, RACK_BACK, RACK_AISLE, want)
 		if b.is_empty():
 			continue                      # no wall in this room can hold a row
-		var L: float = b.hi - b.lo
+		# The usable run is the wall minus a way past each end of the row.
+		var L: float = (b.hi - b.lo) - 2.0 * RACK_END
+		if L < RACK_W:
+			continue                      # this wall cannot hold a row you can get past
 		n = min(n, int(floor((L - RACK_W) / RACK_PITCH)) + 1)
 		if n < 1:
 			continue
 		var run: float = float(n - 1) * RACK_PITCH + RACK_W
-		var start: float = b.lo + (L - run) * 0.5
+		var start: float = b.lo + RACK_END + (L - run) * 0.5
 		for i in range(n):
 			var d := {"room": r.i, "floor": r.floor, "along_x": bool(b.along_x),
 					"face": b.face, "next_u": 36, "x": 0.0, "z": 0.0}
@@ -1296,7 +1319,7 @@ func spawn_point() -> Vector3:
 		for m in mine:
 			mid += _rack_front(m)
 		mid /= float(mine.size())
-		p = mid + face * 1.9
+		p = mid + face * 3.0
 		p.x = clampf(p.x, float(r.x0) + 0.6, float(r.x1) - 0.6)
 		p.z = clampf(p.z, float(r.y0) + 0.6, float(r.y1) - 0.6)
 	p.y = 0.1
