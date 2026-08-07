@@ -346,6 +346,24 @@ typedef struct {
      * asserted here. */
     uint64_t nolink, worldq, swdrops;
     int      rate_mb;      /* forced circuit rate; 0 = whatever the cable is */
+    /* HOW MUCH THIS PORT WILL HOLD WHILE IT WAITS FOR THE WIRE, in bytes.
+     *
+     * It was NET_PORT_BUFFER for every port of every device in the game, and
+     * that one constant was the ceiling two blind playtesters died against
+     * without ever being able to act on it. Measured: a planned tower's
+     * server ports pegged at 406us of queue and dropping AT 20% UTILISATION
+     * -- because 48 KB at 1000 Mb is 393us of wire plus one frame in service,
+     * so the queue was not busy, it was FULL. Bandwidth cannot help that, and
+     * `demand` says so to voice tenants and then the game offered nothing
+     * that would.
+     *
+     * The owner's instruction is the fix: "we should have the switches with
+     * more parts be able to handle more capacity not just be more ports." So
+     * it is a per-port number now, and core/site.c sets it from the kind, so
+     * a dear switch rides out a burst a cheap one drops. 0 means the default,
+     * which keeps every port nobody has an opinion about exactly where it
+     * was. */
+    uint32_t buf_bytes;
     bool     used;
     /* Spanning tree put this port in blocking. It carries no data and it
      * still shows a link light, which is precisely why a blocked port is
@@ -998,6 +1016,19 @@ uint64_t net_port_rx(const Net *n, int node, int port)
 { int p = pid_of(n, node, port); return p < 0 ? 0 : n->port[p].rx; }
 uint64_t net_port_drops(const Net *n, int node, int port)
 { int p = pid_of(n, node, port); return p < 0 ? 0 : n->port[p].drops; }
+void net_port_set_buffer(Net *n, int node, int port, uint32_t bytes)
+{
+    int p = pid_of(n, node, port);
+    if (p >= 0) n->port[p].buf_bytes = bytes;
+}
+
+uint32_t net_port_buffer(const Net *n, int node, int port)
+{
+    int p = pid_of(n, node, port);
+    if (p < 0) return 0;
+    return n->port[p].buf_bytes ? n->port[p].buf_bytes : (uint32_t)NET_PORT_BUFFER;
+}
+
 uint64_t net_port_qdrops(const Net *n, int node, int port)
 { int p = pid_of(n, node, port); return p < 0 ? 0 : n->port[p].qdrops; }
 uint64_t net_port_nolink(const Net *n, int node, int port)
@@ -1149,7 +1180,8 @@ static void port_tx(Net *n, int p, const uint8_t *data, int len)
 
     uint64_t start = pt->busy_us > offer_us ? pt->busy_us : offer_us;
     uint64_t wait  = start - offer_us;
-    uint64_t buf_us = ((uint64_t)NET_PORT_BUFFER * 8 + (uint64_t)mb - 1) / (uint64_t)mb;
+    uint64_t cap_b = pt->buf_bytes ? pt->buf_bytes : (uint32_t)NET_PORT_BUFFER;
+    uint64_t buf_us = (cap_b * 8 + (uint64_t)mb - 1) / (uint64_t)mb;
     /* THE PEAK IS RECORDED BEFORE THE DROP, not after it. Recording it only
      * on the frames that got in meant a port that was dropping because its
      * buffer was full reported the deepest queue it had ever ACCEPTED, which
@@ -5488,14 +5520,15 @@ static void dump_ports(const Net *n, int node, Buf *out, bool empties)
              * Anything left over is a drop this printer does not know the
              * cause of, and it says so rather than borrowing one. */
             int mb = port_rate_mb(n, p);
-            uint64_t buf_us = ((uint64_t)NET_PORT_BUFFER * 8 + (uint64_t)mb - 1)
-                              / (uint64_t)mb;
+            uint64_t cap_b = pt->buf_bytes ? pt->buf_bytes
+                                          : (uint32_t)NET_PORT_BUFFER;
+            uint64_t buf_us = (cap_b * 8 + (uint64_t)mb - 1) / (uint64_t)mb;
             if (pt->qdrops)
                 buf_printf(out, "\n        %llu of those drops were this port's "
-                                "egress buffer full: %d KB is\n        %lluus of "
+                                "egress buffer full: %u KB is\n        %lluus of "
                                 "wire at %dMb, and the queue reached %lluus",
                            (unsigned long long)pt->qdrops,
-                           NET_PORT_BUFFER / 1024,
+                           (unsigned)(cap_b / 1024),
                            (unsigned long long)buf_us, mb,
                            (unsigned long long)pt->qpeak_us);
             if (pt->nolink)

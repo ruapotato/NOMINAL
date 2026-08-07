@@ -267,6 +267,14 @@ int   net_cable(Net *n, int a, int aport, int b, int bport, int metres, CableKin
 /* Pull it out. Frames already on the wire are lost, because they are. */
 void  net_uncable(Net *n, int cable);
 void  net_port_admin(Net *n, int node, int port, bool up);
+/* HOW MUCH THIS PORT HOLDS WHILE IT WAITS FOR THE WIRE, in bytes. 0 restores
+ * NET_PORT_BUFFER, which is what every port that nobody sets is. This is the
+ * one axis on which a dear switch is genuinely better than a cheap one with
+ * the same number of holes: bandwidth decides how fast a queue drains and
+ * this decides how much burst it can absorb before it drops, which is what
+ * voice and a web host's opening rush actually die of. */
+void  net_port_set_buffer(Net *n, int node, int port, uint32_t bytes);
+uint32_t net_port_buffer(const Net *n, int node, int port);
 PortState net_port_state(const Net *n, int node, int port);
 int   net_port_speed(const Net *n, int node, int port);   /* Mb/s, 0 if down */
 Duplex net_port_duplex(const Net *n, int node, int port);

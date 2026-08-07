@@ -52,13 +52,31 @@
  * under it. Neither is a multiplier and neither is consulted by anything that
  * carries a frame: the grade difference the player will actually feel is
  * `slow_mb` and `ports`, doing arithmetic in netstack. */
+/* AND `buf_kb`, WHICH IS CAPACITY AS OPPOSED TO SPEED.
+ *
+ * The owner: "we should have the switches with more parts be able to handle
+ * more capacity not just be more ports." He is right and the measurement
+ * agrees with him. Every port in this game held the same 48 KB, and a planned
+ * tower's server ports sat pegged at 406us of queue while DROPPING at twenty
+ * percent utilisation -- because 48 KB at a gigabit is 393us of wire plus one
+ * frame in service, so those ports were not busy, they were FULL. Two blind
+ * playtesters lost runs to that and neither could act on it: voice at 3.7%
+ * concealed with 4ms of delay and 19us of jitter is not late audio, it is
+ * lost audio, and no amount of circuit fixes a full buffer. `demand` already
+ * told them so and the game had nothing to sell them.
+ *
+ * Bandwidth is how fast a queue DRAINS. This is how much burst it can hold
+ * while it drains, and they are different purchases. A switch4 and a switch24
+ * used to differ only in how many holes they have; now the dear one rides out
+ * an opening rush the cheap one drops, which is the difference a person who
+ * has bought both would expect. */
 static const struct {
     const char *name; int ports; int price; int slow_mb; int nfast; bool sale;
-    int disk; bool ups;
+    int disk; bool ups; int buf_kb;
 } KIT[SDEV_KIND_COUNT] = {
     /* the ISP's socket. Not for sale, and site_isp() rate-limits it to the
      * circuit the landlord has actually bought. */
-    { "uplink",   1,    0, 10000, 0, false,   0, false },
+    { "uplink",   1,    0, 10000, 0, false,   0, false,  48 },
     /* THE CHEAP GRADE, AND IT IS CHEAP FOR A REASON YOU CAN MEASURE. Four
      * holes at a hundred megabits. The buffer on the back of a port is the
      * same 48 KB it is on everything else in this game, which at 100 Mb is
@@ -66,36 +84,36 @@ static const struct {
      * desks fetching at once overruns it where a gigabit port would not, and
      * `load` prints the drops and `show` gives the reason in words. Nobody
      * wrote "the cheap switch is worse" anywhere. */
-    { "switch4",  4,   45,   100, 0, true,    0, false },
-    { "switch8",  8,  120,  1000, 0, true,    0, false },  /* all copper, a gigabit each */
-    { "switch24", 24, 400,  1000, 2, true,    0, false },  /* ...and its SFP+ pair, 22 and 23   */
-    { "router",   4,  650, 10000, 0, true,    0, false },  /* four sockets; as many vlans as you like */
-    { "pc",       1,  480,  1000, 0, true,   60, false },
+    { "switch4",  4,   45,   100, 0, true,    0, false,  16 },
+    { "switch8",  8,  120,  1000, 0, true,    0, false,  48 },  /* all copper, a gigabit each */
+    { "switch24", 24, 400,  1000, 2, true,    0, false, 128 },  /* ...and its SFP+ pair, 22 and 23   */
+    { "router",   4,  650, 10000, 0, true,    0, false, 128 },  /* four sockets; as many vlans as you like */
+    { "pc",       1,  480,  1000, 0, true,   60, false,  48 },
     /* THE SMALL-OFFICE SERVER. One hundred-megabit card and a disk rated for
      * half the life. It will hold a floor's files on day three for a third
      * of the money, and it is the box a second tenancy on that floor
      * outgrows -- which is the decision, because on day three there is no
      * second tenancy on that floor. */
-    { "minitower",1,  460,   100, 0, true,   30, false },
-    { "server",   2, 1350,  1000, 0, true,   60, false },  /* a gigabit NIC, and it is the one
+    { "minitower",1,  460,   100, 0, true,   30, false,  16 },
+    { "server",   2, 1350,  1000, 0, true,   60, false,  64 },  /* a gigabit NIC, and it is the one
                                                             * a flat tower falls over on        */
     /* AND THE ONE THAT UNBINDS IT. Two ten-gigabit cards, a disk rated for
      * twice the life, and a battery in it -- so a mains failure is a box
      * that stayed up rather than a filesystem to check. Two and a half
      * times the money, and the ten gigabit is only ten gigabit if the copper
      * and the port at the other end are: cat6 under 55 m, or fibre. */
-    { "rackserver",2,3400, 10000, 2, true,  120, true  },
+    { "rackserver",2,3400, 10000, 2, true,  120, true,  256 },
     /* A DESK IS NOT FOR SALE. It is the tenant's own computer and it costs
      * the landlord nothing; what the landlord sells is the port it is
      * plugged into and the network behind that port. It is here in the
      * catalogue anyway because it is a device in the site with a card in it
      * and a name, and everything else in this file has to be able to say so. */
-    { "desk",     1,    0,  1000, 0, false,  60, false },
+    { "desk",     1,    0,  1000, 0, false,  60, false, 48 },
     /* AND NEITHER IS THE PLAYER'S OWN WORKSTATION, for the same kind of
      * reason and a different one: it is theirs already. One gigabit socket,
      * an operating system, and it is standing in the MDF on the morning of
      * day one with its lead in the handoff. Everything else about it is a pc.  */
-    { "workstation", 1, 0,  1000, 0, false, 60, false },
+    { "workstation", 1, 0,  1000, 0, false, 60, false, 48 },
 };
 
 int site_kind_port_mb(int kind, int port)
@@ -109,6 +127,14 @@ const char *site_kind_name(int kind)
 {
     return (kind >= 0 && kind < SDEV_KIND_COUNT) ? KIT[kind].name : "?";
 }
+/* HOW MUCH BURST A PORT OF THIS KIND HOLDS, in bytes. See the note on KIT[]:
+ * this is capacity, which is a different purchase from speed. */
+int site_kind_port_buffer(int kind)
+{
+    if (kind < 0 || kind >= SDEV_KIND_COUNT) return 0;
+    return KIT[kind].buf_kb * 1024;
+}
+
 int site_kind_ports(int kind)
 {
     return (kind >= 0 && kind < SDEV_KIND_COUNT) ? KIT[kind].ports : 0;
@@ -1040,8 +1066,12 @@ static int install_dev(Site *s, int kind, int room, const char *name)
      * cat 6 lead to a desk came up at ten gigabit because the run was short,
      * and the desk-cable choice was free. The ports are the box you bought.
      * netstack takes the minimum, so this can only ever slow a link down. */
-    for (int p = 0; p < d->nports; p++)
+    for (int p = 0; p < d->nports; p++) {
         net_port_rate(s->net, d->node, p, site_kind_port_mb(kind, p));
+        /* AND HOW MUCH IT WILL HOLD WHILE IT WAITS FOR THAT WIRE. */
+        net_port_set_buffer(s->net, d->node, p,
+                            (uint32_t)site_kind_port_buffer(kind));
+    }
     /* AND THE BATTERY, WHEN IT COMES WITH ONE. The dear server arrives with
      * a UPS in the bottom of the rack; on anything else `ups <box>` fits one
      * afterwards for 220. Same flag, same behaviour on a mains failure, and

@@ -192,6 +192,10 @@ bool  site_kind_is_server(int kind);
  * countdown, and `disk <box>` puts a new one in for a fraction of the price
  * of the box. 0 for anything with no disk in it. */
 int   site_kind_disk_days(int kind);
+/* Bytes of burst one of its ports will hold while it waits for the wire.
+ * Speed is how fast a queue drains; this is how much it can hold while it
+ * does, and a switch with more ports holds more. */
+int   site_kind_port_buffer(int kind);
 /* Does one arrive with a battery under it? The dear server does; on anything
  * else `ups <box>` buys one afterwards for the same result and more money.  */
 bool  site_kind_has_ups(int kind);
