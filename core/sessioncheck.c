@@ -310,18 +310,52 @@ static void check_walking(int *passed, int *total)
     if (!session_start(&ses, GATE_SEED, 100000)) { ck("a session starts", false); return; }
     Buf o = {0};
 
-    /* A riser is a shaft. bld_walk_all() has never joined one to anything a
-     * person can stand in, so this refusal is geometry rather than a rule. */
+    /* A RISER IS A ROOM YOU CAN WALK INTO, AND THE LADDER IS THE WAY UP.
+     *
+     * It used to be a shaft nobody could enter, and this gate asserted the
+     * refusal. The owner walked into one in the window -- the 3D has drawn
+     * its doorway all along -- and found it empty: "there's a room in called
+     * riser, that seems to be an empty elevator shaft... potentially the
+     * riser room should be left kind of a corridor where you run cables. But
+     * with a ladder so you can actually climb up and down."
+     *
+     * So the model agrees with the window now. What is asserted instead is
+     * the thing that makes the ladder honest: it is the DEAREST way between
+     * two floors, in walked metres, because you climb it a rung at a time.
+     * It is there for somebody who is already in the riser following a cable,
+     * not as a route anybody would send a journey through -- and the numbers
+     * say that rather than a rule saying it. */
     int riser = -1;
     for (int i = 0; i < ses.b.nrooms; i++)
         if (ses.b.rooms[i].kind == RM_RISER) { riser = i; break; }
     char cmd[64];
     snprintf(cmd, sizeof cmd, "go #%d", riser);
-    int was = ses.room;
-    ck("walking into a riser is refused, and says why",
-       riser >= 0 && has(say(&ses, cmd, &o), "no way to walk") &&
-       ses.room == was);
+    say(&ses, cmd, &o);
+    ck("you can walk into a riser, and end up standing in it",
+       riser >= 0 && ses.room == riser);
 
+    /* the riser above it, and the stairwell above the stairwell, measured on
+     * the same building with the same walker */
+    int riser_up = -1, stair0 = -1, stair_up = -1;
+    for (int i = 0; i < ses.b.nrooms; i++) {
+        if (ses.b.rooms[i].floor != 1) continue;
+        if (ses.b.rooms[i].kind == RM_RISER) riser_up = i;
+        if (ses.b.rooms[i].kind == RM_STAIR) stair_up = i;
+    }
+    for (int i = 0; i < ses.b.nrooms; i++)
+        if (ses.b.rooms[i].floor == 0 && ses.b.rooms[i].kind == RM_STAIR) stair0 = i;
+    double *dm = nom_alloc(sizeof(double) * (size_t)ses.b.nrooms);
+    double ladder = BLD_INF, stairs = BLD_INF;
+    if (riser >= 0 && riser_up >= 0 && bld_walk_all(&ses.b, riser, dm))
+        ladder = dm[riser_up];
+    if (stair0 >= 0 && stair_up >= 0 && bld_walk_all(&ses.b, stair0, dm))
+        stairs = dm[stair_up];
+    nom_free(dm);
+    ck("the floor above is reachable up the ladder", ladder < BLD_INF);
+    ck("and the ladder is dearer than the stairs, per storey",
+       ladder < BLD_INF && stairs < BLD_INF && ladder > stairs);
+
+    int was = ses.room;
     ck("walking to a room that is not there is refused by name",
        has(say(&ses, "go f9.nowhere", &o), "no room or box") && ses.room == was);
 

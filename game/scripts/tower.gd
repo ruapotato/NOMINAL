@@ -403,6 +403,13 @@ func _hole_on(f: int) -> Array:
 			var rb: Rect2 = Rect2(rooms[below].x0, rooms[below].y0,
 				rooms[below].x1 - rooms[below].x0, rooms[below].y1 - rooms[below].y0)
 			var cut := ra.intersection(rb)
+			# THE SHAFT STAYS OPEN. A first attempt shrank this to a strip so
+			# that a body climbing the ladder had a floor to step off onto,
+			# and it broke the thing the shaft is FOR: _route_between() climbs
+			# in whatever riser cell the tray route passes through, so 732 of
+			# 861 cable routes suddenly ran through 160 mm of concrete. What a
+			# person needs is a landing beside the ladder, which is what
+			# _riser_ladder() draws -- not a smaller hole.
 			if cut.size.x > 0.4 and cut.size.y > 0.4:
 				out.append(cut)
 	for s in stairs:
@@ -472,6 +479,7 @@ func _build_mesh() -> void:
 		_walls(f)
 		_trays(f)
 		_troffers(f)
+		_riser_ladder(f)
 	for s in stairs:
 		_stair_run(s)
 	for i in range(racks.size()):
@@ -1169,6 +1177,106 @@ func _trays(f: int) -> void:
 				_box(Vector3(x + i + 0.35, y + 0.005, y0 + 0.25),
 					Vector3(0.07, 0.02, 0.50), TRAY_COL, false)
 			x = x2
+
+
+# --------------------------------------------------------------- the ladder
+#
+# "There's a room in called riser, that seems to be an empty elevator shaft...
+# potentially the riser room should be left kind of a corridor where you run
+# cables. But with a ladder so you can actually climb up and down."
+#
+# The shaft was already open -- the floor above a riser has had a hole punched
+# in it since the tubes stopped climbing through 160 mm of concrete -- and its
+# doorway has always been drawn. What was missing was any way up it, and any
+# admission from the model that a person could be in there at all: core
+# refused `go` into a riser until this commit, so the window let you walk into
+# a room the session said you could not be in.
+#
+# Both halves are here now. core/building.c gives the riser a ladder between
+# floors, priced at LADDER_CLIMB per storey -- dearer than the stairs, because
+# you climb it a rung at a time -- and this is the ladder you climb.
+#
+# THE RUNGS ARE A RAMP, for the same reason the stairs are: a capsule cannot
+# step up 300 mm, and the thing that must never happen is a ladder that looks
+# climbable and is not. The rungs you see are drawn on it.
+const RUNG_GAP := 0.30
+
+# Where every ladder is, as [x0, z0, x1, z1, y0, y1] in metres. Filled by
+# _riser_ladder() as it draws them, so a ladder you can climb and a ladder you
+# can see are the same ladder.
+var _ladders: Array = []
+
+func Rect3ish(x0: float, z0: float, x1: float, z1: float,
+		y0: float, y1: float) -> Array:
+	return [x0, z0, x1, z1, y0, y1]
+
+
+# Is this body on a ladder? walker.gd asks every physics frame.
+func on_ladder(p: Vector3) -> bool:
+	for L in _ladders:
+		if p.x >= L[0] and p.x <= L[2] and p.z >= L[1] and p.z <= L[3] \
+				and p.y >= L[4] and p.y <= L[5]:
+			return true
+	return false
+
+
+func _riser_ladder(f: int) -> void:
+	if f + 1 >= nfloors:
+		return                        # nothing above to climb to
+	var r := find_room(f, K_RISER)
+	var up := find_room(f + 1, K_RISER)
+	if r < 0 or up < 0:
+		return
+	var rm = rooms[r]
+	# against the long wall, out of the way of the cable drops
+	var x0 := float(rm.x0) + 0.25
+	var z0 := float(rm.y0) + (float(rm.y1) - float(rm.y0)) * 0.5 - 0.22
+	var base := float(f) * fheight
+	var col := Color("#8a8f96")
+	# two stiles
+	for sx in [0.0, 0.38]:
+		_box(Vector3(x0 + sx, base + 0.05, z0), Vector3(0.05, fheight + 0.10, 0.05),
+			col, false)
+	# and the rungs, drawn all the way through the hole into the floor above
+	var n := int(floor((fheight + 0.10) / RUNG_GAP))
+	for i in range(n):
+		_box(Vector3(x0, base + 0.20 + float(i) * RUNG_GAP, z0),
+			Vector3(0.43, 0.035, 0.045), col, false)
+	# THE LANDING AT THE TOP OF IT, which is what makes the ladder go
+	# anywhere. The shaft is open floor to ceiling -- it has to be, it is what
+	# the cables climb -- so without this a body that climbed a storey arrived
+	# over a hole and fell back down. A steel grating beside the ladder, at
+	# each floor, is what a real riser has and it is what you step off onto.
+	# It collides, for the same reason the stairs' half landing had to: what a
+	# capsule stands on is not the thing you can see.
+	# BESIDE the ladder and not over it: a grating across the rungs is a
+	# ceiling you climb into, which is what the first one was -- the body
+	# stopped dead at y = 1.79, one storey short, with its head on the
+	# underside of its own landing.
+	var gy := float(f + 1) * fheight
+	var gx0 := x0 + 0.80
+	var gw := float(rm.x1) - 0.10 - gx0
+	if gw > 0.5:
+		_box(Vector3(gx0, gy - 0.06, float(rm.y0) + 0.10),
+			Vector3(gw, 0.06, float(rm.y1 - rm.y0) - 0.20),
+			Color("#6f757c"), true)
+	# WHERE THE CLIMBING HAPPENS. Not a ramp: an 81 degree incline is not
+	# something a capsule walks up -- floor_max_angle is 50 -- and the first
+	# draft of this drew one and the physics test caught it going nowhere.
+	# A ladder is a mode, and this is the volume walker.gd asks about.
+	# DEEP ENOUGH TO CLIMB WITHOUT FALLING OUT OF. The first volume was 0.8 m
+	# front to back and a climbing body drifts forward at 0.4 m/s, so it left
+	# the ladder a third of the way up and fell: measured, out at y = 1.15 and
+	# back to y = 0.00. The drift is how you step off at the top, so the fix
+	# is room to climb rather than no drift at all.
+	# THE WHOLE DEPTH OF THE ROOM, and 1.5 m of its width. A riser is three
+	# metres deep; a body climbing drifts, and a volume that only covered the
+	# rungs put it outside the ladder a third of the way up -- measured, out
+	# at y = 1.15 and back down to the floor. Along the ladder's own wall you
+	# can climb; the rest of the riser is a room you stand in.
+	_ladders.append(Rect3ish(float(rm.x0) - 0.10, float(rm.y0) + 0.10,
+		float(rm.x0) + 1.50, float(rm.y1) - 0.10,
+		base - 0.10, base + fheight + 0.55))
 
 
 # ------------------------------------------------------------ the tube lights
@@ -2307,6 +2415,7 @@ func spawn_yaw() -> float:
 func _spawn_player() -> void:
 	player = preload("res://scripts/walker.gd").new()
 	player.name = "Player"
+	player.tower = self
 	add_child(player)
 	player.global_position = spawn_point() + Vector3(0, 0.2, 0)
 	player.look_at_yaw(spawn_yaw())

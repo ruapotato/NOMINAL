@@ -40,6 +40,22 @@
  * and out of the car. */
 #define STAIR_RUN   2.2
 #define LIFT_BOARD  4.0
+/* THE LADDER IN THE RISER, and why it costs more than the stairs.
+ *
+ * The owner: "there's a room in called riser, that seems to be an empty
+ * elevator shaft... potentially the riser room should be left kind of a
+ * corridor where you run cables. But with a ladder so you can actually climb
+ * up and down."
+ *
+ * So a riser is a room you can walk into now, and the ladder is a way up. It
+ * is deliberately the WORST way up: a storey of ladder is dearer, in walked
+ * metres, than a storey of stairs, because a ladder is slow and you climb it
+ * one rung at a time with your hands. It exists so that a person who is IN
+ * the riser -- following a cable, looking at what is in it -- can get to the
+ * next floor's riser without walking the whole corridor to the stairwell and
+ * back. It is not a shortcut anybody would route a journey through, and the
+ * numbers say so rather than a rule saying so. */
+#define LADDER_CLIMB 3.4
 
 #define CIDX(b,f,x,y) ((((size_t)(f) * (size_t)(b)->h + (size_t)(y)) * (size_t)(b)->w) + (size_t)(x))
 
@@ -613,7 +629,6 @@ static bool step_ok(const Building *b, int f, int x, int y, int nx, int ny)
 {
     uint16_t a = cell_at(b, f, x, y), c = cell_at(b, f, nx, ny);
     if (a == BLD_NOROOM || c == BLD_NOROOM) return false;
-    if (b->rooms[a].kind == RM_RISER || b->rooms[c].kind == RM_RISER) return false;
     if (a == c) return true;
     if (b->rooms[a].kind == RM_CORRIDOR && b->rooms[c].kind == RM_CORRIDOR) return true;
     if (nx == x + 1 && ny == y) return (b->edge[CIDX(b, f, x, y)] & 1) != 0;
@@ -664,9 +679,10 @@ static bool walk_cells(const Building *b, int sf, int sx, int sy, double *dist)
                 if (d + DIAG < dist[v] - 1e-12) { dist[v] = d + DIAG; pq_push(&q, (int)v, dist[v]); }
             }
         int kind = cell_kind(b, f, x, y);
-        if (kind == RM_STAIR || kind == RM_LIFT) {
+        if (kind == RM_STAIR || kind == RM_LIFT || kind == RM_RISER) {
             double cost = kind == RM_STAIR ? b->floor_height * STAIR_RUN
-                                           : b->floor_height + LIFT_BOARD;
+                        : kind == RM_LIFT  ? b->floor_height + LIFT_BOARD
+                                           : b->floor_height * LADDER_CLIMB;
             for (int df = -1; df <= 1; df += 2) {
                 int nf = f + df;
                 if (nf < 0 || nf >= b->floors) continue;

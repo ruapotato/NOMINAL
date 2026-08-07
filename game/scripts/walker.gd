@@ -26,6 +26,24 @@ var look_free := false      # true = mouse captured
 var drive := Vector2.ZERO   # x = strafe, y = forward
 var drive_active := false
 
+# THE LADDER, WHICH IS NOT A SLOPE.
+#
+# The riser got a ladder because the owner asked for one -- "with a ladder so
+# you can actually climb up and down" -- and the first attempt drew it the way
+# the stairs are drawn: rungs you can see, and an invisible incline behind
+# them that a capsule really walks up. That works at 30 degrees and cannot
+# work here. A ladder is 81 degrees in this building and floor_max_angle is
+# 50; the body slid straight back down it, and the physics test said so:
+# "walked at the riser ladder from y = 0.43 and got to y = -0.00".
+#
+# So a ladder is a MODE, the way it is in every game that has one. While the
+# body is in the volume of a ladder, gravity is off and forward means up.
+# tower.gd owns where the ladders are -- it is the thing that drew them -- and
+# this only asks.
+const CLIMB := 2.2          # metres a second, and a ladder is slower than a walk
+var tower: Node3D = null
+var on_ladder := false
+
 
 func _ready() -> void:
 	var cs := CollisionShape3D.new()
@@ -80,6 +98,18 @@ func _physics_process(delta: float) -> void:
 	dir.y = 0
 	if dir.length() > 0.001:
 		dir = dir.normalized()
+	on_ladder = tower != null and tower.has_method("on_ladder") \
+		and tower.on_ladder(global_position)
+	# ONLY WHILE YOU ARE PULLING YOURSELF UP IT. Standing in a riser is
+	# standing in a room -- the slab is under you and gravity is normal. It is
+	# holding forward against the rungs that lifts you, and letting go puts
+	# you back on the floor rather than leaving you hanging in the shaft.
+	if on_ladder and absf(input.y) > 0.01:
+		velocity.x = dir.x * speed * 0.4
+		velocity.z = dir.z * speed * 0.4
+		velocity.y = input.y * CLIMB
+		move_and_slide()
+		return
 	velocity.x = dir.x * speed
 	velocity.z = dir.z * speed
 	if not is_on_floor():

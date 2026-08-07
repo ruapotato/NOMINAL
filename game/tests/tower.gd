@@ -367,6 +367,50 @@ func _init() -> void:
 	# not fallen through, not perched on a tread half a metre up.
 	# What a standing body reads as its own y when it is on a floor, measured
 	# rather than assumed: the capsule's origin is not at the slab.
+	# ---- THE RISER HAS A LADDER AND A BODY CAN CLIMB IT.
+	#
+	# "There's a room in called riser, that seems to be an empty elevator
+	# shaft... potentially the riser room should be left kind of a corridor
+	# where you run cables. But with a ladder so you can actually climb up and
+	# down." The shaft was open and its doorway was drawn; there was no way up
+	# it, and core refused to admit you could be in there at all.
+	var ris0: int = t.find_room(0, t.K_RISER)
+	var ris1: int = t.find_room(1, t.K_RISER)
+	if ris0 < 0 or ris1 < 0:
+		fail("the building has no riser on the first two floors")
+	else:
+		# the model lets you be in one
+		var wentr: String = str(t.site("go #%d" % ris0))
+		if int(t.ses_state().get("room", -1)) != ris0:
+			fail("`go` into the riser did not put you in it: " + wentr.strip_edges())
+		else:
+			ok("the session walks you into the riser: %s" % wentr.strip_edges().split("\n")[0])
+		# and a body really climbs it, under the same physics as the stairs
+		var rm0 = t.rooms[ris0]
+		var foot := Vector3(float(rm0.x0) + 0.9, 0.45,
+			float(rm0.y0) + (float(rm0.y1) - float(rm0.y0)) * 0.5 - 0.1)
+		t.teleport(foot)
+		for i in range(12):
+			await process_frame
+		var y_before: float = t.player.global_position.y
+		t.player.drive_active = true
+		t.player.drive = Vector2(0, 1)
+		t.player.look_at_yaw(PI)
+		var up_ok := false
+		for i in range(700):
+			await process_frame
+			if t.player.global_position.y > t.fheight - 0.4:
+				up_ok = true
+				break
+		t.player.drive_active = false
+		t.player.drive = Vector2.ZERO
+		if not up_ok:
+			fail("walked at the riser ladder from y = %.2f and got to y = %.2f"
+				% [y_before, t.player.global_position.y])
+		else:
+			ok("climbed the riser ladder from floor 0 to y = %.2f"
+				% t.player.global_position.y)
+
 	# ---- THE MAP IS A READING OF THE BUILDING, NOT A PICTURE OF ONE.
 	#
 	# "It would be better if that window just said the floor you were on and
