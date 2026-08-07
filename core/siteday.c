@@ -229,7 +229,10 @@ int site_serve_vlan(Site *s, int tenant, int dev, CableKind k, int vlan)
     if (tenant < 0 || tenant >= s->ntenant) { s->err = SITE_ENODEV; return -1; }
     if (dev < 0 || dev >= s->ndev) { s->err = SITE_ENODEV; return -1; }
     SiteTenant *t = &s->tenant[tenant];
-    if (!t->moved) { s->err = SITE_ENODEV; return -1; }
+    /* A TENANCY WITH A DATE ON IT IS NOT A MISSING DEVICE. This said
+     * SITE_ENODEV -- "no such device" -- about a line whose device was
+     * standing in the cupboard with a lead in it. See SITE_ENOTIN. */
+    if (!t->moved) { s->err = SITE_ENOTIN; return -1; }
     int done = 0;
     for (int i = 0; i < t->ndesk; i++) {
         int d = t->desk0 + i;
@@ -316,7 +319,12 @@ int site_isp_days_to_bill(const Site *s)
 bool site_isp(Site *s, int mb)
 {
     s->err = SITE_OK;
-    if (mb < 10) { s->err = SITE_EADDR; return false; }
+    /* MEGABITS, AND THE REFUSAL SAYS SO. `isp 0` and `isp -5` both answered
+     * "that is the network or broadcast address of its own subnet, not a
+     * machine's" -- an error about addressing, from the one verb in this
+     * shell that takes no address at all. SITE_EADDR was borrowed because
+     * nothing else fitted; now something does. */
+    if (mb < 10) { s->err = SITE_EMBIT; return false; }
     long up = site_isp_price(mb) - site_isp_price(s->isp_mb);
     if (up > 0 && s->money < up) { s->err = SITE_EMONEY; return false; }
     if (up > 0) { s->money -= up; s->spent += up; }
@@ -1460,11 +1468,24 @@ void site_tenant_why(const Site *s, int ti, char *out, int cap)
          * nothing, because every tool they knew asks about NOW and the calls
          * were over. `voice` is the one that remembers, and it names the port
          * that threw the audio away -- which on a naive tower is three hops
-         * from the desk and not on that floor at all. */
+         * from the desk and not on that floor at all.
+         *
+         * AND WHERE THAT VERB LIVES, which this line did not say. There is
+         * no `sit` and no `voice` in the tower shell: they are verbs of the
+         * SESSION -- the chair the player gets over `--serve`/`--desk`, and
+         * `tower` is the word that stands them up out of it. A blind
+         * playtester read this sentence at a tower prompt, typed `sit`,
+         * was told there is no such command, and the game had advertised
+         * two commands that do not exist at the prompt it printed the
+         * advice at. So the line now leads with the verb this shell really
+         * has -- `load`, which names the busiest ports and their drops --
+         * and names the other two as somebody else's, rather than pretending
+         * either that they do not exist or that they are here. */
         snprintf(out, (size_t)cap,
                  "%d of %d calls broke up: %d.%d%% of the audio concealed, "
-                 "%d ms one way, %u us of jitter. `sit` at one of their desks "
-                 "and run `voice` for which port threw it away.",
+                 "%d ms one way, %u us of jitter. `load` names the port that "
+                 "threw it away (`sit`+`voice` at a desk, in the session, say "
+                 "it from the other end).",
                  t->tried - t->finished, t->tried,
                  t->conceal_ppm / 10000, (t->conceal_ppm / 1000) % 10,
                  t->delay_ms, (unsigned)t->jitter_us);
@@ -2204,7 +2225,6 @@ void site_dump_service(const Site *s, Buf *out)
     buf_puts(out, "  floor tenant  trade      desks   up  addr   done  worst"
                   "   strikes  rent/day  files\n");
     bool offfloor = false;
-    bool anywhy = false;
     for (int i = 0; i < s->ntenant; i++) {
         const SiteTenant *t = &s->tenant[i];
         if (!t->moved) continue;
@@ -2233,17 +2253,54 @@ void site_dump_service(const Site *s, Buf *out)
          * transfer for an office, a call for a voice tenancy, a visitor for
          * a web host, a stream for a studio. A number that means four things
          * has to say which one it is on the day it matters. */
-        char why[192];
+        char why[288];
         site_tenant_why(s, i, why, (int)sizeof why);
-        if (why[0]) {
-            buf_printf(out, "          %s\n", why);
-            anywhy = true;
-        }
+        if (why[0]) buf_printf(out, "          %s\n", why);
         if (t->sla)
             buf_printf(out, "          and %ld of rent handed BACK: they were "
                             "down, and their lease says what that costs.\n",
                        t->sla);
     }
+    /* AND HOW MANY OF THOSE ENDS IT, which was a constant three nobody could
+     * read anywhere. It scales with the building now, so it has to be said
+     * out loud and it has to be said as a number the player can count
+     * against the stars in the column above. It stays on the SHORT page:
+     * of every number in this report it is the one being counted against,
+     * and it moves as the building fills. */
+    {
+        int in = 0;
+        for (int i = 0; i < s->ntenant; i++) if (s->tenant[i].moved) in++;
+        int bear = site_complaints_allowed(s);
+        buf_printf(out, "\n  %d filed complaints ends the run (a third of the %d "
+                        "tenancies in, never\n  fewer than three). `service ?` "
+                        "explains every column.\n", bear, in);
+    }
+    if (offfloor)
+        buf_puts(out, "  <- is a tenancy served from another floor: their traffic "
+                      "crosses a riser\n  to get there. `load` says which port "
+                      "carries it.\n");
+}
+
+/* THE LEGEND, WHICH IS NOW SOMEWHERE RATHER THAN EVERYWHERE.
+ *
+ * `service` printed thirty-five lines of this every single time. By day 60 a
+ * blind playtester's `service` was nine tenancy rows inside ninety per cent
+ * legend, and the day-31 disaster -- four `**` lines, the only place in the
+ * game the world tells you what it did to your kit -- was very nearly lost
+ * in it. They asked for exactly this: the legend behind `service ?`.
+ *
+ * The project's rule is that a message must be honest AND complete, and
+ * moving text is how completeness usually gets lost. So the split is: the
+ * short page keeps every number that is a MEASUREMENT of this building on
+ * this day, including the complaint threshold, and the legend keeps every
+ * sentence that explains what a column MEANS -- which does not change from
+ * day to day and is therefore the part that is worth reading once. Nothing
+ * was deleted; `service ?` is one word and prints all of it, and the gate
+ * asserts that every sentence that used to be on the page is still reachable
+ * from it. */
+void site_dump_service_legend(const Site *s, Buf *out)
+{
+    buf_puts(out, "`service` -- what each column is\n");
     buf_puts(out, "\n  up is desks whose port has LINK on it: copper in a socket at both\n"
                   "  ends, short enough to carry. addr is how many of those also got an\n"
                   "  ADDRESS, and only an addressed desk does any work -- which is the\n"
@@ -2272,15 +2329,22 @@ void site_dump_service(const Site *s, Buf *out)
                   "  never comes off a call -- a voice tenancy's worst is measured on\n"
                   "  its agents' files and pages -- so it does not compare with the\n"
                   "  150 ms `demand` gives a call. What the calls sounded like is the\n"
-                  "  line under the row; `sit` at one of their desks and run `voice`\n"
-                  "  for the port that threw the audio away.\n");
-    if (anywhy)
-        buf_puts(out, "  The line under a row is that tenancy's own account of the day,\n"
-                      "  in the units their business counts.\n");
-    /* AND HOW MANY OF THOSE ENDS IT, which was a constant three nobody could
-     * read anywhere. It scales with the building now, so it has to be said
-     * out loud and it has to be said as a number the player can count
-     * against the stars in the column above. */
+                  "  line under the row.\n"
+                  /* AND WHERE THOSE TWO VERBS LIVE. This said "`sit` at one
+                   * of their desks and run `voice`" at a prompt that has
+                   * neither: they are SESSION verbs (core/session.c), and
+                   * the tower shell a blind playtester was reading this in
+                   * answers "no such command" to both. A page that names a
+                   * command the shell has not got is the one failure this
+                   * project treats as fatal, so the sentence names what
+                   * this shell really has first. */
+                  "  From HERE the port is `load`, and `show <box>` prints how many\n"
+                  "  frames it threw away and which of the four reasons it was. `sit`\n"
+                  "  and `voice` are verbs of the SESSION and not of this shell: they\n"
+                  "  are how you read the same fault off the tenant's own machine,\n"
+                  "  and `tower` is the word that comes back here from there.\n");
+    buf_puts(out, "\n  The line under a row is that tenancy's own account of the day,\n"
+                  "  in the units their business counts.\n");
     {
         int in = 0;
         for (int i = 0; i < s->ntenant; i++) if (s->tenant[i].moved) in++;
@@ -2296,10 +2360,9 @@ void site_dump_service(const Site *s, Buf *out)
                   "  qualifies on ANY address it holds -- a socket or a tagged vlan\n"
                   "  subinterface, it makes no difference -- and the leg that answers is\n"
                   "  the one on the asking desk's own segment when it has one.\n");
-    if (offfloor)
-        buf_puts(out, "  <- is a tenancy being served from another floor. Nothing refused\n"
-                      "  it -- their traffic is just crossing a riser to get there, and\n"
-                      "  `load` will show you which port is carrying it.\n");
+    buf_puts(out, "  <- is a tenancy being served from another floor. Nothing refused\n"
+                  "  it -- their traffic is just crossing a riser to get there, and\n"
+                  "  `load` will show you which port is carrying it.\n");
 }
 
 void site_dump_load(const Site *s, Buf *out)
@@ -2379,11 +2442,52 @@ void site_dump_load(const Site *s, Buf *out)
      * four-second busy period is single digits. Busy is an average and the
      * drops are not; saying so is the whole difference between a tool that
      * points at the problem and one that alibis it. */
-    else buf_puts(out, "\n  busy is the SHARE OF THE BUSY PERIOD this port spent clocking bits,\n"
-                       "  averaged over four seconds. Drops do not wait for it to be high: a\n"
-                       "  48 KB buffer is 394us of wire at a gigabit, so a floor of desks\n"
-                       "  fetching at once can overrun it in bursts while the average sits in\n"
-                       "  single figures. READ THE DROPS AND THE PEAK QUEUE, not the average.\n"
-                       "  `show <box>` says how many were lost and which of the four reasons\n"
-                       "  it was.\n");
+    else buf_puts(out, "\n  READ THE DROPS AND THE PEAK QUEUE, not busy: busy is a four-second\n"
+                       "  average and the drops are not. `show <box>` says which of the four\n"
+                       "  reasons each one was. `load ?` explains the columns.\n");
+}
+
+/* THE SAME SPLIT `service` GOT, AND FOR THE SAME MEASUREMENT: by day 60 the
+ * legend was most of the page and the eight rows it is about were not. What
+ * stays above is the one instruction that changes what the player does --
+ * read the drops, not the average -- because that is the sentence the whole
+ * difficulty model rests on and a player who skips it will misread every row.
+ * The arithmetic that PROVES it moves here, where it can be read once. */
+void site_dump_load_legend(const Site *s, Buf *out)
+{
+    (void)s;
+    buf_puts(out,
+        "`load` -- the busiest eight ports in the tower\n"
+        "\n  port is <box>:<port>. Desks are not on it: a desk has one gigabit\n"
+        "  card and the frames all meet somewhere else, which is the port you\n"
+        "  are looking for.\n"
+        "\n  speed is what the LINK negotiated -- the slowest of the port at each\n"
+        "  end and the copper between them -- so a cat5e run to a gigabit switch\n"
+        "  reads 1000Mb and the same run past 100 m does not come up at all.\n"
+        /* THE LEGEND WAS FALSE AT THESE SPEEDS, AND IT WAS THE THING THAT
+         * MADE THE TOOL USELESS.
+         *
+         * It promised that a port starts hurting past eighty per cent and
+         * drops at a hundred. A playtester's tower died with nothing above
+         * 31%, every queue reading 0ms, and three complaints filed -- so the
+         * instrument said calm while the building fell over, and there was no
+         * move to make.
+         *
+         * The arithmetic: a 48 KB egress buffer is 394 us of wire at a
+         * gigabit. A floor of desks all fetching at once empties into that in
+         * well under a millisecond, so a port drops on bursts while its
+         * average over a four-second busy period is single digits. Busy is an
+         * average and the drops are not; saying so is the whole difference
+         * between a tool that points at the problem and one that alibis it. */
+        "\n  busy is the SHARE OF THE BUSY PERIOD this port spent clocking bits,\n"
+        "  averaged over four seconds. Drops do not wait for it to be high: a\n"
+        "  48 KB buffer is 394us of wire at a gigabit, so a floor of desks\n"
+        "  fetching at once can overrun it in bursts while the average sits in\n"
+        "  single figures. READ THE DROPS AND THE PEAK QUEUE, not the average.\n"
+        "  `show <box>` says how many were lost and which of the four reasons\n"
+        "  it was.\n"
+        "\n  queue peak is the deepest that port's egress queue ever got, in\n"
+        "  microseconds of wire -- the scale it happens at. drops is the whole\n"
+        "  life of the port since it was cabled, NOT yesterday: `status` is the\n"
+        "  one that reports the day just gone.\n");
 }

@@ -351,8 +351,16 @@ const char *site_err_text(int e)
     case SITE_ESEG:     return "no interface of that box is on that pool's "
                                "subnet -- a pool serves the segment the box "
                                "is standing on";
-    case SITE_EPOOL:    return "a pool of no addresses serves nobody, and a "
-                               "box holds eight pools at most";
+    /* ONE ERROR, ONE THING THAT HAPPENED. These were one code and one
+     * sentence, and the sentence led with the reason that was false: a pool
+     * of 180 addresses refused for being the ninth on the box was told
+     * about pools of no addresses first. */
+    case SITE_EPOOL:    return "a pool of no addresses serves nobody -- "
+                               "`dhcpd <box> <first> <count> <bits> <gw> "
+                               "<dns>`, and <count> is how many addresses";
+    case SITE_EPOOLS:   return "that box already holds eight pools, which is "
+                               "all one box holds -- `dhcpd <box>` lists them "
+                               "and `dhcpd <box> off` stops them all";
     case SITE_EZONE:    return "that name server already holds sixty-four "
                                "names, which is all a zone here has room for";
     case SITE_EEARLY:   return "the trade has not been yet -- that jack is a "
@@ -367,6 +375,12 @@ const char *site_err_text(int e)
     case SITE_ECIRCUIT: return "that room is on one final circuit and it is "
                                "full -- there is no more power to bring into "
                                "it";
+    /* THE CIRCUIT IS MEGABITS. See SITE_EMBIT in site.h: this used to
+     * borrow SITE_EADDR and answer `isp 0` with a sentence about subnets. */
+    case SITE_EMBIT:    return "the circuit is a number of MEGABITS and the "
+                               "smallest the ISP will sell is 10 -- `isp` on "
+                               "its own says what you have now";
+    case SITE_ENOTIN:   return "that tenancy has not moved in yet";
     }
     return "?";
 }
@@ -1154,6 +1168,20 @@ int site_ports_used(const Site *s, int dev)
     return n;
 }
 
+/* HOW MANY HOLES A LEAD CAN STILL GO INTO. Not `nports`, and not `nports
+ * minus the leads`: a port punched down to a jack is a pair terminated on a
+ * panel and there is no hole, and port_taken() knows that. This is the
+ * number `show <box>` prints, and it is the number site_free_port() would
+ * find one after another. */
+int site_ports_spare(const Site *s, int dev)
+{
+    if (!s || dev < 0 || dev >= s->ndev) return 0;
+    int n = 0;
+    for (int p = 0; p < s->dev[dev].nports; p++)
+        if (!port_taken(s, dev, p)) n++;
+    return n;
+}
+
 int site_free_port(const Site *s, int dev)
 {
     if (dev < 0 || dev >= s->ndev) return -1;
@@ -1469,6 +1497,13 @@ bool site_port_vlan(Site *s, int dev, int port, int vlan)
     if (dev < 0 || dev >= s->ndev) { s->err = SITE_ENODEV; return false; }
     if (!site_kind_is_switch(s->dev[dev].kind)) { s->err = SITE_ENOTSW; return false; }
     if (port < 0 || port >= s->dev[dev].nports) { s->err = SITE_ENOPORT; return false; }
+    /* ONE RULE, ONE ANSWER. `trunk s8 0 4095` refused the whole line with "a
+     * vlan is a number from 1 to 4094"; `vlan s8 0 99999` answered "set" --
+     * about a port netstack had quietly clamped or dropped -- so the game
+     * held two opinions about what a vlan is, one line apart, and the
+     * permissive one was the one that touched the switch. site_port_trunk()
+     * has always checked this; the access half never did. */
+    if (vlan < 1 || vlan > VLAN_ID_MAX) { s->err = SITE_EVLAN; return false; }
     net_port_mode(s->net, s->dev[dev].node, port, PORT_ACCESS);
     net_port_vlan(s->net, s->dev[dev].node, port, vlan);
     return true;
@@ -1537,8 +1572,16 @@ bool site_dhcpd(Site *s, int dev, uint32_t first, int count, uint32_t mask,
     if (net_dhcpd_scope(s->net, s->dev[dev].node, first, mask) < 0) {
         s->err = SITE_ESEG; return false;
     }
+    /* TWO THINGS THAT CAN GO WRONG, TWO ERRORS. This was one code carrying
+     * one sentence about both, and the sentence led with the half that was
+     * false: a pool of 180 addresses, refused for being the ninth on the
+     * box, was told "a pool of no addresses serves nobody, and a box holds
+     * eight pools at most". The true reason was buried behind a reason the
+     * player could check and disprove in the same line they had typed. */
     if (!net_dhcpd(s->net, s->dev[dev].node, first, count, mask, gw, dns)) {
-        s->err = SITE_EPOOL; return false;
+        s->err = net_dhcpd_pools(s->net, s->dev[dev].node) >= NET_POOL_MAX
+                 ? SITE_EPOOLS : SITE_EPOOL;
+        return false;
     }
     return true;
 }
@@ -1722,6 +1765,72 @@ int site_room_by_name(const Site *s, const char *spec)
     for (int i = 0; K[i].n; i++)
         if (strcmp(dot + 1, K[i].n) == 0) return bld_find(s->b, floor, K[i].k);
     return -1;
+}
+
+/* HOW MANY ROOMS THAT SHORTHAND REALLY MATCHES.
+ *
+ * `f2.office` is one word and floor two has twelve offices belonging to
+ * three tenants. bld_find() returns the lowest-numbered one and says
+ * nothing, so `move pc1 f2.office` put a box in tenant 2's room -- a room
+ * somebody else is paying for -- with no sign anywhere that a choice had
+ * been made. The shorthand is genuinely useful when it is unambiguous
+ * (`f1.comms`, `f0.mdf`) and is not being taken away; what it owes the
+ * player is to say when it was not.
+ *
+ * `#41` and an unambiguous kind both answer 1. A kind with no room on that
+ * floor answers 0. Everything else is a choice the game made for you, and
+ * the caller prints which one and what the alternatives are. */
+int site_room_name_matches(const Site *s, const char *spec, int *first)
+{
+    if (first) *first = -1;
+    int r = site_room_by_name(s, spec);
+    if (first) *first = r;
+    if (r < 0 || !spec) return 0;
+    if (spec[0] == '#') return 1;    /* a number names exactly one room */
+    int kind = s->b->rooms[r].kind, floor = s->b->rooms[r].floor, n = 0;
+    for (int i = 0; i < s->b->nrooms; i++)
+        if (s->b->rooms[i].floor == floor && s->b->rooms[i].kind == kind) n++;
+    return n;
+}
+
+/* The nth room on that floor of that kind, for listing the candidates. */
+static int room_nth_like(const Site *s, int like, int nth)
+{
+    int kind = s->b->rooms[like].kind, floor = s->b->rooms[like].floor, n = 0;
+    for (int i = 0; i < s->b->nrooms; i++)
+        if (s->b->rooms[i].floor == floor && s->b->rooms[i].kind == kind) {
+            if (n == nth) return i;
+            n++;
+        }
+    return -1;
+}
+
+/* WHICH ONE IT PICKED, AND WHY, printed above whatever the verb went on to
+ * do. Named here so `move` and anything else that takes the shorthand say
+ * the same thing about the same choice. */
+void site_room_ambiguity(const Site *s, const char *spec, int picked, Buf *out)
+{
+    int n = site_room_name_matches(s, spec, NULL);
+    if (n < 2 || picked < 0) return;
+    buf_printf(out, "  NOTE: `%s` matches %d rooms on floor %d and the game "
+                    "picked one: #%d,\n  the lowest-numbered", spec, n,
+               s->b->rooms[picked].floor, picked);
+    if (s->b->rooms[picked].tenant)
+        buf_printf(out, ", which tenant %d is leasing",
+                   s->b->rooms[picked].tenant);
+    buf_puts(out, ". The others are");
+    int shown = 0;
+    for (int i = 0; i < n && shown < 11; i++) {
+        int r = room_nth_like(s, picked, i);
+        if (r < 0 || r == picked) continue;
+        buf_printf(out, "%s #%d", shown ? "," : "", r);
+        if (s->b->rooms[r].tenant) buf_printf(out, " (tenant %d)",
+                                              s->b->rooms[r].tenant);
+        shown++;
+    }
+    if (n - 1 > shown) buf_printf(out, " and %d more", n - 1 - shown);
+    buf_printf(out, ".\n  `rooms %d` lists the floor; `#<n>` names one for "
+                    "certain.\n", s->b->rooms[picked].floor);
 }
 
 /* ----------------------------------------------------------- measurement */
@@ -1920,10 +2029,19 @@ void site_dump(const Site *s, Buf *out)
         where(s, d, w, sizeof w);
         buf_printf(out, "  %-12s %-9s %-21s", d->name, site_kind_name(d->kind), w);
         if (site_kind_is_switch(d->kind)) {
-            int used = 0;
-            for (int p = 0; p < d->nports; p++)
-                if (net_port_state(s->net, d->node, p) != PORT_NOCABLE) used++;
-            buf_printf(out, " %d/%d ports used", used, d->nports);
+            /* THE SAME COUNT `look`, `show <box>` AND `serve` USE, which is
+             * leads in holes off the site's own link table. This counted
+             * ports whose NETSTACK state was not NOCABLE, and an unpowered
+             * switch has every port administratively down rather than
+             * unoccupied -- so a switch24 that had just been delivered
+             * printed `24/24 ports used` on the summary page while `show
+             * core` under it printed twenty-four ports with nothing in
+             * them, and the number never moved as the player cabled. The
+             * identical bug was found and fixed in `look` (session.c's
+             * dev_line, see site_port_used) and this copy was missed,
+             * because there were two copies. Now there is one. */
+            buf_printf(out, " %d/%d ports used", site_ports_used(s, i),
+                       d->nports);
         } else if (site_kind_has_os(d->kind) && !d->powered) {
             buf_puts(out, " switched off");
         } else {
@@ -2396,8 +2514,26 @@ static void dump_dev(Site *s, int dev, Buf *out, bool empties)
     SiteDev *d = &s->dev[dev];
     char w[48];
     where(s, d, w, sizeof w);
-    buf_printf(out, "%s: %s in %s, %d socket%s%s\n", d->name, site_kind_name(d->kind),
-               w, d->nports, d->nports == 1 ? "" : "s",
+    /* THE SOCKETS, AND WHICH NUMBERS THEY ARE.
+     *
+     * This said "1 socket" and stopped. Underneath it netstack prints "1
+     * more socket on the back of it, with nothing in it" about the SAME
+     * socket -- "more" meaning "the rest of the ones I did not list", not
+     * "another one" -- and a playtester read the two lines as one socket
+     * plus one more, went looking for the second, and spent a session
+     * trying to hang a router off `uplink:1`. The handoff has one port and
+     * has never had two.
+     *
+     * So the header carries the whole fact and closes the arithmetic: how
+     * many sockets there are, WHAT THEY ARE NUMBERED -- which is the
+     * question the player was really asking -- and how many a lead can
+     * still go into, counted by site_ports_spare(), which steps over the
+     * ports a jack holds for good exactly as `cable` and `serve` do. */
+    buf_printf(out, "%s: %s in %s, %d socket%s, numbered 0 to %d, %d free "
+                    "for a lead%s\n",
+               d->name, site_kind_name(d->kind), w,
+               d->nports, d->nports == 1 ? "" : "s", d->nports - 1,
+               site_ports_spare(s, dev),
                site_kind_has_os(d->kind) && !d->powered
                ? " -- SWITCHED OFF, and nothing of it is on the network" : "");
     /* THE PLUG, WHERE A PLAYER LOOKS. `show` is the page somebody reads when
@@ -2615,8 +2751,8 @@ static const struct { const char *verb; int need; const char *usage; } VERB[] = 
     { "day",      1, "day [<n>]" },
     { "status",   1, "status" },
     { "events",   1, "events" },
-    { "service",  1, "service" },
-    { "load",     1, "load" },
+    { "service",  1, "service | service ?   the tenancies, and `?` for what\n                      every column of them means" },
+    { "load",     1, "load | load ?         the busiest ports, and `?` for what\n                      every column of them means" },
     { "money",    1, "money" },
     { "frames",   1, "frames" },
     { "isp",      1, "isp [<mb>]" },
@@ -2674,7 +2810,12 @@ static const struct { const char *verb; int need; const char *usage; } VERB[] = 
                      "`show <switch>` prints the same list." },
     { "dhcpd",    2, "dhcpd <box> <first> <count> <bits> <gw> <dns>   start a pool\n"
                      "dhcpd <box> off                                stop them all\n"
-                     "dhcpd <box>                                    what it serves" },
+                     "dhcpd <box>                                    what it serves\n"
+                     "<count> is how many addresses, starting at <first>. The pool\n"
+                     "goes on whichever interface of that box is already on that\n"
+                     "subnet, so a router with a subinterface per vlan serves a pool\n"
+                     "per vlan by being told about them one at a time -- up to EIGHT\n"
+                     "pools on one box, which is all one box holds." },
     { "dhcp",     2, "dhcp <box>            ask for a lease, for real" },
     { "httpd",    2, "httpd <box> [port]" },
     { "dnsd",     2, "dnsd <box>" },
@@ -2807,7 +2948,10 @@ bool site_cmd(Site *s, const char *line, Buf *out)
             "                               a pool, on the interface of that box\n"
             "                               whose own address is in it -- so a\n"
             "                               router serves the vlan it is on and\n"
-            "                               not the one next door\n"
+            "                               not the one next door. <count> is how\n"
+            "                               many addresses; EIGHT POOLS is all one\n"
+            "                               box holds, which is the limit on how\n"
+            "                               many segments one router can serve\n"
             "dhcpd <dev> off                stop serving addresses. `dhcpd <dev>`\n"
             "                               says what it is serving now\n"
             "dhcp <dev>                     ask for a lease, for real\n"
@@ -2845,7 +2989,10 @@ bool site_cmd(Site *s, const char *line, Buf *out)
             "                               failure out instead of coming back with\n"
             "                               a filesystem to check\n"
             "disk <box>                     a new disk, copied off the old one\n"
-            "status | service | load        the day, who is suffering, which port is full\n"
+            "status | service | load        the day, who is suffering, which port is full.\n"
+            "                               `service ?` and `load ?` explain every\n"
+            "                               column of those two, once, instead of\n"
+            "                               under every reading of them\n"
             "show [dev] | links | rooms <f> | demand | money | frames\n");
         return true;
     }
@@ -2862,7 +3009,39 @@ bool site_cmd(Site *s, const char *line, Buf *out)
     }
     if (strcmp(t[0], "links") == 0) { site_dump_links(s, out); return true; }
     if (strcmp(t[0], "rooms") == 0) {
-        site_dump_rooms(s, n > 1 ? atoi(t[1]) : 0, out);
+        /* `rooms f2` PRINTED FLOOR 0. atoi("f2") is 0, silently, so the one
+         * spelling every other verb in this game takes -- `f1.comms`,
+         * `f0.mdf`, `go f4.stair` -- answered about the wrong floor and
+         * looked like it had worked. `rooms 2` and `rooms f2` are now the
+         * same line, because a player who has typed `f` everywhere else
+         * will type it here, and silently answering about somewhere else is
+         * worse than refusing. Anything that is neither is refused rather
+         * than rounded down to the ground floor. */
+        int floor = 0;
+        if (n > 1) {
+            const char *a = t[1];
+            if (*a == 'f' || *a == 'F') a++;
+            if (!*a) { buf_printf(out, "which floor? `rooms 2` or `rooms f2`. "
+                                       "The building has %d.\n", s->b->floors);
+                       return true; }
+            for (const char *q = a; *q; q++)
+                if (*q < '0' || *q > '9') {
+                    buf_printf(out, "`%s` is not a floor. `rooms <n>` or "
+                                    "`rooms f<n>`, 0 to %d. A room's own name "
+                                    "--\n  `f1.comms` -- is what `move`, `go` "
+                                    "and `quote` take; `rooms` takes the "
+                                    "floor.\n", t[1], s->b->floors - 1);
+                    return true;
+                }
+            floor = atoi(a);
+            if (floor < 0 || floor >= s->b->floors) {
+                buf_printf(out, "there is no floor %d. This building has %d, "
+                                "numbered 0 to %d.\n",
+                           floor, s->b->floors, s->b->floors - 1);
+                return true;
+            }
+        }
+        site_dump_rooms(s, floor, out);
         return true;
     }
     if (strcmp(t[0], "demand") == 0) { site_dump_demand(s, out); return true; }
@@ -2909,8 +3088,26 @@ bool site_cmd(Site *s, const char *line, Buf *out)
         }
         return true;
     }
-    if (strcmp(t[0], "service") == 0) { site_dump_service(s, out); return true; }
-    if (strcmp(t[0], "load") == 0) { site_dump_load(s, out); return true; }
+    /* `service ?` AND `load ?`, WHICH IS WHERE THE LEGEND WENT. Both pages
+     * printed their whole legend every time; see site_dump_service_legend.
+     * `?` rather than a new verb, because it is one character, it is what
+     * the short page tells you to type, and it needs no entry of its own in
+     * the arity table to be found. `legend` and `help` answer too, for
+     * somebody who guesses a word instead. */
+    if (strcmp(t[0], "service") == 0) {
+        if (n > 1 && (strcmp(t[1], "?") == 0 || strcmp(t[1], "legend") == 0 ||
+                      strcmp(t[1], "help") == 0))
+            site_dump_service_legend(s, out);
+        else site_dump_service(s, out);
+        return true;
+    }
+    if (strcmp(t[0], "load") == 0) {
+        if (n > 1 && (strcmp(t[1], "?") == 0 || strcmp(t[1], "legend") == 0 ||
+                      strcmp(t[1], "help") == 0))
+            site_dump_load_legend(s, out);
+        else site_dump_load(s, out);
+        return true;
+    }
     if (strcmp(t[0], "isp") == 0) {
         if (n < 2) {
             buf_printf(out, "the circuit is %d Mb, %ld a month, and the next "
@@ -2942,6 +3139,23 @@ bool site_cmd(Site *s, const char *line, Buf *out)
             if (s->tenant[i].tenant == want) { ti = i; break; }
         int d = dev_arg(s, t[2]);
         if (ti < 0) { buf_printf(out, "no tenancy %s. `service` lists who is in.\n", t[1]); return true; }
+        /* AND THE ONE A PLAYER ACTUALLY HITS: a tenancy that is in the
+         * diary and not in the building. `serve 3 sw2b cat5e 30` on day 6
+         * for a lease that starts on day 11 used to come back "refused: no
+         * such device" -- about a line with no missing device in it -- while
+         * `serve 99`, a tenancy that will never exist, got a sentence that
+         * named the right verb. The good message existed and the near miss
+         * did not use it. Answered here rather than in site_serve_vlan()
+         * because the day is what the player needs and this is where the
+         * calendar is in scope. */
+        if (!s->tenant[ti].moved) {
+            buf_printf(out, "tenancy %d has not moved in yet: they take the "
+                            "lease on day %d and it is\n  day %d. Their desks "
+                            "are not in the room to cable to. `demand` says "
+                            "who is\n  coming and when; `day` gets there.\n",
+                       s->tenant[ti].tenant, s->tenant[ti].day, s->day);
+            return true;
+        }
         if (d < 0) { buf_printf(out, "no such box: %s\n", t[2]); return true; }
         /* `serve 2 sw cat6 30` and `serve 2 sw 30` both read naturally, so
          * a number where the cable goes is a vlan and not a cable nobody
@@ -3050,6 +3264,15 @@ bool site_cmd(Site *s, const char *line, Buf *out)
         int room = site_room_by_name(s, t[2]);
         if (d < 0) { buf_printf(out, "no such box: %s\n", t[1]); return true; }
         if (room < 0) { buf_printf(out, "no such room: %s\n", t[2]); return true; }
+        /* AND SAY SO WHEN THE NAME WAS A CHOICE. `help` offers `f2.office`
+         * as a room name and floor two has twelve of them belonging to
+         * three tenants; `move pc1 f2.office` put the box in tenant 2's
+         * room and printed nothing about it. The shorthand stays -- it is
+         * how the whole tower gets built without a floor plan -- but it
+         * owes the player the fact that there was a choice, ABOVE the
+         * sentence about the walk, so the correction is the next line
+         * rather than a discovery six days later. */
+        site_room_ambiguity(s, t[2], room, out);
         int was = s->dev[d].room;
         if (!site_move(s, d, room)) {
             buf_printf(out, "refused: %s\n", site_err_text(s->err));
@@ -3467,9 +3690,11 @@ bool site_cmd(Site *s, const char *line, Buf *out)
          * player types when the addresses on a floor are wrong. */
         if (n == 2) {
             site_dump_dhcpd(s, d, out);
-            buf_puts(out, "  dhcpd <box> <first> <count> <bits> <gw> <dns> "
-                          "starts one, `dhcpd <box> off` stops\n  every pool "
-                          "on it.\n");
+            buf_printf(out, "  dhcpd <box> <first> <count> <bits> <gw> <dns> "
+                            "starts one, `dhcpd <box> off` stops\n  every pool "
+                            "on it. %d of the 8 pools this box holds are in "
+                            "use.\n",
+                       net_dhcpd_pools(s->net, s->dev[d].node));
             return true;
         }
         if (strcmp(t[2], "off") == 0 || strcmp(t[2], "stop") == 0) {

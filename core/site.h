@@ -190,6 +190,24 @@ typedef enum {
      * is not in, and the verb for that is `mains <box> on`. */
     SITE_EUNPLUGGED,  /* there is no lead from that box to a wall socket      */
     SITE_ECIRCUIT,    /* the room is on one circuit and it is full            */
+    /* AN ERROR ABOUT SUBNETS, FROM A VERB THAT TAKES MEGABITS. `isp 0` and
+     * `isp -5` both answered "that is the network or broadcast address of
+     * its own subnet, not a machine's", because site_isp() reached for
+     * SITE_EADDR for want of anything better. The circuit is a number of
+     * megabits and its refusal has to be about megabits. */
+    SITE_EMBIT,       /* not a circuit size: `isp <mb>` takes megabits        */
+    /* AND THE OTHER HALF OF SITE_EPOOL. One code carried two facts and led
+     * with the false one: a 180-address pool refused for being the ninth on
+     * the box was told "a pool of no addresses serves nobody, and a box
+     * holds eight pools at most". Two things happened; only one of them
+     * ever happened at a time. */
+    SITE_EPOOLS,      /* that box already holds all the pools it can hold     */
+    /* A TENANCY WITH A DATE ON IT. `serve 3 sw2b` on day 6 for a tenancy
+     * that moves in on day 11 answered "no such device" -- about a line with
+     * no device in it -- while `serve 99` for a tenancy that will never
+     * exist got a sentence that named the right verb. The good message
+     * existed and the case a player really hits did not use it. */
+    SITE_ENOTIN,      /* that tenancy has not moved in yet                    */
     SITE_ERR_COUNT
 } SiteErr;
 const char *site_err_text(int e);
@@ -698,6 +716,12 @@ int  site_port_jack(const Site *s, int dev, int port);   /* jack, or -1 */
 bool site_port_used(const Site *s, int dev, int port);
 /* How many of that box's sockets have something in them, by the same count. */
 int  site_ports_used(const Site *s, int dev);
+/* And how many a lead can still go into: nports, less the leads, less the
+ * ports held for good by a jack. `show <box>` prints this beside the total
+ * and the highest port number, because a playtester read "1 socket" over
+ * "1 more socket on the back of it, with nothing in it", added them, and
+ * spent a session trying to cable a port 1 that has never existed. */
+int  site_ports_spare(const Site *s, int dev);
 /* The jacks on the wall of one room, in order. `nth` counts from 0; -1 when
  * there is no such one. `free_only` skips the ones with a lead in them. */
 int  site_room_jack(const Site *s, int room, int nth, bool free_only);
@@ -838,7 +862,16 @@ int  site_hosts_in_mask(uint32_t mask);
 
 /* --------------------------------------------------------------- lookups */
 int  site_dev_by_name(const Site *s, const char *name);
-int  site_room_by_name(const Site *s, const char *spec);   /* "f3.comms", "#41" */
+int  site_room_by_name(const Site *s, const char *spec);
+/* HOW MANY ROOMS THAT SPELLING REALLY MATCHES, because one of them is what
+ * site_room_by_name() hands back and it never said there were twelve.
+ * `#41` is 1, `f1.comms` is 1, `f2.office` on a let floor is 12. `first`,
+ * when it is not NULL, gets the room the shorthand resolves to. */
+int  site_room_name_matches(const Site *s, const char *spec, int *first);
+/* And the sentence a verb prints when it was more than one: which room it
+ * picked, whose it is, what the others are, and the two spellings that name
+ * one for certain. Prints nothing at all when the name was unambiguous. */
+void site_room_ambiguity(const Site *s, const char *spec, int picked, Buf *out);   /* "f3.comms", "#41" */
 int  site_free_port(const Site *s, int dev);               /* -1 if full     */
 
 /* ----------------------------------------------------------- measurement */
@@ -1094,6 +1127,23 @@ void site_dump_service(const Site *s, Buf *out);
  * evidence is `show <box>` on the box named in it -- a switch has no
  * shell to type netstat into. */
 void site_dump_load(const Site *s, Buf *out);
+/* AND THE LEGENDS, WHICH ARE NO LONGER PRINTED EVERY TIME.
+ *
+ * Both pages carried thirty-odd lines of explanation on every call, so by
+ * day 60 a blind playtester's `service` was ninety per cent legend and the
+ * four `**` lines of the day-31 disaster were nearly lost in it. They asked
+ * for the legend behind `service ?`, and this is it -- `service ?` and
+ * `load ?` in the shell.
+ *
+ * The split is not "shorten it". The short page keeps every number that is a
+ * MEASUREMENT of this building today, plus the one instruction that changes
+ * what a player does with the rows. The legend keeps the sentences that
+ * explain what a column MEANS, which are the same on day 1 and day 60 and
+ * are therefore the part worth reading once. Nothing was deleted, and
+ * --sitecheck asserts sentence by sentence that everything that used to be
+ * on the page is still reachable from it. */
+void site_dump_service_legend(const Site *s, Buf *out);
+void site_dump_load_legend(const Site *s, Buf *out);
 
 /* ------------------------------------------------------------ inspection */
 void site_dump(const Site *s, Buf *out);

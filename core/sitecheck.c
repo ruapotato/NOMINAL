@@ -937,9 +937,18 @@ static void check_agreement(const Building *b)
     ck("`day` says which of the two numbers it means",
        d.p && strstr(d.p, "desks addressed") != NULL &&
        strstr(d.p, "desks up") == NULL);
-    ck("and `service` says what its own two columns are",
-       sv.p && strstr(sv.p, "up is desks whose port has LINK on it") &&
-       strstr(sv.p, "only an addressed desk does any work"));
+    /* THE LEGEND MOVED, AND IT IS STILL REACHABLE. It used to be under
+     * every reading of `service`; it is now `service ?`, and this check
+     * asks the SHELL for it so that the path a player types is the path
+     * the gate walks. */
+    {
+        Buf lg = {0};
+        site_cmd(&s, "service ?", &lg);
+        ck("and `service ?` says what its own two columns are",
+           lg.p && strstr(lg.p, "up is desks whose port has LINK on it") &&
+           strstr(lg.p, "only an addressed desk does any work"));
+        buf_free(&lg);
+    }
     ck("cabled and unaddressed, they disagree the way the words now promise",
        s.last.connected == 0 && site_tenant_connected(&s, 0) == got);
 
@@ -970,7 +979,7 @@ static void check_agreement(const Building *b)
         ck("and marks it when that server is not on their floor",
            s.dev[srv].floor != s.tenant[0].floor &&
            strstr(sv.p, "fs <-") != NULL &&
-           strstr(sv.p, "being served from another floor") != NULL);
+           strstr(sv.p, "served from another floor") != NULL);
         site_power(&s, srv, false);
         site_day(&s, NULL);
         sv.len = 0; if (sv.p) sv.p[0] = 0;
@@ -1067,8 +1076,13 @@ static void check_floor_server(const Building *b)
     ck("so `service` names it, and does not mark them as served off-floor",
        sv.p && strstr(sv.p, "floorsrv") != NULL &&
        strstr(sv.p, "floorsrv <-") == NULL);
-    ck("and `service` says out loud that any address qualifies, not eth0",
-       sv.p && strstr(sv.p, "ANY address it holds") != NULL);
+    {
+        Buf lg = {0};
+        site_cmd(&s, "service ?", &lg);
+        ck("and `service ?` says out loud that any address qualifies, not eth0",
+           lg.p && strstr(lg.p, "ANY address it holds") != NULL);
+        buf_free(&lg);
+    }
     ck("their people really finished work over it",
        s.last.finished > 0 && s.tenant[0].finished > 0);
     /* AND IT IS THE FLOOR'S LEG THAT ANSWERED, not a hairpin through the
@@ -3056,13 +3070,18 @@ static void check_worst_is_wall_time(void)
     ck("while its calls were well inside it -- so the two do not compare",
        t->delay_ms < SITE_VOICE_DELAY_MS && t->tried > 0);
     Buf o = {0};
-    site_dump_service(s, &o);
-    ck("`service` says worst is wall time and not delay",
+    site_cmd(s, "service ?", &o);
+    ck("`service ?` says worst is wall time and not delay",
        has(o.p, "worst is WALL TIME and not delay"));
     ck("and that a voice tenancy's worst never comes off a call",
        has(o.p, "never comes off a call"));
-    ck("and sends them to the desk and `voice` for what a call really did",
-       has(o.p, "run `voice`"));
+    /* AND IT NO LONGER SENDS THEM TO A VERB THIS SHELL HAS NOT GOT. See
+     * D43: `sit` and `voice` are Session verbs and the tower shell answers
+     * "no such command" to both, so the sentence names `load` -- which is
+     * here -- and says where the other two live. */
+    ck("and sends them to a verb of THIS shell for the port that dropped it",
+       has(o.p, "the port is `load`") &&
+       has(o.p, "verbs of the SESSION and not of this shell"));
     buf_free(&o);
     site_free(s);
     bld_free(&b);
@@ -3262,6 +3281,338 @@ static void check_demand_says_what_a_server_is_for(const Building *b)
     bld_free(&b22);
 }
 
+/* ================================================ D43. ONE FACT, ONE ANSWER
+ *
+ * A blind playtester played nine sessions to day 70 and came back with ten
+ * things the game says about itself that another command in the same session
+ * disproves. That is this project's cardinal sin and its recurring one: a
+ * fact computed in two places, and the wrong one shipped.
+ *
+ * Every check below is written so that it FAILS against HEAD. Where a
+ * sentence had to change, the check asserts the sentence; where a NUMBER was
+ * wrong, it asserts the number against the other place the game prints it,
+ * so the two can never drift apart again without something going red.
+ */
+static void check_one_fact_two_answers(const Building *b)
+{
+    printf("\nD43: the reports the playtest caught contradicting themselves\n");
+    Site s;
+    site_new(&s, b, GATE_SEED, 100000);
+    site_credit(&s, 200000);
+    Buf o = {0};
+
+    /* --- 1. A SWITCH THAT IS FULL AND EMPTY AT THE SAME TIME.
+     * `show` counted ports whose netstack state was not NOCABLE, and an
+     * unpowered switch has every port administratively down: a switch24
+     * fresh off the pallet read `24/24 ports used` on the summary page,
+     * `show core` under it printed twenty-four empty ports, and the number
+     * did not move as the player cabled. */
+    site_cmd(&s, "order switch24 core", &o);
+    int core = site_dev_by_name(&s, "core");
+    buf_clear(&o);
+    site_cmd(&s, "show", &o);
+    ck("a switch24 nobody has cabled reads 0/24 on the summary page",
+       has(o.p, "0/24 ports used") && !has(o.p, "24/24 ports used"));
+    ck("and it is the same count `serve` and `cable` walk",
+       site_ports_used(&s, core) == 0 && site_ports_spare(&s, core) == 24);
+    /* Carry it in, power it, put two leads in it, and BOTH pages move
+     * together. This is the half a difficulty constant cannot fake: the
+     * number is read off the link table either way. */
+    site_move(&s, core, bld_find(b, 0, RM_MDF));
+    site_mains(&s, core, true);
+    site_cable(&s, core, 0, s.uplink, 0, CAB_CAT6);
+    site_cmd(&s, "order pc pc9", &o);
+    int pc = site_dev_by_name(&s, "pc9");
+    site_move(&s, pc, bld_find(b, 0, RM_MDF));
+    site_cable(&s, core, 1, pc, 0, CAB_CAT6);
+    buf_clear(&o);
+    site_cmd(&s, "show", &o);
+    ck("two leads in it and the summary says 2/24, having moved as it was cabled",
+       has(o.p, "2/24 ports used"));
+    {
+        Buf d = {0};
+        site_cmd(&s, "show core", &d);
+        /* The detail page and the summary are now one fact: the summary's
+         * numerator is the ports the detail prints as up, and its remainder
+         * is the sockets the detail says have nothing in them. */
+        ck("and `show core` agrees: 24 sockets, 22 free for a lead",
+           has(d.p, "24 sockets, numbered 0 to 23, 22 free for a lead") &&
+           has(d.p, "22 more sockets on the back of it"));
+        buf_free(&d);
+    }
+
+    /* --- 2. A SOCKET THAT IS ADVERTISED AND DOES NOT EXIST.
+     * "1 socket" over "1 more socket on the back of it, with nothing in it"
+     * reads as two, and cost a playtester a session trying to hang a router
+     * off `uplink:1`. The header now says what the sockets are NUMBERED, so
+     * the question they were really asking is answered on the page. */
+    buf_clear(&o);
+    site_cmd(&s, "show uplink", &o);
+    ck("the handoff says it has one socket and what that socket is numbered",
+       has(o.p, "1 socket, numbered 0 to 0"));
+    ck("and there is no port 1 to cable to, exactly as the header now says",
+       site_cable(&s, s.uplink, 1, pc, 0, CAB_CAT6) < 0 &&
+       s.err == SITE_ENOPORT);
+    /* AND THE FREE COUNT IS THE ONE A LEAD CAN GO INTO. A port punched down
+     * to a jack is a pair terminated on a panel: `cable` and `serve` step
+     * over it, so the header must too. */
+    {
+        int comms = bld_find(b, 1, RM_COMMS);
+        int j = site_jack(&s, comms, core, 5, CAB_CAT5E);
+        buf_clear(&o);
+        site_cmd(&s, "show core", &o);
+        ck("a port held for good by a jack is not counted as free for a lead",
+           j >= 0 && has(o.p, "24 sockets, numbered 0 to 23, 21 free for a lead") &&
+           site_ports_spare(&s, core) == 21);
+    }
+
+    /* --- 3. AN ERROR ABOUT SUBNETS FROM A COMMAND THAT TAKES MEGABITS. */
+    buf_clear(&o);
+    site_cmd(&s, "isp 0", &o);
+    ck("`isp 0` is refused in megabits, not in network addresses",
+       has(o.p, "MEGABITS") && !has(o.p, "broadcast address"));
+    buf_clear(&o);
+    site_cmd(&s, "isp -5", &o);
+    ck("and so is `isp -5`", has(o.p, "MEGABITS") && !has(o.p, "subnet"));
+    ck("while a real address error still says what it always said",
+       has(site_err_text(SITE_EADDR), "broadcast address"));
+
+    /* --- 4. `vlan` ACCEPTED 99999 WHILE `trunk` REFUSED 4095. One rule,
+     * two answers, and the permissive one was the one that touched the
+     * switch. */
+    buf_clear(&o);
+    site_cmd(&s, "vlan core 0 99999", &o);
+    ck("`vlan core 0 99999` is refused in the same words `trunk` refuses 4095",
+       has(o.p, "a vlan is a number from 1 to 4094") && !has(o.p, "set"));
+    {
+        /* The FULL port page, because `show <box>` hides an empty access
+         * port and the two ports this pair is about have nothing in them. */
+        Buf d = {0};
+        site_dump_dev(&s, core, &d);
+        ck("and the port was not changed behind the refusal",
+           !has(d.p, "access vlan 99999"));
+        buf_free(&d);
+    }
+    buf_clear(&o);
+    site_cmd(&s, "trunk core 0 4095", &o);
+    ck("`trunk core 0 4095` still refuses, so the two verbs agree",
+       has(o.p, "a vlan is a number from 1 to 4094"));
+    buf_clear(&o);
+    site_cmd(&s, "vlan core 2 11", &o);
+    {
+        Buf d = {0};
+        site_dump_dev(&s, core, &d);
+        ck("and a vlan inside the range is still set, on the port itself",
+           has(o.p, "set") && has(d.p, "access vlan 11"));
+        buf_free(&d);
+    }
+
+    /* --- 6. `rooms f2` SILENTLY PRINTED FLOOR 0. atoi("f2") is 0, and
+     * every other verb in the game takes `f2.something`. */
+    buf_clear(&o);
+    site_cmd(&s, "rooms 2", &o);
+    bool two = has(o.p, "floor 2");
+    buf_clear(&o);
+    site_cmd(&s, "rooms f2", &o);
+    ck("`rooms f2` and `rooms 2` are the same floor", two && has(o.p, "floor 2"));
+    ck("and it is not floor 0 wearing floor 2's name", !has(o.p, "floor 0"));
+    buf_clear(&o);
+    site_cmd(&s, "rooms f99", &o);
+    ck("a floor that does not exist is refused, not rounded to the ground floor",
+       has(o.p, "there is no floor 99") && !has(o.p, "floor 0\n"));
+    buf_clear(&o);
+    site_cmd(&s, "rooms f2.comms", &o);
+    ck("and a room name is refused here and sent to the verbs that take one",
+       has(o.p, "is not a floor") && !has(o.p, "floor 0\n"));
+
+    /* --- 7. THE DHCP POOL CAP, DELIVERED BY THE WRONG HALF OF ITS OWN
+     * MESSAGE. A pool of 180 addresses was refused with a sentence that led
+     * with "a pool of no addresses serves nobody". */
+    {
+        int rt = site_install(&s, SDEV_ROUTER, bld_find(b, 0, RM_MDF), "rt9");
+        site_cable(&s, rt, 0, core, 3, CAB_CAT6);
+        site_addr(&s, rt, 0, net_ip(10, 9, 0, 1), net_mask_bits(24));
+        for (int v = 0; v < 8; v++)
+            site_subif(&s, rt, 0, 100 + v, net_ip(10, 20 + v, 0, 1),
+                       net_mask_bits(24));
+        int made = 0;
+        for (int v = 0; v < 8 && made < 8; v++)
+            if (site_dhcpd(&s, rt, net_ip(10, 20 + v, 0, 50), 180,
+                           net_mask_bits(24), net_ip(10, 20 + v, 0, 1),
+                           net_ip(10, 20 + v, 0, 1))) made++;
+        buf_clear(&o);
+        site_cmd(&s, "dhcpd rt9 10.9.0.50 180 24 10.9.0.1 10.9.0.1", &o);
+        ck("eight pools go on one box and the ninth is refused",
+           made == 8 && has(o.p, "already holds eight pools"));
+        ck("and the refusal does not lead with a reason the line disproves",
+           !has(o.p, "pool of no addresses"));
+        buf_clear(&o);
+        site_cmd(&s, "dhcpd rt9 10.9.0.50 0 24 10.9.0.1 10.9.0.1", &o);
+        ck("a pool of no addresses is its own error, saying only that",
+           has(o.p, "pool of no addresses") && !has(o.p, "eight pools"));
+        buf_clear(&o);
+        site_cmd(&s, "dhcpd", &o);
+        ck("and the cap is in the help text `dhcpd` on its own prints",
+           has(o.p, "EIGHT") || has(o.p, "eight"));
+        buf_clear(&o);
+        site_cmd(&s, "help", &o);
+        ck("and on the help page, where the verb is documented",
+           has(o.p, "EIGHT POOLS"));
+    }
+
+    /* --- 10. THE LEGEND IS SHORTER AND ALL OF IT IS STILL THERE. Measured,
+     * not asserted: the short page against the legend, in lines. */
+    {
+        Buf sh = {0}, lg = {0};
+        site_cmd(&s, "service", &sh);
+        site_cmd(&s, "service ?", &lg);
+        int shl = 0, lgl = 0;
+        for (const char *p = sh.p; p && *p; p++) if (*p == '\n') shl++;
+        for (const char *p = lg.p; p && *p; p++) if (*p == '\n') lgl++;
+        printf("    `service` %d lines, `service ?` %d lines of legend\n",
+               shl, lgl);
+        ck("`service` no longer prints its whole legend under every reading",
+           shl < 8 && !has(sh.p, "up is desks whose port has LINK on it"));
+        ck("and every sentence of it is still reachable, in one word",
+           lgl > 25 &&
+           has(lg.p, "up is desks whose port has LINK on it") &&
+           has(lg.p, "only an addressed desk does any work") &&
+           has(lg.p, "done counts transfers for an office") &&
+           has(lg.p, "nineteen in twenty") &&
+           has(lg.p, "worst is WALL TIME and not delay") &&
+           has(lg.p, "files is the server their people actually pulled off") &&
+           has(lg.p, "ANY address it holds") &&
+           has(lg.p, "<- is a tenancy being served from another floor"));
+        ck("and the short page still prints the number that ends the run",
+           has(sh.p, "filed complaints ends the run") &&
+           has(sh.p, "service ?"));
+        buf_free(&sh); buf_free(&lg);
+    }
+    {
+        Buf sh = {0}, lg = {0};
+        site_cmd(&s, "load", &sh);
+        site_cmd(&s, "load ?", &lg);
+        int shl = 0;
+        for (const char *p = sh.p; p && *p; p++) if (*p == '\n') shl++;
+        printf("    `load` %d lines\n", shl);
+        ck("`load` keeps the one instruction and moves the arithmetic",
+           has(sh.p, "READ THE DROPS AND THE PEAK QUEUE") &&
+           !has(sh.p, "48 KB buffer is 394us") && has(sh.p, "load ?"));
+        ck("and `load ?` has all of it",
+           has(lg.p, "48 KB buffer is 394us") &&
+           has(lg.p, "busy is the SHARE OF THE BUSY PERIOD") &&
+           has(lg.p, "since it was cabled"));
+        buf_free(&sh); buf_free(&lg);
+    }
+    buf_free(&o);
+    site_free(&s);
+}
+
+/* --- 5, 8 and 9, which need a tenancy in the diary and a day on the clock. */
+static void check_ambiguity_and_the_diary(void)
+{
+    printf("\nD43: a room the game chose, a tenancy with a date, a verb "
+           "that exists\n");
+    Building b;
+    if (!bld_generate(&b, 22ull)) { ck("seed 22 makes a building", false); return; }
+    Site s;
+    site_new(&s, &b, 22ull, 200000);
+    Buf o = {0};
+
+    /* --- 5. `move` SILENTLY PICKED A ROOM. `help` offers `f2.office` and a
+     * let floor has a dozen of them belonging to three tenants; the box
+     * went into one of them and nothing said a choice had been made. The
+     * shorthand stays -- it is how the tower gets built without a floor
+     * plan -- and it now says when it was a choice. */
+    int first = -1;
+    int n2 = site_room_name_matches(&s, "f2.office", &first);
+    printf("    f2.office matches %d rooms; f1.comms matches %d\n", n2,
+           site_room_name_matches(&s, "f1.comms", NULL));
+    ck("floor 2 really has more than one office for the shorthand to pick from",
+       n2 > 1 && first >= 0);
+    ck("and an unambiguous name still matches exactly one",
+       site_room_name_matches(&s, "f1.comms", NULL) == 1 &&
+       site_room_name_matches(&s, "f0.mdf", NULL) == 1);
+    site_cmd(&s, "order pc pcx", &o);
+    buf_clear(&o);
+    site_cmd(&s, "move pcx f2.office", &o);
+    char want[64];
+    snprintf(want, sizeof want, "picked one: #%d", first);
+    ck("`move pcx f2.office` says which room it picked, and why that one",
+       has(o.p, "matches") && has(o.p, want) && has(o.p, "lowest-numbered"));
+    ck("and names the spelling that would not have been a guess",
+       has(o.p, "`#<n>` names one for certain") && has(o.p, "rooms 2"));
+    ck("and the box really is in the room the note named",
+       s.dev[site_dev_by_name(&s, "pcx")].room == first);
+    /* THE SHORTHAND IS NOT REMOVED, and an unambiguous one says nothing at
+     * all -- a note on every `move f1.comms` would be the other failure. */
+    buf_clear(&o);
+    site_cmd(&s, "move pcx f1.comms", &o);
+    ck("an unambiguous room name moves the box and prints no note",
+       !has(o.p, "matches") && !has(o.p, "picked one") &&
+       s.dev[site_dev_by_name(&s, "pcx")].room == bld_find(&b, 1, RM_COMMS));
+
+    /* --- 8. `serve` BEFORE MOVE-IN DAY SAID THE WRONG THING. A tenancy
+     * that will NEVER exist got a sentence naming the right verb; a tenancy
+     * that arrives next week got "no such device", about a line with no
+     * missing device in it. */
+    int later = -1;
+    for (int i = 0; i < s.ntenant; i++)
+        if (!s.tenant[i].moved) { later = i; break; }
+    if (later < 0) { ck("seed 22 has a tenancy still to come", false); }
+    else {
+        int sw = site_install(&s, SDEV_SWITCH8, bld_find(&b, 0, RM_MDF), "sw9");
+        (void)sw;
+        char line[64];
+        snprintf(line, sizeof line, "serve %d sw9 cat5e 30", s.tenant[later].tenant);
+        buf_clear(&o);
+        site_cmd(&s, line, &o);
+        printf("    tenancy %d arrives on day %d; it is day %d\n",
+               s.tenant[later].tenant, s.tenant[later].day, s.day);
+        ck("`serve` on a tenancy that has not moved in says so, and names the day",
+           has(o.p, "has not moved in yet") && has(o.p, "day"));
+        ck("and does not claim a device is missing from a line that has one",
+           !has(o.p, "no such device"));
+        char day[32];
+        snprintf(day, sizeof day, "day %d", s.tenant[later].day);
+        ck("and the day it names is the day the lease really starts",
+           has(o.p, day));
+        /* The API underneath says the same thing rather than ENODEV, so
+         * anything else that calls it gets the truth too. */
+        ck("and the call underneath refuses with a tenancy error, not a device one",
+           site_serve_vlan(&s, later, sw, CAB_CAT5E, 0) < 0 &&
+           s.err == SITE_ENOTIN);
+        /* AND THE ONE THAT WAS ALREADY RIGHT IS STILL RIGHT. */
+        buf_clear(&o);
+        site_cmd(&s, "serve 99 sw9", &o);
+        ck("a tenancy that will never exist still gets its own sentence",
+           has(o.p, "no tenancy 99"));
+    }
+
+    /* --- 9. THE GAME ADVERTISED TWO COMMANDS THAT DO NOT EXIST, for the
+     * hardest problem in it. `sit` and `voice` are Session verbs; the tower
+     * shell answers "no such command" to both, and `service` told the
+     * player to type them. */
+    {
+        Buf sh = {0};
+        ck("`sit` really is not a verb of this shell", !site_cmd(&s, "sit t3d0", &sh));
+        buf_clear(&sh);
+        ck("and neither is `voice`", !site_cmd(&s, "voice", &sh));
+        buf_clear(&sh);
+        site_cmd(&s, "service ?", &sh);
+        ck("so `service ?` sends the player to `load`, which IS a verb here",
+           has(sh.p, "the port is `load`"));
+        ck("and says plainly where `sit` and `voice` live instead",
+           has(sh.p, "verbs of the SESSION and not of this shell"));
+        ck("and `load` is in the verb table it just named",
+           site_cmd(&s, "load", &sh));
+        buf_free(&sh);
+    }
+    buf_free(&o);
+    site_free(&s);
+    bld_free(&b);
+}
+
 int site_selfcheck(void)
 {
     passed = total = 0;
@@ -3311,6 +3662,10 @@ int site_selfcheck(void)
     check_power_map(&b);
     check_serve_vlan_remedy(&b);
     check_demand_says_what_a_server_is_for(&b);
+    /* D43: ten things the game said about itself that another command in
+     * the same session disproved. */
+    check_one_fact_two_answers(&b);
+    check_ambiguity_and_the_diary();
     /* AND THAT A PERSON CAN PLAY ALL OF IT OVER A SOCKET, which is the
      * claim that had quietly stopped being true. See core/sessioncheck.c. */
     session_selfcheck(&passed, &total);
