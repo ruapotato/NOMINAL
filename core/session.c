@@ -3656,14 +3656,37 @@ bool session_line(Session *ses, const char *line, Buf *out)
     }
     if (strcmp(t[0], "buy") == 0 || strcmp(t[0], "install") == 0 ||
         strcmp(t[0], "order") == 0) {
+        /* THE CATALOGUE IS PRINTED OFF THE CATALOGUE.
+         *
+         * These two lines used to be typed out by hand -- "switch8 120
+         * switch24 400 router 650 pc 480 server 1350" -- and this is the
+         * shell the 3D window and `--towersh` actually use. So when D43 put
+         * three grades of switch and three of server in KIT[], a player in
+         * the GAME could not see them: the window's own shop still listed
+         * five kinds at last year's prices, and `buy switch4` was answered
+         * with a list that did not contain switch4. The site shell had it
+         * right and nobody was reading that one.
+         *
+         * Nothing is typed now. Both lines walk KIT[] through
+         * site_kind_for_sale(), so a grade added to core arrives in the
+         * window on the same commit, at the price the counter charges. */
         if (n < 2) {
-            buf_puts(out, "buy what? switch8 120  switch24 400  router 650  "
-                          "pc 480  server 1350\n");
+            buf_puts(out, "buy what?");
+            for (int k = 0; k < SDEV_KIND_COUNT; k++) {
+                if (!site_kind_for_sale(k)) continue;
+                buf_printf(out, "  %s %d", site_kind_name(k), site_kind_price(k));
+            }
+            buf_puts(out, "\n");
             return true;
         }
         int kind = site_kind_by_name(t[1]);
-        if (kind < 0) {
-            buf_printf(out, "no such kit: %s. switch8 switch24 router pc server\n", t[1]);
+        if (kind < 0 || !site_kind_for_sale(kind)) {
+            buf_printf(out, "no such kit: %s.", t[1]);
+            for (int k = 0; k < SDEV_KIND_COUNT; k++) {
+                if (!site_kind_for_sale(k)) continue;
+                buf_printf(out, " %s", site_kind_name(k));
+            }
+            buf_puts(out, "\n");
             return true;
         }
         /* A room in the order is somebody expecting delivery to the floor

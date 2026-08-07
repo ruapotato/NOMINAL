@@ -367,6 +367,114 @@ func _init() -> void:
 	# not fallen through, not perched on a tread half a metre up.
 	# What a standing body reads as its own y when it is on a floor, measured
 	# rather than assumed: the capsule's origin is not at the slab.
+	# ---- EVERYTHING THE SHOP SELLS HAS A SHAPE AND A COLOUR IN THE WORLD.
+	#
+	# DEV_U and DEV_COL are a second list of the catalogue, and a second list
+	# is how this project keeps hurting itself. A kind that is in the shop and
+	# not in them is drawn as an anonymous grey 1U box: a tower unit standing
+	# in a rack slot, a 3400 machine that looks exactly like the 45 one. It
+	# does not crash, so nothing would have said. The kinds come from the
+	# shop's own usage line, so adding a grade to core is what breaks this.
+	# `order` with no kind answers "buy what?  <name> <price>  <name> <price>",
+	# printed off KIT[] itself. The names are the words that are not prices.
+	var usage: String = str(t.site("order")).split("\n")[0]
+	var kinds: Array = []
+	for w in usage.replace("buy what?", "").split(" ", false):
+		var k1: String = w.strip_edges()
+		if k1 != "" and not k1.is_valid_int():
+			kinds.append(k1)
+	if kinds.size() < 4:
+		fail("could not read the catalogue off `order`: %s" % usage)
+	else:
+		var unpainted: Array = []
+		for k3 in kinds:
+			if not t.DEV_U.has(k3) or not t.DEV_COL.has(k3):
+				unpainted.append(k3)
+		if not unpainted.is_empty():
+			fail("the shop sells %s and the world has no shape or colour for %s"
+				% [str(kinds), str(unpainted)])
+		else:
+			ok("all %d kinds the shop sells have a size and a colour: %s"
+				% [kinds.size(), " ".join(kinds)])
+
+	# ---- THE POWER IS ON THE WALLS AND ON THE BOXES.
+	#
+	# "None of the rooms seemed to have power outlets... I don't see power
+	# going to any of the networking gear, or the server." Core has counted
+	# sockets per room since D37 and the 3D drew none of them. So: every room
+	# the model gives sockets to has that many faceplates in the world, and a
+	# box the model says is plugged in has a lead and one the model says is
+	# not has none.
+	var owall: Dictionary = t.site_outlets()
+	if owall.is_empty():
+		fail("the site model says no room in the building has a socket in it")
+	else:
+		var wrong := 0
+		var total := 0
+		for oroom in owall.keys():
+			var want: int = int(owall[oroom].built)
+			var got: int = t.outlet_points(int(oroom)).size()
+			total += got
+			if got != want:
+				wrong += 1
+		if wrong > 0:
+			fail("%d rooms draw a different number of sockets than the model has" % wrong)
+		else:
+			ok("%d rooms, %d sockets on their walls, every one the model's" % [owall.size(), total])
+		if t.power_drawn() < 100:
+			fail("nothing of the power system is drawn: %d vertices" % t.power_drawn())
+		else:
+			ok("%d vertices of faceplate and flex in the world" % t.power_drawn())
+		# AND THE LEAD FOLLOWS THE MODEL. Pull the plug over the socket -- the
+		# same `mains` a player types -- and the flex has to go with it.
+		var plugged := ""
+		var plugged_room := -1
+		for sd in t.site_devs():
+			# NOT THE HANDOFF. Its socket is the ISP's and core refuses to
+			# pull it out -- "it was there before you were" -- so a test that
+			# picked it would be measuring a refusal, not the drawing.
+			if str(sd.kindname) == "uplink":
+				continue
+			if bool(sd.get("mains", false)) and int(sd.room) >= 0:
+				plugged = str(sd.name)
+				plugged_room = int(sd.room)
+				break
+		if plugged == "":
+			fail("nothing in the building is plugged into a wall")
+		else:
+			# IN THE ROOM, BECAUSE THE MODEL SAYS SO. `mains` is somebody
+			# reaching behind a box: "ws is in f0 MDF #17 and you are not."
+			# The refusal is right, so the test walks there rather than
+			# arguing with it.
+			t.teleport(t.room_centre(plugged_room) + Vector3(0, 0.3, 0))
+			for i in range(10):
+				await process_frame
+			var was: int = t.power_drawn()
+			var said_m: String = str(t.site("mains %s off" % plugged))
+			t._reconcile()
+			await process_frame
+			var now: int = t.power_drawn()
+			if now >= was:
+				fail("`mains %s off` and the flex is still drawn: %d then %d -- it said: %s"
+					% [plugged, was, now, said_m.strip_edges()])
+			else:
+				ok("`mains %s off` took its lead off the wall too: %d -> %d vertices"
+					% [plugged, was, now])
+			t.site("mains %s on" % plugged)
+			t._reconcile()
+			await process_frame
+			if t.power_drawn() != was:
+				fail("plugging %s back in did not put the lead back: %d, was %d"
+					% [plugged, t.power_drawn(), was])
+			else:
+				ok("and plugging it back in put it back")
+			# THE PLUG IS NOT THE BUTTON, which is the whole point of D37: a
+			# box that has had its lead pulled comes back needing switching
+			# on, and the rest of this file expects the workstation running.
+			t.site("power %s on" % plugged)
+			t._reconcile()
+			await process_frame
+
 	for s in t.stairs:
 		var f0: int = int(s.floor)
 		var r0 = t.rooms[int(s.room)]

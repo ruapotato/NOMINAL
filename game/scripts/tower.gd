@@ -122,6 +122,7 @@ var lifts: Array = []          # lift.gd instances, one per shaft
 var racks: Array = []          # {room, floor, i, x, z, face, used}
 var site_up := false
 var _cable_node: MeshInstance3D = null
+var _power_node: MeshInstance3D = null
 var _cable_from := -1          # the device whose port the spool is on
 
 var _v := PackedVector3Array()
@@ -1598,6 +1599,150 @@ func site_devs() -> Array:
 	return out
 
 
+# ------------------------------------------------------------------- power
+#
+# "None of the rooms seemed to have power outlets." -- the owner, walking his
+# own building. And: "it seems to not have a power cable, I don't see power
+# going to any of the networking gear, or the server... The goods room has a
+# few items that are not plugged into power, but seem to be working."
+#
+# Every one of those is true of the picture and false of the model. Core has
+# had a full power system since D37: sockets counted per room off the room's
+# kind and area, a plug that is a separate act from the button, another socket
+# buyable for money on a circuit that eventually fills up, and a five percent
+# chance of a filesystem to repair if you pull a live one. `outlets` prints
+# all of it. The 3D drew none of it, so the one system the player was told to
+# care about was the one system the world would not show -- and a box standing
+# on nothing, running, is the world flatly contradicting the model.
+#
+# So the wall gets its sockets, and every box that is really in one gets its
+# lead. Both come from the model on every reconcile: buy a socket with
+# `outlet`, pull a plug with `mains`, and the wall and the flex follow.
+
+func site_outlets() -> Dictionary:
+	var out: Dictionary = {}
+	if not site_up:
+		return out
+	for line in str(machine.site_outlets()).split("\n", false):
+		var f: PackedStringArray = line.split(" ", false)
+		if f.size() < 4:
+			continue
+		out[int(f[0])] = {"built": int(f[1]), "used": int(f[2]), "free": int(f[3])}
+	return out
+
+
+# WHERE THE SOCKETS ON A ROOM'S WALL ARE. Along the longest wall, at the height
+# a socket is really at, inset from the corners so a faceplate is never in one.
+# Computed rather than stored, for the same reason the lift's buttons are: a
+# thing drawn in one place and reached for in another is one fact with two
+# answers, and this one has a lead plugged into it.
+const OUTLET_Y := 0.32          # centre height, metres off the slab
+const OUTLET_W := 0.09
+const OUTLET_H := 0.13
+
+func outlet_points(room_i: int) -> Array:
+	var out: Array = []
+	var have: int = int(site_outlets().get(room_i, {}).get("built", 0))
+	if have <= 0 or room_i < 0 or room_i >= rooms.size():
+		return out
+	var r = rooms[room_i]
+	var y: float = float(r.floor) * fheight + OUTLET_Y
+	var wx: float = float(r.x1 - r.x0)
+	var wy: float = float(r.y1 - r.y0)
+	# the longest wall, and the inward normal of it
+	var along_x: bool = wx >= wy
+	var span: float = (wx if along_x else wy) - 0.8
+	if span < 0.3:
+		return out
+	for k in range(have):
+		var t: float = 0.4 + (span * (float(k) + 0.5) / float(have))
+		if along_x:
+			out.append({"pos": Vector3(float(r.x0) + t, y, float(r.y0) + 0.03),
+				"n": Vector3(0, 0, 1)})
+		else:
+			out.append({"pos": Vector3(float(r.x0) + 0.03, y, float(r.y0) + t),
+				"n": Vector3(1, 0, 0)})
+	return out
+
+
+# The plug end on a box: low on its back, which is where a kettle lead goes.
+func _inlet_point(d: Dictionary) -> Vector3:
+	var back: Vector3 = -Vector3(d.face)
+	var c: Vector3 = d.mn + Vector3(d.size) * 0.5
+	var half: float = absf(Vector3(d.size).dot(back)) * 0.5
+	return Vector3(c.x, float(d.mn.y) + 0.04, c.z) + back * (half - 0.01)
+
+
+func _draw_power() -> void:
+	if _power_node:
+		_power_node.name = "PowerGone"
+		_power_node.queue_free()
+		_power_node = null
+	if not site_up:
+		return
+	var g = preload("res://scripts/vgeo.gd").new()
+	var plate := Color("#d9d6cf")
+	var slot := Color("#2b2f34")
+	var flex := Color("#23262a")
+	# every socket on every wall the model says has one
+	var seats: Dictionary = {}
+	for room_i in site_outlets().keys():
+		var pts: Array = outlet_points(int(room_i))
+		seats[int(room_i)] = pts
+		for p in pts:
+			var c: Vector3 = p.pos
+			var n: Vector3 = p.n
+			var w := Vector3(n.z, 0, n.x).abs() * OUTLET_W
+			var mn := Vector3(c.x - max(w.x, 0.006), c.y - OUTLET_H * 0.5, c.z - max(w.z, 0.006))
+			var sz := Vector3(max(w.x * 2.0, 0.012), OUTLET_H, max(w.z * 2.0, 0.012))
+			g.box(mn, sz, plate, false)
+			# two holes in it, so it reads as a socket and not a light switch
+			for s in [-0.025, 0.025]:
+				var o: Vector3 = Vector3(n.z, 0, n.x).normalized() * float(s)
+				g.box(Vector3(c.x + o.x - 0.008, c.y - 0.012, c.z + o.z - 0.008),
+					Vector3(0.016, 0.024, 0.016), slot, false)
+	# and a lead from every box the model says is plugged in
+	var used: Dictionary = {}
+	for d in devices:
+		var si: int = int(d.get("site", -1))
+		if si < 0:
+			continue
+		var sd := _site_dev(si)
+		if sd.is_empty() or not bool(sd.get("mains", false)):
+			continue
+		var room_i: int = int(sd.get("room", -1))
+		var pts: Array = seats.get(room_i, [])
+		if pts.is_empty():
+			continue
+		var k: int = int(used.get(room_i, 0)) % pts.size()
+		used[room_i] = k + 1
+		var a: Vector3 = _inlet_point(d)
+		var b: Vector3 = Vector3(pts[k].pos) + Vector3(pts[k].n) * 0.02
+		_run_cable(g, [a, a + (b - a) * 0.5 + Vector3(0, -0.10, 0), b], flex, 9000 + si)
+	_power_node = MeshInstance3D.new()
+	_power_node.name = "Power"
+	_power_node.mesh = g.mesh()
+	add_child(_power_node)
+
+
+# HOW MUCH FLEX AND FACEPLATE IS REALLY DRAWN, in vertices, so a headless test
+# can tell "the wall has sockets on it" from "the wall has nothing on it".
+func power_drawn() -> int:
+	if _power_node == null or not is_instance_valid(_power_node):
+		return 0
+	var m: Mesh = _power_node.mesh
+	if m == null or m.get_surface_count() == 0:
+		return 0
+	return m.surface_get_array_len(0)
+
+
+func _site_dev(site_i: int) -> Dictionary:
+	for sd in site_devs():
+		if int(sd.i) == site_i:
+			return sd
+	return {}
+
+
 func site_links() -> Array:
 	var out: Array = []
 	if not site_up:
@@ -1638,6 +1783,7 @@ func _draw_cables() -> void:
 	var links := site_links()
 	if links.is_empty():
 		_port_lights()
+		_draw_power()
 		return
 	var g = preload("res://scripts/vgeo.gd").new()
 	for l in links:
@@ -1655,6 +1801,7 @@ func _draw_cables() -> void:
 	_cable_node.mesh = g.mesh()
 	add_child(_cable_node)
 	_port_lights()
+	_draw_power()
 
 
 # ------------------------------------------------------------ string mechanics
@@ -2159,11 +2306,22 @@ func _spawn_player() -> void:
 # machine that never finished booting, which is the interesting one.
 
 # How tall a thing is, in U. A switch is 1U because a switch is 1U.
-const DEV_U := {"uplink": 1, "switch8": 1, "switch24": 1, "router": 1,
-	"pc": 4, "server": 2}
-const DEV_COL := {"uplink": Color("#9a7b3a"), "switch8": Color("#3f6f96"),
-	"switch24": Color("#3f6f96"), "router": Color("#8a5a3e"),
-	"pc": Color("#6a707a"), "server": Color("#7c828c")}
+# HOW TALL EACH KIND IS IN A RACK, AND WHAT COLOUR IT IS. Both tables have to
+# name every kind the catalogue sells: a kind missing from them is drawn as an
+# anonymous grey 1U box, which is not a crash and is a lie -- a tower unit
+# standing in a rack slot, or a 3400 machine that looks like the 45 one. The
+# grades landed in core/site.c (D43) and the game test now walks the shop's
+# own list against these, so a fourth grade cannot arrive unpainted.
+const DEV_U := {"uplink": 1, "switch4": 1, "switch8": 1, "switch24": 1,
+	"router": 1, "pc": 4, "minitower": 4, "server": 2, "rackserver": 2,
+	"workstation": 4}
+const DEV_COL := {"uplink": Color("#9a7b3a"),
+	# the three switch grades read as one family, cheapest palest
+	"switch4": Color("#5b7f9c"), "switch8": Color("#3f6f96"),
+	"switch24": Color("#2d5b80"), "router": Color("#8a5a3e"),
+	"pc": Color("#6a707a"), "minitower": Color("#5d636b"),
+	"server": Color("#7c828c"), "rackserver": Color("#969ca6"),
+	"workstation": Color("#6a707a")}
 
 func _place_devices() -> void:
 	devices.clear()

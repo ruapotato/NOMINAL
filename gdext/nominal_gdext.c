@@ -911,6 +911,36 @@ static void m_site_devs(Station *st, const GDExtensionConstTypePtr *args, void *
     buf_free(&o);
 }
 
+/* site_outlets() -> String — "room built used free" per room that has any.
+ *
+ * THE WALL IS A VIEW OF THE MODEL, LIKE EVERYTHING ELSE. The owner walked his
+ * own building and reported it: "None of the rooms seemed to have power
+ * outlets." They all have them -- `outlets` prints a table of every one and
+ * charges you to add another -- and not one was drawn. So the view had a whole
+ * system it could not see, which is the failure the architectural rule exists
+ * to prevent, running in the direction nobody was watching.
+ *
+ * These are the same three functions the `outlets` table prints from, so a
+ * faceplate on a wall and a row in that table cannot disagree. Rooms with no
+ * outlets are left out rather than sent as zeroes: an office has none, and
+ * that is most of the building. */
+static void m_site_outlets(Station *st, const GDExtensionConstTypePtr *args, void *ret)
+{
+    (void)args;
+    if (!site_ready(st)) { c_to_gdstring(ret, ""); return; }
+    const Site *s = SITE(st);
+    const Building *b = BLD(st);
+    Buf o; buf_init(&o);
+    for (int r = 0; r < b->nrooms; r++) {
+        int have = site_room_outlets(s, r);
+        if (have <= 0) continue;
+        buf_printf(&o, "%d %d %d %d\n", r, have,
+                   site_room_outlets_used(s, r), site_room_outlets_free(s, r));
+    }
+    c_to_gdstring(ret, o.p ? o.p : "");
+    buf_free(&o);
+}
+
 /* site_links() -> String — "i a aport b bport room_a room_b metres cost kind
  * state" per line. The cables that really exist, so the tray above the
  * corridor carries the runs the site model was charged for and no others. */
@@ -1110,6 +1140,7 @@ static const MethodDef METHODS[] = {
     { "site_start",    m_site_start,    1, { GDEXTENSION_VARIANT_TYPE_INT }, GDEXTENSION_VARIANT_TYPE_STRING },
     { "site_cmd",      m_site_cmd,      1, { GDEXTENSION_VARIANT_TYPE_STRING }, GDEXTENSION_VARIANT_TYPE_STRING },
     { "site_devs",     m_site_devs,     0, { 0 },                            GDEXTENSION_VARIANT_TYPE_STRING },
+    { "site_outlets",  m_site_outlets,  0, { 0 },                            GDEXTENSION_VARIANT_TYPE_STRING },
     { "site_links",    m_site_links,    0, { 0 },                            GDEXTENSION_VARIANT_TYPE_STRING },
     { "site_room_of",  m_site_room_of,  1, { GDEXTENSION_VARIANT_TYPE_INT }, GDEXTENSION_VARIANT_TYPE_INT },
     { "ses_start",     m_ses_start,     2, { GDEXTENSION_VARIANT_TYPE_INT, GDEXTENSION_VARIANT_TYPE_INT }, GDEXTENSION_VARIANT_TYPE_STRING },
