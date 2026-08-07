@@ -215,6 +215,75 @@ func _init() -> void:
 		else:
 			ok("and back down to the ground floor")
 
+		# ---- AND THE BUTTONS ARE THINGS YOU CAN PRESS.
+		#
+		# The owner got in the car, aimed at a lit button, pressed [E] and
+		# nothing happened: "So the elevator is functionally not working."
+		# The panel was vgeo paint. aim() did not know it was there, so the
+		# crosshair never named a button and [E] never had one to press --
+		# and the only way to choose a floor was a number key that nothing
+		# in the car mentions.
+		#
+		# So this walks the panel the way a player's eye does: every button
+		# must be a real place in the world, the one for a floor in service
+		# must offer [E], and pressing it must move the car. A button drawn
+		# somewhere other than where it can be aimed at fails the first of
+		# these, which is the half of the bug that could come back quietly.
+		var btns: Array = lift.buttons()
+		if btns.size() != lift.floors.size():
+			fail("the car has %d buttons for %d floors" % [btns.size(), lift.floors.size()])
+		else:
+			ok("every floor the shaft passes has a button in the car: %d" % btns.size())
+		# every button is inside the car it is painted in, which is what makes
+		# it aimable from where a body stands
+		var stray := -1
+		for b in btns:
+			if not lift.inside(b["pos"] + Vector3(0, -1.0, 0)):
+				stray = int(b["floor"])
+		if stray >= 0:
+			fail("the button for floor %d is not in the car it is drawn in" % stray)
+		else:
+			ok("and every one of them is on the wall of the car, where it is drawn")
+		# the crosshair names one, and offers the key
+		var up := 1
+		while up < t.floors_in_service and not lift.floors.has(up):
+			up += 1
+		var bpos: Vector3 = lift.button_pos(up)
+		var txt: Array = t.aim_text({"kind": "liftbtn", "dev": -1, "port": -1,
+			"floor": up, "point": bpos})
+		if txt[0].find("floor %d" % up) < 0 or txt[1].find("[E]") < 0:
+			fail("the crosshair on the floor %d button says: %s / %s" % [up, txt[0], txt[1]])
+		else:
+			ok("the crosshair on it reads: %s -- %s" % [txt[0], txt[1]])
+		# and an unlit one says why rather than offering a key
+		var shut: int = int(t.floors_in_service)
+		while shut < 40 and not lift.floors.has(shut):
+			shut += 1
+		if lift.floors.has(shut):
+			var t2: Array = t.aim_text({"kind": "liftbtn", "dev": -1, "port": -1,
+				"floor": shut, "point": lift.button_pos(shut)})
+			if t2[1].find("[E]") >= 0:
+				fail("the button for floor %d is not in service and offers [E]" % shut)
+			else:
+				ok("an unlit button says why instead of offering a key: " + t2[1])
+		# pressing it is the act, and it is the same act the digit is
+		var said3: String = lift.button_press(up)
+		var got := false
+		for i in range(900):
+			await process_frame
+			if not t.lift_busy() and lift.at == up:
+				got = true
+				break
+		if not got:
+			fail("pressing the floor %d button did nothing (%s)" % [up, said3])
+		else:
+			ok("pressing the button in the car took it to floor %d" % up)
+		t.lift_go(0)
+		for i in range(900):
+			await process_frame
+			if not t.lift_busy() and lift.at == 0:
+				break
+
 	# ---- YOU CAN GET TO THE STAIRS FROM WHERE THE DAY STARTS.
 	#
 	# The owner: "I would also suggest that there were multiple floors, but

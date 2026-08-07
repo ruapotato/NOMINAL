@@ -2997,6 +2997,29 @@ func aim() -> Dictionary:
 		if t2 >= 0.0 and t2 < bt:
 			bt = t2
 			best = {"kind": "lift", "dev": -1, "port": -1, "point": o + dir * t2}
+	# AND THE BUTTONS INSIDE THE CAR, which until now were paint.
+	#
+	# The owner got in, aimed at a lit button, pressed [E] and nothing
+	# happened -- *"So the elevator is functionally not working."* He was
+	# right. The panel was drawn by lift.gd as vgeo boxes and nothing here
+	# knew it existed, so the crosshair never named a button, [E] never had
+	# one to press, and the ONLY way to choose a floor was a number key that
+	# no button, sign or prompt in the car mentions. A panel you can see and
+	# aim at that answers nothing says the lift is broken.
+	#
+	# Where the buttons are comes from lift.gd's own geometry -- the same
+	# three lines that DREW them -- so a button cannot be somewhere other
+	# than where it is drawn, and it follows the car up the shaft.
+	var incar: Object = lift_in()
+	if incar != null:
+		for b in incar.buttons():
+			var bp: Vector3 = b["pos"]
+			var half := Vector3(0.055, 0.055, 0.055)
+			var t3: float = _ray_box(o, dir, bp - half, bp + half)
+			if t3 >= 0.0 and t3 < bt:
+				bt = t3
+				best = {"kind": "liftbtn", "dev": -1, "port": -1,
+					"floor": int(b["floor"]), "point": o + dir * t3}
 	if best.is_empty():
 		return {}
 	# AND THE WORLD IS IN THE WAY OR IT IS NOT. Everything above is arithmetic
@@ -3022,6 +3045,17 @@ func aim_text(a: Dictionary) -> Array:
 		return ["", ""]
 	if a.kind == "lift":
 		return ["lift call plate", "[E] call"]
+	# A BUTTON SAYS WHAT PRESSING IT WOULD DO, INCLUDING NOTHING. An unlit
+	# button is a floor that exists and is not open yet, which is a true and
+	# useful thing to be told while you are standing in the car looking at it
+	# -- and much better than the refusal arriving only after you press.
+	if a.kind == "liftbtn":
+		var bf := int(a.floor)
+		if not in_service(bf):
+			return ["lift button, floor %d" % bf, "not in service -- the button is not lit"]
+		if bf == player_floor():
+			return ["lift button, floor %d" % bf, "you are on floor %d" % bf]
+		return ["lift button, floor %d" % bf, "[E] go to floor %d" % bf]
 	var d: Dictionary = devices[int(a.dev)]
 	var s: int = int(d.get("site", -1))
 	if a.kind == "port":
@@ -5364,6 +5398,13 @@ func _unhandled_input(event: InputEvent) -> void:
 			if t.get("kind", "") == "lift":
 				var l := _lift_landing()
 				said2 = l.call_to(player_floor()) if l != null else ""
+			elif t.get("kind", "") == "liftbtn":
+				# The button and the number key are two ways in to one act, so
+				# they are literally the same call. A player who presses the
+				# button and a player who knows about the digit get the same
+				# answer, in the same words, on the same sign in the car.
+				var car2: Object = lift_in()
+				said2 = car2.button_press(int(t.get("floor", -1))) if car2 != null else ""
 			else:
 				said2 = use_here(dev)
 		# THE LEAD GOES IN THROUGH THE SESSION, NOT INTO THE PROP.

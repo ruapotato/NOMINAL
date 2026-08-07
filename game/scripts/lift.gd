@@ -283,6 +283,88 @@ func _set_collide(n: Node3D, on: bool) -> void:
 # one per floor the shaft passes, lit for the floors that are IN SERVICE. An
 # unlit button is the honest way to say a floor exists and is not open yet.
 
+# ------------------------------------------------------- THE BUTTONS ARE REAL
+#
+# The owner got into the car and pressed one: *"You can call a lift, but when
+# you go into it and try to hit E on one of the lit buttons, it doesn't do
+# anything. So the elevator is functionally not working."*
+#
+# He is right and the reason is exactly this file's fault. The column of
+# buttons drawn below is vgeo boxes -- paint on a wall. Nothing in aim() knew
+# they were there, so the crosshair never named one, [E] never had a target,
+# and the ONLY way to choose a floor was a number key that no button, sign or
+# prompt in the car tells you about. A panel you can see, aim at, and press,
+# that answers nothing, is worse than no panel: it says the lift is broken.
+#
+# So the geometry of the panel is written down once, here, and both the thing
+# that DRAWS a button and the thing that FINDS the one you are aiming at read
+# it from the same three lines. A button that moved without its target -- the
+# other half of this same bug -- cannot happen, because there is no second
+# copy of where the buttons are.
+#
+# The car moves, so these are computed from `car_y` every time rather than
+# cached: a target that stayed on floor 0 while the car went to floor 4 would
+# be the same class of lie in a different place.
+
+const BTN_S := 0.075        # a button is 75mm square, which is a real one
+const BTN_TOP := 1.62       # the top button, metres above the car floor
+const BTN_GAP := 0.115      # centres, going down
+
+# WHERE THE PANEL IS, computed and not remembered. An earlier draft cached
+# this in rebuild_panels() and read it in button_pos(), which meant a button
+# aimed at before the panel had ever been rebuilt was at the origin of the
+# world. It is three lines of arithmetic; there is no reason for it to be a
+# fact stored anywhere.
+func _panel_xz() -> Vector2:
+	var out := _outward()
+	var wall := _wall_pos()
+	var side := door_c + 0.75
+	if side > (rect.end.y if _is_x() else rect.end.x) - 0.25:
+		side = door_c - 0.75
+	if _is_x():
+		return Vector2(wall - out * 0.09, side)
+	return Vector2(side, wall - out * 0.09)
+
+
+func _button_y(i: int) -> float:
+	return BTN_TOP - float(i) * BTN_GAP
+
+
+# Where the button for floor `f` is in the world, right now, or ZERO if this
+# shaft has no such button. The car's own height is in it, so this follows the
+# car up the shaft.
+func button_pos(f: int) -> Vector3:
+	var n := floors.size()
+	var i := floors.find(f)
+	if i < 0:
+		return Vector3.ZERO
+	var out := _outward()
+	var xz := _panel_xz()
+	var y := _button_y(n - 1 - i)
+	var p: Vector3
+	if _is_x():
+		p = Vector3(xz.x - out * 0.035, y, xz.y)
+	else:
+		p = Vector3(xz.x, y, xz.y - out * 0.035)
+	return global_position + p + Vector3(0, car_y, 0)
+
+
+# Every button of this car that a body standing in it could press, as
+# {floor, pos}. aim() walks this rather than guessing at the panel.
+func buttons() -> Array:
+	var a: Array = []
+	for f in floors:
+		a.append({"floor": int(f), "pos": button_pos(int(f))})
+	return a
+
+
+# PRESSING ONE IS PRESSING ONE, and it is deliberately the same call the
+# number key makes. Two ways in to one act: the digit for somebody who knows,
+# the button for somebody who is looking at it, and one answer either way.
+func button_press(f: int) -> String:
+	return go_to(f)
+
+
 func rebuild_panels() -> void:
 	if _inside_panel:
 		_inside_panel.queue_free()
@@ -292,17 +374,9 @@ func rebuild_panels() -> void:
 	var wall := _wall_pos()
 	# --- the plate inside the car, beside the opening
 	var d := 0.03
-	var side := door_c + 0.75
-	if side > (rect.end.y if _is_x() else rect.end.x) - 0.25:
-		side = door_c - 0.75
-	var px: float
-	var pz: float
-	if _is_x():
-		px = wall - out * 0.09
-		pz = side
-	else:
-		px = side
-		pz = wall - out * 0.09
+	var xz := _panel_xz()
+	var px: float = xz.x
+	var pz: float = xz.y
 	g.box(Vector3(px - (d if _is_x() else 0.13), 0.85, pz - (0.13 if _is_x() else d)),
 		Vector3((d * 2 if _is_x() else 0.26), 0.90, (0.26 if _is_x() else d * 2)),
 		PANEL_COL, false)
@@ -310,8 +384,8 @@ func rebuild_panels() -> void:
 	for i in range(n):
 		var f: int = floors[n - 1 - i]      # top floor at the top of the panel
 		var col: Color = LIT if tower.in_service(f) else UNLIT
-		var by := 1.62 - float(i) * 0.115
-		var bs := 0.075
+		var by := _button_y(i)
+		var bs := BTN_S
 		if _is_x():
 			g.box(Vector3(px - out * 0.035, by, pz - bs * 0.5), Vector3(0.02, bs, bs), col, false)
 		else:
