@@ -5802,9 +5802,77 @@ func command(line: String) -> String:
 	# command to cable a particular port, the mouse automatically aligns to
 	# that port." A command that puts an end in `core:6` and leaves the player
 	# looking at a wall is a window that is not keeping up with the game.
-	if line.begins_with("plug ") and line.find(":") > 0:
-		_face_port(line.substr(5).strip_edges())
+	_face_what_it_did(line, out)
 	return out
+
+
+# THE WINDOW FOLLOWS THE LINE, WHATEVER THE LINE WAS.
+#
+# "I also want the gui to come up when an agent is playing it -- if they attach
+# a cable to a switch the player teleports to that position looking at the port
+# they just plugged in. So the console affects the 3d world and can verify the
+# images, but at no point should an agent use xdotool to play the game."
+#
+# The machinery was here and only `plug` used it. So a socket client who typed
+# `cable core:2 files:0` -- the whole run in one line, which is how a script
+# builds a tower -- did the work and photographed a wall. The screenshot is
+# the ONE thing a blind client cannot verify by reading, and it is worthless
+# aimed at nothing.
+#
+# Which end you end up at is the end you just made: the far end of a `cable`,
+# the box a `conduit` or a `feed` now powers, the socket a `plug` or a `patch`
+# went into. And it only happens if the line WORKED -- following the camera to
+# a port that refused would be the window telling you a lie the text just
+# refused to tell.
+func _face_what_it_did(line: String, said: String) -> void:
+	var low := line.strip_edges()
+	var reply := said.strip_edges()
+	if reply.begins_with("refused") or reply.begins_with("?") 			or reply.begins_with("no such"):
+		return
+	var f := low.split(" ", false)
+	if f.size() < 2:
+		return
+	var verb: String = f[0]
+	if verb == "plug" or verb == "patch":
+		if low.find(":") > 0:
+			_face_port(str(f[1]))
+	elif verb == "cable":
+		# the far end: the socket the run finished in
+		if f.size() >= 3 and str(f[2]).find(":") > 0:
+			_face_port(str(f[2]))
+		elif str(f[1]).find(":") > 0:
+			_face_port(str(f[1]))
+	elif verb == "conduit":
+		# the thing it now feeds, which is what you walked over to look at
+		if f.size() >= 3:
+			_face_dev(str(f[2]))
+	elif verb == "feed":
+		_face_dev(str(f[1]))
+
+
+# A BOX RATHER THAN A SOCKET ON ONE. Same standing rule as _face_port(): at
+# arm's length off the face of it, in the room you are already in.
+func _face_dev(name: String) -> void:
+	if player == null:
+		return
+	var want := -1
+	for d in site_devs():
+		if str(d.name) == name:
+			want = int(d.i)
+	if want < 0:
+		return
+	var p := _dev_point(want, 0)
+	if p == Vector3.INF:
+		return
+	var here := int(ses_state().get("room", -1))
+	if here >= 0 and here < rooms.size():
+		var n := _dev_face(want)
+		var stand := p + n * 1.2
+		var fl := int(rooms[here].floor)
+		if room_of(fl, int(floor(stand.x)), int(floor(stand.z))) == here:
+			stand.y = float(fl) * fheight + 0.25
+			teleport(stand)
+	aim_at(p)
 
 
 # FACE A BOX, A SOCKET ON ONE, OR A ROOM. The body does not move and nothing
@@ -5886,7 +5954,14 @@ func _face_port(spec: String) -> void:
 		var stand := p + n * 1.1
 		var fl := int(rooms[here].floor)
 		if room_of(fl, int(floor(stand.x)), int(floor(stand.z))) == here:
-			stand.y = float(fl) * fheight + 0.25
+			# LEVEL WITH THE HOLE, not standing over it. Parked at floor
+			# height the eye is 1.6 m up and a port on a 1U box is under a
+			# metre, so the ray went into the LID of the box and the
+			# crosshair said "device" about the thing whose socket the line
+			# had just named. Dropping the body so the eye is at the port's
+			# own height makes the look horizontal, into the hole.
+			stand.y = clampf(p.y - player.EYE + 0.05,
+				float(fl) * fheight, float(fl) * fheight + 0.9)
 			teleport(stand)
 	aim_at(p)
 

@@ -339,7 +339,12 @@ func _make_viewport() -> void:
 	how.add_theme_font_override("font", _mono)
 	how.add_theme_font_size_override("font_size", 32)
 	how.add_theme_color_override("font_color", Color("#4f6272"))
-	how.text = "point at a box -- [F] serial  [H] display"
+	# [H] WAS THE DISPLAY LEAD AND IT IS GONE -- see the note on KEY_H in
+	# tower.gd. A screenshot of the handset caught this still offering it, in
+	# the corner of every picture of the MDF, months after the key stopped
+	# doing anything. Point at the CONSOLE SOCKET now: the debugger is a
+	# serial lead and the wide low socket is the only thing it goes into.
+	how.text = "point at a console socket -- [F] the lead in"
 	how.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	how.set_anchors_preset(Control.PRESET_FULL_RECT)
 	how.vertical_alignment = VERTICAL_ALIGNMENT_CENTER

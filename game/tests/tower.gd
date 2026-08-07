@@ -961,6 +961,64 @@ func _init() -> void:
 		else:
 			ok("day one: one lead, %s to the handoff, and nothing else" % a)
 
+	# ---- THE WINDOW FOLLOWS WHATEVER LINE THE CLIENT TYPED.
+	#
+	# "If they attach a cable to a switch the player teleports to that
+	# position looking at the port they just plugged in. So the console
+	# affects the 3d world and can verify the images." The machinery existed
+	# and only `plug` used it, so a script that built a tower with whole
+	# `cable a:1 b:2` lines did the work and photographed a wall -- and the
+	# screenshot is the one thing a blind client cannot verify by reading.
+	#
+	# It cables into the WORKSTATION, which is standing in the MDF already,
+	# so this leg moves nothing else in the building around.
+	t.command("order switch8 cam")
+	t.command("deliver cam #%d" % t.find_room(0, t.K_MDF))
+	t.command("go mdf")
+	for i in range(8):
+		await process_frame
+	var cam_said: String = t.command("cable cam:0 ws:0")
+	for i in range(6):
+		await process_frame
+	var cam_aim: Dictionary = t.aim()
+	var ws_i: int = _device(t, "ws")
+	if cam_said.strip_edges().begins_with("refused"):
+		fail("could not run the cable to test the camera: " + cam_said.strip_edges())
+	elif str(cam_aim.get("kind", "")) != "port" or int(cam_aim.get("dev", -1)) != ws_i:
+		fail("cabled ws:0 over the socket and the crosshair is on %s"
+			% ["nothing" if cam_aim.is_empty()
+				else "%s dev %d port %d" % [str(cam_aim.get("kind", "")),
+					int(cam_aim.get("dev", -1)), int(cam_aim.get("port", -1))]])
+	else:
+		ok("`cable` over the socket left the body looking into ws:%d"
+			% int(cam_aim.get("port", -1)))
+	# AND A REFUSAL MOVES NOTHING. Following the camera to a socket the line
+	# was refused at would be the window telling you a lie the text had just
+	# refused to tell.
+	var cam_before: Vector3 = t.player.global_position
+	var cam_no: String = t.command("cable cam:0 ws:0")
+	for i in range(4):
+		await process_frame
+	if not cam_no.strip_edges().begins_with("refused"):
+		fail("cabling a port that is already full was not refused: " + cam_no)
+	elif t.player.global_position.distance_to(cam_before) > 0.05:
+		fail("a refused line moved the body %.2f m"
+			% t.player.global_position.distance_to(cam_before))
+	else:
+		ok("and a refused line moves nothing: " + cam_no.strip_edges().split("\n")[0])
+	# AND PUT THE BUILDING BACK. This leg buys a box and runs a lead; the
+	# checks after it are about the state the building came in, and a test
+	# that leaves its props lying about breaks the next one for reasons that
+	# have nothing to do with what it was measuring.
+	t.command("spool back")
+	for li in t.site_links():
+		if int(li.a) == int(t.devices[_device(t, "cam")].site) \
+				or int(li.b) == int(t.devices[_device(t, "cam")].site):
+			t.command("uncable %d" % int(li.i))
+	t._reconcile()
+	for i in range(4):
+		await process_frame
+
 	# ---- doors are gaps you can get through: every door edge must be clear
 	var blocked := 0
 	for d in t.doors:
