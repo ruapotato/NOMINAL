@@ -341,7 +341,9 @@ typedef enum {
     SITE_EUNPLUGGED,  /* there is no lead from that box to a wall socket      */
     SITE_ECIRCUIT,
     /* A conduit that would feed the thing it comes out of. */
-    SITE_ELOOP,    /* the room is on one circuit and it is full            */
+    SITE_ELOOP,
+    SITE_ENOWALL,     /* the old outlet refusal, while outlets are still  */
+                      /* in the tree at all. See site_mains_sync().       */    /* the room is on one circuit and it is full            */
     /* AN ERROR ABOUT SUBNETS, FROM A VERB THAT TAKES MEGABITS. `isp 0` and
      * `isp -5` both answered "that is the network or broadcast address of
      * its own subnet, not a machine's", because site_isp() reached for
@@ -959,6 +961,9 @@ int  site_conduit_pct(const Site *s, int run);
  * carrying more than it can? -1 in `why` gets the run that tripped. */
 bool site_dev_fed(const Site *s, int dev, int *tripped);
 int  site_conduit_count(const Site *s);
+/* Make every device's `mains` agree with the conduit tree. Called by every
+ * path that changes the tree; see the note on the definition. */
+void site_mains_sync(Site *s);
 void site_dump_conduits(const Site *s, Buf *out);
 
 int  site_room_outlets_built(const Site *s, int room);

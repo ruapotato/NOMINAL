@@ -1220,7 +1220,13 @@ func _init() -> void:
 			var pdev := -1
 			for i in range(t.devices.size()):
 				var sdp: Dictionary = t._site_dev(int(t.devices[i].get("site", -1)))
-				if not sdp.is_empty() and str(sdp.kindname) != "uplink" 						and bool(sdp.get("mains", false)):
+# NOT THE HANDOFF, AND NOT THE POWER CORE. Both were here before you
+				# were and neither is yours to unplug: the handoff is the
+				# ISP's, and the core is what everything else plugs INTO --
+				# there is no socket behind it to pull it out of.
+				if not sdp.is_empty() and str(sdp.kindname) != "uplink" \
+						and str(sdp.kindname) != "powercore" \
+						and bool(sdp.get("mains", false)):
 					pdev = i
 					break
 			if pdev < 0:
@@ -1239,11 +1245,14 @@ func _init() -> void:
 				else:
 					ok("the power lead pulled %s out of the wall: %s"
 						% [pname, out_said.split("\n")[0]])
+					# PUTTING IT BACK RUNS A RUN, because there is no wall to
+					# plug into any more. The lead in your hand pulls conduit
+					# from the nearest source with a hole in it.
 					var in_said: String = t.mains_at(pdev)
 					if not bool(t._site_dev(int(t.devices[pdev].site)).get("mains", false)):
 						fail("and it would not put it back: %s" % in_said)
 					else:
-						ok("and put it back in")
+						ok("and put it back in: %s" % in_said.split("\n")[0])
 					t.site("power %s on" % t._site_dev(int(t.devices[pdev].site)).name)
 					t._reconcile()
 					await process_frame

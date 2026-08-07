@@ -114,11 +114,19 @@ static const struct {
      * an operating system, and it is standing in the MDF on the morning of
      * day one with its lead in the handoff. Everything else about it is a pc.  */
     { "workstation", 1, 0,  1000, 0, false, 60, false, 48, 180 },
-    /* THE STATION'S OWN SUPPLY. Eight ways out of it, given rather than
+    /* THE STATION'S OWN SUPPLY. Sixteen ways out of it, given rather than
      * bought, and every light in the building traces back to this or it is
      * off. Not for sale for the same reason the handoff is not: it was here
-     * before you were. */
-    { "powercore", 8,   0,     0, 0, false,   0, false,  0,   0 },
+     * before you were.
+     *
+     * SIXTEEN AND NOT EIGHT, and the reason is a corner worth knowing about.
+     * With eight, a building that hung eight loads straight off the core had
+     * nowhere left to put a STRIP -- and a strip is the thing that gives you
+     * five more. So "buy a strip" was advice you could put yourself in a
+     * position not to be able to take, short of pulling a load off the core
+     * first. Sixteen does not remove the corner, it moves it out to where a
+     * player has had time to learn what a strip is for. */
+    { "powercore", 16,  0,     0, 0, false,   0, false,  0,   0 },
     /* AND THE JUNCTION. One conduit in, five out, and an out takes a load or
      * another strip -- which is the fork. It passes what arrives and no
      * more: a strip is not a substation. */
@@ -455,7 +463,10 @@ const char *site_err_text(int e)
                                "day in the diary, not a socket on the wall";
     case SITE_EJACK:    return "that socket is punched down to a jack and is "
                                "not a free port -- the pair is terminated";
-    case SITE_ENOMAINS: return "there is no free outlet on that room's wall -- "
+    case SITE_ENOMAINS: return "power comes down a conduit now, not out of a "
+                               "wall: `conduit core0:<n> <box>` or `feed <box>`. "
+                               "`conduits` says what each run is carrying";
+    case SITE_ENOWALL:  return "there is no free outlet on that room's wall -- "
                                "`outlet` puts another socket in, `outlets` says "
                                "which rooms have one free";
     case SITE_EUNPLUGGED: return "it is not plugged into anything -- there is no "
@@ -625,6 +636,31 @@ bool site_new(Site *s, const Building *b, uint64_t seed, long budget)
     int ws = install_dev(s, SDEV_WORKSTATION, mdf, "ws");
     if (ws < 0) return false;
     s->ws = ws;
+    /* AND THE RUN THE BUILDING CAME WITH, which is the power half of the
+     * patch lead the building came with. This machine is running on the first
+     * morning -- the desktop on its monitor is a thing you walk up to rather
+     * than boot -- so something has to be feeding it, and an engineer who
+     * arrives to a dark room with no way to see anything is not a game. One
+     * run, off the core, at no cost, exactly like the lead in the handoff.
+     * Everything else in the building is dark until conduit is pulled to it,
+     * which is the job. */
+    {
+        int pcore = site_dev_by_name(s, "core0");
+        if (pcore >= 0) {
+            /* IT COSTS NOTHING, AND IT MUST NOT BE ABLE TO FAIL FOR MONEY.
+             * Charging it and refunding it looked equivalent and is not: a
+             * site started with ninety pounds in it -- which --sitecheck does,
+             * to prove a switch cannot be bought -- could not afford the run,
+             * so the building came up with a dark workstation. The purse is
+             * lifted over the run and put back exactly as it was. */
+            long money = s->money, spent = s->spent;
+            s->money = money + 1000000;
+            int r = site_conduit(s, pcore, 0, ws);
+            if (r >= 0) s->cond[r].cost = 0;
+            s->money = money;
+            s->spent = spent;
+        }
+    }
     /* It is running. A landlord walks into the MDF on the first morning and
      * their own machine is on -- and site_power() can switch it off again
      * like any other box, with the same consequences. */
@@ -1055,6 +1091,29 @@ int site_feed(Site *s, int to)
         for (int p = lo; p < s->dev[i].nports; p++)
             if (conduit_from(s, i, p) < 0) { port = p; break; }
         if (port < 0) continue;                    /* every hole is in use  */
+        /* AND IT MUST HAVE THE HEADROOM. A strip is fed by a run that carries
+         * everything behind it, so hanging one more box off the nearest strip
+         * can trip the run above it -- and then the box you just paid to feed
+         * is dark along with everything else on that limb. A person would not
+         * do that; they would walk back to the core. Measured: without this,
+         * a gate standing up twenty-one machines chained strip to strip and
+         * took the whole tree down.
+         *
+         * The check walks from the candidate up to a core, adding this box's
+         * draw to every run on the way. */
+        int want = site_kind_watts(s->dev[to].kind);
+        bool room_for_it = true;
+        int at = i, guard2 = 0;
+        while (guard2++ <= SITE_MAX_CONDUIT) {
+            if (s->dev[at].kind == SDEV_POWERCORE) break;
+            int up = conduit_into(s, at);
+            if (up < 0) { room_for_it = false; break; }
+            int cap = s->cond[up].watts > 0 ? s->cond[up].watts : SITE_CONDUIT_W;
+            if (site_conduit_load(s, up) + want > cap) { room_for_it = false; break; }
+            at = s->cond[up].from;
+            if (at < 0 || at >= s->ndev) { room_for_it = false; break; }
+        }
+        if (!room_for_it) continue;
         int m = site_run_metres(s, s->dev[i].room, s->dev[to].room);
         if (m < 0) continue;                       /* no route for a cable  */
         if (best < 0 || m < best_m) { best = i; best_port = port; best_m = m; }
@@ -1093,7 +1152,9 @@ int site_conduit(Site *s, int from, int fport, int to)
     c->room_a = (uint16_t)s->dev[from].room;
     c->room_b = (uint16_t)s->dev[to].room;
     c->metres = m; c->cost = cost; c->watts = SITE_CONDUIT_W; c->live = 1;
-    return s->ncond++;
+    int made = s->ncond++;
+    site_mains_sync(s);
+    return made;
 }
 
 bool site_unconduit(Site *s, int run)
@@ -1103,6 +1164,7 @@ bool site_unconduit(Site *s, int run)
         s->err = SITE_ENODEV; return false;
     }
     s->cond[run].live = 0;
+    site_mains_sync(s);
     return true;
 }
 
@@ -1192,7 +1254,6 @@ static bool mains_attach(Site *s, int dev)
     if (!draws_mains(d->kind)) return true;
     if (d->mains) return true;
     if (d->room == BLD_NOROOM) return false;
-    if (site_room_outlets_free(s, d->room) <= 0) return false;
     d->mains = 1;
     /* AN APPLIANCE HAS NO BUTTON, so the plug is its button -- which is what
      * site.h has said about a switch since the pivot and what nothing could
@@ -1227,6 +1288,41 @@ static void mains_detach(Site *s, int dev, bool dirty)
             net_port_admin(s->net, d->node, p, false);
 }
 
+/* ============================== WHAT IS FED, ASKED OF THE CONDUIT TREE
+ *
+ * "Per room outlets will go away, all things will be powered by the new
+ * conduit power system."
+ *
+ * `mains` used to be a socket on a room's wall: a room had so many, a box
+ * took one, and running out of them was the limit. The limit is somewhere far
+ * more interesting now -- not how many holes this room was built with, but
+ * whether the run you pulled to it still has headroom once you hang another
+ * server off it.
+ *
+ * So `mains` is DERIVED. site_dev_fed() walks back up the tree to a core and
+ * refuses to get there through a run carrying more than it can; this turns
+ * that answer into the flag the rest of the file already reads, and every
+ * path that changes the tree calls it. A box that loses its feed goes down
+ * the way it always did -- unclean, with a filesystem to check -- because it
+ * is the same mains_detach() a pulled plug always used.
+ *
+ * That is the cascade, and it is the whole reason for the work: one run over
+ * its rating takes down everything behind it, including the switch three
+ * other rooms were reaching the network through. */
+void site_mains_sync(Site *s)
+{
+    for (int i = 0; i < s->ndev; i++) {
+        SiteDev *d = &s->dev[i];
+        if (!draws_mains(d->kind)) continue;
+        /* The handoff is the ISP's: their kit, their supply, and none of your
+         * conduit reaches it. */
+        if (d->kind == SDEV_UPLINK) continue;
+        bool fed = site_dev_fed(s, i, NULL);
+        if (fed && !d->mains) mains_attach(s, i);
+        else if (!fed && d->mains) mains_detach(s, i, true);
+    }
+}
+
 bool site_mains(Site *s, int dev, bool on)
 {
     s->err = SITE_OK;
@@ -1239,10 +1335,20 @@ bool site_mains(Site *s, int dev, bool on)
     if (d->kind == SDEV_UPLINK) { s->err = SITE_EFIXED; return false; }
     if (!!d->mains == on) return true;
     if (on) {
-        if (site_room_outlets_free(s, d->room) <= 0) { s->err = SITE_ENOMAINS; return false; }
-        return mains_attach(s, dev);
+        /* THERE IS NO WALL TO PLUG INTO ANY MORE. Power arrives down a run
+         * you pulled, so the way to make this box live is to pull one -- and
+         * the refusal names the verb, because a player who has been typing
+         * `mains` for a fortnight deserves the sentence rather than a no. */
+        s->err = SITE_ENOMAINS;
+        return false;
     }
+    /* AND PULLING THE PLUG IS PULLING THE RUN. One lead per box, so there is
+     * exactly one to pull, and everything that always happened to a machine
+     * whose plug came out still happens. */
+    for (int i = 0; i < s->ncond; i++)
+        if (s->cond[i].live && s->cond[i].to == dev) { site_unconduit(s, i); break; }
     mains_detach(s, dev, true);
+    site_mains_sync(s);
     return true;
 }
 
@@ -1363,11 +1469,12 @@ static int install_dev(Site *s, int kind, int room, const char *name)
     s->spent += site_kind_price(kind);
     int made = s->ndev++;
     /* AND IT GOES IN THE WALL, if there is a hole in it. Putting a box in a
-     * room is the act of putting a box in a room, and nobody sets a switch
-     * down and then forgets the lead. What this can fail to do is find a
-     * socket -- and that failure is the whole feature: d->mains stays 0, the
-     * button does nothing, and every surface in the game says why. */
-    mains_attach(s, made);
+     * room WAS the act of putting a box in a room, and that stopped being
+     * true when the wall stopped having sockets in it. A box arrives dark
+     * and stays dark until somebody pulls a run to it -- `conduit` or
+     * `feed` -- which is the job, and is why goods in is full of boxes with
+     * no lights on them on the morning of day one. */
+    site_mains_sync(s);
     return made;
 }
 
@@ -1478,7 +1585,12 @@ bool site_move(Site *s, int dev, int room)
     mains_detach(s, dev, false);
     s->dev[dev].room = (uint16_t)room;
     s->dev[dev].floor = s->b->rooms[room].floor;
-    mains_attach(s, dev);
+    /* AND CARRYING IT DOES NOT PLUG IT IN ANY MORE. It used to arrive and
+     * take one of the new room's sockets; the run that fed it is still
+     * attached to it wherever it went, so what decides whether it is live is
+     * the tree, and the tree is asked rather than guessed at. A box carried
+     * out of reach of its own run is a thing the model can say. */
+    site_mains_sync(s);
     /* WHOSE BOX IT IS WAS DECIDED WHEN IT WAS INSTALLED, and carrying it
      * somewhere does not change it. This used to reassign ownership from
      * whatever room the thing was put down in -- so a playtester bought a

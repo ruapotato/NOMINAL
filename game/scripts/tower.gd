@@ -4817,8 +4817,15 @@ func mains_at(dev: int) -> String:
 	var room := player_room()
 	if room != NOROOM:
 		_be_here(room)
-	var on: bool = not bool(sd.get("mains", false))
-	return site("mains %s %s" % [str(sd.name), "on" if on else "off"]).strip_edges()
+	# PUTTING IT BACK IS RUNNING A RUN. There is no wall to plug into any
+	# more -- `mains <box> on` refuses and says so -- so the lead in your hand
+	# does what the lead in your hand actually does: it pulls conduit from the
+	# nearest source with a hole in it. Taking it out is still `mains off`,
+	# which pulls the run and stops the machine the way a pulled plug always
+	# has.
+	if bool(sd.get("mains", false)):
+		return site("mains %s off" % str(sd.name)).strip_edges()
+	return site("feed %s" % str(sd.name)).strip_edges()
 
 
 func cable_at(dev: int, port: int) -> String:

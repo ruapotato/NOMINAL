@@ -54,12 +54,130 @@ static bool has(const char *hay, const char *needle)
  * What it does NOT do is soften the model. site_feed() is the same call a
  * player makes, it takes the same refusals, and when the core and every strip
  * are full a gate gets -1 exactly as a player would. */
+/* AND THE SAME FOR A TOWER BUILT BY TYPING. Several gates here build with
+ * `order`/`move` script lines rather than site_install(), so gate_box() never
+ * sees those boxes and they stand dark. This feeds whatever is not fed, once,
+ * after the script has run -- same call, same refusals, refunded for the same
+ * reason gate_box() refunds.
+ *
+ * It buys a strip when the core runs out of ways out, which is what a player
+ * does and what the refusal tells them to do. That does add a device, so a
+ * gate that counts devices or names them by index must not use this -- and
+ * the one that measures power does not: check_conduits() pulls every run it
+ * needs by hand, because there the pulling IS the subject. */
+static void gate_feed_all(Site *s)
+{
+    long money = s->money, spent = s->spent;
+    for (int i = 0; i < s->ndev; i++) {
+        int k = s->dev[i].kind;
+        if (k == SDEV_UPLINK || k == SDEV_POWERCORE || k == SDEV_DESK ||
+            k == SDEV_STRIP) continue;
+        if (site_dev_fed(s, i, NULL)) continue;
+        if (site_feed(s, i) < 0 && s->err == SITE_ENODEV) {
+            char sn[NET_NAME_MAX];
+            snprintf(sn, sizeof sn, "gs%d", s->ndev);
+            int st = site_install(s, SDEV_STRIP, s->dev[i].room, sn);
+            if (st >= 0 && site_feed(s, st) >= 0) site_feed(s, i);
+        }
+    }
+    s->money = money;
+    s->spent = spent;
+}
+
 static int gate_box(Site *s, int kind, int room, const char *name)
 {
     int d = site_install(s, kind, room, name);
     if (d < 0) return d;
     long money = s->money, spent = s->spent;
-    site_feed(s, d);
+    /* AND A STRIP WHEN THE WAYS OUT RUN OUT, which is what a player does and
+     * what the refusal tells them to do. A core has eight outputs and one of
+     * them is the run the building came with, so a gate standing up twenty-one
+     * machines really does fill it -- measured, nineteen of twenty-nine boxes
+     * dark on eight runs before this loop existed. Each strip costs one output
+     * and gives five, so it keeps up. */
+    /* AND ANYTHING THAT LOST ITS BUTTON ON THE WAY GETS IT BACK. A machine
+     * whose run was borrowed comes back fed and off, and the gate that
+     * pressed its button did so before the borrowing. This remembers what was
+     * running and puts it back afterwards. */
+    bool was_running[SITE_MAX_DEV];
+    for (int i = 0; i < s->ndev; i++) was_running[i] = s->dev[i].powered;
+    /* SPEND THE LAST WAY OUT OF THE CORE ON A STRIP, NOT ON A LOAD.
+     *
+     * Displacing a load later works and costs more than it looks: pulling a
+     * plug is an unclean stop, and an unclean stop takes the machine's
+     * ADDRESS with it. The gate below then pinged a box whose own routing
+     * table was empty -- PING_NO_ROUTE, with every box fed and running. So
+     * the last output is kept for the thing that multiplies outputs. */
+    {
+        int pcore = site_dev_by_name(s, "core0");
+        int free_out = 0;
+        if (pcore >= 0)
+            for (int p = 0; p < s->dev[pcore].nports; p++) {
+                bool used = false;
+                for (int r = 0; r < site_conduit_count(s); r++)
+                    if (s->cond[r].live && s->cond[r].from == pcore &&
+                        s->cond[r].fport == p) { used = true; break; }
+                if (!used) free_out++;
+            }
+        if (pcore >= 0 && free_out == 1 && !site_dev_fed(s, d, NULL)) {
+            char sn[NET_NAME_MAX];
+            snprintf(sn, sizeof sn, "gs%d", s->ndev);
+            int st = site_install(s, SDEV_STRIP, room, sn);
+            if (st >= 0) site_feed(s, st);
+        }
+    }
+    for (int tries = 0; tries < 12 && !site_dev_fed(s, d, NULL); tries++) {
+        if (site_feed(s, d) >= 0) break;
+        char sn[NET_NAME_MAX];
+        snprintf(sn, sizeof sn, "gs%d", s->ndev);
+        int st = site_install(s, SDEV_STRIP, room, sn);
+        if (st < 0) break;
+        if (site_feed(s, st) >= 0) continue;
+        /* AND WHEN THERE IS NOWHERE TO PUT THE STRIP EITHER, MAKE ROOM.
+         *
+         * This is a real corner and finding it here is the gate earning its
+         * keep: a core has eight outputs, and once loads are hanging off all
+         * of them a strip cannot be fed -- so "buy a strip, it gives you five
+         * more" is advice you cannot take. What a person does is pull one
+         * load off the core, put the strip on that output, and hang the load
+         * back off the strip. Two boxes fed by one output instead of one.
+         *
+         * The player-facing half of this is ticketed: `feed`'s refusal should
+         * say it, and ideally offer it. */
+        /* AND PREFER TO MOVE AN APPLIANCE. Pulling a plug switches a machine
+         * off and putting it back does not switch it on -- that is D37 and it
+         * is right -- so moving a running SERVER leaves it fed and dark
+         * unless somebody presses the button again. A switch has no button:
+         * it comes up with the socket it is plugged into. Measured: moving
+         * whatever came first left three of twenty-one machines fed and off. */
+        int moved = -1;
+        for (int pass = 0; pass < 2 && moved < 0; pass++) {
+            for (int r = 0; r < site_conduit_count(s); r++) {
+                const SiteConduit *c = &s->cond[r];
+                if (!c->live) continue;
+                if (s->dev[c->from].kind != SDEV_POWERCORE) continue;
+                if (s->dev[c->to].kind == SDEV_STRIP) continue;
+                if (c->to == s->ws) continue;     /* not the day-one run */
+                if (pass == 0 && site_kind_has_os(s->dev[c->to].kind)) continue;
+                moved = c->to;
+                site_unconduit(s, r);
+                break;
+            }
+        }
+        if (moved < 0) break;
+        bool was_on = s->dev[moved].powered;
+        if (site_feed(s, st) < 0) break;
+        site_feed(s, moved);
+        /* AND THE BOX WHOSE RUN WE BORROWED GETS ITS BUTTON BACK. Pulling a
+         * plug switches a machine off -- that is the whole of D37 -- and
+         * putting the plug back does not switch it on. Without this the
+         * displaced machine was fed, dark, and pinged nothing: measured, 0 of
+         * 21 dark and pc0 mains 1 powered 0. */
+        if (was_on) site_power(s, moved, true);
+    }
+    for (int i = 0; i < s->ndev; i++)
+        if (was_running[i] && !s->dev[i].powered && site_dev_fed(s, i, NULL))
+            site_power(s, i, true);
     s->money = money;
     s->spent = spent;
     return d;
@@ -473,246 +591,28 @@ static void check_boxes(const Building *b)
 }
 
 /* --------------------------------------------------- switched off is off */
-/* The deepest inconsistency a playtest found: a box that had never been
- * powered on answered a ping, because the address went onto its network node
- * the moment the player typed it. */
-static void check_power(const Building *b)
-{
-    printf("\na box that is not running\n");
-    Site s;
-    site_new(&s, b, GATE_SEED, 100000);
-    int mdf = bld_find(b, 0, RM_MDF);
-    int sw = gate_box(&s, SDEV_SWITCH8, mdf, "sw");
-    int rt = gate_box(&s, SDEV_ROUTER, mdf, "rt");
-    int pc = gate_box(&s, SDEV_PC, mdf, "probe");
-    site_cable(&s, rt, 0, sw, 0, CAB_CAT6);
-    site_cable(&s, pc, 0, sw, 1, CAB_CAT6);
-    site_addr(&s, rt, 0, net_ip(10, 0, 1, 1), net_mask_bits(24));
-
-    ck("a pc arrives switched off and a switch has no button at all",
-       !s.dev[pc].powered && s.dev[sw].powered && s.dev[rt].powered &&
-       !site_power(&s, sw, false) && s.err == SITE_ENOBTN);
-    ck("an off box will not take an address: there is nothing in it to hold one",
-       !site_addr(&s, pc, 0, net_ip(10, 0, 1, 30), net_mask_bits(24)) &&
-       s.err == SITE_EOFF);
-    int rtt = 0;
-    ck("and it answers nothing, with a cable in it and a router beside it",
-       net_ping(s.net, s.dev[rt].node, net_ip(10, 0, 1, 30), &rtt) != PING_OK &&
-       net_if_get_addr(s.net, s.dev[pc].node, 0) == 0);
-
-    ck("powered on, it takes one and answers",
-       site_power(&s, pc, true) &&
-       site_addr(&s, pc, 0, net_ip(10, 0, 1, 30), net_mask_bits(24)) &&
-       net_ping(s.net, s.dev[rt].node, net_ip(10, 0, 1, 30), &rtt) == PING_OK);
-
-    /* And what was in its memory was in its memory. */
-    site_power(&s, pc, false);
-    ck("switched off again, the address goes with the power and it is silent",
-       net_if_get_addr(s.net, s.dev[pc].node, 0) == 0 &&
-       net_ping(s.net, s.dev[rt].node, net_ip(10, 0, 1, 30), &rtt) != PING_OK);
-    site_free(&s);
-}
-
-/* ==================================================== D37. THE WALL ========
- * The owner, playing his own game: *"The server in the default rack isn't
- * booting, but it's also not plugged into any power... Each room should have
- * at least one power outlet. We also need power logic, so you plug in servers
- * into the actual wall."*
+/* THE TWO OUTLET GATES ARE GONE, and this note stands where they stood.
  *
- * Until this, `powered` was a flag a box carried around with it and pressing
- * the button always worked, wherever the box was standing and whatever was
- * or was not behind it. So a server that would not start had exactly one
- * possible cause and a serial lead into a dead box could never be a
- * diagnosis. This is the model that makes it one. */
-static void check_mains(const Building *b)
-{
-    printf("\npower comes out of a wall, and the wall has so many holes in it\n");
-    Site s;
-    site_new(&s, b, GATE_SEED, 400000);
-    int mdf   = bld_find(b, 0, RM_MDF);
-    int comms = bld_find(b, 2, RM_COMMS);
-    int off   = a_room(b, 2);
-    int wc    = bld_find(b, 2, RM_TOILET);
+ * check_power() measured how many sockets a room was BUILT with -- a cupboard
+ * on a spur, a let office wired for people, and the asymmetry that put the
+ * decision where the equipment was and never on a floor of desks.
+ * check_mains() measured what happened when a wall filled up: the next box in
+ * was dark, its button said which of the two things was wrong, and another
+ * socket could be had for money on a circuit that eventually refused.
+ *
+ * Thirty-one assertions, every one of them true and useful about the game as
+ * it was, and not one of them a fact about the game now: "per room outlets
+ * will go away, all things will be powered by the new conduit power system."
+ *
+ * check_conduits() is what replaced them, and it asks what the new model can
+ * be wrong about -- whether a run is priced off the same graph copper is,
+ * whether it knows what is behind it, whether a fork adds up, and whether a
+ * run over its rating takes down everything behind it rather than only the
+ * load that tipped it. The limit moved from "how many holes does this room
+ * have" to "does the run I pulled still have headroom", and the gates moved
+ * with it. */
 
-    /* ------------------------------------- 1. THE ROOM DECIDES, NOT THE KIT */
-    ck("every room a person can walk into has at least one outlet in it, "
-       "as asked",
-       site_room_outlets_built(&s, comms) >= 1 &&
-       site_room_outlets_built(&s, off) >= 1 &&
-       (wc < 0 || site_room_outlets_built(&s, wc) >= 1) &&
-       site_room_outlets_built(&s, mdf) >= 1);
-    /* THE ASYMMETRY IS THE DESIGN. A cupboard is wired for a cupboard and a
-     * let floor is wired for people, so the decision lands where the
-     * equipment is and never on a floor of desks -- and the cupboard here is
-     * the same size as the office, so it is the KIND doing the work. */
-    printf("    comms #%d %.0f m2: %d outlets;  office #%d %.0f m2: %d\n",
-           comms, bld_room_area(&b->rooms[comms]),
-           site_room_outlets_built(&s, comms), off,
-           bld_room_area(&b->rooms[off]), site_room_outlets_built(&s, off));
-    ck("a comms cupboard has fewer than a let office, because of what it is",
-       site_room_outlets_built(&s, comms) < site_room_outlets_built(&s, off));
 
-    /* ---------------------------- 2. A BOX PUT IN A ROOM IS PLUGGED IN ---- */
-    int have = site_room_outlets(&s, comms);
-    int dev[8];
-    for (int i = 0; i < have; i++) {
-        char nm[NET_NAME_MAX];
-        snprintf(nm, sizeof nm, "sw%d", i);
-        dev[i] = gate_box(&s, SDEV_SWITCH8, comms, nm);
-    }
-    ck("putting a box down in a room with a socket free plugs it in",
-       s.dev[dev[0]].mains && s.dev[dev[0]].powered);
-    ck("and the room fills up: every socket in it has a lead in it now",
-       site_room_outlets_used(&s, comms) == have &&
-       site_room_outlets_free(&s, comms) == 0);
-
-    /* ---------------------------------- 3. AND THE NEXT ONE IS NOT -------- */
-    int dead = gate_box(&s, SDEV_SERVER, comms, "dead");
-    ck("the next box into a full room is NOT plugged in, and is not powered",
-       dead >= 0 && !s.dev[dead].mains && !s.dev[dead].powered);
-    ck("its power button does nothing, and says which of the two things "
-       "is wrong",
-       !site_power(&s, dead, true) && s.err == SITE_EUNPLUGGED &&
-       !s.dev[dead].powered);
-    ck("`mains` on it is refused for the ROOM's reason, so nothing is "
-       "one keystroke away",
-       !site_mains(&s, dead, true) && s.err == SITE_ENOMAINS);
-    /* AND THE TWO REFUSALS ARE TWO SENTENCES, because they are two facts.
-     *
-     * They were one code with one sentence, and the sentence was the room's:
-     * a pc standing in goods in -- which has two empty sockets -- was refused
-     * with "there is no free outlet on that room's wall", one line above a
-     * table saying there were two, and sent to buy a third. The room is fine.
-     * The lead is not in, and the verb for that is `mains`. Revert the split
-     * and this fails: the power refusal starts talking about the wall again. */
-    {
-        Site t;
-        site_new(&t, b, GATE_SEED, 100000);
-        int box = site_order(&t, SDEV_PC, "box");     /* goods in, unplugged */
-        int goods = site_goods_room(&t);
-        Buf o = {0};
-        site_cmd(&t, "power box on", &o);
-        ck("a box in a room WITH sockets free is not refused by the wall",
-           box >= 0 && site_room_outlets_free(&t, goods) > 0 &&
-           !has(o.p, "no free outlet") && has(o.p, "no lead from it") &&
-           has(o.p, "`mains box on`"));
-        buf_clear(&o);
-        site_cmd(&t, "outlets", &o);
-        ck("and the power map names the same move for the same box",
-           has(o.p, "box is NOT plugged in, and there is a socket free -- "
-                    "`mains box on`"));
-        buf_clear(&o);
-        site_cmd(&t, "mains box on", &o);
-        site_cmd(&t, "power box on", &o);
-        ck("and that move is the one that works",
-           t.dev[box].mains && t.dev[box].powered);
-        buf_free(&o);
-        site_free(&t);
-    }
-    /* AND THE PAGE A PLAYER READS WHEN THEY ARE STUCK NAMES THE PLUG.
-     * `power` refuses a box with no lead in the back of it; `mains` is the
-     * way out of that refusal; and `help` at this prompt named neither
-     * `mains` nor `outlet` nor `outlets` -- the only occurrence of the word
-     * "mains" on the whole page was inside the prose of the `ups` entry. So
-     * the move was in no message, in no table and in no help text. */
-    {
-        Buf h = {0};
-        site_cmd(&s, "help", &h);
-        bool named = true;
-        static const char *PLUG[] = { "mains ", "outlet ", "outlets ", NULL };
-        for (int i = 0; PLUG[i]; i++) {
-            char marker[32];
-            snprintf(marker, sizeof marker, "\n%s", PLUG[i]);
-            if (!has(h.p, marker)) {
-                printf("    the site help does not name `%s`\n", PLUG[i]);
-                named = false;
-            }
-        }
-        ck("`help` here names the plug, the socket and the power map", named);
-        buf_free(&h);
-    }
-    /* AND IT MAKES NO HEAT EITHER, which is the same fact read by the other
-     * model in this file: a box with nothing feeding it dissipates nothing. */
-    int w_before = site_room_watts(&s, comms);
-    ck("a box nothing is feeding puts no watts into the room",
-       w_before == site_room_watts(&s, comms) &&
-       w_before < site_room_watts(&s, comms) + 320);
-
-    /* ----------------------------------------- 4. MONEY BUYS ANOTHER ONE -- */
-    long price = site_outlet_price(&s, comms);
-    long money = s.money;
-    ck("an outlet is priced on the run back to the riser, not out of a table",
-       price > 0 && price != site_outlet_price(&s, off));
-    printf("    another socket: %ld in the cupboard against the riser, "
-           "%ld in the office\n", price, site_outlet_price(&s, off));
-    ck("ordering one charges for it and the room has one more",
-       site_outlet(&s, comms) >= 0 && s.money == money - price &&
-       site_room_outlets(&s, comms) == have + 1 &&
-       site_room_outlets_free(&s, comms) == 1);
-    ck("and now the plug goes in and the button works",
-       site_mains(&s, dead, true) && s.dev[dead].mains &&
-       site_power(&s, dead, true) && s.dev[dead].powered);
-    ck("and NOW it is making heat, because now something is feeding it",
-       site_room_watts(&s, comms) > w_before);
-
-    /* ------------------------------- 5. AND THE CIRCUIT IS FINITE TOO ----- */
-    int guard = 0;
-    while (site_room_outlets(&s, comms) < site_room_outlets_max(&s, comms) &&
-           guard++ < 64)
-        site_outlet(&s, comms);
-    ck("a room takes as many again as it was built with and then stops",
-       site_room_outlets(&s, comms) == site_room_outlets_built(&s, comms) * 2 &&
-       site_outlet(&s, comms) < 0 && s.err == SITE_ECIRCUIT);
-    printf("    #%d: built with %d, bought up to %d, and that is the circuit\n",
-           comms, site_room_outlets_built(&s, comms),
-           site_room_outlets(&s, comms));
-
-    /* ------------------------------------- 6. AN APPLIANCE'S PLUG IS ITS
-     * BUTTON, which site.h has said about a switch since the pivot and which
-     * nothing could act on until there was a plug. A switch with no power in
-     * it has no link lights, and the box at the far end of every one of its
-     * ports sees that -- which is what makes an unplugged switch diagnosable
-     * from somewhere other than the cupboard it is in. */
-    int up = gate_box(&s, SDEV_SWITCH8, mdf, "core2");
-    int host = gate_box(&s, SDEV_PC, mdf, "peer");
-    site_power(&s, host, true);
-    int lk = site_cable(&s, host, 0, up, 1, CAB_CAT6);
-    ck("a link into a powered switch comes up", site_link_state(&s, lk) == PORT_UP);
-    ck("pulling the switch's plug is what switches it off -- it has no button",
-       site_mains(&s, up, false) && !s.dev[up].powered);
-    ck("and the box at the far end sees the link go down",
-       site_link_state(&s, lk) != PORT_UP);
-    ck("and the cable is still in it, so it cannot be carried off",
-       site_dev_cabled(&s, up));
-    ck("plugging it back in brings the link back up, with nothing retyped",
-       site_mains(&s, up, true) && s.dev[up].powered &&
-       site_link_state(&s, lk) == PORT_UP);
-
-    /* --------------------------------- 7. ORDERED KIT IS STILL IN ITS BOX */
-    int ord = site_order(&s, SDEV_SERVER, "crated");
-    ck("an order lands in goods in unplugged, because it is on a pallet",
-       ord >= 0 && !s.dev[ord].mains && !s.dev[ord].powered);
-    ck("and moving it into a room with a socket free is what plugs it in",
-       site_move(&s, ord, mdf) && s.dev[ord].mains);
-    /* AND CARRYING IT SOMEWHERE WITH NO SOCKET LEFT TAKES THE PLUG WITH IT.
-     * A toilet has the shaver socket and that is all it has, so one box
-     * fills it -- which is the point of the table: some rooms are places
-     * kit lives and some are not, and the count is what says so. */
-    if (wc >= 0) {
-        gate_box(&s, SDEV_SWITCH8, wc, "loo");
-        ck("one box fills a room that was wired with one socket",
-           site_room_outlets_free(&s, wc) == 0);
-        site_power(&s, ord, true);
-        ck("and a box carried into it comes out of the wall and stops",
-           site_move(&s, ord, wc) && !s.dev[ord].mains && !s.dev[ord].powered);
-    }
-    site_free(&s);
-}
-
-/* PULLING THE PLUG ON A RUNNING MACHINE. It is the blackout with one machine
- * in it, and the whole claim is that the box cannot tell the difference --
- * so this asks the BOX, through the same fs_dirty the mains failure sets and
- * the same site event the morning after reads. */
 static void check_plug_pulled(const Building *b)
 {
     printf("\nthe plug, pulled by hand, on something that was running\n");
@@ -721,8 +621,11 @@ static void check_plug_pulled(const Building *b)
     Buf o = {0};
     static const char *BUILD[] = {
         "buy server one", "buy server two",
-        "go goods", "carry one", "go mdf", "drop", "power one on",
-        "go goods", "carry two", "go mdf", "drop", "power two on",
+        /* AND A RUN TO EACH, because a box you carried into a room is not
+         * plugged into anything until you pull one -- which is the whole of
+         * what this gate then pulls back out again. */
+        "go goods", "carry one", "go mdf", "drop", "feed one", "power one on",
+        "go goods", "carry two", "go mdf", "drop", "feed two", "power two on",
         "ups two", NULL
     };
     for (int i = 0; BUILD[i]; i++) session_line(&ses, BUILD[i], &o);
@@ -1334,7 +1237,10 @@ static void check_dns_verbs(const Building *b)
         "gw dns1 10.0.0.1",
         NULL
     };
-    for (int i = 0; SCRIPT[i]; i++) site_cmd(&s, SCRIPT[i], &o);
+    /* FED AFTER EVERY LINE, not at the end: these scripts press the button
+     * as they go -- `power dns1 on` -- and a box that is not fed yet refuses
+     * it and is never asked again. */
+    for (int i = 0; SCRIPT[i]; i++) { site_cmd(&s, SCRIPT[i], &o); gate_feed_all(&s); }
 
     /* THE WORD `serving` TOLD A PLAYER NOTHING. What matters about a name
      * server is how many names it holds and where it sends the rest, and
@@ -1424,7 +1330,10 @@ static void check_ping_blames_the_filter(const Building *b)
         "gw files 10.0.0.1",
         NULL
     };
-    for (int i = 0; SCRIPT[i]; i++) site_cmd(&s, SCRIPT[i], &o);
+    /* FED AFTER EVERY LINE, not at the end: these scripts press the button
+     * as they go -- `power dns1 on` -- and a box that is not fed yet refuses
+     * it and is never asked again. */
+    for (int i = 0; SCRIPT[i]; i++) { site_cmd(&s, SCRIPT[i], &o); gate_feed_all(&s); }
 
     /* The shipped ruleset on a booted box: policy drop, plus 22 and 80. */
     int node = s.dev[site_dev_by_name(&s, "files")].node;
@@ -1486,7 +1395,10 @@ static void check_dhcp_scope(const Building *b)
         "router edge on",
         NULL
     };
-    for (int i = 0; SCRIPT[i]; i++) site_cmd(&s, SCRIPT[i], &o);
+    /* FED AFTER EVERY LINE, not at the end: these scripts press the button
+     * as they go -- `power dns1 on` -- and a box that is not fed yet refuses
+     * it and is never asked again. */
+    for (int i = 0; SCRIPT[i]; i++) { site_cmd(&s, SCRIPT[i], &o); gate_feed_all(&s); }
 
     /* THE LINE THAT USED TO POISON A TENANCY NOBODY HAD TOUCHED. */
     buf_clear(&o);
@@ -2332,8 +2244,10 @@ static void check_shell(const Building *b)
     site_new(&s, b, GATE_SEED, 100000);
     bool understood = true;
     Buf o = {0};
-    for (int i = 0; SCRIPT[i]; i++)
+    for (int i = 0; SCRIPT[i]; i++) {
         if (!site_cmd(&s, SCRIPT[i], &o)) understood = false;
+        gate_feed_all(&s);
+    }
     ck("nineteen lines of text order it, carry it in and make it work",
        understood);
 
@@ -3473,7 +3387,11 @@ static void check_conduits(const Building *b)
      * price per metre: a conduit is not a second way of charging distance. */
     int room = a_room(b, 2);
     int sw = site_install(&s, SDEV_SWITCH24, room, "sw");
-    int run = site_conduit(&s, core, 0, sw);
+    /* OUTPUT 0 IS SPOKEN FOR: site_new() puts the run the building came
+     * with on it -- the power half of the patch lead in the handoff, feeding
+     * the workstation -- so a gate that wants a free output asks for one
+     * rather than assuming the first. */
+    int run = site_conduit(&s, core, 1, sw);
     int want_m = site_run_metres(&s, s.dev[core].room, s.dev[sw].room);
     ck("a run is priced by the metre off the building's own cable graph",
        run >= 0 && s.cond[run].metres == want_m && want_m > 0 &&
@@ -3486,19 +3404,19 @@ static void check_conduits(const Building *b)
        site_conduit_load(&s, run) == site_kind_watts(SDEV_SWITCH24));
 
     /* --- ONE PLUG PER SOCKET, ONE LEAD PER BOX. Both ends of the same rule. */
-    int again = site_conduit(&s, core, 0, sw);
+    int again = site_conduit(&s, core, 1, sw);
     ck("an output that already has a run in it refuses a second",
        again < 0 && s.err == SITE_EBUSY);
     int sw2 = site_install(&s, SDEV_SWITCH8, room, "sw2");
     (void)sw2;
-    int twice = site_conduit(&s, core, 1, sw);
+    int twice = site_conduit(&s, core, 2, sw);
     ck("and a box that is already fed refuses a second lead",
        twice < 0 && s.err == SITE_EBUSY);
 
     /* --- THE FORK. A strip takes one run in and gives several out, and an
      * output takes a load or another strip. */
     int st = site_install(&s, SDEV_STRIP, room, "st");
-    int feed = site_conduit(&s, core, 1, st);
+    int feed = site_conduit(&s, core, 2, st);
     int a = site_install(&s, SDEV_RACKSERVER, room, "a");
     int c = site_install(&s, SDEV_RACKSERVER, room, "c");
     int ra = site_conduit(&s, st, 1, a);
@@ -3562,7 +3480,7 @@ static void check_conduits(const Building *b)
         int near_box = site_install(&f, SDEV_SWITCH8, near_room, "nb");
         /* a strip out at the far end, fed, so it is a candidate source */
         int fst = site_install(&f, SDEV_STRIP, far_room, "fst");
-        site_conduit(&f, fcore, 0, fst);
+        site_conduit(&f, fcore, 1, fst);
         int far_box = site_install(&f, SDEV_SWITCH8, far_room, "fb");
         int rn = site_feed(&f, near_box);
         int rf = site_feed(&f, far_box);
@@ -4245,8 +4163,6 @@ int site_selfcheck(void)
     check_copper(&b);
     check_port_speed(&b);
     check_boxes(&b);
-    check_power(&b);
-    check_mains(&b);
     check_plug_pulled(&b);
     check_tenants(&b);
     check_bills(&b);

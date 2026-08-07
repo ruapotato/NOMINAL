@@ -2175,6 +2175,15 @@ static bool isp_tower(Isp *t)
     if (!site_new(&t->s, &t->b, 7008, 60000)) return false;
     int mdf = t->s.dev[t->s.uplink].room;
     t->box = site_install(&t->s, SDEV_PC, mdf, "box1");
+    /* AND A RUN TO IT. Power comes down conduit now, so a box nothing feeds
+     * is dark -- see the note on gate_box() in core/sitecheck.c for why the
+     * gates pull their own and why it is refunded. */
+    if (t->box >= 0) {
+        long money = t->s.money, spent = t->s.spent;
+        site_feed(&t->s, t->box);
+        t->s.money = money;
+        t->s.spent = spent;
+    }
     if (t->box < 0) return false;
     if (!site_power(&t->s, t->box, true)) return false;
     /* WHATEVER IS ALREADY IN THE HANDOFF COMES OUT FIRST. On the day this

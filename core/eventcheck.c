@@ -42,10 +42,58 @@ static void ck(const char *what, bool ok)
     printf("  %-66s %s\n", what, ok ? "ok" : "FAIL");
 }
 
+/* POWER, FOR A GATE NOT MEASURING POWER. Every tower in this file is built by
+ * typing and every one of them is measuring something else -- a blackout, a
+ * disk wearing out, a run of copper degrading. Power used to come free with
+ * the room; it comes down a run you pull now, so after each line anything
+ * standing with nothing feeding it gets one, refunded. The price of power is
+ * measured in check_conduits() in core/sitecheck.c and nowhere else. Same
+ * call a player makes, same refusals; what is skipped is the typing.
+ *
+ * A strip is bought when the core runs out of ways out, and when the core is
+ * FULL of loads a load is moved onto the strip to make room -- which is the
+ * corner core/sitecheck.c's gate_box() found and is ticketed for the player
+ * to be told about. */
+static void autopower(Session *ses)
+{
+    Site *s = &ses->s;
+    long money = s->money, spent = s->spent;
+    for (int i = 0; i < s->ndev; i++) {
+        int k = s->dev[i].kind;
+        if (k == SDEV_UPLINK || k == SDEV_POWERCORE || k == SDEV_DESK ||
+            k == SDEV_STRIP) continue;
+        for (int tries = 0; tries < 12 && !site_dev_fed(s, i, NULL); tries++) {
+            if (site_feed(s, i) >= 0) break;
+            char sn[NET_NAME_MAX];
+            snprintf(sn, sizeof sn, "gs%d", s->ndev);
+            int st = site_install(s, SDEV_STRIP, s->dev[i].room, sn);
+            if (st < 0) break;
+            if (site_feed(s, st) >= 0) continue;
+            int moved = -1;
+            for (int r = 0; r < site_conduit_count(s); r++) {
+                const SiteConduit *c = &s->cond[r];
+                if (!c->live || s->dev[c->from].kind != SDEV_POWERCORE) continue;
+                if (s->dev[c->to].kind == SDEV_STRIP || c->to == s->ws) continue;
+                moved = c->to;
+                site_unconduit(s, r);
+                break;
+            }
+            if (moved < 0) break;
+            bool was_on = s->dev[moved].powered;
+            if (site_feed(s, st) < 0) break;
+            site_feed(s, moved);
+            if (was_on) site_power(s, moved, true);
+        }
+    }
+    s->money = money;
+    s->spent = spent;
+}
+
 static const char *say(Session *ses, const char *line, Buf *o)
 {
     buf_clear(o);
     session_line(ses, line, o);
+    autopower(ses);
     if (!o->len) buf_puts(o, "");
     return o->p ? o->p : "";
 }

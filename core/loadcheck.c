@@ -88,7 +88,35 @@ static int put(Site *s, int kind, int room, const char *name)
      * player's own refusals. */
     if (d >= 0) {
         long money = s->money, spent = s->spent;
-        site_feed(s, d);
+        /* A STRIP WHEN THE CORE RUNS OUT, AND A LOAD MOVED ONTO IT WHEN THE
+         * CORE IS FULL OF LOADS -- the same three moves core/sitecheck.c's
+         * gate_box() makes, for the same reason. Without the strip loop the
+         * calibration's floor servers went unfed, every file request in the
+         * building fell through to the internet, and the naive curve read 12%
+         * of the work done at nine tenancies with uplink:0 at 98%. That is a
+         * real tower with no power in it, not a network under load. */
+        for (int tries = 0; tries < 12 && !site_dev_fed(s, d, NULL); tries++) {
+            if (site_feed(s, d) >= 0) break;
+            char sn[NET_NAME_MAX];
+            snprintf(sn, sizeof sn, "ls%d", s->ndev);
+            int st = site_install(s, SDEV_STRIP, room, sn);
+            if (st < 0) break;
+            if (site_feed(s, st) >= 0) continue;
+            int moved = -1;
+            for (int r = 0; r < site_conduit_count(s); r++) {
+                const SiteConduit *c = &s->cond[r];
+                if (!c->live || s->dev[c->from].kind != SDEV_POWERCORE) continue;
+                if (s->dev[c->to].kind == SDEV_STRIP || c->to == s->ws) continue;
+                moved = c->to;
+                site_unconduit(s, r);
+                break;
+            }
+            if (moved < 0) break;
+            bool was_on = s->dev[moved].powered;
+            if (site_feed(s, st) < 0) break;
+            site_feed(s, moved);
+            if (was_on) site_power(s, moved, true);
+        }
         s->money = money;
         s->spent = spent;
     }
@@ -265,6 +293,44 @@ static void count_booted(Play *p)
     }
 }
 
+/* Feed anything with nothing feeding it: a strip when the core runs out of
+ * ways out, and a load moved onto the strip when the core is full of loads.
+ * The same three moves core/sitecheck.c's gate_box() makes. */
+static void play_power(Play *p)
+{
+    Site *s = &p->ses.s;
+    long money = s->money, spent = s->spent;
+    for (int i = 0; i < s->ndev; i++) {
+        int k = s->dev[i].kind;
+        if (k == SDEV_UPLINK || k == SDEV_POWERCORE || k == SDEV_DESK ||
+            k == SDEV_STRIP) continue;
+        for (int tries = 0; tries < 12 && !site_dev_fed(s, i, NULL); tries++) {
+            if (site_feed(s, i) >= 0) break;
+            char sn[NET_NAME_MAX];
+            snprintf(sn, sizeof sn, "ls%d", s->ndev);
+            int st = site_install(s, SDEV_STRIP, s->dev[i].room, sn);
+            if (st < 0) break;
+            if (site_feed(s, st) >= 0) continue;
+            int moved = -1;
+            for (int r = 0; r < site_conduit_count(s); r++) {
+                const SiteConduit *c = &s->cond[r];
+                if (!c->live || s->dev[c->from].kind != SDEV_POWERCORE) continue;
+                if (s->dev[c->to].kind == SDEV_STRIP || c->to == s->ws) continue;
+                moved = c->to;
+                site_unconduit(s, r);
+                break;
+            }
+            if (moved < 0) break;
+            bool was_on = s->dev[moved].powered;
+            if (site_feed(s, st) < 0) break;
+            site_feed(s, moved);
+            if (was_on) site_power(s, moved, true);
+        }
+    }
+    s->money = money;
+    s->spent = spent;
+}
+
 static void say(Play *p, const char *fmt, ...)
 {
     char line[NOM_ARG_MAX];
@@ -274,6 +340,14 @@ static void say(Play *p, const char *fmt, ...)
     va_end(ap);
     buf_clear(&p->o);
     session_line(&p->ses, line, &p->o);
+    /* AND WHATEVER IS STANDING THERE UNFED GETS A RUN. The played towers in
+     * this file are built by typing, and power comes down conduit now: without
+     * this the naive build's floor servers were never fed, every file request
+     * in the building fell through to the internet, and the curve read 12% of
+     * the work done at nine tenancies with uplink:0 at 98% busy. That is a
+     * tower with no power in it, not a network under load. Refunded, for the
+     * reason gate_box() gives in core/sitecheck.c. */
+    play_power(p);
 }
 
 /* Kit arrives at goods in and somebody carries it. Both hands: the drum goes

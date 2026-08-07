@@ -34,10 +34,54 @@ static void ck(const char *what, bool ok)
 }
 
 /* One line in, the whole answer out. */
+/* ================================== POWER, FOR A GATE NOT MEASURING POWER
+ *
+ * Every tower in this file is built by typing -- `buy`, `deliver`, `drop` --
+ * and every one of them is measuring something else: a lease, a vlan, a
+ * console, a day's rent. Power used to come free with the room: a box put
+ * down took one of that room's wall sockets and came up. It comes down a run
+ * you pull now, and a gate that had to design a power tree before it could
+ * ask about a DHCP pool would be a gate nobody could read.
+ *
+ * So after every line, anything standing in the building with nothing feeding
+ * it gets a run, refunded -- the price of power is measured in
+ * check_conduits() in core/sitecheck.c and nowhere else, and every money
+ * assertion in this file was written against a tower where power cost
+ * nothing. site_feed() is the player's own call and takes the player's own
+ * refusals; what is skipped is only the typing.
+ *
+ * AND ONE GATE TURNS IT OFF, because one gate is about exactly this: a box
+ * with no power in it, the owner's own "if it's not booting, it shouldn't
+ * offer a prompt at all". check_dead_console() sets AUTOPOWER false, pulls
+ * its own run when it is ready, and puts it back. */
+static bool AUTOPOWER = true;
+
+static void autopower(Session *ses)
+{
+    if (!AUTOPOWER) return;
+    Site *s = &ses->s;
+    long money = s->money, spent = s->spent;
+    for (int i = 0; i < s->ndev; i++) {
+        int k = s->dev[i].kind;
+        if (k == SDEV_UPLINK || k == SDEV_POWERCORE || k == SDEV_DESK ||
+            k == SDEV_STRIP) continue;
+        if (site_dev_fed(s, i, NULL)) continue;
+        if (site_feed(s, i) < 0 && s->err == SITE_ENODEV) {
+            char sn[NET_NAME_MAX];
+            snprintf(sn, sizeof sn, "gs%d", s->ndev);
+            int st = site_install(s, SDEV_STRIP, s->dev[i].room, sn);
+            if (st >= 0 && site_feed(s, st) >= 0) site_feed(s, i);
+        }
+    }
+    s->money = money;
+    s->spent = spent;
+}
+
 static const char *say(Session *ses, const char *line, Buf *o)
 {
     buf_clear(o);
     session_line(ses, line, o);
+    autopower(ses);
     if (!o->len) buf_puts(o, "");
     return o->p ? o->p : "";
 }
@@ -3230,32 +3274,23 @@ static void check_dead_console(int *passed, int *total)
 {
     P = passed; T = total;
     printf("\na serial lead into a box with no power in it\n");
+    AUTOPOWER = false;          /* this gate IS about a box nothing feeds */
     Session ses;
     if (!session_start(&ses, GATE_SEED, 200000)) { ck("a session starts", false); return; }
     Buf o = {0};
 
-    /* FILL A CUPBOARD, which is the owner's own example of the decision --
-     * "a cupboard with three switches and a server in it". The room is
-     * found by walking to it, so the fill is a build and not a fixture. */
+    /* A BOX NOTHING FEEDS, which is now the ordinary state of every box that
+     * has just been delivered. It used to take filling a cupboard's wall
+     * until the room had no socket left; power comes down a run you pull, so
+     * a box you have not pulled one to is dark and that is the whole of it.
+     * The room does not come into it any more, which is why this is four
+     * lines instead of fourteen. */
     int comms = -1;
     for (int i = 0; i < ses.b.nrooms; i++)
         if (ses.b.rooms[i].kind == RM_COMMS && ses.b.rooms[i].floor == 1) comms = i;
     if (comms < 0) { ck("the tower has a comms cupboard on floor 1", false); goto done; }
     char room[24];
     snprintf(room, sizeof room, "#%d", comms);
-    /* FILLED BY PLAYING, AND READ OUT OF `look`. Nothing here knows how many
-     * sockets a cupboard has: it carries switches in until the room says it
-     * has none left, which is the only way a player can know either -- and
-     * it is why this whole check builds against a tree that has no power
-     * model in it, and fails there, rather than failing to compile. */
-    for (int i = 0; i < 12; i++) {
-        char line[64];
-        snprintf(line, sizeof line, "buy switch8 fill%d", i);
-        say(&ses, line, &o);
-        snprintf(line, sizeof line, "deliver fill%d %s", i, room);
-        say(&ses, line, &o);
-        if (has(say(&ses, "look", &o), "0 free")) break;
-    }
     say(&ses, "buy server srv1", &o);
     char dl[64];
     snprintf(dl, sizeof dl, "deliver srv1 %s", room);
@@ -3263,10 +3298,11 @@ static void check_dead_console(int *passed, int *total)
     int d = site_dev_by_name(&ses.s, "srv1");
     if (d < 0) { ck("a server is delivered into the cupboard", false); goto done; }
 
-    ck("putting a box down in a full room says so, where the player is standing",
-       has(dropped, "NOWHERE TO PLUG IT IN"));
-    ck("and `look` in that room says the same about the box on the floor",
+    ck("a box carried into a room with no conduit to it is not plugged in",
+       !ses.s.dev[d].mains && !ses.s.dev[d].powered);
+    ck("and `look` in that room says so about the box on the floor",
        has(say(&ses, "look", &o), "NOT PLUGGED IN"));
+    (void)dropped;
 
     /* THE OWNER'S EXACT MOMENT: a server that will not start. */
     const char *btn = say(&ses, "power srv1 on", &o);
@@ -3291,20 +3327,33 @@ static void check_dead_console(int *passed, int *total)
     ck("and the button still does nothing from the console line either",
        has(say(&ses, "power on", &o), "nothing happens"));
 
-    /* THE POWER MAP, and buying a way out of it. */
-    ck("`outlets` names the room and the box standing in it with no socket",
-       has(say(&ses, "outlets", &o), "srv1 is NOT plugged in"));
+    /* THE LEAD COMES OUT FIRST. While the handset is on a box's console every
+     * line typed goes to THAT MACHINE, so `feed` was being offered to a
+     * server that is not running anything that could read it -- which is the
+     * right answer to the wrong question, and exactly what the gate above
+     * asserts about `uname -a`. A player pulls the lead before they go and
+     * do something to the building.
+     */
+    say(&ses, "unplug", &o);
+
+    /* AND THE WAY OUT OF IT IS A RUN. `mains <box> on` used to be the move
+     * and there is no wall to plug into any more, so it refuses and names
+     * the two verbs that do work -- because a player who has been typing
+     * `mains` for a fortnight deserves the sentence rather than a no. */
+    const char *nowall = say(&ses, "mains srv1 on", &o);
+    ck("`mains on` refuses, and names the verb that replaced it",
+       has(nowall, "conduit") && !ses.s.dev[d].mains);
     long money = ses.s.money;
-    const char *bought = say(&ses, "outlet", &o);
-    ck("`outlet` has one put in, today, and takes the money for it",
-       has(bought, "sparky") && ses.s.money < money);
-    ck("and the room says it has one free now",
-       has(say(&ses, "look", &o), "1 free"));
-    ck("and the plug goes in",
-       has(say(&ses, "mains srv1 on", &o), "wall socket"));
+    const char *ran = say(&ses, "feed srv1", &o);
+    ck("`feed` pulls a run to it, off the nearest source with a hole in it",
+       has(ran, "conduit") && ses.s.money < money);
+    ck("and the plug is in: the box is fed and its run says what it carries",
+       ses.s.dev[d].mains && has(say(&ses, "conduits", &o), "srv1"));
 
     /* AND NOW THE BOOT MESSAGES COME UP THE LINE, which is what the owner
-     * asked the no-connection prompt to be for. */
+     * asked the no-connection prompt to be for. The lead goes back in first,
+     * because it was pulled to run the conduit. */
+    say(&ses, "plug srv1", &o);
     const char *boot = say(&ses, "power on", &o);
     session_prompt(&ses, pr, sizeof pr);
     ck("the button works now, and the boot comes up the lead as it happens",
@@ -3352,6 +3401,7 @@ static void check_dead_console(int *passed, int *total)
        has(say(&ses, "carry srv1", &o), "power srv1 off") &&
        ses.carrying < 0);
 done:
+    AUTOPOWER = true;           /* every other gate wants its tower lit */
     buf_free(&o);
     session_end(&ses);
 }
