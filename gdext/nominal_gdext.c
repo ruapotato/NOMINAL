@@ -131,6 +131,29 @@ typedef struct {
 static Building *BLD(Station *st) { return st->ses_ok ? &st->ses.b : &st->bld; }
 static Site     *SITE(Station *st) { return st->ses_ok ? &st->ses.s : &st->site; }
 
+/* AND WHERE THE DESKTOP RUNS, which is the same question with the same
+ * answer. `st->desk` is the break-fix bench's workstation: a machine on
+ * nobody's network, which is right for `--desk` and for a run with no tower
+ * in it. In a SESSION the player's workstation is a box standing in the MDF
+ * with one gigabit socket, a plug in the wall and a lead in the handoff --
+ * `site_workstation()` -- and the desktop, the browser, the files app and
+ * the terminal have to be running on THAT, or the shop cannot be taken away
+ * by anything the player does to their own building. D40 named this as the
+ * gap; D41 is it being closed.
+ *
+ * The peer is set here for the same reason ensure_desk() sets it: `rcon` is
+ * how the break-fix half reaches the customer's machine, and it is reached
+ * FROM a computer. */
+static Machine *DESK(Station *st)
+{
+    Machine *m = st->ses_ok ? session_ws_machine(&st->ses) : NULL;
+    if (!m) return &st->desk;
+    m->peer = &st->m;
+    if (!m->peer_addr[0])
+        snprintf(m->peer_addr, sizeof m->peer_addr, "%s", st->desk.peer_addr);
+    return m;
+}
+
 static SN sn_class, sn_parent;
 
 static GDExtensionObjectPtr station_create(void *userdata,
@@ -401,7 +424,7 @@ static void m_sh_on(Station *st, const GDExtensionConstTypePtr *args, void *ret)
         buf_free(&out);
         return;
     }
-    kernel_run(which ? &st->m : &st->desk, line, &out);
+    kernel_run(which ? &st->m : DESK(st), line, &out);
     c_to_gdstring(ret, out.p ? out.p : "");
     buf_free(&out);
 }
@@ -467,7 +490,7 @@ static void m_de_requests(Station *st, const GDExtensionConstTypePtr *args, void
      * script error at all -- the second time I have made exactly this
      * mistake, so both new methods check. */
     if (!st->desk_up) { c_to_gdstring(ret, ""); return; }
-    VNode *n = vfs_lookup(&st->desk.disk, "/run/nomde/requests");
+    VNode *n = vfs_lookup(&DESK(st)->disk, "/run/nomde/requests");
     if (!n || n->kind != VN_FILE || !n->data.len) { c_to_gdstring(ret, ""); return; }
     Buf b; buf_init(&b);
     buf_put(&b, n->data.p, n->data.len);
@@ -483,7 +506,7 @@ static void m_de_apps(Station *st, const GDExtensionConstTypePtr *args, void *re
     (void)args;
     if (!st->desk_up) { c_to_gdstring(ret, ""); return; }
     Buf b; buf_init(&b);
-    VNode *d = vfs_lookup(&st->desk.disk, "/usr/share/applications");
+    VNode *d = vfs_lookup(&DESK(st)->disk, "/usr/share/applications");
     for (VNode *k = d ? d->child : NULL; k; k = k->next) {
         if (k->kind != VN_FILE) continue;
         size_t nl = strlen(k->name);
@@ -519,7 +542,7 @@ static void m_de_apps(Station *st, const GDExtensionConstTypePtr *args, void *re
 static void m_peer_addr(Station *st, const GDExtensionConstTypePtr *args, void *ret)
 {
     (void)args;
-    c_to_gdstring(ret, st->desk.peer_addr);
+    c_to_gdstring(ret, DESK(st)->peer_addr);
 }
 
 static void m_sh(Station *st, const GDExtensionConstTypePtr *args, void *ret)
@@ -874,9 +897,15 @@ static void m_site_devs(Station *st, const GDExtensionConstTypePtr *args, void *
     Buf o; buf_init(&o);
     for (int i = 0; i < s->ndev; i++) {
         const SiteDev *d = &s->dev[i];
-        buf_printf(&o, "%d %d %d %d %d %d %s %s\n", i, d->kind,
+        /* AND WHETHER IT IS ON, AND WHETHER IT IS IN THE WALL. Appended, so
+         * every existing reader of this dump is unaffected. The window needs
+         * both for the player's own workstation: a monitor attached to a box
+         * with no power in it shows nothing, and that nothing is the same
+         * diagnosis a serial lead into it gives. */
+        buf_printf(&o, "%d %d %d %d %d %d %s %s %d %d\n", i, d->kind,
                    (int)(int16_t)d->room, d->floor, d->tenant, d->nports,
-                   site_kind_name(d->kind), d->name);
+                   site_kind_name(d->kind), d->name, d->powered ? 1 : 0,
+                   d->mains ? 1 : 0);
     }
     c_to_gdstring(ret, o.p ? o.p : "");
     buf_free(&o);

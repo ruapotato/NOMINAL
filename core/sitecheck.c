@@ -71,8 +71,25 @@ static void check_empty(const Building *b)
     Site s;
     if (!site_new(&s, b, GATE_SEED, 100000)) { ck("a site starts", false); return; }
 
-    ck("one device exists, and it is the ISP's handoff",
-       s.ndev == 1 && s.dev[s.uplink].kind == SDEV_UPLINK && s.nlink == 0);
+    /* TWO devices exist on the first morning and the player bought neither:
+     * the ISP's socket on the MDF wall, and their own workstation on the desk
+     * in front of it with its lead in that socket. There is one link in the
+     * building and nobody paid for it. Everything else is theirs to build. */
+    ck("two devices exist: the ISP's handoff and the machine you sit at",
+       s.ndev == 2 && s.dev[s.uplink].kind == SDEV_UPLINK &&
+       site_workstation(&s) >= 0 &&
+       s.dev[site_workstation(&s)].kind == SDEV_WORKSTATION &&
+       s.dev[site_workstation(&s)].room == (uint16_t)bld_find(b, 0, RM_MDF));
+    ck("the workstation is in the handoff's only port, on a lead that cost nothing",
+       s.nlink == 1 && s.link[0].cost == 0 &&
+       site_dev_cabled(&s, site_workstation(&s)) &&
+       site_free_port(&s, s.uplink) < 0 &&
+       site_port_factory(&s, s.uplink, 0) == 0);
+    ck("it is running, plugged into the wall, and not for sale",
+       s.dev[site_workstation(&s)].powered && s.dev[site_workstation(&s)].mains &&
+       !site_kind_for_sale(SDEV_WORKSTATION) &&
+       site_install(&s, SDEV_WORKSTATION, bld_find(b, 0, RM_MDF), "ws2") < 0 &&
+       site_order(&s, SDEV_WORKSTATION, "ws3") < 0);
 
     /* Buy a machine, put it in an office, give it an address. It is not
      * plugged into anything, so it can reach nothing -- including the socket
@@ -369,7 +386,12 @@ static void check_boxes(const Building *b)
     for (int k = SDEV_SWITCH8; k < SDEV_KIND_COUNT; k++) {
         char nm[NET_NAME_MAX];
         snprintf(nm, sizeof nm, "box%d", k);
-        int d = site_install(&s, k, room, nm);
+        /* The player's own workstation is not orderable and is already
+         * standing in the MDF, so it is counted where it stands rather than
+         * bought -- the holes on the back of it are checked the same way as
+         * every other kind's. */
+        int d = (k == SDEV_WORKSTATION) ? site_workstation(&s)
+                                        : site_install(&s, k, room, nm);
         if (d < 0) { agree = false; continue; }
         if (net_node_ports(s.net, s.dev[d].node) != site_kind_ports(k) ||
             s.dev[d].nports != site_kind_ports(k)) agree = false;
@@ -508,11 +530,65 @@ static void check_mains(const Building *b)
        dead >= 0 && !s.dev[dead].mains && !s.dev[dead].powered);
     ck("its power button does nothing, and says which of the two things "
        "is wrong",
-       !site_power(&s, dead, true) && s.err == SITE_ENOMAINS &&
+       !site_power(&s, dead, true) && s.err == SITE_EUNPLUGGED &&
        !s.dev[dead].powered);
-    ck("`mains` on it is refused for the same reason, so nothing is "
+    ck("`mains` on it is refused for the ROOM's reason, so nothing is "
        "one keystroke away",
        !site_mains(&s, dead, true) && s.err == SITE_ENOMAINS);
+    /* AND THE TWO REFUSALS ARE TWO SENTENCES, because they are two facts.
+     *
+     * They were one code with one sentence, and the sentence was the room's:
+     * a pc standing in goods in -- which has two empty sockets -- was refused
+     * with "there is no free outlet on that room's wall", one line above a
+     * table saying there were two, and sent to buy a third. The room is fine.
+     * The lead is not in, and the verb for that is `mains`. Revert the split
+     * and this fails: the power refusal starts talking about the wall again. */
+    {
+        Site t;
+        site_new(&t, b, GATE_SEED, 100000);
+        int box = site_order(&t, SDEV_PC, "box");     /* goods in, unplugged */
+        int goods = site_goods_room(&t);
+        Buf o = {0};
+        site_cmd(&t, "power box on", &o);
+        ck("a box in a room WITH sockets free is not refused by the wall",
+           box >= 0 && site_room_outlets_free(&t, goods) > 0 &&
+           !has(o.p, "no free outlet") && has(o.p, "no lead from it") &&
+           has(o.p, "`mains box on`"));
+        buf_clear(&o);
+        site_cmd(&t, "outlets", &o);
+        ck("and the power map names the same move for the same box",
+           has(o.p, "box is NOT plugged in, and there is a socket free -- "
+                    "`mains box on`"));
+        buf_clear(&o);
+        site_cmd(&t, "mains box on", &o);
+        site_cmd(&t, "power box on", &o);
+        ck("and that move is the one that works",
+           t.dev[box].mains && t.dev[box].powered);
+        buf_free(&o);
+        site_free(&t);
+    }
+    /* AND THE PAGE A PLAYER READS WHEN THEY ARE STUCK NAMES THE PLUG.
+     * `power` refuses a box with no lead in the back of it; `mains` is the
+     * way out of that refusal; and `help` at this prompt named neither
+     * `mains` nor `outlet` nor `outlets` -- the only occurrence of the word
+     * "mains" on the whole page was inside the prose of the `ups` entry. So
+     * the move was in no message, in no table and in no help text. */
+    {
+        Buf h = {0};
+        site_cmd(&s, "help", &h);
+        bool named = true;
+        static const char *PLUG[] = { "mains ", "outlet ", "outlets ", NULL };
+        for (int i = 0; PLUG[i]; i++) {
+            char marker[32];
+            snprintf(marker, sizeof marker, "\n%s", PLUG[i]);
+            if (!has(h.p, marker)) {
+                printf("    the site help does not name `%s`\n", PLUG[i]);
+                named = false;
+            }
+        }
+        ck("`help` here names the plug, the socket and the power map", named);
+        buf_free(&h);
+    }
     /* AND IT MAKES NO HEAT EITHER, which is the same fact read by the other
      * model in this file: a box with nothing feeding it dissipates nothing. */
     int w_before = site_room_watts(&s, comms);
@@ -1783,17 +1859,22 @@ static void check_reports(const Building *b)
     snprintf(row, sizeof row, "%2d  core:1", lf);
     ck("a pulled run is no longer a row you can try to pull",
        !has(o.p, "core:0") && has(o.p, row));
+    /* Link 0 is the lead the building came with -- the workstation's, which
+     * came out of uplink:0 the moment `core` was cabled to it -- so the two
+     * runs this check laid are 1 and 2, and they are still 1 and 2. */
     ck("and the survivor kept its index, so `uncable <n>` still means what "
-       "it meant", lf == 1 && site_link_state(&s, lf) == PORT_UP);
+       "it meant", lu == 1 && lf == 2 && site_link_state(&s, lf) == PORT_UP);
     buf_clear(&o);
-    site_cmd(&s, "uncable 1", &o);
-    ck("`uncable 1` pulls the run the table numbered 1",
+    char pull[32];
+    snprintf(pull, sizeof pull, "uncable %d", lf);
+    site_cmd(&s, pull, &o);
+    ck("`uncable 2` pulls the run the table numbered 2",
        site_link_state(&s, lf) == PORT_NOCABLE);
     buf_clear(&o);
     site_cmd(&s, "links", &o);
     ck("with everything pulled, the table says so and still counts the money",
        has(o.p, "0 m of cable in the building") &&
-       has(o.p, "2 pulled runs") && has(o.p, want));
+       has(o.p, "3 pulled runs") && has(o.p, want));
     buf_free(&o);
     site_free(&s);
 }

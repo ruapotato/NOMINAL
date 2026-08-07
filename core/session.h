@@ -121,6 +121,15 @@ void session_end(Session *ses);
  * understood still reaches it untouched. */
 bool session_line(Session *ses, const char *line, Buf *out);
 
+/* THE MACHINE THE PLAYER SITS AT, and the device it is. The desktop, the
+ * browser and the files app in the 3D window run on this Machine -- the box
+ * standing in the MDF, on the player's own network -- rather than on a
+ * machine of the window's own. That is what makes the supplier's website a
+ * thing the player can lose by pulling a lead out. NULL / -1 with no
+ * session. See site_workstation() in core/site.h. */
+Machine *session_ws_machine(Session *ses);
+int      session_ws_dev(const Session *ses);
+
 /* What to print in front of the cursor. Never lies about where you are:
  * two playtesters lost track and both reported it. */
 void session_prompt(const Session *ses, char *out, size_t cap);

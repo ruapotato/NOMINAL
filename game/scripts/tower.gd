@@ -1495,7 +1495,11 @@ func site_devs() -> Array:
 			continue
 		out.append({"i": int(f[0]), "kind": int(f[1]), "room": int(f[2]),
 			"floor": int(f[3]), "tenant": int(f[4]), "nports": int(f[5]),
-			"kindname": f[6], "name": f[7]})
+			"kindname": f[6], "name": f[7],
+			# The button and the plug, both facts and both the model's. A
+			# monitor on a box with no power in it shows nothing.
+			"powered": f.size() > 8 and int(f[8]) != 0,
+			"mains": f.size() > 9 and int(f[9]) != 0})
 	return out
 
 
@@ -2078,7 +2082,17 @@ func _place_devices() -> void:
 	# This is a read of site_devs(). There is no list of devices in this file.
 	_on_floor = {}
 	var on_floor := _on_floor
+	# THE PLAYER'S OWN WORKSTATION IS NOT A BOX IN A RACK, and since D41 it is
+	# a device in the site like everything else -- so it would be drawn twice:
+	# once as a grey 1U brick in the frames, and once as the desk it actually
+	# is. It is drawn below, by _workstation(), from the room the SITE says it
+	# is standing in. Carry it into a cupboard on floor six and that is where
+	# the desk, the monitor and the desktop on it are.
+	var ws := {}
 	for d in site_devs():
+		if str(d.kindname) == "workstation":
+			ws = d
+			continue
 		if d.i == carrying:
 			continue                          # it is in your hands, not in the room
 		var room: int = d.room
@@ -2142,8 +2156,26 @@ func _place_devices() -> void:
 				+ _rot_xz(Vector3(0.12, 0.1, 1.15), float(slot.yaw))
 			devices[devices.size() - 1] = td
 
+	# WHERE THE DESK IS is where the site says the machine is. It starts in the
+	# MDF; a player who picks it up and puts it down on floor six has moved
+	# their desk, and the fallback is only for a run with no session in it.
+	var ws_room: int = mdf
+	if not ws.is_empty() and int(ws.room) >= 0 and int(ws.room) < rooms.size():
+		ws_room = int(ws.room)
+	if ws_room >= 0 and not (not ws.is_empty() and int(ws.i) == carrying):
+		_workstation(ws_room, ws)
+	# AND WHETHER THERE IS A PICTURE ON IT. The site says whether that box has
+	# power in it; a monitor on a machine that has not got any shows nothing,
+	# and the nothing is the diagnosis.
+	var lit: bool = ws.is_empty() or bool(ws.get("powered", true))
+	_desk_lit(lit)
+	# AND IF YOU WERE SITTING AT IT WHEN THE POWER WENT, YOU ARE NOT NOW.
+	# Leaving a live desktop full-screen on a machine the site says is off
+	# would be the one lie this project cannot afford: the window would be
+	# showing a shell on a box with no power in it.
+	if not lit and desk_open():
+		stand_up()
 	if mdf >= 0:
-		_workstation(mdf)
 		# the customer's machine, racked: 4U of it, and the phone's whole
 		# lesson lives on the back of it -- serial yes, display no.
 		var frames := racks_in_fill_order(mdf)
@@ -2464,7 +2496,7 @@ const DESK_H := 0.74
 
 var _ws_node: Node3D = null
 
-func _workstation(room: int) -> void:
+func _workstation(room: int, ws := {}) -> void:
 	var taken: Array = []
 	for i in racks_in(room):
 		var f: Vector3 = racks[i].get("face", Vector3(0, 0, 1))
@@ -2551,8 +2583,14 @@ func _workstation(room: int) -> void:
 	var size := Vector3(absf(t1.x - t0.x), 0.45, absf(t1.z - t0.z))
 	size.x = max(size.x, 0.20)
 	size.z = max(size.z, 0.20)
-	_add_device("workstation", 0, true, true, mn, size,
-		Color("#3a3f46"), b.face, 0, -1)
+	# THE DEVICE, AND IT IS THE SITE'S DEVICE. Until D41 this was added with
+	# `nports 0, site_i -1`: a picture of a computer, on nobody's network, with
+	# no socket on the back of it and nothing the model knew about. It is a box
+	# now -- one gigabit port you can plug a lead into, an index the session
+	# understands, and a name the tower prompt answers to -- so `cable ws core`
+	# in the window and at the prompt are the same act on the same object.
+	_add_device(str(ws.get("name", "workstation")), 0, true, true, mn, size,
+		Color("#3a3f46"), b.face, int(ws.get("nports", 0)), int(ws.get("i", -1)))
 	# YOU WALK UP TO THE SCREEN, not to the box under the desk. What counts as
 	# "in reach" is where a person stands to use the thing, so the reach point
 	# is the monitor and the seat in front of it.
@@ -2782,6 +2820,15 @@ func _desk_build() -> void:
 	# A QuadMesh faces +Z; the screen has to face out of the monitor.
 	desk_screen.rotation = Vector3(0, float(_desk_at.yaw), 0)
 	add_child(desk_screen)
+
+
+# THE PICTURE ON THE GLASS, or no picture. The desktop keeps running either
+# way -- it is a real machine and the site, not this file, decides whether it
+# has power -- and what this does is stop drawing it, which is what a monitor
+# on a dead box looks like from the doorway.
+func _desk_lit(on: bool) -> void:
+	if desk_screen != null:
+		desk_screen.visible = on
 
 
 # A box centred on `c`, `w` across the face, `h` up it and `d` through it.
@@ -3150,11 +3197,41 @@ func desk_open() -> bool:
 	return desk_layer != null
 
 
+# IS THERE A COMPUTER UNDER THIS DESK, AND IS IT ON? Both are the site's
+# facts, and neither is this file's to assume. Since D41 the desktop runs on
+# the box in the room: carry that box out and the monitor has nothing behind
+# it; pull its plug and the screen is dark, which is exactly what a monitor on
+# a dead machine shows and exactly what a serial lead into one gives you.
+func _ws_dev() -> Dictionary:
+	for d in site_devs():
+		if str(d.kindname) == "workstation":
+			return d
+	return {}
+
+
+func _ws_live() -> bool:
+	var d := _ws_dev()
+	if d.is_empty():
+		return true              # no session: the bench's own workstation
+	return bool(d.get("powered", true)) and int(d.i) != carrying
+
+
 func sit_down() -> String:
 	if desk_layer != null:
 		return "you are already sitting at it."
 	if not with_desktop:
 		return "the desktop is not built in this run."
+	var w := _ws_dev()
+	if not w.is_empty() and int(w.i) == carrying:
+		return "the machine that drives this screen is in your hands."
+	if not w.is_empty() and not bool(w.get("powered", true)):
+		if not bool(w.get("mains", true)):
+			return ("the screen is dark. %s is not plugged into anything -- "
+				+ "there is no lead\n  from it to a wall socket, so its button "
+				+ "does nothing. `outlets` says\n  which rooms have one free.") \
+				% str(w.name)
+		return ("the screen is dark: %s is switched off. `power %s on`.") \
+			% [str(w.name), str(w.name)]
 	_desk_build()
 	if desk_de == null:
 		return "there is no monitor here to sit at."
@@ -4808,7 +4885,13 @@ func _dismiss_report() -> void:
 func _site_sig() -> String:
 	var s := ""
 	for d in site_devs():
-		s += "%d:%d:%d," % [int(d.i), int(d.room), int(d.nports)]
+		# AND WHETHER IT IS ON. `power ws off` moves no box and changes no
+		# port, so the signature did not notice it -- and the desktop stayed
+		# painted on the monitor of a machine the site said was dead, which is
+		# exactly the picture this whole record exists to stop being possible.
+		s += "%d:%d:%d:%d%d," % [int(d.i), int(d.room), int(d.nports),
+			1 if bool(d.get("powered", false)) else 0,
+			1 if bool(d.get("mains", false)) else 0]
 	return s + "|%d" % carrying
 
 
@@ -4890,7 +4973,15 @@ func _reconcile_phone() -> void:
 		return
 	_phone_dev = dev
 	_phone_lead = want_lead
-	phone.plug(dev, want_lead)
+	# AND THE TWO NUMBERS ARE NOT THE SAME NUMBER. `plugged` off ses_state is
+	# the SITE's device index; phone.plug() takes an index into `devices`,
+	# which is this file's own list of things you can walk up to -- it holds
+	# props the site has never heard of (the patch panels, the customer's rack
+	# server) and, since D41, draws the player's workstation out of order
+	# because it is a desk rather than a box in a frame. The two happened to
+	# line up until something was placed out of order, and then `plug core`
+	# put the handset on the box after it.
+	phone.plug(dev_of_site(dev), want_lead)
 	# AND IT CALLS THE FAR END WHAT THE SESSION CALLS IT. A switch and a
 	# router are appliances: the lead reaches a management line, not a shell,
 	# and `plug core` says so while the handset was answering "serial console
@@ -4898,6 +4989,18 @@ func _reconcile_phone() -> void:
 	# project has spent the day removing. SES_MGMT is 2 in core/session.h.
 	if int(st.get("where", 0)) == 2 and str(phone.status).begins_with("serial console on "):
 		phone.status = "management line on " + str(phone.status).substr(18)
+
+
+# THE SITE'S INDEX FOR A BOX, TRANSLATED INTO THIS FILE'S. -1 if the view is
+# not drawing it -- which is a real state: a box in your hands is not standing
+# in a room.
+func dev_of_site(site_i: int) -> int:
+	if site_i < 0:
+		return -1
+	for i in range(devices.size()):
+		if int(devices[i].get("site", -1)) == site_i:
+			return i
+	return -1
 
 
 func _rebuild_devices() -> void:

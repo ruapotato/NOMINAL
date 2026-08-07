@@ -484,11 +484,20 @@ func _init() -> void:
 						% [where, put])
 				else:
 					ok("carried to the MDF and the site agrees: " + put)
-	# nothing is cabled on day one: that is the job
-	if t.site_links().size() != 0:
-		fail("something was already cabled before the player touched it")
+	# ONE LEAD IS IN ON DAY ONE and it is the one the building came with: the
+	# player's own workstation, in the handoff's only port. Everything else is
+	# the job -- and that lead comes out the moment they cable their first
+	# switch to the handoff, which is D41's whole point.
+	var day_one: Array = t.site_links()
+	if day_one.size() != 1:
+		fail("day one holds %d links, not the one the building came with"
+			% day_one.size())
 	else:
-		ok("and not one of them is plugged into anything yet")
+		var a: String = str(t.devices[_device(t, "ws")].name) if _device(t, "ws") >= 0 else "?"
+		if int(day_one[0].a) != _site_i(t, "ws") and int(day_one[0].b) != _site_i(t, "ws"):
+			fail("the one lead on day one is not the workstation's: %s" % str(day_one[0]))
+		else:
+			ok("day one: one lead, %s to the handoff, and nothing else" % a)
 
 	# ---- doors are gaps you can get through: every door edge must be clear
 	var blocked := 0
@@ -506,7 +515,7 @@ func _init() -> void:
 	if mob == null:
 		fail("no mobile debugger")
 	else:
-		var ws := _device(t, "workstation")
+		var ws := _device(t, "ws")
 		var srv := _device(t, "rack server")
 		var pp := _device(t, "patch panel")
 		if ws < 0 or srv < 0 or pp < 0:
@@ -1055,7 +1064,10 @@ func _init() -> void:
 	# ---- [E] AT THE WORKSTATION IS THE 2D DESKTOP. Walk to it -- so a desk
 	# nobody can reach fails here rather than looking fine in a screenshot --
 	# and open it. This is last because de.gd installs a ticket when it starts.
-	var wsi := _device(t, "workstation")
+	# `ws` is the name the SITE gives the player's own machine (D41: it is a
+	# device in the model with a port on the back, not a picture of one), and
+	# the window labels it with the model's name like every other box.
+	var wsi := _device(t, "ws")
 	if wsi < 0:
 		fail("there is no workstation in the MDF")
 	else:
@@ -1736,6 +1748,13 @@ func _route_rooms(t: Node3D, from: int, to: int) -> Array:
 		var c: Vector3 = t.room_centre(b)
 		out.append(Vector2(c.x, c.z))
 	return out
+
+
+# The SITE index of a named box, which is what a link's ends are numbered in.
+func _site_i(t: Node3D, want: String) -> int:
+	for d in t.site_devs():
+		if str(d.name) == want: return int(d.i)
+	return -1
 
 
 func _device(t: Node3D, want: String) -> int:

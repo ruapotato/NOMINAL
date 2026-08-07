@@ -39,24 +39,35 @@
  * money burnt; cat 6 between a router and a core switch's uplink is ten
  * gigabit for a third of the price of fibre, right up until the run passes
  * fifty-five metres and it quietly becomes a gigabit. */
+/* AND WHETHER THE SHOP SELLS IT, which is a separate fact from the price and
+ * was inferred from it until D41. Three of these seven cost the landlord
+ * nothing and none of the three is his to order: the handoff belongs to the
+ * ISP, a desk belongs to the tenant, and the workstation was already in the
+ * MDF when he got the keys. `sale` is that fact written down, so the
+ * catalogue page and site_install()'s refusal ask the same question. */
 static const struct {
-    const char *name; int ports; int price; int slow_mb; int nfast;
+    const char *name; int ports; int price; int slow_mb; int nfast; bool sale;
 } KIT[SDEV_KIND_COUNT] = {
     /* the ISP's socket. Not for sale, and site_isp() rate-limits it to the
      * circuit the landlord has actually bought. */
-    { "uplink",   1,    0, 10000, 0 },
-    { "switch8",  8,  120,  1000, 0 },  /* a cheap access switch, all copper */
-    { "switch24", 24, 400,  1000, 2 },  /* ...and its SFP+ pair, 22 and 23   */
-    { "router",   4,  650, 10000, 0 },  /* four sockets; as many vlans as you like  */
-    { "pc",       1,  480,  1000, 0 },
-    { "server",   2, 1350,  1000, 0 },  /* a gigabit NIC, and it is the one
-                                         * a flat tower falls over on        */
+    { "uplink",   1,    0, 10000, 0, false },
+    { "switch8",  8,  120,  1000, 0, true  },  /* a cheap access switch, all copper */
+    { "switch24", 24, 400,  1000, 2, true  },  /* ...and its SFP+ pair, 22 and 23   */
+    { "router",   4,  650, 10000, 0, true  },  /* four sockets; as many vlans as you like */
+    { "pc",       1,  480,  1000, 0, true  },
+    { "server",   2, 1350,  1000, 0, true  },  /* a gigabit NIC, and it is the one
+                                                * a flat tower falls over on        */
     /* A DESK IS NOT FOR SALE. It is the tenant's own computer and it costs
      * the landlord nothing; what the landlord sells is the port it is
      * plugged into and the network behind that port. It is here in the
      * catalogue anyway because it is a device in the site with a card in it
      * and a name, and everything else in this file has to be able to say so. */
-    { "desk",     1,    0,  1000, 0 },
+    { "desk",     1,    0,  1000, 0, false },
+    /* AND NEITHER IS THE PLAYER'S OWN WORKSTATION, for the same kind of
+     * reason and a different one: it is theirs already. One gigabit socket,
+     * an operating system, and it is standing in the MDF on the morning of
+     * day one with its lead in the handoff. Everything else about it is a pc.  */
+    { "workstation", 1, 0,  1000, 0, false },
 };
 
 int site_kind_port_mb(int kind, int port)
@@ -81,6 +92,10 @@ int site_kind_price(int kind)
 bool site_kind_is_switch(int kind)
 {
     return kind == SDEV_SWITCH8 || kind == SDEV_SWITCH24;
+}
+bool site_kind_for_sale(int kind)
+{
+    return (kind >= 0 && kind < SDEV_KIND_COUNT) && KIT[kind].sale;
 }
 
 /* ------------------------------------------------------ the industries
@@ -160,7 +175,7 @@ int site_tenant_rent_pct(int k)
 }
 bool site_kind_has_os(int kind)
 {
-    return kind == SDEV_PC || kind == SDEV_SERVER;
+    return kind == SDEV_PC || kind == SDEV_SERVER || kind == SDEV_WORKSTATION;
 }
 int site_kind_by_name(const char *name)
 {
@@ -344,8 +359,11 @@ const char *site_err_text(int e)
                                "day in the diary, not a socket on the wall";
     case SITE_EJACK:    return "that socket is punched down to a jack and is "
                                "not a free port -- the pair is terminated";
-    case SITE_ENOMAINS: return "it is not plugged into anything -- there is no "
-                               "free outlet on that room's wall";
+    case SITE_ENOMAINS: return "there is no free outlet on that room's wall -- "
+                               "`outlet` puts another socket in, `outlets` says "
+                               "which rooms have one free";
+    case SITE_EUNPLUGGED: return "it is not plugged into anything -- there is no "
+                                 "lead from it to a wall socket. `mains <box> on`";
     case SITE_ECIRCUIT: return "that room is on one final circuit and it is "
                                "full -- there is no more power to bring into "
                                "it";
@@ -371,12 +389,20 @@ int site_hosts_in_mask(uint32_t mask)
 /* The zone and the pages of the in-game internet. Content, in net_sites.c. */
 int  net_site_hosts(int i, const char **host, const char **ip);
 
+/* Both defined below, and both are day-one work: the workstation is installed
+ * the way any box is installed, and its lead is run the way any lead is run. */
+static int install_dev(Site *s, int kind, int room, const char *name);
+static int cable_run(Site *s, int a, int aport, int b, int bport, CableKind k,
+                     int m, int cost, int jack);
+
 bool site_new(Site *s, const Building *b, uint64_t seed, long budget)
 {
     memset(s, 0, sizeof *s);
     s->b = b;
     s->seed = seed;
     s->uplink = -1;
+    s->ws = -1;
+    s->yielded = -1;
     s->money = budget;
     if (!b || b->floors <= 0) return false;
     int mdf = bld_find(b, 0, RM_MDF);
@@ -442,6 +468,53 @@ bool site_new(Site *s, const Building *b, uint64_t seed, long budget)
     s->day = 0;
     s->isp_mb = SITE_ISP_MB_DEFAULT;
     net_port_rate(s->net, d->node, 0, s->isp_mb);
+
+    /* ------------------------------------------- AND THE MACHINE YOU SIT AT
+     *
+     * The second thing that exists, and until D41 it did not exist here at
+     * all: the window drew a desk in the MDF and ran the desktop on a machine
+     * that was on nobody's network. So the shop could not be taken away by
+     * anything the player did to their own building, and the owner's escape
+     * -- *"if your core switch dies, you can wire up your main box to use the
+     * uplink"* -- was something you could only perform with a pc you had
+     * bought.
+     *
+     * WHERE IT STANDS is the MDF. The owner said "the server room" and this
+     * building generator does not make one on the ground floor: floor 0 is
+     * goods in, the MDF, a comms cupboard, plant and the riser. The MDF is
+     * the building's frame room -- it is where the handoff is, it is wired
+     * for a frame with eight sockets, and it is the room a landlord's own
+     * machine would be in. It also makes the day-one lead a three metre patch
+     * lead between two boxes on the same wall rather than a fiction.
+     *
+     * AND IT IS IN THE HANDOFF'S ONLY PORT. That is the whole shape of it:
+     * the first switch the player buys cannot reach the internet until they
+     * have unplugged their own machine and re-cabled it, so they perform the
+     * escape route forwards, on day one, before they need it. The lead costs
+     * nothing because it was there before they were. */
+    int ws = install_dev(s, SDEV_WORKSTATION, mdf, "ws");
+    if (ws < 0) return false;
+    s->ws = ws;
+    /* It is running. A landlord walks into the MDF on the first morning and
+     * their own machine is on -- and site_power() can switch it off again
+     * like any other box, with the same consequences. */
+    if (!site_power(s, ws, true)) return false;
+    int lead = cable_run(s, ws, 0, s->uplink, 0, CAB_CAT5E, SITE_PATCH_M, 0, -1);
+    if (lead < 0) return false;
+    s->link[lead].factory = 1;
+    /* AND IT IS ADDRESSED FOR THAT SOCKET, because somebody set it up before
+     * the player got here: the /30's other address, the ISP as the way out
+     * and the ISP as the resolver. Nothing else in the building has an
+     * address until the player writes one.
+     *
+     * This is also the second half of the day-one decision. The handoff's
+     * /30 has exactly two usable addresses and the workstation is sitting on
+     * the one a router wants, so a player who builds their tower properly
+     * takes it back -- and their own machine then needs an address on the
+     * network they built, like everything else they will ever plug in. */
+    site_addr(s, ws, 0, s->wan_you, s->wan_mask);
+    site_gateway(s, ws, s->wan_isp);
+    site_resolver(s, ws, s->wan_isp);
 
     /* --------------------------------------------------- who is moving in */
     /* One tenancy per Room.tenant, each with an arrival day and a set of
@@ -584,6 +657,24 @@ bool site_new(Site *s, const Building *b, uint64_t seed, long budget)
         when += 1 + (s->tenant[i].drops + 3) / 6 + rng_range(&r, 0, 2);
     }
     return true;
+}
+
+int site_port_factory(const Site *s, int dev, int port)
+{
+    if (!s || dev < 0 || dev >= s->ndev) return -1;
+    for (int i = 0; i < s->nlink; i++) {
+        const SiteLink *l = &s->link[i];
+        if (l->cable < 0 || !l->factory) continue;
+        if ((l->a == dev && l->aport == port) ||
+            (l->b == dev && l->bport == port)) return i;
+    }
+    return -1;
+}
+
+int site_workstation(const Site *s)
+{
+    return (s && s->ws >= 0 && s->ws < s->ndev &&
+            s->dev[s->ws].kind == SDEV_WORKSTATION) ? s->ws : -1;
 }
 
 void site_free(Site *s)
@@ -847,7 +938,13 @@ int site_outlet(Site *s, int room)
 }
 
 /* ---------------------------------------------------------- installation */
-int site_install(Site *s, int kind, int room, const char *name)
+/* A BOX IN A ROOM, whoever put it there. site_install() is the player buying
+ * one and refuses anything the shop does not sell; this is the same act with
+ * the till taken out of it, for the two devices that are standing in the
+ * building before the player has bought anything -- a tenant's desk and the
+ * player's own workstation. Splitting it is what lets site_install() refuse a
+ * kind that site_new() must still be able to place. */
+static int install_dev(Site *s, int kind, int room, const char *name)
 {
     s->err = SITE_OK;
     if (kind <= SDEV_UPLINK || kind >= SDEV_KIND_COUNT) { s->err = SITE_ENODEV; return -1; }
@@ -897,6 +994,20 @@ int site_install(Site *s, int kind, int room, const char *name)
      * button does nothing, and every surface in the game says why. */
     mains_attach(s, made);
     return made;
+}
+
+int site_install(Site *s, int kind, int room, const char *name)
+{
+    s->err = SITE_OK;
+    /* WHAT THE SHOP DOES NOT SELL, THE BUILDING DOES NOT ACCEPT AN ORDER FOR.
+     * A tenant's desk is the exception and it is not an exception to the
+     * rule: `serve` installs one when a tenancy moves in, which is the
+     * tenant carrying their own computer in, and the price they pay for it
+     * is not the landlord's business. */
+    if (!site_kind_for_sale(kind) && kind != SDEV_DESK) {
+        s->err = SITE_ENODEV; return -1;
+    }
+    return install_dev(s, kind, room, name);
 }
 
 /* ------------------------------------------------------------- goods in */
@@ -1027,6 +1138,22 @@ int site_port_jack(const Site *s, int dev, int port)
  * lead in the faceplate at the other end today. `serve` walks this too, so a
  * tenancy's twenty drops cannot quietly eat the riser you paid to have put
  * in last week. */
+bool site_port_used(const Site *s, int dev, int port)
+{
+    if (!s || dev < 0 || dev >= s->ndev) return false;
+    if (port < 0 || port >= s->dev[dev].nports) return false;
+    return port_taken(s, dev, port);
+}
+
+int site_ports_used(const Site *s, int dev)
+{
+    if (!s || dev < 0 || dev >= s->ndev) return 0;
+    int n = 0;
+    for (int p = 0; p < s->dev[dev].nports; p++)
+        if (port_taken(s, dev, p)) n++;
+    return n;
+}
+
 int site_free_port(const Site *s, int dev)
 {
     if (dev < 0 || dev >= s->ndev) return -1;
@@ -1063,9 +1190,24 @@ static int cable_run(Site *s, int a, int aport, int b, int bport, CableKind k,
     return s->nlink++;
 }
 
+/* THE ONE LEAD THAT GIVES WAY. See SiteLink.factory in site.h: the building
+ * came with the player's workstation in the handoff's only port, and putting
+ * anything else in that port pulls it. Returns the device that just lost its
+ * lead, or -1, so the verb above can say so in words -- nothing here is
+ * allowed to happen quietly. */
+static int yield_factory(Site *s, int dev, int port)
+{
+    int i = site_port_factory(s, dev, port);
+    if (i < 0) return -1;
+    int other = s->link[i].a == dev ? s->link[i].b : s->link[i].a;
+    site_uncable(s, i);
+    return other;
+}
+
 int site_cable(Site *s, int a, int aport, int b, int bport, CableKind k)
 {
     s->err = SITE_OK;
+    s->yielded = -1;
     if (a < 0 || a >= s->ndev || b < 0 || b >= s->ndev) { s->err = SITE_ENODEV; return -1; }
     /* THE PORT YOU HAVE NOT GOT. The first limit a growing floor meets, and
      * it is not a rule about difficulty: an eight-port switch has eight
@@ -1080,6 +1222,12 @@ int site_cable(Site *s, int a, int aport, int b, int bport, CableKind k)
 
     int m = site_run_metres(s, s->dev[a].room, s->dev[b].room);
     if (m < 0) { s->err = SITE_ENOROUTE; return -1; }
+    /* AND THE LEAD THE BUILDING CAME WITH COMES OUT. Only that one, only
+     * while it is still the lead the building came with, and the caller is
+     * told which box it was. */
+    int y = yield_factory(s, a, aport);
+    if (y < 0) y = yield_factory(s, b, bport);
+    s->yielded = y;
     /* Note what is NOT here: any check that the run is short enough. The
      * cable is bought, laid and paid for, and whether it carries anything is
      * a question for the copper. */
@@ -1221,7 +1369,11 @@ bool site_power(Site *s, int dev, bool on)
      * in a cupboard with no lead in the back of it booted when you pressed
      * the button -- which is the one thing a serial console into a dead
      * machine is supposed to be able to tell you is false. */
-    if (on && !d->mains) { s->err = SITE_ENOMAINS; return false; }
+    /* NOT THE ROOM'S PROBLEM. This used to set SITE_ENOMAINS, whose sentence
+     * is about a room with no socket left in it -- so pressing the button on
+     * a box that simply has no lead in the back of it blamed a wall that was
+     * half empty and named neither the fault nor `mains`. */
+    if (on && !d->mains) { s->err = SITE_EUNPLUGGED; return false; }
     if (!!d->powered == on) return true;
     d->powered = on ? 1 : 0;
     if (!on) { power_down(s, dev); return true; }
@@ -1899,9 +2051,18 @@ void site_dump_outlets(const Site *s, int floor, Buf *out)
         for (int i = 0; i < s->ndev; i++) {
             if (s->dev[i].room != r || s->dev[i].kind == SDEV_DESK) continue;
             if (s->dev[i].mains) continue;
-            buf_printf(out, "      %s is NOT plugged in -- `outlet` here, or "
-                            "carry it somewhere with a socket free\n",
-                       s->dev[i].name);
+            /* AND WHAT TO DO ABOUT IT DEPENDS ON THE WALL, which this line
+             * did not look at: it told a player standing in a room with two
+             * empty sockets to buy a third or carry the box somewhere else.
+             * A socket free is a lead away. */
+            if (site_room_outlets_free(s, r) > 0)
+                buf_printf(out, "      %s is NOT plugged in, and there is a "
+                                "socket free -- `mains %s on`\n",
+                           s->dev[i].name, s->dev[i].name);
+            else
+                buf_printf(out, "      %s is NOT plugged in -- `outlet` here, or "
+                                "carry it somewhere with a socket free\n",
+                           s->dev[i].name);
         }
     }
     for (int i = 0; i < s->nsock; i++) spent += s->sock[i].cost;
@@ -2608,7 +2769,27 @@ bool site_cmd(Site *s, const char *line, Buf *out)
             "                               second -- which is how a router gets a WAN\n"
             "                               side and a LAN side\n"
             "power <dev> on|off             a pc and a server arrive switched off.\n"
-            "                               Nothing of an off box is on the network\n"
+            "                               Nothing of an off box is on the network.\n"
+            "                               The button does NOTHING on a box with no\n"
+            "                               lead to the wall -- see `mains`\n"
+            /* THE THREE VERBS THIS PAGE DID NOT HAVE. `power` refuses a box
+             * that is not plugged in, and until now the way out of that
+             * refusal was in neither the message nor this list: `mains`,
+             * `outlet` and `outlets` were verbs the site answered to and no
+             * help text anywhere named. */
+            "mains <dev> on|off             the plug itself: put the box into a free\n"
+            "                               socket in the room it is standing in, or\n"
+            "                               pull it out. An appliance has no button,\n"
+            "                               so for a switch and a router this IS the\n"
+            "                               button -- and pulling the plug on a\n"
+            "                               running machine is a blackout with one\n"
+            "                               machine in it\n"
+            "outlets [<floor>|all]          every room kit can live in and what its\n"
+            "                               wall has: built, added, in use, free, and\n"
+            "                               what another socket there would cost\n"
+            "outlet <room>                  have one more put in, today, for money.\n"
+            "                               A room takes as many again as it was\n"
+            "                               wired with and then its circuit is full\n"
             "gw <dev> <ip>                  default gateway\n"
             "router <dev> on|off            forward between its interfaces\n"
             "subif <dev> <nic> <vlan> <ip>/<bits>   a tagged subinterface on a card\n"
@@ -2636,6 +2817,13 @@ bool site_cmd(Site *s, const char *line, Buf *out)
             "resolve <dev> <name>           a real DNS query\n"
             "dnsd <dev>                     a name server on that box, and what\n"
             "                               it will answer\n"
+            /* AND THE OTHER HALF OF THAT PAIR. The page told a player how to
+             * serve names and how to fetch a page, and not how to serve one
+             * -- `httpd` has been a verb since the web host trade existed. */
+            "httpd <dev> [port]             a web server on that box, serving what\n"
+            "                               is on its disk. 80 unless you say\n"
+            "                               otherwise -- and `get` is how you check\n"
+            "                               it from another\n"
             "dns <dev> <name> <ip>          one name in that server's zone. A name\n"
             "                               it has not got goes to the resolver\n"
             "                               that box is configured with\n"
@@ -3047,6 +3235,23 @@ bool site_cmd(Site *s, const char *line, Buf *out)
         bool on = strcmp(t[2], "on") == 0;
         if (!site_power(s, d, on)) {
             buf_printf(out, "%s\n", site_err_text(s->err));
+            /* AND THE MOVE, from where the box is really standing. `power`
+             * and `mains` are two verbs and the refusal from one used to
+             * name neither: a pc in goods in, which has two free sockets,
+             * was told there was no free outlet on that room's wall. */
+            if (s->err == SITE_EUNPLUGGED) {
+                int free = site_room_outlets_free(s, s->dev[d].room);
+                if (free > 0)
+                    buf_printf(out, "  #%d has %d socket%s free: `mains %s on`, "
+                                    "then `power %s on`.\n",
+                               s->dev[d].room, free, free == 1 ? "" : "s",
+                               s->dev[d].name, s->dev[d].name);
+                else
+                    buf_printf(out, "  #%d has no socket free: `outlet %s` puts "
+                                    "one in, or carry it\n  somewhere that has "
+                                    "one. `outlets` says which rooms do.\n",
+                               s->dev[d].room, t[1]);
+            }
             return true;
         }
         buf_printf(out, "%s is %s\n", s->dev[d].name, on ? "on" : "off");

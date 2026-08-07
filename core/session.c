@@ -384,7 +384,7 @@ static void do_power(Session *ses, int dev, bool on, Buf *out)
          * Pressing the button on a box with no lead in the back of it does
          * nothing, and saying "nothing happened" without saying why is the
          * complaint that produced D37. */
-        if (ses->s.err == SITE_ENOMAINS) {
+        if (ses->s.err == SITE_EUNPLUGGED || ses->s.err == SITE_ENOMAINS) {
             buf_printf(out, "you press the button on %s and nothing happens. No "
                             "fans, no lights.\n", d->name);
             dead_box_why(ses, dev, out);
@@ -836,10 +836,16 @@ static void dev_line(const Session *ses, int i, Buf *out)
     char ip[20];
     buf_printf(out, "    %-12s %-9s", d->name, site_kind_name(d->kind));
     if (site_kind_is_switch(d->kind)) {
-        int used = 0;
-        for (int p = 0; p < d->nports; p++)
-            if (net_port_state(ses->s.net, d->node, p) != PORT_NOCABLE) used++;
-        buf_printf(out, " %d/%d ports used", used, d->nports);
+        /* HOW MANY LEADS ARE IN IT, off the site's own link table -- the same
+         * source the "next free port" at the end of this line reads. It used
+         * to count ports whose NETSTACK state was not NOCABLE, and an
+         * unplugged switch has its ports administratively down rather than
+         * unoccupied: so a switch8 sitting in goods in, in its box, with
+         * nothing in it, printed "8/8 ports used   next free port switch8:0"
+         * -- two facts about one box disagreeing in one line, in the room
+         * every delivery lands in. See site_port_used(). */
+        buf_printf(out, " %d/%d ports used", site_ports_used(&ses->s, i),
+                   d->nports);
     } else {
         /* THE FIRST ADDRESS IT HAS, ON WHICHEVER CARD.
          *
@@ -905,6 +911,21 @@ static void dev_line(const Session *ses, int i, Buf *out)
     int free = site_free_port(&ses->s, i);
     if (free >= 0) buf_printf(out, "   next free port %s:%d", d->name, free);
     else buf_printf(out, "   all %d ports used", d->nports);
+    /* AND THE ONE HOLE THAT IS FULL AND STILL AVAILABLE. On the first morning
+     * the handoff's only port has the lead the building came with in it, and
+     * a player reading "all 1 ports used" would conclude, reasonably and
+     * wrongly, that there is nowhere to put their first switch. */
+    for (int p = 0; p < d->nports; p++) {
+        int fl = site_port_factory(&ses->s, i, p);
+        if (fl < 0) continue;
+        const SiteLink *l = &ses->s.link[fl];
+        int far = l->a == i ? l->b : l->a;
+        buf_printf(out, "\n      %s:%d has the lead the building came with in it, "
+                        "to %s. Cable\n      anything else there and that lead "
+                        "comes out.",
+                   d->name, p, ses->s.dev[far].name);
+        break;
+    }
     buf_putc(out, '\n');
 }
 
@@ -1734,7 +1755,7 @@ static void do_plug(Session *ses, const char *what, bool hdmi, Buf *out)
     if (!need_here(ses, what, &d, out)) return;
     const SiteDev *dev = &ses->s.dev[d];
     if (hdmi) {
-        if (dev->kind == SDEV_PC || dev->kind == SDEV_SERVER)
+        if (site_kind_has_os(dev->kind))
             buf_printf(out, "%s: there is a display output on the back of it, and\n"
                             "  over this line all you would get is [graphical display].\n"
                             "  A picture is for somebody standing there. Use the serial\n"
@@ -1746,7 +1767,11 @@ static void do_plug(Session *ses, const char *what, bool hdmi, Buf *out)
     }
     ses->plugged = d;
     ses->hdmi = false;
-    if (dev->kind == SDEV_PC || dev->kind == SDEV_SERVER) {
+    /* A BOX WITH AN OPERATING SYSTEM IN IT, whichever kind -- the pc and the
+     * server the player buys, and the workstation they already had. Asking
+     * for the two kinds by name left the machine the player actually sits at
+     * being offered a switch's management line. */
+    if (site_kind_has_os(dev->kind)) {
         Machine *m = ses->mach[d];
         /* ============================ A SERIAL LEAD INTO A DEAD MACHINE ==
          * IT DOES NOT OFFER A PROMPT, and that is the entire point. A serial
@@ -2004,6 +2029,13 @@ static void spool_plug(Session *ses, const char *arg, Buf *out)
     }
     if (port < 0) {
         port = site_free_port(&ses->s, d);
+        /* THE HANDOFF HAS ONE HOLE AND THE BUILDING CAME WITH A LEAD IN IT.
+         * `cable core uplink` on day one is the move this whole feature is
+         * for, so a box whose only occupied port is holding the factory lead
+         * is not a box with no ports left. See SiteLink.factory. */
+        if (port < 0)
+            for (int p = 0; p < ses->s.dev[d].nports && port < 0; p++)
+                if (site_port_factory(&ses->s, d, p) >= 0) port = p;
         if (port < 0) {
             buf_printf(out, "refused: nothing went in -- %s has no free port left, "
                             "all %d are used.\n  That is a purchase, not a "
@@ -2021,7 +2053,14 @@ static void spool_plug(Session *ses, const char *arg, Buf *out)
                    ses->s.dev[d].nports - 1, port);
         return;
     }
-    if (net_port_state(ses->s.net, ses->s.dev[d].node, port) != PORT_NOCABLE) {
+    /* A PORT WITH SOMETHING ALREADY IN IT, and one exception to it: the lead
+     * the building came with. See SiteLink.factory in site.h -- the player's
+     * own workstation is in the handoff's only port on the morning they get
+     * the keys, and the first switch they buy has to go in that port. Refusing
+     * would make it an error message; instead the lead comes out, and
+     * site_cable() says whose it was the moment the run is made. */
+    if (net_port_state(ses->s.net, ses->s.dev[d].node, port) != PORT_NOCABLE &&
+        site_port_factory(&ses->s, d, port) < 0) {
         buf_printf(out, "refused: nothing went in -- %s port %d already has a "
                         "cable in it.\n  `links` says which, `uncable <n>` pulls "
                         "it out.\n", ses->s.dev[d].name, port);
@@ -2092,6 +2131,17 @@ static void spool_plug(Session *ses, const char *arg, Buf *out)
     const SiteLink *lk = &ses->s.link[l];
     PortState st = site_link_state(&ses->s, l);
     ses->spool_left -= lk->metres;
+    /* AND IF SOMETHING CAME OUT TO MAKE ROOM, SAY SO BEFORE THE RUN IS
+     * REPORTED. It is the lead the building came with, it is the player's own
+     * workstation on the end of it, and the machine they order hardware on
+     * has just left the network. Nothing about that is allowed to be quiet. */
+    if (ses->s.yielded >= 0 && ses->s.yielded < ses->s.ndev) {
+        const SiteDev *y = &ses->s.dev[ses->s.yielded];
+        buf_printf(out, "the lead the building came with comes out of that port to "
+                        "make room:\n  %s is off the network now, and the shop on "
+                        "it with it. `cable %s <box>`\n  is how it comes back.\n",
+                   y->name, y->name);
+    }
     buf_printf(out, "link %d: %s:%d to %s:%d, %d m of %s through the tray, %d "
                     "paid, %s", l, ses->s.dev[ses->cab_dev].name, ses->cab_port,
                ses->s.dev[d].name, port, lk->metres,
@@ -2997,9 +3047,39 @@ bool session_start(Session *ses, uint64_t seed, long budget)
     /* The ground floor and the one above it, as the 3D shell starts. */
     ses->floors = ses->b.floors < 2 ? ses->b.floors : 2;
     site_boxes(&ses->s, session_box, ses);
+    /* AND THE MACHINE THE PLAYER SITS AT IS ALREADY RUNNING.
+     *
+     * Every other box in this game gets its Machine the first time somebody
+     * presses its button, because 13.5 MB a box is the reason a tower of
+     * three hundred is affordable. The workstation is the exception and it is
+     * not an exception to the rule: the site says it is switched on, the
+     * desktop on the monitor in the MDF is a thing you walk up to rather than
+     * boot, and `netsite_pin` inside box_of() is what puts its card on the
+     * player's own network -- which is the whole point of D41. One machine,
+     * from the first second, and the browser on it can reach the supplier
+     * exactly as far as the copper does. */
+    int ws = site_workstation(&ses->s);
+    if (ws >= 0) box_of(ses, ws, NULL);
     ses->where = SES_BODY;
     ses->up = true;
     return true;
+}
+
+/* THE MACHINE THE PLAYER SITS AT, for a front end that has a screen. The
+ * desktop, the browser and the files app run on THIS, not on a machine of
+ * their own -- so when its lead comes out of the handoff the shop goes with
+ * it. NULL only if there is no session. */
+struct Machine_ *session_ws_machine(Session *ses)
+{
+    if (!ses || !ses->up) return NULL;
+    int ws = site_workstation(&ses->s);
+    return ws >= 0 ? ses->mach[ws] : NULL;
+}
+
+/* And the device index behind it, for a view that wants to draw the box. */
+int session_ws_dev(const Session *ses)
+{
+    return (ses && ses->up) ? site_workstation(&ses->s) : -1;
 }
 
 void session_end(Session *ses)

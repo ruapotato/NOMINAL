@@ -671,12 +671,19 @@ func unplug() -> void:
 		tower._phone_lead = ""
 
 
-# Does this device actually paint a picture right now? The workstation is up
-# by construction; the customer's machine is up only when it booted.
+# Does this device actually paint a picture right now? The workstation paints
+# one while the site says it has power; the customer's machine only when it
+# booted.
 func _has_picture(d: Dictionary) -> bool:
 	if tower == null or tower.machine == null:
 		return false
 	if d.which == 0:
+		# THE PLAYER'S OWN WORKSTATION, and since D41 it is a box in a room
+		# with a plug in the wall rather than a machine that is up by
+		# construction. A display lead into a computer with no power in it
+		# shows what a display lead into any dead computer shows.
+		if tower.has_method("_ws_live"):
+			return bool(tower._ws_live())
 		return true
 	if d.which == 1:
 		return bool(tower.machine.booted())

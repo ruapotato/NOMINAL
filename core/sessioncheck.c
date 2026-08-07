@@ -47,6 +47,40 @@ static bool has(const char *hay, const char *needle)
     return hay && strstr(hay, needle) != NULL;
 }
 
+/* THE MACHINE THE PLAYER SITS AT, found the way a player finds it: by the name
+ * printed in `look`. core has site_workstation() for this and it is used
+ * everywhere else; this gate asks by name deliberately, so that the whole
+ * section below COMPILES against a tree that has no workstation in its model
+ * and fails there on the assertions rather than at the linker. D37's power
+ * gate was written the same way and for the same reason. */
+static int ws_dev(const Session *ses)
+{
+    for (int i = 0; i < ses->s.ndev; i++)
+        if (strcmp(ses->s.dev[i].name, "ws") == 0) return i;
+    return -1;
+}
+
+/* ONE BOX'S LINE OUT OF A ROOM FULL OF THEM. `look` prints a line per device,
+ * and since D41 the MDF has the player's own workstation standing in it and
+ * running -- so "does this output claim an OS is running" stopped being a
+ * question about the box under test. Copies the line `name` starts, so the
+ * assertion is about that box and no other. */
+static const char *dev_row(const char *out, const char *name, char *buf, size_t cap)
+{
+    buf[0] = 0;
+    if (!out) return buf;
+    char want[80];
+    snprintf(want, sizeof want, "    %s ", name);
+    const char *p = strstr(out, want);
+    if (!p) return buf;
+    const char *e = strchr(p, '\n');
+    size_t n = e ? (size_t)(e - p) : strlen(p);
+    if (n >= cap) n = cap - 1;
+    memcpy(buf, p, n);
+    buf[n] = 0;
+    return buf;
+}
+
 /* The tray metres out of a quote, read back out of the words the player
  * reads rather than out of a variable this file also set. */
 static int metres_of(const char *s)
@@ -80,9 +114,14 @@ static void check_verbs(int *passed, int *total)
     if (!session_start(&ses, GATE_SEED, 100000)) { ck("a session starts", false); return; }
     Buf o = {0};
 
+    /* AND WITH YOUR OWN MACHINE, in the same room, cabled to that handoff.
+     * Two devices on the first morning and the player bought neither. */
     ck("you start in the MDF, on the ground floor, with the ISP handoff",
        ses.b.rooms[ses.room].kind == RM_MDF && ses.b.rooms[ses.room].floor == 0 &&
-       ses.s.ndev == 1 && ses.s.dev[ses.s.uplink].room == ses.room);
+       ses.s.ndev == 2 && ses.s.dev[ses.s.uplink].room == ses.room);
+    ck("and the machine you sit at is standing in that room too",
+       ws_dev(&ses) >= 0 && ses.s.dev[ws_dev(&ses)].room == ses.room &&
+       has(say(&ses, "look", &o), "workstation"));
 
     static const char *VERB[] = {
         "where", "look", "map", "go", "lift", "open", "buy", "carry", "drop",
@@ -113,8 +152,21 @@ static void check_verbs(int *passed, int *total)
     ck("`look` names what is in the room and the ways out of it",
        has(say(&ses, "look", &o), "uplink") && has(o.p, "ways out"));
 
+    /* On the first morning every hole in the building is full: the handoff
+     * has one and the workstation is in it, on the lead the building came
+     * with. So the port an agent can name without seeing it is that one, and
+     * `look` has to say both halves -- that it is used, and that it is still
+     * where the first switch goes. A player who read "all 1 ports used" and
+     * nothing else would conclude, reasonably and wrongly, that there is
+     * nowhere in this building to plug anything in. */
     ck("`look` names a port an agent can address without seeing it",
-       has(say(&ses, "look", &o), "next free port uplink:0"));
+       has(say(&ses, "look", &o), "all 1 ports used") &&
+       has(o.p, "uplink:0 has the lead the building came with in it, to ws") &&
+       has(o.p, "ws:0 has the lead the building came with in it, to uplink"));
+    ck("and a port named that way really takes a cable",
+       has(say(&ses, "spool cat5e", &o), "m of cat5e") &&
+       has(say(&ses, "plug uplink:0", &o), "one end into uplink port 0"));
+    say(&ses, "spool back", &o);
 
     ck("`where` says the floor, the room, the money and the metres walked",
        has(say(&ses, "where", &o), "MDF") && has(o.p, "walked") &&
@@ -351,10 +403,13 @@ static void check_reach(int *passed, int *total)
      * here it is just the setup for reaching one. */
     int mdf = ses.room;
     say(&ses, "buy switch8 sw1", &o);
+    /* The handoff and the workstation were both there before this; the switch
+     * is the first thing anybody bought. */
+    int bought = site_dev_by_name(&ses.s, "sw1");
     ck("kit is charged for and delivered to goods in, not to your feet",
-       ses.s.ndev == 2 && ses.s.money == 100000 - 120 &&
-       ses.s.dev[1].room == (uint16_t)site_goods_room(&ses.s) &&
-       ses.s.dev[1].room != (uint16_t)ses.room);
+       ses.s.ndev == 3 && bought > 0 && ses.s.money == 100000 - 120 &&
+       ses.s.dev[bought].room == (uint16_t)site_goods_room(&ses.s) &&
+       ses.s.dev[bought].room != (uint16_t)ses.room);
 
     say(&ses, "go goods", &o);
     say(&ses, "carry sw1", &o);
@@ -446,6 +501,23 @@ static void check_goods(int *passed, int *total)
        ses.room == goods);
     ck("and it is in that room, which is where `look` says it is",
        has(say(&ses, "look", &o), "core") && has(o.p, "roller door"));
+    /* AND THE LINE ABOUT IT DOES NOT CONTRADICT ITSELF.
+     *
+     * A switch in goods in, in its box, with nothing in it, printed
+     * "24/24 ports used   next free port core:0" -- one line, one box, two
+     * counts, in the room every delivery lands in. The port count was read
+     * off the NETSTACK, where a switch with no power in it has its ports
+     * administratively down rather than empty; the free port came off the
+     * site's link table, which is where a lead in a hole is recorded. One
+     * source now, and it is the link table. */
+    {
+        char row[256];
+        const char *r = dev_row(say(&ses, "look", &o), "core", row, sizeof row);
+        char none[32];
+        snprintf(none, sizeof none, "0/%d ports used", ses.s.dev[d].nports);
+        ck("a box nobody has cabled says no ports are used, and says it once",
+           row[0] && has(r, none) && has(r, "next free port core:0"));
+    }
 
     long walked = ses.walked;
     ck("you can pick it up", has(say(&ses, "carry core", &o), "you pick core up") &&
@@ -489,15 +561,23 @@ static void check_goods(int *passed, int *total)
     say(&ses, "plug uplink:0", &o);
     say(&ses, "go core", &o);
     say(&ses, "plug core:0", &o);
+    /* AND THE LEAD THE BUILDING CAME WITH COMES OUT, because the handoff has
+     * one hole and the workstation was in it. It is said out loud at the
+     * moment it happens, and link 0 -- the factory lead -- is now pulled. */
     ck("a cable comes up between the handoff and the box that was carried up",
-       ses.s.nlink == 1);
+       ses.s.nlink == 2 && site_link_state(&ses.s, 1) == PORT_UP);
+    ck("and it says the lead the building came with came out to make room",
+       has(o.p, "the lead the building came with comes out") &&
+       has(o.p, "ws is off the network now") &&
+       site_link_state(&ses.s, 0) == PORT_NOCABLE &&
+       !site_dev_cabled(&ses.s, ws_dev(&ses)));
     /* The drum is still in your hands after a run: put it back, or the
      * refusal you get is about the drum and not about the box. */
     say(&ses, "spool back", &o);
     ck("and now it will not be picked up: there is a cable in it",
        has(say(&ses, "carry core", &o), "cable in it") && ses.carrying < 0);
     ck("`uncable` frees it, and it can be carried again",
-       has(say(&ses, "uncable 0", &o), "pulled out") &&
+       has(say(&ses, "uncable 1", &o), "pulled out") &&
        has(say(&ses, "carry core", &o), "you pick core up"));
 
     /* And the one thing in the building that was never bought. */
@@ -549,7 +629,17 @@ static void check_build(int *passed, int *total)
     bool clean = true;
     for (int i = 0; SCRIPT[i]; i++) {
         const char *r = say(&ses, SCRIPT[i], &o);
-        if (has(r, "no such command") || has(r, "refused") || has(r, "cannot")) {
+        /* WHAT A REFUSAL LOOKS LIKE, and it is not the word "cannot" on its
+         * own. `power files on` prints that machine's REAL boot log, and one
+         * of the image's decoys is an fstab line for a disk that is not there
+         * -- `mountall: /etc/fstab:8: cannot mount /dev/sdb1 on /media`. That
+         * is a true sentence from an operating system about itself, not the
+         * building refusing a line this script typed. The session's own
+         * refusals are these, and "you cannot" is how it says the reaching
+         * one ("`go core` first -- you cannot reach into another room"). */
+        if (has(r, "no such command") || has(r, "refused") ||
+            has(r, "I do not know how to") || has(r, "you cannot") ||
+            has(r, "You cannot")) {
             printf("    `%s` -> %s", SCRIPT[i], r);
             clean = false;
         }
@@ -557,10 +647,13 @@ static void check_build(int *passed, int *total)
     ck("a delivery fetched, cabled and configured by somebody who cannot see",
        clean);
 
-    ck("every link came up", ses.s.nlink == 3 &&
-       site_link_state(&ses.s, 0) == PORT_UP &&
+    /* Four links: the lead the building came with, which `plug uplink:0`
+     * pulled to make room, and the three runs this script laid. */
+    ck("every link came up", ses.s.nlink == 4 &&
+       site_link_state(&ses.s, 0) == PORT_NOCABLE &&
        site_link_state(&ses.s, 1) == PORT_UP &&
-       site_link_state(&ses.s, 2) == PORT_UP);
+       site_link_state(&ses.s, 2) == PORT_UP &&
+       site_link_state(&ses.s, 3) == PORT_UP);
 
     /* AND WHAT ANSWERS IS THE OPERATING SYSTEM, not the box. The server is
      * running, it has the address the player gave it, the router can ARP it
@@ -659,9 +752,13 @@ static void check_booted(int *passed, int *total)
         goto done;
     }
     {
-        const char *r = say(&ses, "look", &o);
+        char row[256];
+        /* THAT BOX'S OWN LINE. The player's workstation is standing in this
+         * room, running, and saying so -- so the question has to be asked of
+         * `files` rather than of the room. */
+        const char *r = dev_row(say(&ses, "look", &o), "files", row, sizeof row);
         ck("a box whose boot failed does NOT claim an OS is running on it",
-           !has(r, "[an OS is running on it]"));
+           row[0] && !has(r, "[an OS is running on it]"));
         ck("it says it is on and where the boot stopped instead",
            has(r, "switched on, but its boot stopped at"));
         ck("and the site still says it is powered, because it is",
@@ -865,24 +962,26 @@ static void check_dangling(int *passed, int *total)
     say(&ses, "carry edge", &o); say(&ses, "go mdf", &o); say(&ses, "drop", &o);
 
     /* A run that cannot finish: the far end is a port that box has not got. */
+    /* Link 0 is the lead the building came with, still in the handoff and
+     * untouched by any of this: nothing here cables anything to uplink:0. */
     const char *r = say(&ses, "cable core:0 edge:9", &o);
     ck("a run to a port that box has not got does not make a cable",
-       has(r, "numbered 0 to 3") && ses.s.nlink == 0);
+       has(r, "numbered 0 to 3") && ses.s.nlink == 1);
     ck("and it leaves no end in a socket for the next line to eat",
        has(r, "comes back out of core port 0") && ses.cab_dev < 0);
 
     ck("so the next run is the one that was asked for",
        has(say(&ses, "cable core:1 edge:0", &o), "core:1 to edge:0") &&
-       ses.s.nlink == 1 && ses.s.link[0].aport == 1);
+       ses.s.nlink == 2 && ses.s.link[1].aport == 1);
 
     /* And an end put in BY HAND is not silently consumed either. */
     say(&ses, "plug core:3", &o);
     ck("an end left in by hand stops the macro rather than being used",
        has(say(&ses, "cable core:4 edge:1", &o), "already in core port 3") &&
-       ses.s.nlink == 1);
+       ses.s.nlink == 2);
     ck("both ends of one run in the same box is refused where the loop would be",
        has(say(&ses, "plug core:4", &o), "both ends would be in core") &&
-       ses.s.nlink == 1);
+       ses.s.nlink == 2);
     buf_free(&o);
     session_end(&ses);
 }
@@ -962,9 +1061,12 @@ static void check_power(int *passed, int *total)
      * `show <box>` two lines later said it was switched off and serving
      * nothing. A playtester who read the first one and not the second would
      * have gone looking for a network fault on a machine that had no power. */
-    const char *lk = say(&ses, "look", &o);
+    char row[256];
+    /* Asked of `probe`'s own line: the workstation is in this room too, and
+     * it is running. */
+    const char *lk = dev_row(say(&ses, "look", &o), "probe", row, sizeof row);
     ck("`look` does not claim an OS is running on a box that is switched off",
-       !has(lk, "an OS is running") && has(lk, "SWITCHED OFF"));
+       row[0] && !has(lk, "an OS is running") && has(lk, "SWITCHED OFF"));
     ck("and `show` says the same thing about the same box in the same room",
        has(say(&ses, "show probe", &o), "SWITCHED OFF"));
     say(&ses, "power probe on", &o);
@@ -1810,7 +1912,7 @@ static void check_cable_batch(int *passed, int *total)
         }
     }
     ck("three runs typed one after another from the MDF, and all three come up",
-       all && ses.s.nlink == 3);
+       all && ses.s.nlink == 4);   /* + the lead the building came with */
     ck("because every one of them walks you back to the room you typed it in",
        home && ses.room == mdf);
     ck("and the walk back is charged, both ways: it is legs, not a teleport",
@@ -2213,7 +2315,7 @@ static void check_jack_played(int *passed, int *total)
     const char *early = say(&ses, "patch fsw:0", &o);
     ck("a jack booked today is not a socket today, and says so in days",
        has(early, "refused") && has(early, "Copper off the spool is in your") &&
-       ses.s.nlink == 0);
+       ses.s.nlink == 1);   /* the lead the building came with, and nothing else */
 
     char day[16];
     snprintf(day, sizeof day, "day %d", site_jack_days(metres));
@@ -2221,14 +2323,14 @@ static void check_jack_played(int *passed, int *total)
     long before = ses.s.money;
     const char *in = say(&ses, "patch fsw:0", &o);
     ck("once the trade has been, a box in that room plugs in for a lead",
-       has(in, "already in the wall") && ses.s.nlink == 1 &&
+       has(in, "already in the wall") && ses.s.nlink == 2 &&
        ses.s.money == before - site_jack_lead_price());
     ck("and the link is up, on the metres that are in the wall",
-       site_link_state(&ses.s, 0) == PORT_UP && ses.s.link[0].metres == metres);
+       site_link_state(&ses.s, 1) == PORT_UP && ses.s.link[1].metres == metres);
 
     /* THE FLOOR THAT GETS REBUILT. Take the switch out, put it back -- which
      * is a `move`, and a move off the spool is the whole run again. */
-    say(&ses, "uncable 0", &o);
+    say(&ses, "uncable 1", &o);
     ck("the lead comes out and the jack does not",
        has(o.p, "The jack is still in the wall") && ses.s.njack == 1);
     say(&ses, "carry fsw", &o);
@@ -2313,7 +2415,7 @@ static void check_quote_played(int *passed, int *total)
     ck("and asking costs no money, no metres of your legs, and does not move "
        "you",
        ses.s.money == money && ses.walked == walked && ses.room == where &&
-       ses.s.nlink == 0 && ses.s.njack == 0);
+       ses.s.nlink == 1 && ses.s.njack == 0);   /* only the day-one lead */
 
     /* THE DECISION IT EXISTS TO INFORM. Two offices on one floor: the far one
      * is past the margin and the near one is not, and before this verb the
@@ -2367,12 +2469,13 @@ static void check_quote_played(int *passed, int *total)
        qm == dfar && has(q, want));
     money = ses.s.money;
     say(&ses, "cable fsw:0 core:0 cat5e", &o);
+    /* Link 0 is the lead the building came with; link 1 is this run. */
     ck("and the run it quoted is the run that was laid, to the metre",
-       ses.s.nlink == 1 && ses.s.link[0].metres == qm);
+       ses.s.nlink == 2 && ses.s.link[1].metres == qm);
     ck("and the price it quoted is the money that actually left the account",
-       ses.s.link[0].cost == qp && money - ses.s.money == qp);
+       ses.s.link[1].cost == qp && money - ses.s.money == qp);
     printf("    quoted %d m of cat5e at %d; paid %d for %d m\n",
-           qm, qp, ses.s.link[0].cost, ses.s.link[0].metres);
+           qm, qp, ses.s.link[1].cost, ses.s.link[1].metres);
     /* AND THE SPEED. The quote said what it would come up at; `show` reads
      * the port. */
     int fsw = site_dev_by_name(&ses.s, "fsw");

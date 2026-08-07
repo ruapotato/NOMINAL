@@ -73,6 +73,18 @@ typedef enum {
      * generates real frames, which is the only reason any of the rest of
      * this file has anything to do. */
     SDEV_DESK,
+    /* THE PLAYER'S OWN WORKSTATION. The machine in the MDF the browser, the
+     * files app and the desktop terminal all run on -- and it is a box like
+     * every other box: one gigabit socket, an operating system, a plug in the
+     * wall and a name in `look`. It is not for sale, because it was there on
+     * the morning of day one and cost the landlord nothing; that is a fact
+     * about the CATALOGUE and not a rule about what may be done with it.
+     * Carry it, cable it, unplug it, stand it in a cupboard on floor six --
+     * every refusal that applies to a pc applies to this and no others do.
+     * site_new() cables it to uplink:0, which is the handoff's ONLY port, so
+     * the first switch the player buys costs them a re-cable of their own
+     * machine. See the note above site_workstation(). */
+    SDEV_WORKSTATION,
     SDEV_KIND_COUNT
 } SiteDevKind;
 
@@ -81,6 +93,14 @@ int   site_kind_by_name(const char *name);
 int   site_kind_ports(int kind);      /* sockets on the back of it          */
 int   site_kind_price(int kind);      /* pounds                             */
 bool  site_kind_is_switch(int kind);
+/* IS IT IN THE SHOP? Three kinds of device in this catalogue are not the
+ * landlord's to buy -- the ISP's handoff, a tenant's own desk, and the
+ * player's own workstation -- and until D41 the supplier's catalogue page
+ * inferred that from `price > 0`, which happened to be right and was not the
+ * fact it wanted to ask (D40 says so and asks for this). site_install() and
+ * site_order() refuse anything this returns false for, so what the shop
+ * advertises and what the building accepts are one predicate. */
+bool  site_kind_for_sale(int kind);
 /* Has an operating system in it, and therefore a power button. A switch and
  * a router are appliances: they come up with the socket they are plugged
  * into. A pc and a server are computers, and a computer that nobody has
@@ -161,7 +181,14 @@ typedef enum {
     SITE_EZONE,       /* that name server's zone is full                     */
     SITE_EEARLY,      /* the trade has not been yet: the jack is not a socket */
     SITE_EJACK,       /* that port is punched down to a jack, for good        */
-    SITE_ENOMAINS,    /* nothing to plug it into, or it is not plugged in     */
+    SITE_ENOMAINS,    /* the room has no socket left to plug it into          */
+    /* AND THE OTHER HALF OF WHAT THAT USED TO MEAN. These are two different
+     * facts and they were one code with one sentence: a pc standing in goods
+     * in, which has two free outlets, was refused with "there is no free
+     * outlet on that room's wall" -- printed one line above a table saying
+     * there were two -- and sent to buy a third. The room is fine. The LEAD
+     * is not in, and the verb for that is `mains <box> on`. */
+    SITE_EUNPLUGGED,  /* there is no lead from that box to a wall socket      */
     SITE_ECIRCUIT,    /* the room is on one circuit and it is full            */
     SITE_ERR_COUNT
 } SiteErr;
@@ -230,6 +257,21 @@ typedef struct {
      * the spool and paid for by the metre; anything else is the jack this
      * lead is plugged into, and `cost` is then the lead and not the run. */
     int16_t  jack;
+    /* THE LEAD THE BUILDING CAME WITH, and there is exactly one of them.
+     *
+     * On the morning the player gets the keys their own workstation is in the
+     * handoff's only port, on a lead nobody paid for. When they buy their
+     * first switch and cable it to the handoff, that lead comes out: a socket
+     * takes one plug, and refusing would make the first switch anybody buys
+     * an error message instead of a decision. It does NOT go anywhere else --
+     * the workstation is off the network, and the shop with it, until the
+     * player patches it into whatever they just put in front of it. That is
+     * the escape route, performed forwards, on day one.
+     *
+     * It is the ONLY lead in the game with this property and it has it once:
+     * pull it and it is gone, and every lead after it is an ordinary lead
+     * that refuses with SITE_EBUSY like everything else in this file. */
+    uint8_t  factory;
 } SiteLink;
 
 /* A PERMANENT JACK: a socket on the wall of a room, and the run behind it.
@@ -514,6 +556,9 @@ typedef struct {
     SiteJack jack[SITE_MAX_JACK];
     SiteSocket sock[SITE_MAX_SOCKET];
     int      uplink;           /* the device that exists on day one         */
+    int      ws;               /* ...and the one you sit at. See site_new() */
+    int      yielded;          /* the box whose factory lead the last cable
+                                * pulled out, or -1. See SiteLink.factory.  */
     uint32_t wan_isp, wan_you, wan_mask;
     long     money, spent;
     int      ntenant;
@@ -540,10 +585,24 @@ typedef struct {
 } Site;
 
 /* ------------------------------------------------------------- day one */
-/* An empty site: the building, the ISP's socket in the MDF, and a budget.
- * There is no switch, no cable, no address and no connectivity of any kind
- * until somebody makes some. */
+/* An empty site: the building, the ISP's socket in the MDF, the player's own
+ * workstation in the MDF with its lead in that socket, and a budget. There is
+ * no switch, no address and no connectivity to anything the player owns until
+ * somebody makes some. */
 bool site_new(Site *s, const Building *b, uint64_t seed, long budget);
+/* THE MACHINE THE PLAYER SITS AT, as a device index, or -1. The browser, the
+ * files app and the desktop terminal run on THIS box -- so pulling its lead
+ * out takes the supplier's website away, which is the point of it being a box
+ * at all. It obeys every rule an ordinary pc obeys and gets no others: it can
+ * be carried, re-cabled, unplugged from the wall and switched off, and the
+ * consequences are the consequences. There is always a move, because the
+ * thing is standing in a room a person can walk to. */
+int  site_workstation(const Site *s);
+/* Is the lead in that port the one the building came with? The link index, or
+ * -1. See SiteLink.factory: it is the one lead in the game that gives way to
+ * whatever the player puts in front of it, and every surface that would
+ * otherwise refuse the port has to ask this rather than assume. */
+int  site_port_factory(const Site *s, int dev, int port);
 void site_free(Site *s);
 void site_credit(Site *s, long amount);
 
@@ -629,6 +688,16 @@ int  site_patch(Site *s, int jack, int dev, int port);
  * is not a free port: site_free_port, site_cable and `serve` all step over
  * it, because the pair is terminated on a panel and there is no hole. */
 int  site_port_jack(const Site *s, int dev, int port);   /* jack, or -1 */
+/* IS THERE ANYTHING IN THAT SOCKET? Asked of the site's own link table, which
+ * is where a lead being in a hole is recorded -- and NOT of the netstack,
+ * because a port with no power behind it reads DOWN rather than NOCABLE. That
+ * difference printed "8/8 ports used" and "next free port switch8:0" about the
+ * same uncabled switch, in goods in, in one line of `look`: two facts about
+ * one box, from two sources, disagreeing. site_free_port() has always read
+ * this one; now everything that counts holes does. */
+bool site_port_used(const Site *s, int dev, int port);
+/* How many of that box's sockets have something in them, by the same count. */
+int  site_ports_used(const Site *s, int dev);
 /* The jacks on the wall of one room, in order. `nth` counts from 0; -1 when
  * there is no such one. `free_only` skips the ones with a lead in them. */
 int  site_room_jack(const Site *s, int room, int nth, bool free_only);

@@ -117,5 +117,42 @@ func _init() -> void:
 	else:
 		ok("the supplier is a bookmark (an address, not a page)")
 
+	# ---- 5. AND THE SHOP IS ON THE END OF A CABLE. D41.
+	#
+	# The browser runs on the player's own workstation, which since D41 is a
+	# box standing in the MDF with one socket on the back of it and its lead
+	# in the ISP's handoff. So this is the whole claim, performed: the
+	# catalogue loads, the lead comes out, the catalogue is gone -- not
+	# because a flag was set but because the machine the browser is on is not
+	# on a network any more -- and putting the lead back brings it back.
+	# There is always a move.
+	b._go("halbert.co.uk/catalogue")
+	if String(b.raw).find("switch8") < 0:
+		fail("the catalogue does not load on day one: %s" % String(b.raw).substr(0, 120))
+	else:
+		ok("the catalogue loads on the machine in the MDF")
+	# link 0 is the lead the building came with, workstation to uplink:0
+	machine.ses_cmd("uncable 0")
+	b._go("halbert.co.uk/catalogue")
+	var gone := String(b.raw)
+	if gone.find("cannot reach halbert.co.uk") < 0:
+		fail("the lead came out and the shop still loaded")
+	else:
+		ok("pull the workstation's lead and the shop is unreachable")
+	if gone.find("NO-CARRIER") < 0:
+		fail("the failure page does not show the machine's own card is down:\n%s"
+			% gone.substr(0, 400))
+	else:
+		ok("and the page shows `ip addr` on that box saying NO-CARRIER")
+	# AND THE WAY BACK, which is legs and copper and nothing else.
+	machine.ses_cmd("spool cat5e")
+	machine.ses_cmd("go mdf")
+	machine.ses_cmd("cable ws:0 uplink:0")
+	b._go("halbert.co.uk/catalogue")
+	if String(b.raw).find("switch8") < 0:
+		fail("re-cabled the workstation to the handoff and the shop stayed dead")
+	else:
+		ok("cable it back to the handoff and the shop is there again")
+
 	print("shop_orders: %d failures" % bad)
 	quit(1 if bad else 0)
