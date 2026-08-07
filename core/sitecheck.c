@@ -71,12 +71,18 @@ static void check_empty(const Building *b)
     Site s;
     if (!site_new(&s, b, GATE_SEED, 100000)) { ck("a site starts", false); return; }
 
-    /* TWO devices exist on the first morning and the player bought neither:
-     * the ISP's socket on the MDF wall, and their own workstation on the desk
-     * in front of it with its lead in that socket. There is one link in the
-     * building and nobody paid for it. Everything else is theirs to build. */
-    ck("two devices exist: the ISP's handoff and the machine you sit at",
-       s.ndev == 2 && s.dev[s.uplink].kind == SDEV_UPLINK &&
+    /* THREE devices exist on the first morning and the player bought none of
+     * them: the ISP's socket on the MDF wall, their own workstation on the
+     * desk in front of it with its lead in that socket, and the building's
+     * power core down in the plant room. All three are given on the same
+     * terms -- they were here before you were, none is for sale, and none is
+     * yours to carry off. There is one link in the building and nobody paid
+     * for it. Everything else is theirs to build. */
+    ck("three things were here before you were: the handoff, your machine, "
+       "and the power core",
+       s.ndev == 3 && s.dev[s.uplink].kind == SDEV_UPLINK &&
+       site_dev_by_name(&s, "core0") >= 0 &&
+       s.dev[site_dev_by_name(&s, "core0")].kind == SDEV_POWERCORE &&
        site_workstation(&s) >= 0 &&
        s.dev[site_workstation(&s)].kind == SDEV_WORKSTATION &&
        s.dev[site_workstation(&s)].room == (uint16_t)bld_find(b, 0, RM_MDF));
@@ -390,6 +396,13 @@ static void check_boxes(const Building *b)
          * standing in the MDF, so it is counted where it stands rather than
          * bought -- the holes on the back of it are checked the same way as
          * every other kind's. */
+        /* THE POWER KINDS HAVE HOLES THAT ARE NOT NETWORK HOLES. A core has
+         * eight ways out and a strip six, and not one of them carries a
+         * frame: they take conduit. So they have no cards in the netstack on
+         * purpose, and counting them here would be asserting that a socket
+         * for a kettle lead is an ethernet port. What they DO have to agree
+         * about is checked in check_conduits(). */
+        if (k == SDEV_POWERCORE || k == SDEV_STRIP) continue;
         int d = (k == SDEV_WORKSTATION) ? site_workstation(&s)
                                         : site_install(&s, k, room, nm);
         if (d < 0) { agree = false; continue; }
@@ -3394,6 +3407,120 @@ static void check_catalogue(const Building *b)
     site_free(&s);
 }
 
+/* ==================================================== THE CONDUIT TREE
+ *
+ * The owner's redirect, first piece: "making you have to run power conduits
+ * to certain places just like you run ethernet... a power strip that allows
+ * you to take a conduit and plug in multiple devices to the end of it.
+ * Including other conduits so that you can fork a conduit... when you hover
+ * over a conduit, it'll tell you its percent of utilisation. So you have to
+ * run fresh conduits from the power core once they've hit a maximum load."
+ *
+ * Four things have to be true or it is decoration: the metres cost what
+ * copper costs over the same ground, a run knows what is behind it, a fork
+ * adds up, and a run over its rating takes everything behind it down. The
+ * fourth is the one the whole station design rests on.
+ */
+static void check_conduits(const Building *b)
+{
+    printf("\nconduit: a tree from the core, and what it carries\n");
+    Site s;
+    site_new(&s, b, GATE_SEED, 100000);
+
+    int core = site_dev_by_name(&s, "core0");
+    ck("the building came with a power core, in the plant room",
+       core >= 0 && s.dev[core].kind == SDEV_POWERCORE &&
+       s.b->rooms[s.dev[core].room].kind == RM_PLANT);
+    ck("and it is not for sale, for the same reason the handoff is not",
+       !site_kind_for_sale(SDEV_POWERCORE) && site_kind_for_sale(SDEV_STRIP));
+
+    /* --- THE METRES ARE COPPER'S METRES. Same two rooms, same graph, same
+     * price per metre: a conduit is not a second way of charging distance. */
+    int room = a_room(b, 2);
+    int sw = site_install(&s, SDEV_SWITCH24, room, "sw");
+    int run = site_conduit(&s, core, 0, sw);
+    int want_m = site_run_metres(&s, s.dev[core].room, s.dev[sw].room);
+    ck("a run is priced by the metre off the building's own cable graph",
+       run >= 0 && s.cond[run].metres == want_m && want_m > 0 &&
+       s.cond[run].cost == site_cable_price(CAB_CAT6, want_m));
+    printf("    core to the cupboard: %d m, %d paid\n",
+           s.cond[run].metres, s.cond[run].cost);
+
+    /* --- IT KNOWS WHAT IS BEHIND IT. */
+    ck("and it carries what the thing on the end of it draws",
+       site_conduit_load(&s, run) == site_kind_watts(SDEV_SWITCH24));
+
+    /* --- ONE PLUG PER SOCKET, ONE LEAD PER BOX. Both ends of the same rule. */
+    int again = site_conduit(&s, core, 0, sw);
+    ck("an output that already has a run in it refuses a second",
+       again < 0 && s.err == SITE_EBUSY);
+    int sw2 = site_install(&s, SDEV_SWITCH8, room, "sw2");
+    (void)sw2;
+    int twice = site_conduit(&s, core, 1, sw);
+    ck("and a box that is already fed refuses a second lead",
+       twice < 0 && s.err == SITE_EBUSY);
+
+    /* --- THE FORK. A strip takes one run in and gives several out, and an
+     * output takes a load or another strip. */
+    int st = site_install(&s, SDEV_STRIP, room, "st");
+    int feed = site_conduit(&s, core, 1, st);
+    int a = site_install(&s, SDEV_RACKSERVER, room, "a");
+    int c = site_install(&s, SDEV_RACKSERVER, room, "c");
+    int ra = site_conduit(&s, st, 1, a);
+    int rc = site_conduit(&s, st, 2, c);
+    ck("a strip forks a run: one in, several out",
+       feed >= 0 && ra >= 0 && rc >= 0);
+    ck("and the run feeding it carries everything behind it, added up",
+       site_conduit_load(&s, feed) == 2 * site_kind_watts(SDEV_RACKSERVER));
+    printf("    two rack servers behind one strip: %d W on the feed, %d%%\n",
+           site_conduit_load(&s, feed), site_conduit_pct(&s, feed));
+    /* the strip's input is not an output: you cannot run out of the way in */
+    int backwards = site_conduit(&s, st, 0, sw2);
+    ck("a strip's input is the way in and not another way out",
+       backwards < 0 && s.err == SITE_EIFACE);
+
+    /* --- AND THE TRIP, WHICH IS THE POINT. Everything up to the rating is
+     * fed; the load that takes it over darkens everything behind that run,
+     * not just itself. */
+    int trip_run = -1;
+    ck("everything on a run inside its rating is fed",
+       site_dev_fed(&s, a, &trip_run) && site_dev_fed(&s, c, &trip_run) &&
+       trip_run < 0);
+    int e = site_install(&s, SDEV_RACKSERVER, room, "e");
+    int re = site_conduit(&s, st, 3, e);
+    ck("a third rack server takes that feed over what it carries",
+       re >= 0 && site_conduit_pct(&s, feed) > 100);
+    printf("    a third one: %d W on the feed, %d%%\n",
+           site_conduit_load(&s, feed), site_conduit_pct(&s, feed));
+    bool a_dark = !site_dev_fed(&s, a, &trip_run);
+    int t2 = -1;
+    bool e_dark = !site_dev_fed(&s, e, &t2);
+    ck("and everything behind it goes dark, not just the one that tipped it",
+       a_dark && e_dark && trip_run == feed && t2 == feed);
+    ck("while a box on a different run off the core is untouched",
+       site_dev_fed(&s, sw, &t2) && t2 < 0);
+
+    /* --- AND TAKING SOMETHING OFF IT BRINGS THE REST BACK. That is the
+     * repair, and it is the same move as running another from the core. */
+    site_unconduit(&s, re);
+    ck("take the third one off and the other two light again",
+       site_dev_fed(&s, a, &t2) && site_dev_fed(&s, c, &t2) &&
+       site_conduit_pct(&s, feed) <= 100);
+
+    /* --- A BOX NOTHING FEEDS IS DARK, which is the day-one state of
+     * everything in the building. */
+    int lonely = site_install(&s, SDEV_SERVER, room, "lonely");
+    ck("a box with no conduit to it is dark, and the core itself is not",
+       !site_dev_fed(&s, lonely, &t2) && site_dev_fed(&s, core, &t2));
+
+    Buf o = {0};
+    site_cmd(&s, "conduits", &o);
+    ck("and `conduits` prints every run with what is on it",
+       has(o.p, "core0:0") && has(o.p, "%") && has(o.p, "1500 W"));
+    buf_free(&o);
+    site_free(&s);
+}
+
 static void check_one_fact_two_answers(const Building *b)
 {
     printf("\nD43: the reports the playtest caught contradicting themselves\n");
@@ -4063,6 +4190,7 @@ int site_selfcheck(void)
     /* D43: ten things the game said about itself that another command in
      * the same session disproved. */
     check_catalogue(&b);
+    check_conduits(&b);
     check_one_fact_two_answers(&b);
     check_ambiguity_and_the_diary();
     /* D43: and the decision the first twenty days did not have. */

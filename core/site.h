@@ -50,6 +50,19 @@
 
 #define SITE_MAX_DEV     400
 #define SITE_MAX_LINK    600
+#define SITE_MAX_CONDUIT 400
+/* WHAT ONE RUN OF CONDUIT CARRIES, in watts, and what a strip will pass.
+ *
+ * 1500 is chosen so that it is a DECISION rather than a formality: a proper
+ * server draws 350 and a rack server 700, so one run feeds four of the small
+ * ones or two of the big ones and then you go back to the core for another.
+ * A cupboard with a switch, two servers and a spare is already thinking about
+ * its second run, which is the point -- "you have to run fresh conduits from
+ * the power core once they've hit a maximum load".
+ *
+ * The strip passes the same, because a strip is a junction and not a
+ * substation: it cannot give you more than what arrives at it. */
+#define SITE_CONDUIT_W   1500
 #define SITE_MAX_TENANT  200
 #define SITE_MAX_JACK    200
 #define SITE_MAX_SOCKET  240     /* outlets ORDERED. The built-in ones are  */
@@ -175,6 +188,31 @@ typedef enum {
      * the first switch the player buys costs them a re-cable of their own
      * machine. See the note above site_workstation(). */
     SDEV_WORKSTATION,
+    /* ------------------------------------------------------------- POWER
+     *
+     * The owner, redirecting the whole game towards a station: "instead of
+     * money being the stress point, it's pure design... essentially I'd want
+     * to reuse everything we've already done, but making you have to run
+     * power conduits to certain places just like you run ethernet." And on
+     * the shape of it: "we'll have to add in something like a power strip
+     * that allows you to take a conduit and plug in multiple devices to the
+     * end of it. Including other conduits so that you can fork a conduit...
+     * when you hover over a conduit, it'll tell you its percent of
+     * utilisation. So you have to run fresh conduits from the power core
+     * once they've hit a maximum load."
+     *
+     * That is the network's own shape with one number instead of two. A
+     * conduit is a run, priced by the metre off the same cable graph. A
+     * strip is the switch of it: one input, several outputs, and an output
+     * takes a load OR another strip, which is the fork. And the thing a
+     * player watches is UTILISATION -- what is drawn through a run against
+     * what it carries -- which is what `load` already prints for a wire.
+     *
+     * THE CORE IS GIVEN, LIKE THE HANDOFF. It was there before you were,
+     * there is one on the ground floor's plant room, and everything with a
+     * light on traces back to it or it is dark. */
+    SDEV_POWERCORE,
+    SDEV_STRIP,
     SDEV_KIND_COUNT
 } SiteDevKind;
 
@@ -196,6 +234,12 @@ int   site_kind_disk_days(int kind);
  * Speed is how fast a queue drains; this is how much it can hold while it
  * does, and a switch with more ports holds more. */
 int   site_kind_port_buffer(int kind);
+/* WHAT ONE OF THESE DRAWS, in watts, when it is running. 0 for the things
+ * that are not on your power: the handoff is the ISP's and a tenant's own
+ * desk is on their own supply, which is the same sentence the heat model and
+ * the old outlet model both made about a desk. */
+int   site_kind_watts(int kind);
+
 /* Does one arrive with a battery under it? The dear server does; on anything
  * else `ups <box>` buys one afterwards for the same result and more money.  */
 bool  site_kind_has_ups(int kind);
@@ -295,7 +339,9 @@ typedef enum {
      * there were two -- and sent to buy a third. The room is fine. The LEAD
      * is not in, and the verb for that is `mains <box> on`. */
     SITE_EUNPLUGGED,  /* there is no lead from that box to a wall socket      */
-    SITE_ECIRCUIT,    /* the room is on one circuit and it is full            */
+    SITE_ECIRCUIT,
+    /* A conduit that would feed the thing it comes out of. */
+    SITE_ELOOP,    /* the room is on one circuit and it is full            */
     /* AN ERROR ABOUT SUBNETS, FROM A VERB THAT TAKES MEGABITS. `isp 0` and
      * `isp -5` both answered "that is the network or broadcast address of
      * its own subnet, not a machine's", because site_isp() reached for
@@ -471,6 +517,32 @@ typedef struct {
     int      day;              /* the day the sparky came                   */
     int      cost;             /* what it cost. Never refunded.             */
 } SiteSocket;
+
+/* ===================================================== A RUN OF CONDUIT
+ *
+ * The same shape as a SiteLink and deliberately not the same struct: a
+ * conduit carries no frames, has no netstack cable behind it and negotiates
+ * nothing, so sharing SiteLink would mean four fields that are always zero
+ * and one -- `cable` -- that would have to lie. What IS shared is the thing
+ * worth sharing: the metres come from bld_cable_all() and the price from
+ * site_run_cost(), so a conduit and a patch lead between the same two rooms
+ * cost the same to run, which is the parity rule every cable in this game
+ * already has.
+ *
+ * `from` is a core or a strip and `fport` is which of its outputs. `to` is
+ * the thing being fed: a load takes the whole device -- a lead goes in the
+ * back of a box, there is nothing to choose -- and a strip takes its input.
+ * So the tree is unambiguous without inventing a power port on every kind of
+ * equipment in the catalogue. */
+typedef struct {
+    int16_t  from, fport;      /* a core or a strip, and which output       */
+    int16_t  to;               /* the load, or the strip being fed          */
+    uint16_t room_a, room_b;
+    int      metres;
+    int      cost;
+    int      watts;            /* what this grade of conduit carries        */
+    uint8_t  live;             /* 0 once pulled out                         */
+} SiteConduit;
 
 /* ================================================= WHAT KIND OF BUSINESS
  *
@@ -677,6 +749,8 @@ typedef struct {
     int      ndev, nlink, njack, nsock;
     SiteDev  dev[SITE_MAX_DEV];
     SiteLink link[SITE_MAX_LINK];
+    SiteConduit cond[SITE_MAX_CONDUIT];
+    int      ncond;
     SiteJack jack[SITE_MAX_JACK];
     SiteSocket sock[SITE_MAX_SOCKET];
     int      uplink;           /* the device that exists on day one         */
@@ -865,6 +939,23 @@ bool site_power(Site *s, int dev, bool on);
  * the ones bought), the most its circuit will ever carry, and how many of
  * them have a plug in them. Every one is a pure reading of the room and the
  * device table. */
+/* ------------------------------------------------------------- conduits */
+/* Run one, from an output of a core or a strip to a load or another strip.
+ * Priced by the metre off the building's own cable graph, exactly as copper
+ * is. Returns the run, or -1 and s->err. */
+int  site_conduit(Site *s, int from, int fport, int to);
+bool site_unconduit(Site *s, int run);
+/* What is drawn through this run: everything downstream of it, added up. */
+int  site_conduit_load(const Site *s, int run);
+/* And as a percentage of what it carries -- the number that goes on the
+ * hover. Over 100 is a run that has tripped. */
+int  site_conduit_pct(const Site *s, int run);
+/* Is there a live path from this device back to a core, with no run on it
+ * carrying more than it can? -1 in `why` gets the run that tripped. */
+bool site_dev_fed(const Site *s, int dev, int *tripped);
+int  site_conduit_count(const Site *s);
+void site_dump_conduits(const Site *s, Buf *out);
+
 int  site_room_outlets_built(const Site *s, int room);
 int  site_room_outlets(const Site *s, int room);
 int  site_room_outlets_max(const Site *s, int room);

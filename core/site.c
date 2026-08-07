@@ -72,11 +72,11 @@
  * has bought both would expect. */
 static const struct {
     const char *name; int ports; int price; int slow_mb; int nfast; bool sale;
-    int disk; bool ups; int buf_kb;
+    int disk; bool ups; int buf_kb; int watts;
 } KIT[SDEV_KIND_COUNT] = {
     /* the ISP's socket. Not for sale, and site_isp() rate-limits it to the
      * circuit the landlord has actually bought. */
-    { "uplink",   1,    0, 10000, 0, false,   0, false,  48 },
+    { "uplink",   1,    0, 10000, 0, false,   0, false,  48,   0 },
     /* THE CHEAP GRADE, AND IT IS CHEAP FOR A REASON YOU CAN MEASURE. Four
      * holes at a hundred megabits. The buffer on the back of a port is the
      * same 48 KB it is on everything else in this game, which at 100 Mb is
@@ -84,37 +84,45 @@ static const struct {
      * desks fetching at once overruns it where a gigabit port would not, and
      * `load` prints the drops and `show` gives the reason in words. Nobody
      * wrote "the cheap switch is worse" anywhere. */
-    { "switch4",  4,   45,   100, 0, true,    0, false,  16 },
-    { "switch8",  8,  120,  1000, 0, true,    0, false,  48 },  /* all copper, a gigabit each */
-    { "switch24", 24, 400,  1000, 2, true,    0, false, 128 },  /* ...and its SFP+ pair, 22 and 23   */
-    { "router",   4,  650, 10000, 0, true,    0, false, 128 },  /* four sockets; as many vlans as you like */
-    { "pc",       1,  480,  1000, 0, true,   60, false,  48 },
+    { "switch4",  4,   45,   100, 0, true,    0, false,  16,  15 },
+    { "switch8",  8,  120,  1000, 0, true,    0, false,  48,  30 },  /* all copper, a gigabit each */
+    { "switch24", 24, 400,  1000, 2, true,    0, false, 128,  90 },  /* ...and its SFP+ pair, 22 and 23   */
+    { "router",   4,  650, 10000, 0, true,    0, false, 128, 120 },  /* four sockets; as many vlans as you like */
+    { "pc",       1,  480,  1000, 0, true,   60, false,  48, 180 },
     /* THE SMALL-OFFICE SERVER. One hundred-megabit card and a disk rated for
      * half the life. It will hold a floor's files on day three for a third
      * of the money, and it is the box a second tenancy on that floor
      * outgrows -- which is the decision, because on day three there is no
      * second tenancy on that floor. */
-    { "minitower",1,  460,   100, 0, true,   30, false,  16 },
-    { "server",   2, 1350,  1000, 0, true,   60, false,  64 },  /* a gigabit NIC, and it is the one
+    { "minitower",1,  460,   100, 0, true,   30, false,  16, 150 },
+    { "server",   2, 1350,  1000, 0, true,   60, false,  64, 350 },  /* a gigabit NIC, and it is the one
                                                             * a flat tower falls over on        */
     /* AND THE ONE THAT UNBINDS IT. Two ten-gigabit cards, a disk rated for
      * twice the life, and a battery in it -- so a mains failure is a box
      * that stayed up rather than a filesystem to check. Two and a half
      * times the money, and the ten gigabit is only ten gigabit if the copper
      * and the port at the other end are: cat6 under 55 m, or fibre. */
-    { "rackserver",2,3400, 10000, 2, true,  120, true,  256 },
+    { "rackserver",2,3400, 10000, 2, true,  120, true,  256, 700 },
     /* A DESK IS NOT FOR SALE. It is the tenant's own computer and it costs
      * the landlord nothing; what the landlord sells is the port it is
      * plugged into and the network behind that port. It is here in the
      * catalogue anyway because it is a device in the site with a card in it
      * and a name, and everything else in this file has to be able to say so. */
-    { "desk",     1,    0,  1000, 0, false,  60, false, 48 },
+    { "desk",     1,    0,  1000, 0, false,  60, false, 48,   0 },
     /* AND NEITHER IS THE PLAYER'S OWN WORKSTATION, for the same kind of
      * reason and a different one: it is theirs already. One gigabit socket,
      * an operating system, and it is standing in the MDF on the morning of
      * day one with its lead in the handoff. Everything else about it is a pc.  */
-    { "workstation", 1, 0,  1000, 0, false, 60, false, 48 },
-};
+    { "workstation", 1, 0,  1000, 0, false, 60, false, 48, 180 },
+    /* THE STATION'S OWN SUPPLY. Eight ways out of it, given rather than
+     * bought, and every light in the building traces back to this or it is
+     * off. Not for sale for the same reason the handoff is not: it was here
+     * before you were. */
+    { "powercore", 8,   0,     0, 0, false,   0, false,  0,   0 },
+    /* AND THE JUNCTION. One conduit in, five out, and an out takes a load or
+     * another strip -- which is the fork. It passes what arrives and no
+     * more: a strip is not a substation. */
+    { "strip",     6,  60,     0, 0, true,    0, false,  0,   0 },};
 
 int site_kind_port_mb(int kind, int port)
 {
@@ -133,6 +141,16 @@ int site_kind_port_buffer(int kind)
 {
     if (kind < 0 || kind >= SDEV_KIND_COUNT) return 0;
     return KIT[kind].buf_kb * 1024;
+}
+
+/* WHAT IT DRAWS WHEN IT IS RUNNING, in watts. Zero is a thing that is not on
+ * your supply at all -- the ISP's handoff, and a tenant's own desk, which is
+ * their machine on their own meter and is the same sentence the heat model
+ * has always made about a desk. */
+int site_kind_watts(int kind)
+{
+    if (kind < 0 || kind >= SDEV_KIND_COUNT) return 0;
+    return KIT[kind].watts;
 }
 
 int site_kind_ports(int kind)
@@ -442,6 +460,8 @@ const char *site_err_text(int e)
                                "which rooms have one free";
     case SITE_EUNPLUGGED: return "it is not plugged into anything -- there is no "
                                  "lead from it to a wall socket. `mains <box> on`";
+    case SITE_ELOOP:    return "a conduit cannot feed the thing it comes out "
+                               "of";
     case SITE_ECIRCUIT: return "that room is on one final circuit and it is "
                                "full -- there is no more power to bring into "
                                "it";
@@ -515,6 +535,32 @@ bool site_new(Site *s, const Building *b, uint64_t seed, long budget)
     d->node = net_add_host_nics(s->net, d->name, d->nports);
     if (d->node < 0) return false;
     s->uplink = s->ndev++;
+
+    /* AND THE STATION'S OWN SUPPLY, on the same terms as the handoff: it was
+     * here before you were, it is not for sale, and it is not yours to carry
+     * off. Eight ways out of it, in the plant room, which is where a
+     * building's incoming power actually lands -- and every light in the
+     * place traces back to it through conduit you ran, or it is dark.
+     *
+     * The plant room is on the ground floor and there is one; if a seed ever
+     * makes a tower without one the core goes in the MDF beside the handoff,
+     * because a building with no power at all is not a game. */
+    {
+        int plant = bld_find(s->b, 0, RM_PLANT);
+        if (plant < 0) plant = mdf;
+        SiteDev *pc = &s->dev[s->ndev];
+        memset(pc, 0, sizeof *pc);
+        pc->kind = SDEV_POWERCORE;
+        pc->room = (uint16_t)plant;
+        pc->floor = 0;
+        pc->nports = site_kind_ports(SDEV_POWERCORE);
+        pc->powered = 1;
+        pc->mains = 1;
+        snprintf(pc->name, sizeof pc->name, "core0");
+        pc->node = net_add_host_nics(s->net, pc->name, 0);
+        if (pc->node < 0) return false;
+        s->ndev++;
+    }
 
     s->wan_isp  = net_ip(WAN_THEIRS);
     s->wan_you  = net_ip(WAN_YOURS);
@@ -847,6 +893,193 @@ static int outlets_built_in(const Room *r)
      * count is what says so. */
     default:          return 1;
     }
+}
+
+/* ====================================================== THE CONDUIT TREE
+ *
+ * "Making you have to run power conduits to certain places just like you run
+ * ethernet... a power strip that allows you to take a conduit and plug in
+ * multiple devices to the end of it. Including other conduits so that you can
+ * fork a conduit... when you hover over a conduit, it'll tell you its percent
+ * of utilisation. So you have to run fresh conduits from the power core once
+ * they've hit a maximum load."
+ *
+ * Everything here is the network's own shape with one number instead of two:
+ * a run has a rating, what flows through it is the sum of what is downstream,
+ * and a run carrying more than it can is a failure with a cause you can name
+ * rather than a refusal at the moment you plug in. You find out by looking.
+ *
+ * THE METRES ARE THE SAME METRES. site_run_metres() is what site_cable() and
+ * site_jack() price from, and it is what this prices from, so a conduit and a
+ * patch lead between the same two rooms cost the same to pull. That parity is
+ * the rule this project has enforced on every other way of buying distance.
+ *
+ * WHAT MAKES IT A TREE RATHER THAN A GRAPH: a load is fed by ONE run, because
+ * a lead goes in the back of a box and there is only one back. Runs hang off
+ * an OUTPUT of a core or a strip and each output takes one run. So the shape
+ * is a tree by construction and there is no loop check to get wrong.
+ */
+
+/* Is this kind a thing runs come OUT of, as opposed to a thing they go into? */
+static bool power_source_kind(int kind)
+{
+    return kind == SDEV_POWERCORE || kind == SDEV_STRIP;
+}
+
+/* An output of a core or a strip. Output 0 of a strip is its INPUT -- the way
+ * in -- so runs leave a strip from 1 upwards and a core from 0. */
+static bool source_out_port(const Site *s, int dev, int port)
+{
+    if (dev < 0 || dev >= s->ndev) return false;
+    int k = s->dev[dev].kind;
+    if (!power_source_kind(k)) return false;
+    int lo = (k == SDEV_STRIP) ? 1 : 0;
+    return port >= lo && port < s->dev[dev].nports;
+}
+
+static int conduit_from(const Site *s, int dev, int port)
+{
+    for (int i = 0; i < s->ncond; i++)
+        if (s->cond[i].live && s->cond[i].from == dev && s->cond[i].fport == port)
+            return i;
+    return -1;
+}
+
+/* The run feeding this device, or -1. One in, by construction. */
+static int conduit_into(const Site *s, int dev)
+{
+    for (int i = 0; i < s->ncond; i++)
+        if (s->cond[i].live && s->cond[i].to == dev) return i;
+    return -1;
+}
+
+int site_conduit_count(const Site *s) { return s ? s->ncond : 0; }
+
+/* WHAT THIS DEVICE ITSELF PULLS, which for a strip is nothing: a junction is
+ * a lump of copper and a moulding. What a strip costs you is what is behind
+ * it, and that is the recursion below. */
+static int dev_watts(const Site *s, int dev)
+{
+    if (dev < 0 || dev >= s->ndev) return 0;
+    return site_kind_watts(s->dev[dev].kind);
+}
+
+/* Everything downstream of a run, added up: the thing it feeds, and -- if
+ * that is a strip -- everything hanging off the strip, to the bottom. */
+static int subtree_watts(const Site *s, int dev, int depth)
+{
+    if (dev < 0 || depth > SITE_MAX_CONDUIT) return 0;
+    int w = dev_watts(s, dev);
+    if (s->dev[dev].kind != SDEV_STRIP) return w;
+    for (int p = 1; p < s->dev[dev].nports; p++) {
+        int r = conduit_from(s, dev, p);
+        if (r >= 0) w += subtree_watts(s, s->cond[r].to, depth + 1);
+    }
+    return w;
+}
+
+int site_conduit_load(const Site *s, int run)
+{
+    if (!s || run < 0 || run >= s->ncond || !s->cond[run].live) return 0;
+    return subtree_watts(s, s->cond[run].to, 0);
+}
+
+int site_conduit_pct(const Site *s, int run)
+{
+    if (!s || run < 0 || run >= s->ncond || !s->cond[run].live) return 0;
+    int cap = s->cond[run].watts > 0 ? s->cond[run].watts : SITE_CONDUIT_W;
+    return (site_conduit_load(s, run) * 100 + cap / 2) / cap;
+}
+
+/* IS THERE A LIVE PATH BACK TO A CORE, and is every run on it inside what it
+ * carries? A run over its rating has tripped, and everything behind it is
+ * dark -- which is the cascade the whole design is for, and it is why this
+ * returns WHICH run rather than just no. */
+bool site_dev_fed(const Site *s, int dev, int *tripped)
+{
+    if (tripped) *tripped = -1;
+    if (!s || dev < 0 || dev >= s->ndev) return false;
+    if (s->dev[dev].kind == SDEV_POWERCORE) return true;
+    int at = dev;
+    for (int guard = 0; guard <= SITE_MAX_CONDUIT; guard++) {
+        int r = conduit_into(s, at);
+        if (r < 0) return false;                  /* nothing feeding it     */
+        if (site_conduit_load(s, r) > (s->cond[r].watts > 0
+                                       ? s->cond[r].watts : SITE_CONDUIT_W)) {
+            if (tripped) *tripped = r;
+            return false;
+        }
+        at = s->cond[r].from;
+        if (at < 0 || at >= s->ndev) return false;
+        if (s->dev[at].kind == SDEV_POWERCORE) return true;
+    }
+    return false;
+}
+
+int site_conduit(Site *s, int from, int fport, int to)
+{
+    s->err = SITE_OK;
+    if (from < 0 || from >= s->ndev || to < 0 || to >= s->ndev) {
+        s->err = SITE_ENODEV; return -1;
+    }
+    if (from == to) { s->err = SITE_ELOOP; return -1; }
+    if (!source_out_port(s, from, fport)) { s->err = SITE_EIFACE; return -1; }
+    if (s->ncond >= SITE_MAX_CONDUIT) { s->err = SITE_ESPACE; return -1; }
+    /* ONE RUN PER OUTPUT, ONE RUN PER LOAD. Both are the same rule from the
+     * two ends: a socket takes one plug and a box has one back. */
+    if (conduit_from(s, from, fport) >= 0) { s->err = SITE_EBUSY; return -1; }
+    if (conduit_into(s, to) >= 0) { s->err = SITE_EBUSY; return -1; }
+    /* A CORE IS NOT SOMETHING YOU FEED. */
+    if (s->dev[to].kind == SDEV_POWERCORE) { s->err = SITE_EFIXED; return -1; }
+    /* AND A TENANT'S DESK IS ON THEIR OWN SUPPLY, which is the sentence this
+     * file has made about a desk since there was a heat model. */
+    if (s->dev[to].kind == SDEV_DESK) { s->err = SITE_ENODEV; return -1; }
+    int m = site_run_metres(s, s->dev[from].room, s->dev[to].room);
+    if (m < 0) { s->err = SITE_ENOROUTE; return -1; }
+    int cost = site_cable_price(CAB_CAT6, m);
+    if (cost > s->money) { s->err = SITE_EMONEY; return -1; }
+    s->money -= cost;
+    s->spent += cost;
+    SiteConduit *c = &s->cond[s->ncond];
+    memset(c, 0, sizeof *c);
+    c->from = (int16_t)from; c->fport = (int16_t)fport; c->to = (int16_t)to;
+    c->room_a = (uint16_t)s->dev[from].room;
+    c->room_b = (uint16_t)s->dev[to].room;
+    c->metres = m; c->cost = cost; c->watts = SITE_CONDUIT_W; c->live = 1;
+    return s->ncond++;
+}
+
+bool site_unconduit(Site *s, int run)
+{
+    s->err = SITE_OK;
+    if (run < 0 || run >= s->ncond || !s->cond[run].live) {
+        s->err = SITE_ENODEV; return false;
+    }
+    s->cond[run].live = 0;
+    return true;
+}
+
+void site_dump_conduits(const Site *s, Buf *out)
+{
+    if (!s->ncond) {
+        buf_puts(out, "  no conduit has been run yet. `conduit <core>:<n> <box>`\n");
+        return;
+    }
+    buf_puts(out, "   n  from        to           metres  cost   load    of\n");
+    long spent = 0;
+    for (int i = 0; i < s->ncond; i++) {
+        const SiteConduit *c = &s->cond[i];
+        if (!c->live) continue;
+        spent += c->cost;
+        char what[40];
+        snprintf(what, sizeof what, "%s:%d", s->dev[c->from].name, c->fport);
+        buf_printf(out, "  %2d  %-11s %-11s %5d m %5d  %4d W %4d%%\n",
+                   i, what, s->dev[c->to].name, c->metres, c->cost,
+                   site_conduit_load(s, i), site_conduit_pct(s, i));
+    }
+    buf_printf(out, "  %ld spent on conduit. A run carries %d W; over that it "
+                    "trips and\n  everything behind it goes dark.\n",
+               spent, SITE_CONDUIT_W);
 }
 
 int site_room_outlets_built(const Site *s, int room)
@@ -2851,6 +3084,13 @@ static const struct { const char *verb; int need; const char *usage; } VERB[] = 
                      "rated for, whether a battery is in it. Nothing multiplies\n"
                      "anything by a grade. `catalogue` prints the whole list\n"
                      "with the specs and charges nothing." },
+    { "conduit",  3, "conduit <src>:<n> <box>   run power from an output of the\n"
+                     "                      core, or of a strip, to a box or to\n"
+                     "                      another strip. Priced by the metre off\n"
+                     "                      the same graph copper is" },
+    { "unconduit", 2, "unconduit <n>         pull one out. `conduits` numbers them" },
+    { "conduits", 1, "conduits              every run, what it carries and what it\n"
+                     "                      is carrying" },
     { "catalogue", 1, "catalogue             every kind, its price and its spec,\n"
                      "                      off the same table the counter charges\n"
                      "                      from. Nothing is bought." },
@@ -2974,6 +3214,17 @@ bool site_cmd(Site *s, const char *line, Buf *out)
 
     if (strcmp(t[0], "help") == 0) {
         buf_puts(out,
+            "conduit <src>:<n> <box>        POWER. Run conduit from an output of\n"
+            "                               the core -- or of a strip -- to a box,\n"
+            "                               or to another strip, which forks it.\n"
+            "                               Priced by the metre off the same graph\n"
+            "                               copper is. A run carries so much and no\n"
+            "                               more: over that it trips and everything\n"
+            "                               behind it is dark until you take\n"
+            "                               something off it or run another\n"
+            "unconduit <n>                  pull one out. `conduits` numbers them\n"
+            "conduits                       every run, the metres, and what each is\n"
+            "                               carrying against what it can\n"
             "catalogue                      every kind the shop sells, its price\n"
             "                               and its spec: sockets, what each one\n"
             "                               clocks, what the disk is rated for,\n"
@@ -3118,6 +3369,44 @@ bool site_cmd(Site *s, const char *line, Buf *out)
         return true;
     }
     if (strcmp(t[0], "links") == 0) { site_dump_links(s, out); return true; }
+    if (strcmp(t[0], "conduits") == 0) { site_dump_conduits(s, out); return true; }
+    if (strcmp(t[0], "conduit") == 0 && n >= 3) {
+        int from = -1, fport = -1;
+        char spec[64];
+        snprintf(spec, sizeof spec, "%s", t[1]);
+        char *colon = strchr(spec, ':');
+        if (colon) { *colon = 0; fport = atoi(colon + 1); }
+        from = site_dev_by_name(s, spec);
+        int to = dev_arg(s, t[2]);
+        if (from < 0 || to < 0 || !colon) {
+            buf_puts(out, "conduit <core>:<n> <box>   -- the first end is an "
+                          "output of the core or of a strip.\n");
+            return true;
+        }
+        int r = site_conduit(s, from, fport, to);
+        if (r < 0) { buf_printf(out, "refused: %s\n", site_err_text(s->err)); return true; }
+        buf_printf(out, "run %d: %d m of conduit from %s:%d to %s, %d paid, %ld left.\n",
+                   r, s->cond[r].metres, s->dev[from].name, fport,
+                   s->dev[to].name, s->cond[r].cost, s->money);
+        /* AND WHAT IT IS NOW CARRYING, said as it is run rather than found
+         * later: this is the number the whole design is about. */
+        buf_printf(out, "  it carries %d W and %d W is on it: %d%%.\n",
+                   s->cond[r].watts, site_conduit_load(s, r), site_conduit_pct(s, r));
+        if (site_conduit_pct(s, r) > 100)
+            buf_puts(out, "  that is over what it carries. It has tripped, and "
+                          "everything behind it is dark\n  until you take "
+                          "something off it or run another from the core.\n");
+        return true;
+    }
+    if (strcmp(t[0], "unconduit") == 0 && n >= 2) {
+        int r = atoi(t[1]);
+        if (!site_unconduit(s, r)) {
+            buf_printf(out, "refused: %s\n", site_err_text(s->err));
+            return true;
+        }
+        buf_printf(out, "run %d comes out. Nothing is refunded.\n", r);
+        return true;
+    }
     /* THE PRICE LIST, BEFORE THE MONEY. `quote` exists so that copper can be
      * priced before it is committed to, and there was no equivalent for kit:
      * a blind playtester learned the catalogue by ordering one of everything

@@ -118,7 +118,7 @@ static void check_verbs(int *passed, int *total)
      * Two devices on the first morning and the player bought neither. */
     ck("you start in the MDF, on the ground floor, with the ISP handoff",
        ses.b.rooms[ses.room].kind == RM_MDF && ses.b.rooms[ses.room].floor == 0 &&
-       ses.s.ndev == 2 && ses.s.dev[ses.s.uplink].room == ses.room);
+       ses.s.ndev == 3 && ses.s.dev[ses.s.uplink].room == ses.room);
     ck("and the machine you sit at is standing in that room too",
        ws_dev(&ses) >= 0 && ses.s.dev[ws_dev(&ses)].room == ses.room &&
        has(say(&ses, "look", &o), "workstation"));
@@ -440,8 +440,10 @@ static void check_reach(int *passed, int *total)
     /* The handoff and the workstation were both there before this; the switch
      * is the first thing anybody bought. */
     int bought = site_dev_by_name(&ses.s, "sw1");
+    /* Four devices now: the handoff, the workstation, the power core and the
+     * switch -- and only the last of those was bought. */
     ck("kit is charged for and delivered to goods in, not to your feet",
-       ses.s.ndev == 3 && bought > 0 && ses.s.money == 100000 - 120 &&
+       ses.s.ndev == 4 && bought > 0 && ses.s.money == 100000 - 120 &&
        ses.s.dev[bought].room == (uint16_t)site_goods_room(&ses.s) &&
        ses.s.dev[bought].room != (uint16_t)ses.room);
 
@@ -449,8 +451,12 @@ static void check_reach(int *passed, int *total)
     say(&ses, "carry sw1", &o);
     say(&ses, "go mdf", &o);
     say(&ses, "drop", &o);
+    /* THE BOX BY NAME, NOT BY INDEX. `dev[1]` was the workstation when there
+     * were two given devices and is the power core now that there are three:
+     * a test that counts on the order of a list is a test that breaks the
+     * next time anything is added to the front of it. */
     ck("and carrying it to the MDF is what puts it in the MDF",
-       ses.room == mdf && ses.s.dev[1].room == (uint16_t)mdf);
+       ses.room == mdf && ses.s.dev[bought].room == (uint16_t)mdf);
 
     /* Take a walk, and everything about that switch goes out of reach. */
     for (int i = 0; i < ses.b.nrooms; i++)

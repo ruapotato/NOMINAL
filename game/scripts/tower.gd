@@ -2447,14 +2447,19 @@ const START_KIT := ["core", "files"]
 
 const DEV_U := {"uplink": 1, "switch4": 1, "switch8": 1, "switch24": 1,
 	"router": 1, "pc": 4, "minitower": 4, "server": 2, "rackserver": 2,
-	"workstation": 4}
+	"workstation": 4,
+	# POWER. A strip is a 1U bar of sockets; the core is the station's own
+	# supply and stands on the plant room floor, so it is drawn as a cabinet.
+	"strip": 1, "powercore": 8}
 const DEV_COL := {"uplink": Color("#9a7b3a"),
 	# the three switch grades read as one family, cheapest palest
 	"switch4": Color("#5b7f9c"), "switch8": Color("#3f6f96"),
 	"switch24": Color("#2d5b80"), "router": Color("#8a5a3e"),
 	"pc": Color("#6a707a"), "minitower": Color("#5d636b"),
 	"server": Color("#7c828c"), "rackserver": Color("#969ca6"),
-	"workstation": Color("#6a707a")}
+	"workstation": Color("#6a707a"),
+	# power is its own family and reads as one at a glance
+	"strip": Color("#8a5a3e"), "powercore": Color("#5e4630")}
 
 func _place_devices() -> void:
 	devices.clear()
