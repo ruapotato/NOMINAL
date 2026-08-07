@@ -29,10 +29,18 @@
  * and a rule that parses and does not bite is worse than no rule at all. */
 #include "machine.h"
 #include "kernel.h"
+/* THE LAST BLOCK BUILDS A REAL TOWER, because the thing it is checking is
+ * the far side of a real tower's handoff. It reads core/site.c and does not
+ * write it: site_new, site_install, site_cable and site_addr are the same
+ * calls a person makes by typing `buy`, `cable` and `addr`. */
+#include "building.h"
+#include "site.h"
 /* Put a booted machine on a node of a net this file built, so that the last
  * voice checks are a person typing on the desk rather than a call into the
  * stack. core/session.c does exactly this when somebody pulls a chair out. */
 void netsite_pin(Machine *m, struct Net *n, int node);
+void netsite_stale(Machine *m);
+void netsite_apply(Machine *m);
 
 static int passed, total;
 
@@ -2141,6 +2149,186 @@ static const char *nft_rule(const char *rule, Buf *o)
     return mrun("netstat -F", o);
 }
 
+
+/* ====================================================================== *
+ * THE INTERNET, PAST THE HANDOFF                                    (D42)
+ *
+ * Every check here is written so that it fails against the shortcut it
+ * replaced. The shortcut was: site_new() gave the ISP's handoff every
+ * address in net_sites.c, a name server holding the whole zone, and an
+ * httpd -- so the supplier's shop was a box on the MDF wall three metres
+ * from the player, one hop away, and no property of the network applied to
+ * it. Under that arrangement the first check below fails on its first line.
+ * ====================================================================== */
+
+/* A tower on day zero with one machine wired straight into the handoff and
+ * addressed on the WAN /30. That is the owner's escape route -- *"if your
+ * core switch dies, you can wire up your main box to use the uplink and use
+ * that to order"* -- and it is the shape every check in this block wants,
+ * because it is the shape a player is in when the shop matters most. */
+typedef struct { Building b; Site s; int box; } Isp;
+
+static bool isp_tower(Isp *t)
+{
+    memset(t, 0, sizeof *t);
+    if (!bld_generate(&t->b, 7008)) return false;
+    if (!site_new(&t->s, &t->b, 7008, 60000)) return false;
+    int mdf = t->s.dev[t->s.uplink].room;
+    t->box = site_install(&t->s, SDEV_PC, mdf, "box1");
+    if (t->box < 0) return false;
+    if (!site_power(&t->s, t->box, true)) return false;
+    /* WHATEVER IS ALREADY IN THE HANDOFF COMES OUT FIRST. On the day this
+     * was written site_new put nothing in it; by the time it is read
+     * something may be, and a check that quietly does not run is worse than
+     * one that fails. */
+    for (int l = 0; l < t->s.nlink; l++)
+        if (t->s.link[l].cable >= 0 &&
+            (t->s.link[l].a == t->s.uplink || t->s.link[l].b == t->s.uplink))
+            site_uncable(&t->s, l);
+    if (site_cable(&t->s, t->box, 0, t->s.uplink, 0, CAB_CAT6) < 0) return false;
+    if (!site_addr(&t->s, t->box, 0, net_ip(198, 51, 100, 2), net_mask_bits(30)))
+        return false;
+    site_gateway(&t->s, t->box, net_ip(198, 51, 100, 1));
+    site_resolver(&t->s, t->box, net_ip(198, 51, 100, 1));
+    net_step(t->s.net, 1);
+    return true;
+}
+static void isp_free(Isp *t) { site_free(&t->s); bld_free(&t->b); }
+
+/* The body of one page, fetched over the wire the way a browser fetches it. */
+static int isp_get(Net *n, int from, uint32_t ip, const char *path, Buf *out)
+{
+    return net_http_get(n, from, ip, 80, path, out);
+}
+
+static void check_isp(void)
+{
+    printf("\nthe internet, past the handoff\n");
+    Isp t;
+    if (!isp_tower(&t)) { ck("a tower with a box in the handoff", false); return; }
+    Net *n = t.s.net;
+    int hand = t.s.dev[t.s.uplink].node, box = t.s.dev[t.box].node;
+    uint32_t shop = net_ip(10, 0, 2, 73), wiki = net_ip(10, 0, 2, 20);
+
+    /* ---------------------------------------------- the handoff is a handoff */
+    Buf wall;
+    buf_init(&wall);
+    uint32_t whop[16] = {0};
+    ck("not one page of the web is served off the wall socket any more",
+       isp_get(n, box, net_ip(198, 51, 100, 1), "/", &wall) == 404 &&
+       net_traceroute(n, box, wiki, whop, 12) > 1);
+    buf_free(&wall);
+    ck("and the handoff holds none of the web's addresses",
+       net_node_by_name(n, "www") >= 0 &&
+       net_ping(n, box, wiki, NULL) == PING_OK);
+    ck("its name server has an empty zone and forwards",
+       net_dnsd_running(n, hand) && net_dns_record_count(n, hand) == 0 &&
+       net_dns_forwarder(n, hand) == net_ip(198, 51, 100, 10));
+
+    /* ------------------------------------------------- machines are out there */
+    int core = net_node_by_name(n, "isp-core");
+    int www  = net_node_by_name(n, "www");
+    int shopn = net_node_by_name(n, "halbert");
+    int nsn  = net_node_by_name(n, "isp-ns");
+    ck("the ISP has a core router, a resolver, a shop and a hosting box",
+       core >= 0 && www >= 0 && shopn >= 0 && nsn >= 0);
+    ck("the shop is a booted machine and not a table entry",
+       shopn >= 0 && net_host_owner(n, shopn) != NULL);
+    ck("so is the resolver",
+       nsn >= 0 && net_host_owner(n, nsn) != NULL);
+    ck("the hosting box is not a machine, and says so",
+       www >= 0 && net_host_owner(n, www) == NULL);
+
+    /* --------------------------------------------------------- real routing */
+    uint32_t hops[16] = {0};
+    int nh = net_traceroute(n, box, shop, hops, 12);
+    ck("the supplier is three hops away, not on the wall",
+       nh == 3 && hops[0] == net_ip(198, 51, 100, 1) &&
+       hops[1] == net_ip(198, 51, 100, 6) && hops[2] == shop);
+    ck("and the ISP's resolver is on a different segment again",
+       net_traceroute(n, box, net_ip(198, 51, 100, 10), hops, 12) == 3 &&
+       hops[1] == net_ip(198, 51, 100, 6) &&
+       hops[2] == net_ip(198, 51, 100, 10));
+    ck("every one of those hops is over the rate-limited circuit",
+       net_port_rate_of(n, hand, 0) > 0);
+
+    /* ------------------------------------------- the escape route, end to end */
+    uint32_t got = 0;
+    ck("halbert.co.uk resolves, through the handoff, off the ISP's resolver",
+       net_resolve(n, box, "halbert.co.uk", &got) && got == shop);
+    Buf page;
+    buf_init(&page);
+    ck("and the catalogue comes back over the circuit",
+       isp_get(n, box, got, "/catalogue", &page) == 200 && page.len > 100);
+    bool priced = true;
+    for (int k = 0; k < SDEV_KIND_COUNT; k++) {
+        long pr = site_kind_price(k);
+        if (pr <= 0) continue;
+        char want[64];
+        snprintf(want, sizeof want, "%ld", pr);
+        if (!page.p || !strstr(page.p, site_kind_name(k))) { priced = false; break; }
+        if (!strstr(page.p, want)) { priced = false; break; }
+    }
+    ck("and every price on it is core/site.c's own number", priced);
+
+    /* --------------------------------- and the page is a FILE on that machine */
+    Machine *sm = shopn >= 0 ? (Machine *)net_host_owner(n, shopn) : NULL;
+    VNode *f = sm ? vfs_resolve(&sm->disk, "/srv/www/catalogue", NULL) : NULL;
+    ck("the catalogue is a file in the shop's own document root",
+       f && f->kind == VN_FILE && f->data.len == page.len &&
+       memcmp(f->data.p, page.p, page.len) == 0);
+    /* THE ONE THAT PROVES IT IS SERVED AND NOT LOOKED UP. Change the file and
+     * the shop serves the change -- which is the whole reason this record
+     * exists, because it is the day somebody edits a price. */
+    if (sm) vfs_mkfile(&sm->disk, "/srv/www/catalogue", "<h1>closed for stocktaking</h1>");
+    Buf again;
+    buf_init(&again);
+    ck("editing that file changes what the shop serves",
+       isp_get(n, box, shop, "/catalogue", &again) == 200 && again.p &&
+       strstr(again.p, "stocktaking"));
+    buf_free(&again);
+
+    /* ------------------------------------------ two boxes, two ways to fail */
+    /* The supplier's web server stops. Names still resolve, the wiki is still
+     * there, and the shop is a connection that is refused -- which is a
+     * completely different morning from the one below. */
+    if (sm) { kernel_svc_stop(sm, "httpd"); netsite_stale(sm); netsite_apply(sm); }
+    buf_free(&page); buf_init(&page);
+    ck("stopping httpd on the supplier's box closes the shop",
+       isp_get(n, box, shop, "/", &page) != 200);
+    buf_free(&page); buf_init(&page);
+    ck("and the rest of the web is untouched by it",
+       isp_get(n, box, wiki, "/", &page) == 200);
+    ck("and the name still resolves, because the resolver is elsewhere",
+       net_resolve(n, box, "halbert.co.uk", &got) && got == shop);
+
+    /* The ISP's resolver stops. Now NOTHING resolves and EVERYTHING still
+     * answers by address: "it works by IP but not by name", out there. */
+    Machine *nm = nsn >= 0 ? (Machine *)net_host_owner(n, nsn) : NULL;
+    if (nm) { kernel_svc_stop(nm, "net"); netsite_stale(nm); netsite_apply(nm); }
+    ck("netd stopped on the ISP's resolver: no name resolves at all",
+       !net_resolve(n, box, "wiki.nomnix.org", &got));
+    buf_free(&page); buf_init(&page);
+    ck("and every address still works, which is a different repair",
+       isp_get(n, box, wiki, "/", &page) == 200);
+    buf_free(&page);
+
+    /* THE HOSTING BOX'S PUBLIC ADDRESS. Everything a tenancy's day is aimed
+     * at has to be reachable from a tower built on 10.0.0.0/16, and the
+     * web's own addresses are not: they are inside it. */
+    uint32_t pub = net_isp_web_addr(n);
+    ck("the hosting box has an address a tower on 10/8 does not shadow",
+       pub && (pub >> 24) != 10 && net_isp_web_node(n) == www);
+    buf_init(&page);
+    ck("and it serves on it", isp_get(n, box, pub, "/n/8", &page) == 200);
+    buf_free(&page);
+
+    /* ------------------------------------------------------- the filter bites */
+    ck("the shop's own nftables ruleset drops ssh from outside",
+       net_tcp_connect_wait(n, box, shop, 22) < 0);
+    isp_free(&t);
+}
+
 static void check_nft(void)
 {
     printf("\nthe filter, as a machine really loads it\n");
@@ -2431,6 +2619,7 @@ int net_selfcheck(void)
     check_visible();
     check_nft();
     check_tools();
+    check_isp();
     printf("\n%d/%d network checks pass\n", passed, total);
     return passed == total ? 0 : 1;
 }

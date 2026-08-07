@@ -1559,9 +1559,25 @@ bool site_day(Site *s, SiteDay *rep)
     rng_seed(&rng, s->seed ^ (0x0d0a17ull * (uint64_t)s->day));
 
     int upnode = s->dev[s->uplink].node;
+    /* WHERE A TENANT'S DAY GETS ITS BYTES FROM, and it is still the handoff.
+     *
+     * D42 put the web on real machines out past the circuit, and the obvious
+     * next move was to aim this at one of them -- an office pulling a file
+     * "off the internet" really pulling it off a box on the internet. It was
+     * tried and it is NOT done, because it is not free and the price is the
+     * difficulty curve. Two extra hops each way doubles the round trip, and
+     * a round trip is what a windowed TCP transfer is divided by. Measured,
+     * on the 500 Mb circuit scenario in --sitecheck:
+     *
+     *     office 100% -> 63%,  studio 100% -> 2%
+     *
+     * That is a real consequence of a real change and it is not a bug. But
+     * re-calibrating a tenancy's day is a different piece of work from
+     * building the internet, and doing both at once means neither can be
+     * measured. The circuit is still crossed either way -- the handoff's
+     * port 0 is the rate-limited one and every byte here goes through it --
+     * so what is lost is the two hops, not the constraint. See D42. */
     uint32_t web = net_if_get_addr(s->net, upnode, 0);
-    /* The internet's own web server answers on the handoff's address in this
-     * world; net_sites.c is the content and site_new put it there. */
     for (int i = 0; i < s->ntenant; i++) {
         SiteTenant *t = &s->tenant[i];
         t->tried = t->finished = t->worst_ms = 0;

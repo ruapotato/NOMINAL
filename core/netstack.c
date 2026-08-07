@@ -192,6 +192,7 @@ typedef struct {
     int      vlan;         /* non-zero: this NIC tags its own frames        */
     bool     up;           /* the admin state of the interface, not the port */
     bool     used;
+    bool     wan;          /* a card that is not one of the holes in the room */
     uint64_t rx_pkt, tx_pkt, rx_drop;
 } Iface;
 
@@ -287,6 +288,8 @@ typedef struct {
      * boots to read it, so standing up out of the chair does not take it
      * with them. */
     VoiceLog vlog;
+    /* THE MACHINE BEHIND THIS NODE, or NULL. See net_host_set_owner. */
+    void    *owner;
 } Host;
 
 typedef struct {
@@ -556,6 +559,14 @@ struct Net {
     int      ntrace, tracehead;
     /* The frame capture. Per node, because a card only sees its own frames
      * -- unlike the trace above, which is the whole world's events. */
+    /* THE INTERNET, past a handoff. `isp_hand` is the node the customer's
+     * circuit lands on; `isp_done` says the world beyond it has been built,
+     * or that we have looked and there is no handoff here. `isp_owner` is
+     * netsite.c's, and is freed with this world. */
+    int      isp_hand;
+    bool     isp_done;
+    uint32_t isp_web;
+    void    *isp_owner[4];
     bool     pcapping;
     struct { int node; char line[NET_PCAP_LINE]; } pcap[NET_PCAP_MAX];
     int      npcap, pcaphead;
@@ -619,9 +630,19 @@ Net *net_new(uint64_t seed)
     n->qfree = 0;
     for (int i = 0; i < NET_DUE_RING; i++) n->qhead[i] = n->qtail[i] = -1;
     n->cur_vs = -1;
+    n->isp_hand = -1;
     return n;
 }
-void net_free(Net *n) { if (n) nom_free(n); }
+/* The world is going away, and anything netsite.c booted onto it goes with
+ * it -- otherwise a harness that plays seventy towers leaks a booted machine
+ * per tower and the seventy-first is the one that runs out of memory. */
+void netsite_net_freed(Net *n);
+void net_free(Net *n)
+{
+    if (!n) return;
+    netsite_net_freed(n);
+    nom_free(n);
+}
 uint64_t net_now(const Net *n) { return n->now; }
 
 static Host *host_of(Net *n, int node)
@@ -729,6 +750,78 @@ int net_add_host_nics(Net *n, const char *name, int nics)
 int net_add_host(Net *n, const char *name)
 {
     return net_add_host_nics(n, name, NET_HOST_NICS);
+}
+
+/* A CARD ON THE BACK THAT IS NOT A HOLE IN THE ROOM.
+ *
+ * The handoff on the MDF wall has one customer socket and that is the whole
+ * of the day-one decision: your own machine is in it, and the first switch
+ * you buy cannot reach the internet until you have taken your machine out.
+ * Giving it a second socket the player could cable into would delete that
+ * decision. But a handoff with no way out to the rest of the ISP is not a
+ * handoff, it is a wall with a light on it -- so the way out is a real card
+ * on a real port, allocated OUTSIDE the node's contiguous run of sockets.
+ *
+ * Everything that counts holes -- net_node_ports, `show`, `cable`, the free
+ * port search, `net_dump_ports` -- walks port0..port0+nports and therefore
+ * cannot see this one. Everything that carries frames -- port_tx, frame_land,
+ * route_pick, the cable table -- works in global port ids and therefore can.
+ * That split is the whole trick, and it is only honest because the port is
+ * genuinely there: it has a MAC, it clocks bits, it drops what it cannot
+ * hold, and a `tcpdump` on the far side of the cable sees the frames. */
+int net_wan_nic(Net *n, int node)
+{
+    Host *h = host_of(n, node);
+    if (!h) return -1;
+    if (n->nport >= NET_PORTS_MAX) return -1;
+    /* From the TOP of the interface table down, so that net_if_subif -- which
+     * fills from nports upwards -- and this cannot collide however many
+     * tagged subinterfaces the box grows. */
+    int ifx = -1;
+    for (int i = NET_IF_MAX - 1; i >= n->node[node].nports; i--)
+        if (!h->ifc[i].used) { ifx = i; break; }
+    if (ifx < 0) return -1;
+    int p = n->nport++;
+    Port *pt = &n->port[p];
+    memset(pt, 0, sizeof *pt);
+    pt->used = true;
+    pt->node = node;
+    pt->index = ifx;
+    pt->cable = -1;
+    pt->admin_up = true;
+    pt->duplex = DUPLEX_FULL;
+    pt->mode = PORT_ACCESS;
+    pt->vlan = VLAN_DEFAULT;
+    memset(&h->ifc[ifx], 0, sizeof h->ifc[ifx]);
+    h->ifc[ifx].used = true;
+    h->ifc[ifx].up = true;
+    h->ifc[ifx].wan = true;
+    h->ifc[ifx].port = p;
+    factory_mac(n, h->ifc[ifx].mac);
+    return ifx;
+}
+
+int net_wan_cable(Net *n, int a, int aifx, int b, int bport, int metres,
+                  CableKind k)
+{
+    Host *h = host_of(n, a);
+    if (!h || aifx < 0 || aifx >= NET_IF_MAX || !h->ifc[aifx].used) return -1;
+    int pa = h->ifc[aifx].port, pb = pid_of(n, b, bport);
+    if (pa < 0 || pb < 0 || pa == pb) return -1;
+    if (n->port[pa].cable >= 0 || n->port[pb].cable >= 0) return -1;
+    if (n->ncable >= NET_CABLES_MAX) return -1;
+    int id = -1;
+    for (int i = 0; i < NET_CABLES_MAX; i++) if (!n->cable[i].used) { id = i; break; }
+    if (id < 0) return -1;
+    if (id >= n->ncable) n->ncable = id + 1;
+    Cable *c = &n->cable[id];
+    c->used = true; c->a = pa; c->b = pb;
+    c->metres = metres < 0 ? 0 : metres;
+    c->kind = k;
+    n->port[pa].cable = id;
+    n->port[pb].cable = id;
+    stp_recompute(n);
+    return id;
 }
 
 int net_add_switch(Net *n, const char *name, int nports)
@@ -1707,6 +1800,11 @@ bool net_if_alias(Net *n, int node, uint32_t ip)
             return true;
         }
     return false;
+}
+void net_if_alias_clear(Net *n, int node)
+{
+    for (int i = 0; i < NET_ALIAS_MAX; i++)
+        if (n->alias[i].used && n->alias[i].node == node) n->alias[i].used = false;
 }
 static bool alias_held(const Net *n, int node, uint32_t ip)
 {
@@ -4785,6 +4883,27 @@ void net_httpd(Net *n, int node, uint16_t port)
     if (s >= 0) n->sock[s].service = SVC_HTTPD;
 }
 
+void net_host_set_owner(Net *n, int node, void *owner)
+{
+    Host *h = host_of(n, node);
+    if (h) h->owner = owner;
+}
+void *net_host_owner(const Net *n, int node)
+{
+    const Host *h = chost_of(n, node);
+    return h ? h->owner : NULL;
+}
+
+/* WHAT THIS BOX SERVES.
+ *
+ * A node with a real machine behind it serves that machine's document root,
+ * off its own disk, and netsite.c does the reading because netstack must not
+ * learn what a filesystem is. A node with nothing behind it -- the hosting
+ * box that is thirty of the web's minor names at once, and every host in the
+ * break-fix game's own site network -- is still served out of net_sites.c's
+ * table by address, which is what it has always been. */
+bool netsite_www(Net *n, int node, const char *selfip, const char *path, Buf *out);
+
 static void httpd_poll(Net *n, int sock)
 {
     Sock *s = &n->sock[sock];
@@ -4864,7 +4983,7 @@ static void httpd_poll(Net *n, int sock)
     net_fmt_ip(s->laddr, selfip, sizeof selfip);
     Buf body;
     buf_init(&body);
-    bool have = net_fetch(selfip, path, &body);
+    bool have = netsite_www(n, s->node, selfip, path, &body);
 
     Buf resp;
     buf_init(&resp);
@@ -4953,8 +5072,77 @@ static void service_poll(Net *n)
     }
 }
 
+void net_isp_declare(Net *n, int handoff)
+{
+    if (!n) return;
+    n->isp_hand = handoff;
+    n->isp_done = false;
+}
+int net_isp_handoff(const Net *n) { return n ? n->isp_hand : -1; }
+void net_isp_own(Net *n, int slot, void *p)
+{
+    if (n && slot >= 0 && slot < 4) n->isp_owner[slot] = p;
+}
+void *net_isp_owned(const Net *n, int slot)
+{
+    return (n && slot >= 0 && slot < 4) ? n->isp_owner[slot] : NULL;
+}
+
+/* WHICH NODE THE CIRCUIT LANDS ON, when nobody has said.
+ *
+ * site_new() still builds the internet the old way -- one box on the far
+ * side of the /30 that answers DNS for every name in net_sites.c and holds
+ * every one of their addresses on its own interface. That box is, precisely,
+ * a handoff pretending to be the internet, and it is the only thing in this
+ * program that is both: a name server whose own card claims the addresses it
+ * hands out. Recognising it is how the web gets moved off it without
+ * reaching into a file somebody else is editing today.
+ *
+ * When site.c calls net_isp_declare() this never runs. It is a bridge, and
+ * D42 says so in as many words. */
+static int isp_sniff(const Net *n)
+{
+    for (int i = 0; i < n->nnode; i++) {
+        if (!n->node[i].used || n->node[i].kind != NODE_HOST) continue;
+        const Host *h = &n->host[n->node[i].sub];
+        if (!h->dnsd || !h->forwarding) continue;
+        for (int k = 0; k < NET_ALIAS_MAX; k++)
+            if (n->alias[k].used && n->alias[k].node == i) return i;
+    }
+    return -1;
+}
+
+/* netsite.c's, because the machines out there are machines. */
+void netsite_isp_build(Net *n, int handoff);
+
+static void isp_settle(Net *n)
+{
+    /* Once. Before anything is built, so that the boot of a machine out
+     * there -- which steps this same world -- cannot come back in here. */
+    n->isp_done = true;
+    int hand = n->isp_hand >= 0 ? n->isp_hand : isp_sniff(n);
+    if (hand < 0) return;
+    n->isp_hand = hand;
+    netsite_isp_build(n, hand);
+}
+
+void net_isp_set_web(Net *n, uint32_t ip) { if (n) n->isp_web = ip; }
+uint32_t net_isp_web_addr(Net *n)
+{
+    if (!n) return 0;
+    if (!n->isp_done) isp_settle(n);
+    return n->isp_web;
+}
+int net_isp_web_node(Net *n)
+{
+    if (!n) return -1;
+    if (!n->isp_done) isp_settle(n);
+    return net_node_by_name(n, "www");
+}
+
 void net_step(Net *n, int ticks)
 {
+    if (!n->isp_done) isp_settle(n);
     for (int t = 0; t < ticks; t++) {
         net_tick(n);
         tcp_timers(n);
@@ -4985,7 +5173,8 @@ static void if_name(const Net *n, int node, int ifx, char *out, size_t cap)
     const Host *h = chost_of(n, node);
     int nic = net_if_nic(n, node, ifx);
     int vlan = h ? h->ifc[ifx].vlan : 0;
-    if (ifx < n->node[node].nports || nic < 0) snprintf(out, cap, "eth%d", ifx);
+    if (h && h->ifc[ifx].wan) snprintf(out, cap, "wan0");
+    else if (ifx < n->node[node].nports || nic < 0) snprintf(out, cap, "eth%d", ifx);
     else if (vlan) snprintf(out, cap, "eth%d.%d", nic, vlan);
     else snprintf(out, cap, "eth%d:%d", nic, ifx);
 }

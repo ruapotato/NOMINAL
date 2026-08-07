@@ -754,7 +754,14 @@ void netsite_detach(Machine *m)
      * somebody's building with a cable in it; the box being freed does not
      * unplug it, and handing it to the free list would let the next
      * break-fix machine be issued a node in a network it has never seen. */
-    if (m->net_home) { m->net_home = NULL; m->net_node = 0; m->net_cfg = 0; return; }
+    if (m->net_home) {
+        /* And it stops being the box behind that node: a web server whose
+         * machine has been carried out serves nothing, rather than serving
+         * the last thing that stood there. */
+        if (net_host_owner((Net *)m->net_home, m->net_node) == m)
+            net_host_set_owner((Net *)m->net_home, m->net_node, NULL);
+        m->net_home = NULL; m->net_node = 0; m->net_cfg = 0; return;
+    }
     if (!m->net_node || !SITE || m->net_gen != SITE_GEN) {
         m->net_node = 0; m->net_cfg = 0;
         return;
@@ -778,4 +785,396 @@ void netsite_reset(void)
     nfreed = 0;
     SITE_GEN++;
     if (!SITE_GEN) SITE_GEN = 1;
+}
+
+/* ======================================================================= *
+ * THE INTERNET, OUT PAST THE HANDOFF
+ *
+ * Until D42 the whole web was one box: site_new() gave the ISP's handoff
+ * every address in net_sites.c and an httpd, so `links halbert.co.uk` from
+ * a machine in the building opened a connection to the wall socket three
+ * metres away and got a page out of a C array. It worked, and every property
+ * of the network the rest of this program models -- distance, a rate-limited
+ * circuit, routing, a resolver that can be down on its own -- stopped at the
+ * demarcation point.
+ *
+ * Now the far side is built:
+ *
+ *   uplink      198.51.100.1/30   the handoff, on the MDF wall. One customer
+ *               198.51.100.5/30   socket; wan0 is the way out and no player
+ *                                 can see it or cable into it. It answers
+ *                                 DNS at .1 as it always has, but its zone
+ *                                 is EMPTY and it forwards -- so the name
+ *                                 service the tower is pointed at is the
+ *                                 ISP's resolver, one hop further away, and
+ *                                 losing that resolver is not the same fault
+ *                                 as losing the circuit.
+ *   isp-core    198.51.100.6/30   the ISP's router. Four cards: the
+ *               198.51.100.9/29   backhaul, its own service segment, and the
+ *               10.0.2.1/24       two hosting segments.
+ *               10.0.3.1/24
+ *   isp-ns      198.51.100.10/29  A REAL MACHINE. NomnixOS, booted, netd
+ *                                 reading its own /etc/net/interfaces, and
+ *                                 the whole zone in /etc/net/services on its
+ *                                 own disk.
+ *   halbert     10.0.2.73/24      A REAL MACHINE. The supplier. Its httpd
+ *                                 serves /srv/www off its own filesystem,
+ *                                 and the catalogue in there is PRINTED off
+ *                                 core/site.c's KIT[] when the disk is laid
+ *                                 down -- so it cannot drift from what the
+ *                                 counter charges, and it is a file that one
+ *                                 day somebody can edit.
+ *   www         10.0.2.20/24      Not a machine: one box holding the
+ *               10.0.3.10/24      addresses of the web's other twenty-odd
+ *                                 names, served out of net_sites.c's table
+ *                                 the way they always were. See the note on
+ *                                 cost below.
+ *
+ * WHAT A REAL BOX COSTS, MEASURED. A booted machine is 13.0 MB (rss over 32
+ * of them, 507952 kB - 294156 kB / 16) and 92 ms to install and boot. The
+ * table has 30 names on 23 addresses; thirty machines would be 390 MB and
+ * 2.8 s on every tower the harness builds, and --sitecheck builds 71 of them.
+ * So the two boxes that a player can have a relationship with are real and
+ * the rest of the web is a hosting box, which is what the rest of the web
+ * is. The two that are real are the two that can BREAK in ways that mean
+ * something: the shop is what the money goes through, and the resolver is
+ * the difference between "the internet is gone" and "the internet is fine
+ * and you cannot look anything up".
+ *
+ * AND IT IS BUILT LAZILY, on the world's first tick (net_step). A Site that
+ * is generated and never played -- most of --building, and every seed the
+ * scenario generator throws away -- pays nothing at all.
+ * ======================================================================= */
+
+#define ISP_HAND_WAN   198, 51, 100, 5
+#define ISP_CORE_WAN   198, 51, 100, 6
+#define ISP_CORE_SVC   198, 51, 100, 9
+#define ISP_NS_IP      198, 51, 100, 10
+#define ISP_SVC_BITS   29
+#define WWW_A_GW       10, 0, 2, 1
+#define WWW_A_IP       10, 0, 2, 20
+#define WWW_B_GW       10, 0, 3, 1
+#define WWW_B_IP       10, 0, 3, 10
+#define SHOP_IP        10, 0, 2, 73
+/* THE HOSTING BOX'S PUBLIC ADDRESS, and the reason it needs one.
+ *
+ * The whole of this web is addressed in 10.0.2.0/24 and 10.0.3.0/24, which
+ * is private space, which is where the player's own tower is built. A tower
+ * on 10.0.0.0/16 -- the shape --loadcheck recommends and every gate builds
+ * -- contains 10.0.2.20 in its OWN connected subnet, so a desk asking for it
+ * ARPs on its own floor and never sends a packet at all. That is a real
+ * collision and it is older than this record; what is new is that a
+ * tenancy's whole day now goes to this box, so it could not be left alone.
+ *
+ * The honest repair is to move the web into documentation space, and that is
+ * net_sites.c's twenty-three addresses, image.c's /etc/hosts, every page that
+ * quotes one, and the break-fix game's own site network. It was not done
+ * today; see D42. This is the hosting box's public address, on the same card,
+ * and it is what a day's traffic is aimed at. */
+#define WWW_PUBLIC     203, 0, 113, 20
+#define SHOP_HOST      "halbert.co.uk"
+
+/* Every page of one host, and its body. net_sites.c. */
+int  net_site_page(int i, const char **host, const char **ip, const char **path);
+bool net_fetch(const char *ip, const char *path, Buf *out);
+
+/* ------------------------------------------------------ a box's own disk */
+/* WHAT A WEB SERVER SERVES.
+ *
+ * The daemon in netstack calls this instead of net_fetch. A node with a
+ * machine behind it serves that machine's DocumentRoot -- the directory its
+ * own /etc/httpd/httpd.conf names, which httpd(8) refused to start without
+ * -- and a node with nothing behind it is served out of the table by address
+ * as it always was.
+ *
+ * That is the line this whole record is about. A price list that lives in a
+ * C string can never be changed by anything inside the game; a price list
+ * that is a file on a disk that a real daemon reads is a thing a player can
+ * one day reach. Nothing here lets them yet. Everything here is what they
+ * would have to get past. */
+bool netsite_www(Net *n, int node, const char *selfip, const char *path, Buf *out)
+{
+    Machine *m = (Machine *)net_host_owner(n, node);
+    if (!m) return net_fetch(selfip, path, out);
+
+    char root[160];
+    if (!cfg_field(m, "/etc/httpd/httpd.conf", "DocumentRoot", root, sizeof root))
+        return false;                      /* configured with no document root */
+    if (!path || !*path) path = "/";
+    /* A REQUEST IS NOT A PATH UNTIL IT HAS BEEN CHECKED. `GET /../etc/shadow`
+     * is the oldest trick there is and it would work perfectly against a vfs
+     * that resolves `..` honestly. The document root is a root. */
+    for (const char *p = path; *p; p++)
+        if (p[0] == '.' && p[1] == '.') return false;
+
+    Vfs *fs = m->on_rescue ? &m->rescue : &m->disk;
+    char full[NOM_PATH_MAX];
+    static const char *IDX[] = { "index", "index.html", NULL };
+    VNode *f = NULL;
+    if (strcmp(path, "/") == 0) {
+        for (int i = 0; IDX[i] && !f; i++) {
+            snprintf(full, sizeof full, "%s/%s", root, IDX[i]);
+            f = vfs_resolve(fs, full, NULL);
+            if (f && f->kind != VN_FILE) f = NULL;
+        }
+    } else {
+        snprintf(full, sizeof full, "%s%s", root, path);
+        f = vfs_resolve(fs, full, NULL);
+        if (f && f->kind != VN_FILE) f = NULL;
+    }
+    if (!f) return false;                             /* a real 404 */
+    buf_put(out, f->data.p, f->data.len);
+    return true;
+}
+
+/* ------------------------------------------------------ the boxes out there */
+/* A pristine machine, then the four files that make it this box. Everything
+ * a NomnixOS machine needs to be on a network is on its own disk and is read
+ * off its own disk by netd, so making one of the ISP's servers is writing
+ * files and booting it -- not a second configuration path. */
+static void isp_write(Machine *m, const char *path, const char *body)
+{
+    vfs_mkfile(&m->disk, path, body);
+}
+
+/* THE FILTER IN FRONT OF THE SHOP.
+ *
+ * /etc/nftables.conf is read at boot by nft(8) running INSIDE the machine,
+ * which calls netsite_fw_add through a syscall -- the same path a player's
+ * own `nft` takes on their own server. So this is not a description of a
+ * filter, it is one, and it is what will have to be got past on the day
+ * somebody tries to order a switch for nothing.
+ *
+ * Port 80 is open because it is a shop. ICMP is open because the supplier's
+ * own front page says *"it is on 10.0.2.73 and it answers a ping"* and
+ * --mancheck runs that ping against this machine: a page in this game does
+ * not get to be wrong about the box it is served from.
+ *
+ * SSH IS DROPPED BY A RULE AND NOT BY THE POLICY, and the difference is the
+ * whole reason this comment is long. netstack's `policy drop` disposes of
+ * what no rule named AND nothing is listening for -- it is not a way to shut
+ * a port a service has open, and net_dump_fw says so in the paragraph it
+ * prints. The shop is running sshd. So a chain policy alone left port 22
+ * open on the supplier's box, and the first version of this ruleset was a
+ * filter that looked closed and was not. A named drop is what closes it, and
+ * a named drop is also what somebody will one day have to get past. */
+static const char *SHOP_NFT =
+    "# halbert trade supply -- edge filter. ssh is NOT open from outside.\n"
+    "table inet filter {\n"
+    "  chain input {\n"
+    "    type filter hook input priority 0; policy drop;\n"
+    "    tcp dport { 22 } drop\n"
+    "    icmp accept\n"
+    "    tcp dport { 80 } accept\n"
+    "  }\n}\n";
+
+/* The resolver answers questions and lets people find out it is there. */
+static const char *NS_NFT =
+    "# the ISP's resolver. Queries and echoes, and nothing else.\n"
+    "table inet filter {\n"
+    "  chain input {\n"
+    "    type filter hook input priority 0; policy drop;\n"
+    "    tcp dport { 22, 80 } drop\n"
+    "    icmp accept\n"
+    "    udp dport { 53 } accept\n"
+    "  }\n}\n";
+
+/* THE SHOP'S DOCUMENT ROOT, PRINTED RATHER THAN TYPED.
+ *
+ * Every page halbert.co.uk serves becomes a real file under its DocumentRoot,
+ * and the body is whatever net_sites.c renders for that page AT THE MOMENT
+ * THE DISK IS LAID DOWN -- which for the two generated pages means it is
+ * printed off core/site.c's KIT[] through site_kind_*(), exactly as it was
+ * when it was printed at fetch time. The guarantee D40 bought is unchanged:
+ * a price on that page is the catalogue's price because it was read from the
+ * catalogue, and there is still no second copy of it anywhere.
+ *
+ * What HAS changed is that it is now a file, so it can be read with `cat`,
+ * hashed, edited, and one day disagreed with. That is the point. */
+/* Install a pristine NomnixOS and write the handful of files that make it
+ * this particular box. Everything a machine needs to be on a network is on
+ * its own disk and is read off its own disk by netd, so making one of the
+ * ISP's servers is writing files -- not a second configuration path that
+ * could disagree with the first. */
+static Machine *isp_install(uint64_t seed, const char *addr, const char *bits,
+                            const char *gw, const char *ns, const char *nft)
+{
+    Machine *m = (Machine *)nom_alloc(sizeof *m);
+    machine_install(m, seed);
+    char buf[256];
+    snprintf(buf, sizeof buf,
+             "# the ISP's own kit. Not yours, and not on your network.\n"
+             "iface eth0\n  address %s\n  netmask %s\n  gateway %s\n",
+             addr, bits, gw);
+    isp_write(m, "/etc/net/interfaces", buf);
+    snprintf(buf, sizeof buf, "nameserver %s\n", ns);
+    isp_write(m, "/etc/resolv.conf", buf);
+    if (nft) isp_write(m, "/etc/nftables.conf", nft);
+    return m;
+}
+
+/* PINNED BEFORE IT IS BOOTED, so that the filter nft(8) loads at boot, the
+ * address netd reads and the sockets its services open all land on the node
+ * it is really going to live on. Booting first and pinning afterwards put
+ * the ruleset and the listeners on a node in another world, and the box came
+ * up filtering nothing on a network it was not on. */
+static void isp_start(Net *n, int node, Machine *m)
+{
+    netsite_pin(m, n, node);
+    net_host_set_owner(n, node, m);
+    machine_boot(m);
+    netsite_apply(m);
+}
+
+static void shop_disk(Machine *m)
+{
+    const char *host, *ip, *path;
+    for (int i = 0; net_site_page(i, &host, &ip, &path); i++) {
+        if (strcmp(host, SHOP_HOST) != 0) continue;
+        Buf body;
+        buf_init(&body);
+        if (net_fetch(ip, path, &body) && body.len) {
+            char full[NOM_PATH_MAX];
+            if (strcmp(path, "/") == 0) snprintf(full, sizeof full, "/srv/www/index");
+            else                        snprintf(full, sizeof full, "/srv/www%s", path);
+            /* buf is not NUL-terminated by contract; vfs_mkfile takes a
+             * string, so terminate a copy. */
+            char *z = (char *)nom_alloc(body.len + 1);
+            memcpy(z, body.p, body.len);
+            z[body.len] = 0;
+            vfs_mkfile(&m->disk, full, z);
+            nom_free(z);
+        }
+        buf_free(&body);
+    }
+    isp_write(m, "/etc/httpd/httpd.conf",
+              "Listen 80\nDocumentRoot /srv/www\nServerName halbert.co.uk\n");
+}
+
+/* ---------------------------------------------------------------- build */
+void netsite_isp_build(Net *n, int hand)
+{
+    if (!n || hand < 0) return;
+
+    /* The handoff stops being the internet. It keeps its address, its
+     * circuit and its DNS socket -- everything the tower is configured
+     * against -- and gives back the thirty addresses it was pretending to
+     * be and the web server it was pretending to run. */
+    net_if_alias_clear(n, hand);
+    net_dnsd_stop(n, hand);
+    net_dnsd(n, hand);
+    net_set_resolver(n, hand, net_ip(ISP_NS_IP));
+
+    int wan = net_wan_nic(n, hand);
+    if (wan < 0) return;
+    net_if_addr(n, hand, wan, net_ip(ISP_HAND_WAN), net_mask_bits(30));
+
+    int core = net_add_host_nics(n, "isp-core", 4);
+    int sw   = net_add_switch(n, "isp-sw", 8);
+    int www  = net_add_host_nics(n, "www", 2);
+    int shop = net_add_host_nics(n, "halbert", 1);
+    int ns   = net_add_host_nics(n, "isp-ns", 1);
+    if (core < 0 || sw < 0 || www < 0 || shop < 0 || ns < 0) return;
+
+    /* Fibre, because it is a carrier's own plant and because the one thing
+     * out here that is allowed to be the bottleneck is the circuit the
+     * landlord bought. */
+    net_wan_cable(n, hand, wan, core, 0, 400, CAB_FIBRE);
+    net_cable(n, core, 1, sw, 0, 5, CAB_FIBRE);
+    net_cable(n, www,  0, sw, 1, 5, CAB_CAT6);
+    net_cable(n, shop, 0, sw, 2, 5, CAB_CAT6);
+    net_cable(n, core, 2, www, 1, 5, CAB_CAT6);
+    net_cable(n, core, 3, ns,  0, 5, CAB_CAT6);
+
+    net_if_addr(n, core, 0, net_ip(ISP_CORE_WAN), net_mask_bits(30));
+    net_if_addr(n, core, 1, net_ip(WWW_A_GW),     net_mask_bits(24));
+    net_if_addr(n, core, 2, net_ip(WWW_B_GW),     net_mask_bits(24));
+    net_if_addr(n, core, 3, net_ip(ISP_CORE_SVC), net_mask_bits(ISP_SVC_BITS));
+    net_forwarding(n, core, true);
+    net_set_gateway(n, core, net_ip(ISP_HAND_WAN));
+
+    /* The way to the web, from the handoff. Longer than the 10.0.0.0/8 that
+     * site_new points back down the customer's own circuit, so it wins --
+     * which is exactly how a provider's more specific route wins in the real
+     * table, and it is arithmetic rather than a special case. */
+    net_route_add(n, hand, net_ip(10, 0, 2, 0), net_mask_bits(24),
+                  net_ip(ISP_CORE_WAN), -1);
+    net_route_add(n, hand, net_ip(10, 0, 3, 0), net_mask_bits(24),
+                  net_ip(ISP_CORE_WAN), -1);
+    net_route_add(n, hand, net_ip(198, 51, 100, 8), net_mask_bits(ISP_SVC_BITS),
+                  net_ip(ISP_CORE_WAN), -1);
+
+    /* THE HOSTING BOX, which is thirty names on one card, which is how
+     * virtual hosting has always worked and is the honest shape for a web of
+     * jokes nobody administers. The shop is not among them: it is a machine.
+     */
+    net_if_addr(n, www, 0, net_ip(WWW_A_IP), net_mask_bits(24));
+    net_if_addr(n, www, 1, net_ip(WWW_B_IP), net_mask_bits(24));
+    net_set_gateway(n, www, net_ip(WWW_A_GW));
+    net_if_alias(n, www, net_ip(WWW_PUBLIC));
+    net_isp_set_web(n, net_ip(WWW_PUBLIC));
+    net_route_add(n, core, net_ip(WWW_PUBLIC), net_mask_bits(32),
+                  net_ip(WWW_A_IP), -1);
+    net_route_add(n, hand, net_ip(203, 0, 113, 0), net_mask_bits(24),
+                  net_ip(ISP_CORE_WAN), -1);
+    uint32_t shop_ip = net_ip(SHOP_IP);
+    for (int i = 0; ; i++) {
+        const char *h = NULL, *ipstr = NULL;
+        if (!net_site_hosts(i, &h, &ipstr)) break;
+        uint32_t a = 0;
+        if (!net_parse_ip(ipstr, &a)) continue;
+        if (a == shop_ip) continue;                   /* that one is a box */
+        if ((a >> 24) == 127) continue;               /* somebody's loopback joke */
+        if (a == net_ip(WWW_A_IP) || a == net_ip(WWW_B_IP)) continue;
+        net_if_alias(n, www, a);
+    }
+    net_httpd(n, www, 80);
+
+    /* ------------------------------------------------------ the real boxes */
+    /* The zone, on a disk. netd replays /etc/net/services at every
+     * configuration, so the resolver's answers come off its own filesystem
+     * and stopping netd on it stops the whole web resolving -- while the
+     * shop's address goes on working, which is the diagnosis this record
+     * exists for. */
+    Machine *mns = isp_install(0x15b0001ull, "198.51.100.10", "29",
+                               "198.51.100.9", "198.51.100.10", NS_NFT);
+    Buf zone;
+    buf_init(&zone);
+    buf_puts(&zone, "dnsd\n");
+    for (int i = 0; ; i++) {
+        const char *h = NULL, *ipstr = NULL;
+        if (!net_site_hosts(i, &h, &ipstr)) break;
+        buf_printf(&zone, "record %s %s\n", h, ipstr);
+    }
+    char *z = (char *)nom_alloc(zone.len + 1);
+    memcpy(z, zone.p, zone.len);
+    z[zone.len] = 0;
+    isp_write(mns, "/etc/net/services", z);
+    nom_free(z);
+    buf_free(&zone);
+    isp_start(n, ns, mns);
+
+    Machine *msh = isp_install(0x15b0002ull, "10.0.2.73", "24",
+                               "10.0.2.1", "198.51.100.10", SHOP_NFT);
+    shop_disk(msh);
+    isp_start(n, shop, msh);
+
+    net_isp_own(n, 0, mns);
+    net_isp_own(n, 1, msh);
+}
+
+/* The world this internet was built in is going away. netstack calls this
+ * from net_free, because a harness that plays seventy towers would otherwise
+ * leak two booted machines a tower. */
+void netsite_net_freed(Net *n)
+{
+    for (int i = 0; i < 4; i++) {
+        Machine *m = (Machine *)net_isp_owned(n, i);
+        if (!m) continue;
+        net_isp_own(n, i, NULL);
+        m->net_home = NULL;         /* the world is going, not the wire */
+        m->net_node = 0;
+        machine_free(m);
+        nom_free(m);
+    }
 }

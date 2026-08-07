@@ -242,6 +242,22 @@ int   net_add_host(Net *n, const char *name);
  * are then counting the same holes. */
 int   net_add_host_nics(Net *n, const char *name, int nics);
 int   net_add_switch(Net *n, const char *name, int nports);
+/* ------------------------------------------------- A HOLE NOBODY CAN SEE
+ * A socket on the back of a box that is not one of the holes in the room.
+ *
+ * The ISP's handoff has ONE customer port -- that is the whole shape of the
+ * first decision the player makes, and giving it a second one they could
+ * cable into would undo it. It also has, obviously, a way out to the rest of
+ * the ISP, because otherwise the box on the wall is not a handoff, it is a
+ * wall. This is that way out: a real card with a real MAC on a real port
+ * that carries real frames, allocated OUTSIDE the node's contiguous run of
+ * sockets so that net_node_ports(), `show`, `cable` and every count of what
+ * is free are unchanged by it.
+ *
+ * Returns the interface index, or -1. Cable it with net_wan_cable(). */
+int   net_wan_nic(Net *n, int node);
+int   net_wan_cable(Net *n, int a, int aifx, int b, int bport, int metres,
+                    CableKind k);
 int   net_node_count(const Net *n);
 const char *net_node_name(const Net *n, int node);
 int   net_node_ports(const Net *n, int node);
@@ -377,6 +393,9 @@ void  net_if_addr(Net *n, int node, int ifx, uint32_t ip, uint32_t mask);
  * held in a small pool for the world rather than per host, because almost no
  * host has one. */
 bool  net_if_alias(Net *n, int node, uint32_t ip);
+/* Give every one of them back. A box that stops being thirty web servers has
+ * to stop answering for their addresses, or it goes on being them. */
+void  net_if_alias_clear(Net *n, int node);
 uint32_t net_if_get_addr(const Net *n, int node, int ifx);
 uint32_t net_if_get_mask(const Net *n, int node, int ifx);
 void  net_route_add(Net *n, int node, uint32_t dst, uint32_t mask, uint32_t gw, int ifx);
@@ -692,6 +711,38 @@ ResolveResult net_resolve_ex(Net *n, int node, const char *name, uint32_t *out);
 bool  net_resolve(Net *n, int node, const char *name, uint32_t *out);
 
 void  net_httpd(Net *n, int node, uint16_t port);
+/* WHO IS BEHIND THIS NODE. Opaque here on purpose: netstack does not know
+ * what a Machine is and must not learn. netsite.c puts one here when it pins
+ * a booted box onto a node, and the web daemon above asks -- because a node
+ * with a real machine behind it serves that machine's DOCUMENT ROOT, off its
+ * disk, rather than a page out of a table. */
+void  net_host_set_owner(Net *n, int node, void *owner);
+void *net_host_owner(const Net *n, int node);
+/* ------------------------------------------------------------ the internet
+ * WHERE THE WEB LIVES, which is not here.
+ *
+ * A handoff is a box on a wall with somebody else's network behind it. Tell
+ * the world which node that is and netsite.c builds the somebody else: the
+ * ISP's core router, its resolver, and the machines that serve the web, on
+ * their own segments, reached by real routing over the rate-limited circuit.
+ * Nothing is built until the world takes its first tick, so a Site that is
+ * generated and never played costs nothing. */
+void  net_isp_declare(Net *n, int handoff);
+int   net_isp_handoff(const Net *n);
+/* What netsite.c booted out there, so that net_free can hand it back. Opaque
+ * for the same reason net_host_owner is. */
+/* WHICH BOX OUT THERE THE WEB COMES FROM. Everything in a tenant's day that
+ * arrives "from the internet" -- an office's files, a studio's ingest, a
+ * hosting company's visitors -- has to come from a machine that is really on
+ * the internet, or the circuit it is supposed to cross is not crossed. Forces
+ * the world to be built if it has not been. -1 when there is no internet on
+ * this Net at all, which is every world but a tower's. */
+int   net_isp_web_node(Net *n);
+uint32_t net_isp_web_addr(Net *n);
+void  net_isp_set_web(Net *n, uint32_t ip);
+void  net_isp_own(Net *n, int slot, void *p);
+void *net_isp_owned(const Net *n, int slot);
+/* The nodes the ISP world built are found with net_node_by_name(). */
 /* A real GET: connect, send a request line, read a response, tear down. */
 int   net_http_get(Net *n, int node, uint32_t ip, uint16_t port,
                    const char *path, Buf *out);
