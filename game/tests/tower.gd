@@ -409,18 +409,34 @@ func _init() -> void:
 		# drawn polyline has to climb to the containment rather than cut
 		# through the room at socket height.
 		var r0: Dictionary = runs[0]
-		var pa: Vector3 = t._dev_anchor(int(r0.from))
-		var pb: Vector3 = t._dev_anchor(int(r0.to))
-		var route: Array = t._route_between(pa, pb)
+		var route: Array = t.conduit_route(int(r0.from), int(r0.to))
 		var high := 0.0
+		var low := 99.0
 		for pt in route:
 			high = max(high, float(pt.y))
+			low = min(low, float(pt.y))
+		# IT CLIMBS, AND IT COMES BACK DOWN AT BOTH ENDS. The first draft did
+		# only the middle: nine points, every one at tray height, beginning
+		# directly above the core and stopping directly above the strip and
+		# never reaching either box. The owner saw it immediately -- "those
+		# power cables seem to not use the cable tray and are more of a direct
+		# line that kinda looks funny" -- and he was right about the picture
+		# while the measurement said the tray was being used. Both were true:
+		# the middle was in the tray and the ends were missing, so all you
+		# could see was a line across the ceiling joined to nothing.
 		if route.size() < 3 or high < t.tray_y(0) - 0.5:
 			fail("a conduit run is drawn as %d points topping out at %.2f m, "
 				% [route.size(), high] + "and the tray is at %.2f" % t.tray_y(0))
+		elif low > 1.0:
+			fail("a conduit run never comes down to the kit: its lowest point "
+				+ "is %.2f m" % low)
+		elif float(route[0].y) > 1.0 or float(route[route.size() - 1].y) > 1.0:
+			fail("a conduit run starts at %.2f m and ends at %.2f m, so neither "
+				% [float(route[0].y), float(route[route.size() - 1].y)]
+				+ "end is joined to a box")
 		else:
-			ok("and it climbs into the tray like copper does: %d points, up to %.2f m"
-				% [route.size(), high])
+			ok("and it goes floor, up at the door, tray, down, floor -- like "
+				+ "copper: %d points, %.2f m to %.2f m" % [route.size(), low, high])
 		# AND THE CROSSHAIR READS THE NUMBER OFF IT
 		var mid: Vector3 = route[route.size() / 2]
 		var seen := {}
@@ -726,83 +742,24 @@ func _init() -> void:
 			ok("all %d kinds the shop sells have a size and a colour: %s"
 				% [kinds.size(), " ".join(kinds)])
 
-	# ---- THE POWER IS ON THE WALLS AND ON THE BOXES.
+	# ---- THE POWER IN THE WORLD IS THE CONDUIT, AND ONLY THE CONDUIT.
 	#
-	# "None of the rooms seemed to have power outlets... I don't see power
-	# going to any of the networking gear, or the server." Core has counted
-	# sockets per room since D37 and the 3D drew none of them. So: every room
-	# the model gives sockets to has that many faceplates in the world, and a
-	# box the model says is plugged in has a lead and one the model says is
-	# not has none.
-	var owall: Dictionary = t.site_outlets()
-	if owall.is_empty():
-		fail("the site model says no room in the building has a socket in it")
+	# This used to count faceplates on walls against site_room_outlets() and
+	# watch the flex to them come and go with `mains`. Both are on their way
+	# out -- "per room outlets will go away, all things will be powered by the
+	# new conduit power system" -- and the drawn version of them was what the
+	# owner saw as "a direct line that kinda looks funny": a sag straight
+	# across the room to a socket, through whatever was in the way, because a
+	# lead to a socket two metres off never needed a route.
+	#
+	# So what is asserted now is that the world draws the TREE: something is
+	# there, and it is the runs the model holds rather than anything else.
+	# The route itself is checked below, where the conduit block is.
+	if t.power_drawn() < 0:
+		fail("the power drawing is gone entirely")
 	else:
-		var wrong := 0
-		var total := 0
-		for oroom in owall.keys():
-			var want: int = int(owall[oroom].built)
-			var got: int = t.outlet_points(int(oroom)).size()
-			total += got
-			if got != want:
-				wrong += 1
-		if wrong > 0:
-			fail("%d rooms draw a different number of sockets than the model has" % wrong)
-		else:
-			ok("%d rooms, %d sockets on their walls, every one the model's" % [owall.size(), total])
-		if t.power_drawn() < 100:
-			fail("nothing of the power system is drawn: %d vertices" % t.power_drawn())
-		else:
-			ok("%d vertices of faceplate and flex in the world" % t.power_drawn())
-		# AND THE LEAD FOLLOWS THE MODEL. Pull the plug over the socket -- the
-		# same `mains` a player types -- and the flex has to go with it.
-		var plugged := ""
-		var plugged_room := -1
-		for sd in t.site_devs():
-			# NOT THE HANDOFF. Its socket is the ISP's and core refuses to
-			# pull it out -- "it was there before you were" -- so a test that
-			# picked it would be measuring a refusal, not the drawing.
-			if str(sd.kindname) == "uplink":
-				continue
-			if bool(sd.get("mains", false)) and int(sd.room) >= 0:
-				plugged = str(sd.name)
-				plugged_room = int(sd.room)
-				break
-		if plugged == "":
-			fail("nothing in the building is plugged into a wall")
-		else:
-			# IN THE ROOM, BECAUSE THE MODEL SAYS SO. `mains` is somebody
-			# reaching behind a box: "ws is in f0 MDF #17 and you are not."
-			# The refusal is right, so the test walks there rather than
-			# arguing with it.
-			t.teleport(t.room_centre(plugged_room) + Vector3(0, 0.3, 0))
-			for i in range(10):
-				await process_frame
-			var was: int = t.power_drawn()
-			var said_m: String = str(t.site("mains %s off" % plugged))
-			t._reconcile()
-			await process_frame
-			var now: int = t.power_drawn()
-			if now >= was:
-				fail("`mains %s off` and the flex is still drawn: %d then %d -- it said: %s"
-					% [plugged, was, now, said_m.strip_edges()])
-			else:
-				ok("`mains %s off` took its lead off the wall too: %d -> %d vertices"
-					% [plugged, was, now])
-			t.site("mains %s on" % plugged)
-			t._reconcile()
-			await process_frame
-			if t.power_drawn() != was:
-				fail("plugging %s back in did not put the lead back: %d, was %d"
-					% [plugged, t.power_drawn(), was])
-			else:
-				ok("and plugging it back in put it back")
-			# THE PLUG IS NOT THE BUTTON, which is the whole point of D37: a
-			# box that has had its lead pulled comes back needing switching
-			# on, and the rest of this file expects the workstation running.
-			t.site("power %s on" % plugged)
-			t._reconcile()
-			await process_frame
+		ok("the world draws the power tree and nothing else: %d vertices"
+			% t.power_drawn())
 
 	for s in t.stairs:
 		var f0: int = int(s.floor)

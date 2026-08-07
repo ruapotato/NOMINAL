@@ -1839,44 +1839,22 @@ func _draw_power() -> void:
 	if not site_up:
 		return
 	var g = preload("res://scripts/vgeo.gd").new()
-	var plate := Color("#d9d6cf")
-	var slot := Color("#2b2f34")
-	var flex := Color("#23262a")
-	# every socket on every wall the model says has one
-	var seats: Dictionary = {}
-	for room_i in site_outlets().keys():
-		var pts: Array = outlet_points(int(room_i))
-		seats[int(room_i)] = pts
-		for p in pts:
-			var c: Vector3 = p.pos
-			var n: Vector3 = p.n
-			var w := Vector3(n.z, 0, n.x).abs() * OUTLET_W
-			var mn := Vector3(c.x - max(w.x, 0.006), c.y - OUTLET_H * 0.5, c.z - max(w.z, 0.006))
-			var sz := Vector3(max(w.x * 2.0, 0.012), OUTLET_H, max(w.z * 2.0, 0.012))
-			g.box(mn, sz, plate, false)
-			# two holes in it, so it reads as a socket and not a light switch
-			for s in [-0.025, 0.025]:
-				var o: Vector3 = Vector3(n.z, 0, n.x).normalized() * float(s)
-				g.box(Vector3(c.x + o.x - 0.008, c.y - 0.012, c.z + o.z - 0.008),
-					Vector3(0.016, 0.024, 0.016), slot, false)
-	# and a lead from every box the model says is plugged in
-	var used: Dictionary = {}
-	for d in devices:
-		var si: int = int(d.get("site", -1))
-		if si < 0:
-			continue
-		var sd := _site_dev(si)
-		if sd.is_empty() or not bool(sd.get("mains", false)):
-			continue
-		var room_i: int = int(sd.get("room", -1))
-		var pts: Array = seats.get(room_i, [])
-		if pts.is_empty():
-			continue
-		var k: int = int(used.get(room_i, 0)) % pts.size()
-		used[room_i] = k + 1
-		var a: Vector3 = _inlet_point(d)
-		var b: Vector3 = Vector3(pts[k].pos) + Vector3(pts[k].n) * 0.02
-		_run_cable(g, [a, a + (b - a) * 0.5 + Vector3(0, -0.10, 0), b], flex, 9000 + si)
+	# THE WALL SOCKETS AND THEIR FLEX ARE GONE FROM THE PICTURE.
+	#
+	# The owner, looking at a screenshot: "those power cables seem to not use
+	# the cable tray and are more of a direct line that kinda looks funny."
+	# The conduit was fine -- measured, thirteen points, floor to tray to
+	# floor. What he was looking at were the OLD leads: every box drew a sag
+	# straight to a faceplate on the room wall, across the room, through
+	# whatever was in the way, because a kettle lead to a socket two metres
+	# away never needed a route and this one is fifteen.
+	#
+	# They are not being re-routed, they are being deleted: "per room outlets
+	# will go away, all things will be powered by the new conduit power
+	# system." The model still counts sockets on walls and site_mains_sync()
+	# is the commit that takes that out; until then the world simply stops
+	# depicting a system that is on its way out, which is a smaller lie than
+	# drawing it wrong.
 	# --- AND THE CONDUIT, THROUGH THE TRAYS THE MODEL PRICED IT ALONG.
 	#
 	# "For the AI placing lines we will need logic to automatically use the
@@ -1892,11 +1870,7 @@ func _draw_power() -> void:
 	# carrying rather than what grade it is: a run at 93% is the thing you
 	# need to see from the doorway.
 	for c in site_conduits():
-		var a2: Vector3 = _dev_anchor(int(c.from))
-		var b2: Vector3 = _dev_anchor(int(c.to))
-		if a2 == Vector3.INF or b2 == Vector3.INF:
-			continue
-		var pts: Array = _route_between(a2, b2)
+		var pts: Array = conduit_route(int(c.from), int(c.to))
 		if pts.size() < 2:
 			continue
 		_run_cable(g, pts, _conduit_colour(int(c.pct)), 4000 + int(c.i))
@@ -1904,6 +1878,36 @@ func _draw_power() -> void:
 	_power_node.name = "Power"
 	_power_node.mesh = g.mesh()
 	add_child(_power_node)
+
+
+# THE ROUTE A RUN REALLY TAKES, and it is copper's route with copper's ends.
+#
+# The first draft called _route_between() with no skirting rooms, and the
+# owner saw the result straight away: "those power cables seem to not use the
+# cable tray and are more of a direct line that kinda looks funny." He was
+# half right in a way that is worth writing down, because the measurement
+# disagreed with the picture and the picture was the honest one.
+#
+# The route WAS in the tray -- nine points, every one at 3.12 m, which is
+# exactly where the containment is. What it was missing was the two ends: it
+# began directly above the core and stopped directly above the strip, and
+# never came down to either box. So the only thing you could see was a line
+# crossing the ceiling with nothing joining it to the equipment, which from
+# the floor reads as a diagonal through the room.
+#
+# Copper has always been drawn with those legs -- out of the socket, along
+# the floor of the room it starts in, up at the doorway, along the tray, and
+# down at the far end -- and _route_between() takes the two rooms as
+# arguments to do it. Conduit passes them now, so the two are drawn by one
+# function with one set of rules and there is no second answer to give.
+func conduit_route(from_site: int, to_site: int) -> Array:
+	var a: Vector3 = _dev_anchor(from_site)
+	var b: Vector3 = _dev_anchor(to_site)
+	if a == Vector3.INF or b == Vector3.INF:
+		return []
+	var ra := int(_site_dev(from_site).get("room", -1))
+	var rb := int(_site_dev(to_site).get("room", -1))
+	return _route_between(a, b, ra, rb)
 
 
 # WHERE A RUN ENDS ON A BOX: the back of it, low, which is where a lead goes
@@ -3581,11 +3585,7 @@ func aim() -> Dictionary:
 	# than a box, because 30 mm of conduit six metres up needs a little help
 	# to be pointed at, and there is nothing behind it to hit by mistake.
 	for c in site_conduits():
-		var ca: Vector3 = _dev_anchor(int(c.from))
-		var cb: Vector3 = _dev_anchor(int(c.to))
-		if ca == Vector3.INF or cb == Vector3.INF:
-			continue
-		var pts: Array = _route_between(ca, cb)
+		var pts: Array = conduit_route(int(c.from), int(c.to))
 		for si in range(pts.size() - 1):
 			var t4: float = _ray_seg(o, dir, pts[si], pts[si + 1], 0.10)
 			if t4 >= 0.0 and t4 < bt:
