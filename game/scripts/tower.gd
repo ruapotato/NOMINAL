@@ -273,10 +273,46 @@ func walk_from(src: int) -> PackedFloat32Array:
 
 # ------------------------------------------------------------- the stairs
 #
-# A switchback per floor: up one side of the stairwell, land, turn, up the
-# other way. The run punches its own strip out of the slab above; the landing
-# at the far end is what you step onto, and it is the reason the hole is the
-# run's length and not the room's.
+# A SWITCHBACK, WHICH IS WHAT THIS COMMENT ALREADY SAID AND THE CODE DID NOT.
+#
+# The old plan was one straight flight per floor, alternating which side of
+# the shaft it used. It read as a switchback in the comment above it and was
+# never one, and the difference is the thing the owner walked into twice:
+#
+#   "Stairwell still has stairs that go right up against a wall so there's no
+#    landing for you to walk onto the staircase without jumping onto the
+#    staircase."
+#
+# He is describing `a = lo`. The foot of the flight sat exactly on the room's
+# own wall, so there was no floor in front of the bottom step to stand on and
+# turn from -- you had to come at the flight side-on and climb onto it. The
+# test in game/tests/tower.gd even had to work around it, in as many words:
+# "the foot of an even-numbered run is against the stairwell wall, and a
+# teleport that overshoots by half a metre puts the test inside brickwork".
+# A test that has to know about a defect to pass is a defect with a witness.
+#
+# So it is a real switchback now, and every stairwell in every seed is the
+# same shape a person expects:
+#
+#     lo ---------------- foot landing (LAND deep, floor you walk in onto)
+#        [ flight A up ] [ flight B down ]     two strips, side by side
+#     y1 ---------------- half landing (MID deep, at half the floor height)
+#        ... whatever is left of the room is plain floor
+#
+# You enter onto the landing, climb A to the half landing, turn, and climb B
+# back over your own entry point to arrive on the floor above at the same end
+# you came in. Both flights rise half a storey, so both are the SAME PITCH,
+# and the pitch is a constant rather than whatever the room's length happened
+# to give: a 5 x 6 m shaft used to be 38 degrees and a 6 x 10 m one 23, which
+# is two different staircases in one building.
+#
+# The floor above is open over both flights and the half landing -- that is
+# what a stairwell IS -- so nobody walks into the underside of anything, and
+# the only floor kept up there is the landing you arrive on.
+
+const STAIR_LAND := 1.2      # foot landing, and the head landing above it
+const STAIR_MID := 1.4       # the half landing you turn on
+const STAIR_PITCH := 30.0    # degrees, and it is the same in every stairwell
 
 func _plan_stairs() -> void:
 	stairs.clear()
@@ -292,23 +328,52 @@ func _plan_stairs() -> void:
 		var hi: float = float(r.y1 if axis == 1 else r.x1)
 		var cross_lo: float = float(r.x0 if axis == 1 else r.y0)
 		var cross_hi: float = float(r.x1 if axis == 1 else r.y1)
+		# Two flights side by side, as wide as the shaft will take up to a
+		# comfortable 1.7 m each.
 		var rw: float = min(1.7, (cross_hi - cross_lo) * 0.5)
-		var landing: float = clamp((hi - lo) * 0.25, 0.9, 1.4)
-		# Alternate BOTH ways: even floors climb up one side, odd floors come
-		# back up the other. Stacking every flight in the same strip put the
-		# next flight directly over this one and a walking body cracked its
-		# head on the underside of it two thirds of the way up -- which is why
-		# a real stairwell has two flights side by side and not one column.
-		var up: bool = (int(r.floor) % 2) == 0
-		var a: float = lo if up else hi
-		var b: float = (hi - landing) if up else (lo + landing)
-		var c0: float = cross_lo if up else cross_hi - rw
+		# THE PITCH DECIDES THE LENGTH, not the other way round. Half a storey
+		# at STAIR_PITCH is what a flight needs; if the shaft is shorter than
+		# that it gets what there is, and the assertion in the game test that
+		# a body can actually climb it is what says whether that was enough.
+		var want: float = (fheight * 0.5) / tan(deg_to_rad(STAIR_PITCH))
+		var room_for: float = (hi - lo) - STAIR_LAND - STAIR_MID
+		var run: float = min(want, room_for)
+		if run < 1.0:
+			continue          # a shaft this small has no stair in it at all
+		var y0: float = lo + STAIR_LAND       # bottom of both flights
+		var y1: float = y0 + run              # top of both flights
+		var a0: float = cross_lo              # flight A: up, away from the door
+		var b0: float = cross_lo + rw         # flight B: back, arriving above
 		stairs.append({
 			"floor": r.floor, "room": r.i, "axis": axis,
-			"a": a, "b": b, "up": up,
-			"c0": c0, "c1": c0 + rw,
-			"lo": min(a, b), "hi": max(a, b),
+			"y0": y0, "y1": y1, "run": run, "mid_hi": y1 + STAIR_MID,
+			"a0": a0, "a1": a0 + rw, "b0": b0, "b1": b0 + rw,
+			# The footprint the floor above is open over, and the keys the
+			# rest of the file already reads. `a`/`b` are flight A, which is
+			# the one you climb first and the one a test stands at the foot of.
+			"a": y0, "b": y1, "up": true,
+			"c0": a0, "c1": b0 + rw,
+			"lo": y0, "hi": y1 + STAIR_MID,
 		})
+
+
+# WHERE YOU STAND IN A STAIRWELL, which is not the middle of it. The middle
+# of a stairwell is the flights; the floor you can actually stand on is the
+# landing at the near end -- the one you walk in onto and the one you arrive
+# on from below. Anything aiming a body at a stair room wants this and not
+# room_centre(), and the walking test found that out the hard way when its
+# last waypoint landed inside a flight.
+func stair_landing(room_i: int) -> Vector2:
+	for s in stairs:
+		if int(s.room) != room_i:
+			continue
+		var r = rooms[room_i]
+		var lo: float = float(r.y0 if int(s.axis) == 1 else r.x0)
+		var along: float = (lo + float(s.y0)) * 0.5
+		var across: float = (float(s.a0) + float(s.b1)) * 0.5
+		return Vector2(across, along) if int(s.axis) == 1 else Vector2(along, across)
+	var c: Vector3 = room_centre(room_i)
+	return Vector2(c.x, c.z)
 
 
 # The strip of floor f that the run from f-1 punched out, as a Rect2 in metres.
@@ -599,33 +664,63 @@ func _roof() -> void:
 
 func _stair_run(s: Dictionary) -> void:
 	var base: float = s.floor * fheight
-	var length: float = absf(s.b - s.a)
-	if length < 1.0:
+	var half: float = fheight * 0.5
+	# Flight A climbs away from the landing you walked in on; flight B climbs
+	# back over it. Same length, same rise, so the same pitch on both.
+	_stair_flight(s, base, half, float(s.y0), float(s.y1), float(s.a0), float(s.a1))
+	_stair_flight(s, base + half, half, float(s.y1), float(s.y0), float(s.b0), float(s.b1))
+	# THE HALF LANDING, which is the whole point of a switchback: somewhere
+	# flat to stand while you turn round. It spans both strips, because you
+	# arrive on one and leave on the other.
+	var col := Color("#7e838a")
+	var mlo: float = float(s.y1)
+	var mln: float = float(s.mid_hi) - mlo
+	var c0: float = float(s.a0)
+	var cw: float = float(s.b1) - c0
+	# AND IT COLLIDES. The treads either side of it are visual only -- what a
+	# capsule really walks on is the invisible incline under them -- so a
+	# landing drawn the same way was a platform you fell through, which is
+	# exactly what the physics walk caught: onto the landing at 1.68 m,
+	# across it, and down to y = 0.0002.
+	if s.axis == 1:
+		_box(Vector3(c0, base + half - 0.16, mlo), Vector3(cw, 0.16, mln), col, true)
+	else:
+		_box(Vector3(mlo, base + half - 0.16, c0), Vector3(mln, 0.16, cw), col, true)
+
+
+# One flight: the treads you see, and the incline under them that a capsule
+# can actually walk up. `from` and `to` are along the run's axis and may go
+# either way; `y` is the height it starts at and `rise` how far it climbs.
+func _stair_flight(s: Dictionary, y: float, rise: float,
+		from: float, to: float, c0: float, c1: float) -> void:
+	var length: float = absf(to - from)
+	if length < 0.5:
 		return
-	var n: int = int(max(8.0, min(24.0, floor(fheight / 0.17))))
-	var rise: float = fheight / float(n)
+	var n: int = int(max(6.0, min(20.0, floor(rise / 0.17))))
+	var step: float = rise / float(n)
 	var going: float = length / float(n)
-	var dirsign: float = 1.0 if s.b > s.a else -1.0
+	var dirsign: float = 1.0 if to > from else -1.0
 	# The steps are what you SEE. The collider is the incline under them: a
 	# capsule cannot climb a 0.18 m box without step handling, and a player who
 	# cannot get upstairs has a building of disconnected slabs.
 	for i in range(n):
-		var t0: float = s.a + dirsign * going * i
+		var t0: float = from + dirsign * going * i
 		var t1: float = t0 + dirsign * going
 		var lo: float = min(t0, t1)
 		var col := Color("#8b8f94")
 		if s.axis == 1:
-			_box(Vector3(s.c0, base + rise * i, lo), Vector3(s.c1 - s.c0, rise + 0.02, going), col, false)
+			_box(Vector3(c0, y + step * i, lo), Vector3(c1 - c0, step + 0.02, going), col, false)
 		else:
-			_box(Vector3(lo, base + rise * i, s.c0), Vector3(going, rise + 0.02, s.c1 - s.c0), col, false)
+			_box(Vector3(lo, y + step * i, c0), Vector3(going, step + 0.02, c1 - c0), col, false)
 	# the incline, as two triangles with the normal upward
-	var y0 := base
-	var y1 := base + fheight
+	var ya := y
+	var yb := y + rise
 	if s.axis == 1:
-		_ramp(Vector3(s.c0, y0, s.a), Vector3(s.c1, y0, s.a),
-			Vector3(s.c1, y1, s.b), Vector3(s.c0, y1, s.b))
+		_ramp(Vector3(c0, ya, from), Vector3(c1, ya, from),
+			Vector3(c1, yb, to), Vector3(c0, yb, to))
 	else:
-		_ramp(Vector3(s.a, y0, s.c0), Vector3(s.a, y0, s.c1), Vector3(s.b, y1, s.c1), Vector3(s.b, y1, s.c0))
+		_ramp(Vector3(from, ya, c0), Vector3(from, ya, c1),
+			Vector3(to, yb, c1), Vector3(to, yb, c0))
 
 
 # An invisible ramp: collision only, no triangles in the visible mesh.

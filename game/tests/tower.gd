@@ -354,25 +354,40 @@ func _init() -> void:
 			ok("every stairwell doorway is clear on every floor")
 
 	# ---- the stairs carry a body up, every floor, under real physics
+	#
+	# THREE WALKS, BECAUSE IT IS A SWITCHBACK. Up the first flight, across the
+	# half landing, up the second. Nothing here is teleported between the
+	# legs: if any part of the shape is unwalkable -- no floor at the foot, a
+	# pitch a capsule slides back down, a half landing too small to turn on --
+	# the body stops where it stopped and this says so.
+	# THERE IS FLOOR IN FRONT OF THE BOTTOM STEP. The owner reported this
+	# twice: "stairs that go right up against a wall so there's no landing for
+	# you to walk onto the staircase without jumping onto the staircase." A
+	# body put down where a person walks in has to be standing on the SLAB --
+	# not fallen through, not perched on a tread half a metre up.
+	# What a standing body reads as its own y when it is on a floor, measured
+	# rather than assumed: the capsule's origin is not at the slab.
+	for s in t.stairs:
+		var f0: int = int(s.floor)
+		var r0 = t.rooms[int(s.room)]
+		var wall: float = float(r0.y0 if int(s.axis) == 1 else r0.x0)
+		var deep: float = float(s.y0) - wall
+		if deep < 1.0:
+			fail("the floor %d flight starts %.2f m from the wall: there is no landing "
+				% [f0, deep] + "to walk onto it from")
+		else:
+			ok("floor %d: %.1f m of landing between the wall and the bottom step" % [f0, deep])
+
 	for s in t.stairs:
 		var f: int = s.floor
-		var start := _foot_of(t, s)
-		t.teleport(start)
-		t.player.drive_active = true
-		t.player.drive = Vector2(0, 1)
-		t.player.look_at_yaw(_yaw_of(s))
-		var climbed := false
-		for i in range(800):
-			await process_frame
-			if t.player.global_position.y > (f + 1) * t.fheight - 0.35:
-				climbed = true
-				break
-		t.player.drive_active = false
-		t.player.drive = Vector2.ZERO
-		if climbed:
+		var how: Array = await _climb(self, t, s)
+		if how[0]:
 			ok("walked up the stairs from floor %d to %d" % [f, f + 1])
+		elif not how[1]:
+			fail("could not get up the first flight from floor %d: stopped at y = %.2f"
+				% [f, t.player.global_position.y])
 		else:
-			fail("could not climb from floor %d: stopped at y = %.2f (want %.2f)"
+			fail("reached the half landing from floor %d and no further: y = %.2f (want %.2f)"
 				% [f, t.player.global_position.y, (f + 1) * t.fheight])
 
 	# ---- OPENING A FLOOR MAKES IT REACHABLE -- AND YOU HAVE TO BE ON IT.
@@ -400,21 +415,13 @@ func _init() -> void:
 			for st2 in t.stairs:
 				if int(st2.floor) != f:
 					continue
-				t.teleport(_foot_of(t, st2))
-				for i in range(12):
-					await process_frame
+				got_up = (await _climb(self, t, st2))[0]
+				# ONTO THE LANDING, not stopped on the top step. The flight
+				# comes up through a hole in the slab and the top step is at
+				# the edge of it; a body that stops there and is then left
+				# alone for a moment goes back down the way it came.
 				t.player.drive_active = true
 				t.player.drive = Vector2(0, 1)
-				t.player.look_at_yaw(_yaw_of(st2))
-				for i in range(1200):
-					await process_frame
-					if t.player.global_position.y > (f + 1) * t.fheight - 0.35:
-						got_up = true
-						break
-				# ONTO THE LANDING, not stopped on the top step. The run comes
-				# up through a hole in the slab and the top step is at the edge
-				# of it; a body that stops there and is then left alone for a
-				# moment goes back down the way it came.
 				for i in range(40):
 					await process_frame
 				t.player.drive_active = false
@@ -1814,8 +1821,14 @@ func _route_rooms(t: Node3D, from: int, to: int) -> Array:
 			var sgn: float = 1.0 if to_b.dot(ax) >= 0.0 else -1.0
 			out.append(j - ax * sgn * 1.2)
 			out.append(j + ax * sgn * 1.2)
-		var c: Vector3 = t.room_centre(b)
-		out.append(Vector2(c.x, c.z))
+		# The middle of a stairwell is the flights. What a body walking to the
+		# stairs is aiming at is the landing at the foot of them, which the
+		# building itself can say.
+		if t.rooms[b].kind == t.K_STAIR:
+			out.append(t.stair_landing(b))
+		else:
+			var c: Vector3 = t.room_centre(b)
+			out.append(Vector2(c.x, c.z))
 	return out
 
 
@@ -1832,13 +1845,17 @@ func _device(t: Node3D, want: String) -> int:
 	return -1
 
 
-# Standing on the bottom step, facing up the run. Not BEHIND it: the foot of
-# an even-numbered run is against the stairwell wall, and a teleport that
-# overshoots by half a metre puts the test inside brickwork and blames the
-# stairs for it.
+# STANDING ON THE LANDING, FACING UP THE FLIGHT -- which is a thing you can
+# now do. This used to have to stand ON the bottom step, with the comment
+# "the foot of an even-numbered run is against the stairwell wall, and a
+# teleport that overshoots by half a metre puts the test inside brickwork".
+# That was the test carrying the owner's bug for it: there was no floor in
+# front of the first tread to stand on. Now there is STAIR_LAND of it, so
+# the test stands half a metre BEFORE the flight and walks on, which is what
+# a player does and what the old geometry made impossible.
 func _foot_of(t: Node3D, s: Dictionary) -> Vector3:
-	var c: float = (s.c0 + s.c1) * 0.5
-	var back: float = s.a + (0.35 if s.b > s.a else -0.35)
+	var c: float = (float(s.a0) + float(s.a1)) * 0.5
+	var back: float = float(s.y0) - 0.5
 	var y: float = s.floor * t.fheight + 0.45
 	if s.axis == 1:
 		return Vector3(c, y, back)
@@ -1851,3 +1868,65 @@ func _yaw_of(s: Dictionary) -> float:
 	if s.axis == 1:
 		return PI if s.b > s.a else 0.0
 	return -PI * 0.5 if s.b > s.a else PI * 0.5
+
+
+# Facing along the run's axis, either way, and facing ACROSS it either way.
+# A switchback is climbed in three straight walks -- up, across the half
+# landing, up again -- so the test needs all four headings.
+func _yaw_along(axis: int, forward: bool) -> float:
+	if axis == 1:
+		return PI if forward else 0.0
+	return -PI * 0.5 if forward else PI * 0.5
+
+
+func _yaw_across(axis: int, forward: bool) -> float:
+	return _yaw_along(1 - axis, forward)
+
+
+# CLIMBING ONE FLOOR OF SWITCHBACK, WRITTEN ONCE. Two places in this file walk
+# a body upstairs and they used to hold two copies of how; when the stairs
+# became a switchback one of them was updated and the other silently stopped
+# working, which is this project's oldest defect wearing a test's clothes.
+#
+# Three straight walks, nothing teleported between them: up the first flight
+# and fully ONTO the half landing (stopping at half HEIGHT leaves the body on
+# the flight, where the side of the other flight is a 0.6 m step it cannot
+# climb), across the landing and stop on it, then up the second flight.
+#
+# Returns [reached the top, reached the half landing].
+func _climb(tree: SceneTree, t: Node3D, s: Dictionary) -> Array:
+	var f: int = int(s.floor)
+	var base: float = f * t.fheight
+	var axis: int = int(s.axis)
+	t.teleport(_foot_of(t, s))
+	for i in range(12):
+		await tree.process_frame
+	t.player.drive_active = true
+	t.player.drive = Vector2(0, 1)
+	t.player.look_at_yaw(_yaw_along(axis, true))
+	var half_up := false
+	for i in range(600):
+		await tree.process_frame
+		var a_now: float = t.player.global_position.z if axis == 1 \
+			else t.player.global_position.x
+		if a_now >= float(s.y1) + 0.4 and t.player.global_position.y > base + 1.0:
+			half_up = true
+			break
+	var want_c: float = (float(s.b0) + float(s.b1)) * 0.5
+	t.player.look_at_yaw(_yaw_across(axis, true))
+	for i in range(240):
+		await tree.process_frame
+		var c_now: float = t.player.global_position.x if axis == 1 \
+			else t.player.global_position.z
+		if c_now >= want_c:
+			break
+	t.player.look_at_yaw(_yaw_along(axis, false))
+	var climbed := false
+	for i in range(600):
+		await tree.process_frame
+		if t.player.global_position.y > (f + 1) * t.fheight - 0.35:
+			climbed = true
+			break
+	t.player.drive_active = false
+	t.player.drive = Vector2.ZERO
+	return [climbed, half_up]
