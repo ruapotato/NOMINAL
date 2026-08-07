@@ -177,9 +177,12 @@ static void check_verbs(int *passed, int *total)
         "jack", "patch", "jacks",
         /* D31: the people at the desks, and the chair you can sit in. */
         "desks", "sit", "stand",
-        /* D37: the plug, the socket and the power map. Every action the 3D
-         * window can offer over a faceplate has to have a word here. */
-        "mains", "outlet", "outlets", NULL
+        /* D37 and after: the plug, and the tree it now hangs off. `outlet`
+         * and `outlets` were here and are gone with the wall they were about;
+         * what replaced them is a run you pull and a page that says what each
+         * run is carrying. Every action the 3D window can offer over a power
+         * lead has to have a word here. */
+        "mains", "conduit", "unconduit", "conduits", "feed", NULL
     };
     bool all = true;
     for (int i = 0; VERB[i]; i++)
@@ -270,7 +273,7 @@ static void check_verbs(int *passed, int *total)
         /* D37. The wall. Same two directions and the same reason: a player
          * standing over a box that will not switch on has to be able to find
          * the words for the plug in the page they are already reading. */
-        "mains", "outlet", "outlets", NULL
+        "mains", "conduit", "conduits", "feed", NULL
     };
     const char *h = say(&ses, "help", &o);
     Buf help = {0};
@@ -1634,7 +1637,7 @@ static bool notfound(const char *out, const char *verb)
  * checked to be honestly refused at a guest prompt -- not shadowed, and not
  * left as a bare "command not found" with no idea where it went. */
 static const char *TOWER_ONLY[] = {
-    "plug", "eject", "rescue", "power", "mains", "outlet", "outlets",
+    "plug", "eject", "rescue", "power", "mains", "conduit", "conduits",
     "carry", "drop", "go", "buy", "deliver", "cable", "uncable", "quote",
     "jack", "patch", "jacks", "spool", "day", "serve", "service", "status",
     "load", "isp", "events", "demand", "money", "frames", "rooms", "map",
@@ -1781,7 +1784,7 @@ static void check_around_the_shell(int *passed, int *total)
 
     Buf nh = {0};
     buf_puts(&nh, say(&ses, "help", &o));
-    static const char *NOCON[] = { "power", "mains", "outlet", "outlets",
+    static const char *NOCON[] = { "power", "mains",
                                    "rescue", "eject", "show", "look", "where",
                                    "unplug", NULL };
     bool nnamed = true, nanswers = true;
@@ -3309,7 +3312,7 @@ static void check_dead_console(int *passed, int *total)
     ck("pressing the button does nothing, and the game says nothing happened",
        has(btn, "nothing happens") && !ses.s.dev[d].powered);
     ck("and it says WHICH of the two reasons a box does not start it is",
-       has(btn, "NOT PLUGGED INTO ANYTHING"));
+       has(btn, "NOTHING IS FEEDING IT"));
 
     /* AND THE LEAD. No prompt, no history, and the way out of it. */
     const char *lead = say(&ses, "plug srv1", &o);

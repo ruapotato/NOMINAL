@@ -541,16 +541,23 @@ func _init() -> void:
 	elif t.player_room() != t.NOROOM:
 		ok("and it marks the one you are standing in: %s"
 			% str(t.rooms[t.player_room()].name))
-	# the sockets on it are the model's, not a second count
-	var owall2: Dictionary = t.site_outlets()
+	# THE WAYS OUT ON IT ARE THE TREE'S, not a second count. This used to
+	# hold the map against site_room_outlets() -- how many sockets the wall
+	# had -- and there is no wall: what a room offers a box you carry into it
+	# is a power source standing in it with a way out still free.
+	var srcrooms := {}
+	for sd4 in t.site_devs():
+		if str(sd4.kindname) == "powercore" or str(sd4.kindname) == "strip":
+			srcrooms[int(sd4.room)] = true
 	var wrongsock := 0
 	for m4 in mrows:
-		if int(m4.outlets) != int(owall2.get(int(m4.i), {}).get("built", 0)):
+		if int(m4.outlets) > 0 and not srcrooms.has(int(m4.i)):
 			wrongsock += 1
 	if wrongsock > 0:
-		fail("%d rooms on the map show a socket count the model does not have" % wrongsock)
+		fail("%d rooms on the map offer a way out of a source that is not in them"
+			% wrongsock)
 	else:
-		ok("every socket count on it is site_room_outlets()'s own")
+		ok("every way out on the map belongs to a source standing in that room")
 	# and it can be read with no window at all
 	var mtext: String = t.command("map")
 	if mtext.find("floor %d" % t.player_floor()) < 0 or mtext.split("\n").size() < 3:

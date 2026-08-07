@@ -65,8 +65,6 @@
 #define SITE_CONDUIT_W   1500
 #define SITE_MAX_TENANT  200
 #define SITE_MAX_JACK    200
-#define SITE_MAX_SOCKET  240     /* outlets ORDERED. The built-in ones are  */
-                                 /* a function of the room, not a table.    */
 #define SITE_PATCH_M       3     /* a patch lead at each end of every run   */
 
 /* WHAT YOU START WITH, AND WHY IT IS THIS NUMBER.
@@ -342,8 +340,6 @@ typedef enum {
     SITE_ECIRCUIT,
     /* A conduit that would feed the thing it comes out of. */
     SITE_ELOOP,
-    SITE_ENOWALL,     /* the old outlet refusal, while outlets are still  */
-                      /* in the tree at all. See site_mains_sync().       */    /* the room is on one circuit and it is full            */
     /* AN ERROR ABOUT SUBNETS, FROM A VERB THAT TAKES MEGABITS. `isp 0` and
      * `isp -5` both answered "that is the network or broadcast address of
      * its own subnet, not a machine's", because site_isp() reached for
@@ -479,46 +475,12 @@ typedef struct {
     int      lead_spend;       /* and what they came to                     */
 } SiteJack;
 
-/* ============================================================ POWER =======
- *
- * The owner, walking into his own tower for the first time in a while:
- *
- *   "The server in the default rack isn't booting, but it's also not plugged
- *    into any power... Each room should have at least one power outlet. We
- *    also need power logic, so you plug in servers into the actual wall.
- *    Potentially have a way to view the mini map for the entire area and
- *    request/order additional power for a fee. That then installs the power
- *    outlet into that room."
- *
- * A ROOM HAS SOCKETS AND THEY RUN OUT. Not a resource bar: a count of holes
- * in a wall, decided by what kind of space the building generator made and
- * how big it is. A comms cupboard is a cupboard with a spur off the
- * landlord's board in it; an office is wired for people, so it has a socket
- * every few metres; a toilet has the shaver socket and nothing else. So
- * putting a fourth box in a floor's cupboard is a decision with a bill
- * attached, and putting one in a corridor is not a plan.
- *
- * PER ROOM, NOT PER WALL, and the reason is D23's rule rather than
- * simplicity. The Building gives a room a kind and an area and no wall
- * geometry any of this code can address; a socket with a position would be a
- * coordinate the MODEL had to invent and the WINDOW had to be the authority
- * on, which is the inversion this project exists to avoid. It is also not a
- * decision: a lead reaches any wall of one room, so which wall it is on
- * changes nothing a player chooses. The count is the decision. Where the
- * faceplate is drawn is the window's business and it may put it anywhere.
- *
- * AND THE CIRCUIT IS FINITE TOO. You may have as many again put in as the
- * room was built with -- site_room_outlets_max() -- and after that the room
- * is on one final circuit and there is no more power to bring into it. That
- * is the limit that cannot be bought out of, and it is what stops the floor
- * plan being scenery: some rooms are places you put equipment and some are
- * not.
- */
-typedef struct {
-    uint16_t room;             /* the wall it went on                       */
-    int      day;              /* the day the sparky came                   */
-    int      cost;             /* what it cost. Never refunded.             */
-} SiteSocket;
+/* THE WALL SOCKET IS GONE. A room used to be wired with so many outlets -- a
+ * cupboard on a spur, a let office wired for people -- and a box took one when
+ * it was put down. Power comes down a run you pull now, and a run has a rating
+ * rather than a room having holes: see SiteConduit below, and
+ * site_mains_sync() in core/site.c for the switch itself. */
+
 
 /* ===================================================== A RUN OF CONDUIT
  *
@@ -748,13 +710,12 @@ typedef struct {
     const Building *b;         /* borrowed: the caller owns the tower       */
     Net     *net;
     uint64_t seed;
-    int      ndev, nlink, njack, nsock;
     SiteDev  dev[SITE_MAX_DEV];
     SiteLink link[SITE_MAX_LINK];
     SiteConduit cond[SITE_MAX_CONDUIT];
     int      ncond;
     SiteJack jack[SITE_MAX_JACK];
-    SiteSocket sock[SITE_MAX_SOCKET];
+    int      ndev, nlink, njack;
     int      uplink;           /* the device that exists on day one         */
     int      ws;               /* ...and the one you sit at. See site_new() */
     int      yielded;          /* the box whose factory lead the last cable
@@ -926,17 +887,15 @@ void site_dump_jacks(const Site *s, int room, Buf *out);
  * never on the box, they were in its memory. */
 bool site_power(Site *s, int dev, bool on);
 
-/* ------------------------------------------------------- AND THE WALL ----
+/* --------------------------------------------------- AND THE POWER TREE --
  * THE OTHER HALF OF THE BUTTON, and until D37 it did not exist: every box
  * ever installed drew power from nowhere, so `power srv on` on a machine
- * standing in an empty cupboard with no lead in the back of it worked. See
- * the note above SiteSocket.
- *
- * A box is on mains or it is not, and a box that is not cannot be switched
- * on -- site_power() refuses with SITE_ENOMAINS and the refusal is the
- * diagnosis. An appliance has no button, so for a switch and a router the
- * plug IS the button and site_mains() is what turns it on and off.
- */
+ * standing in an empty cupboard with no lead in the back of it worked. The
+ * wall answered that for a while -- a room had so many sockets and a box took
+ * one -- and the conduit tree answers it now: a box is on if there is a live
+ * run back to a core and nothing on the way is carrying more than it can.
+ * site_mains_sync() is where that is turned into the flag, and SiteConduit
+ * above is the run itself. */
 /* The sockets the building was wired with, what the room has now (that plus
  * the ones bought), the most its circuit will ever carry, and how many of
  * them have a plug in them. Every one is a pure reading of the room and the
@@ -966,11 +925,6 @@ int  site_conduit_count(const Site *s);
 void site_mains_sync(Site *s);
 void site_dump_conduits(const Site *s, Buf *out);
 
-int  site_room_outlets_built(const Site *s, int room);
-int  site_room_outlets(const Site *s, int room);
-int  site_room_outlets_max(const Site *s, int room);
-int  site_room_outlets_used(const Site *s, int room);
-int  site_room_outlets_free(const Site *s, int room);
 /* Which box is in the nth used socket of a room, or -1. This is the surface
  * the 3D window reads to draw a faceplate with a lead in it. */
 int  site_room_outlet_dev(const Site *s, int room, int nth);
@@ -1000,8 +954,6 @@ bool site_mains(Site *s, int dev, bool on);
  * tray metres from that room back to the riser the power comes up, which is
  * geometry the building already knows and which makes a socket in a far
  * corner of a floor dearer than one in the cupboard against the shaft. */
-long site_outlet_price(const Site *s, int room);
-int  site_outlet(Site *s, int room);          /* the socket, or -1 + s->err */
 /* THE POWER MAP. Every room on a floor that has sockets or kit in it: what
  * it was wired with, what has been added, what is plugged in, what is free
  * and what another one would cost. `floor` of -1 is the whole building. This

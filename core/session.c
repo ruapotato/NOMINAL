@@ -980,19 +980,35 @@ static void do_look(Session *ses, Buf *out)
     }
     if (!doors) buf_puts(out, " none");
     buf_putc(out, '\n');
-    /* WHAT IS ON THE WALL AND NOT ON THE FLOOR. A socket count is a fact
-     * about the room in exactly the way a jack is, and it decides whether
-     * the next box you carry in here will do anything at all. */
+    /* WHAT FEEDS THINGS IN HERE, AND WHAT IS LEFT IN IT. A room does not
+     * have sockets any more; what it may have is a source standing in it --
+     * the core, or a strip you fed -- with holes left, and that is what
+     * decides whether the next box you carry in here will do anything. */
     {
-        int have = site_room_outlets(&ses->s, ses->room);
-        int free = site_room_outlets_free(&ses->s, ses->room);
-        if (have > 0)
-            buf_printf(out, "  power: %d outlet%s on the wall, %d free%s\n",
-                       have, have == 1 ? "" : "s", free,
-                       free ? "" : " -- nothing else in here will run");
+        int holes = 0, sources = 0;
+        for (int i = 0; i < ses->s.ndev; i++) {
+            const SiteDev *sd = &ses->s.dev[i];
+            if (sd->room != (uint16_t)ses->room) continue;
+            if (sd->kind != SDEV_POWERCORE && sd->kind != SDEV_STRIP) continue;
+            if (sd->kind == SDEV_STRIP && !site_dev_fed(&ses->s, i, NULL)) continue;
+            sources++;
+            int lo = sd->kind == SDEV_STRIP ? 1 : 0;
+            for (int p = lo; p < sd->nports; p++) {
+                bool used = false;
+                for (int r = 0; r < site_conduit_count(&ses->s); r++)
+                    if (ses->s.cond[r].live && ses->s.cond[r].from == i &&
+                        ses->s.cond[r].fport == p) { used = true; break; }
+                if (!used) holes++;
+            }
+        }
+        if (sources)
+            buf_printf(out, "  power: %d source%s in here, %d way%s out of them "
+                            "left\n", sources, sources == 1 ? "" : "s",
+                       holes, holes == 1 ? "" : "s");
         else
-            buf_puts(out, "  power: no outlet in here at all. Nothing put in "
-                          "this room will run.\n");
+            buf_puts(out, "  power: nothing in here to plug into. `feed <box>` "
+                          "pulls a run from\n         wherever the nearest one "
+                          "with a hole in it is.\n");
     }
     buf_puts(out, "  (`go #<n>` by number, `go <kind>` for one on this floor,\n"
                   "   `go <box>` for the room a box is in)\n");
@@ -1014,12 +1030,6 @@ static void do_where(Session *ses, Buf *out)
     if (ses->plugged >= 0)
         buf_printf(out, "the cart's %s lead is in %s\n", ses->hdmi ? "hdmi" : "serial",
                    ses->s.dev[ses->plugged].name);
-    {
-        int have = site_room_outlets(&ses->s, ses->room);
-        buf_printf(out, "%d outlet%s on this wall, %d free\n", have,
-                   have == 1 ? "" : "s",
-                   site_room_outlets_free(&ses->s, ses->room));
-    }
     /* THE COPPER THAT IS ALREADY HERE. Counted off the jack table, in the
      * room you are standing in, because a jack is a fact about this wall. */
     {
@@ -1110,8 +1120,12 @@ static void do_help(const Session *ses, Buf *out)
             "                         because a wire has no history\n"
             "  mains on / mains off   the plug. A box with no lead to the wall\n"
             "                         cannot be switched on at all\n"
-            "  outlet                 another socket in this room, if the wall\n"
-            "                         has none free.  `outlets` is the map\n"
+            "  feed <box>             pull a run of conduit to it from the\n"
+            "                         nearest source with a way out free\n"
+            "  conduit <src>:<n> <box>   the same run, picking the end\n"
+            "                         yourself: an output of the core, or of\n"
+            "                         a strip you have already fed\n"
+            "  conduits               every run, and what each is carrying\n"
             "  rescue                 the live medium on the cart goes in the\n"
             "                         front of it, for a box whose own root\n"
             "                         will not mount\n"
@@ -1216,7 +1230,7 @@ static void do_help(const Session *ses, Buf *out)
              * for it three times over: `eject`, `power off` and `power on`
              * are all `command not found` here, and nothing warned them. */
             "AND WHAT DOES NOT WORK HERE, because it is not a program. `power\n"
-            "off`, `power on`, `mains`, `eject`, `rescue`, `outlet` and every\n"
+            "off`, `power on`, `mains`, `feed`, `eject`, `rescue` and every\n"
             "other verb of the building are things a PERSON does, standing at\n"
             "the rack with a hand on the box. This machine has never heard of\n"
             "any of them and will tell you so. `unplug` first; they all answer\n"
@@ -1369,20 +1383,20 @@ static void do_help(const Session *ses, Buf *out)
          * was fixed to list the rooms equipment goes in whether or not
          * anything is in them yet; this sentence was the half of it that
          * still described the old behaviour. */
-        "  outlets            the rooms kit goes in -- risers, cupboards, plant,\n"
-        "                     the MDF, a tenant's server room -- and for each,\n"
-        "                     what it was wired with, what is plugged in, what is\n"
-        "                     free, and what another socket would cost put in\n"
-        "                     there. `outlets all` is the building, `outlets <n>`\n"
-        "                     one floor. A let office is the tenant's own problem\n"
-        "  outlet [<room>]    have another socket put into this room. A sparky\n"
-        "                     comes today -- it is money, not days -- priced on the\n"
-        "                     run back to the riser, and it does not come out again\n"
-        "                     and is not refunded. A room takes as many again as it\n"
-        "                     was built with and then its circuit is full, and that\n"
-        "                     is the limit money cannot move\n"
-        "  mains <box> on|off the plug itself: put a box into a free socket in this\n"
-        "                     room, or pull it out. A SWITCH AND A ROUTER HAVE NO\n"
+        "  conduits           every run of conduit: where it comes from, the\n"
+        "                     metres, and what it is carrying against what it\n"
+        "                     can. A run over that has tripped and everything\n"
+        "                     behind it is dark. `feed <box>` pulls a new one\n"
+        "  feed <box>         pull a run of conduit to it from the nearest source\n"
+        "                     with a way out still free -- the core, or a strip you\n"
+        "                     have already fed. The metres are the trays\' and cost\n"
+        "                     what copper costs over the same ground\n"
+        "  conduit <src>:<n> <box>   the same run with the end picked yourself:\n"
+        "                     an output of the core, or of a strip. A strip takes a\n"
+        "                     load or another strip, which is how a run forks\n"
+        "  unconduit <n>      pull one out. `conduits` numbers them\n"
+        "  mains <box> off    the plug itself: pull the run out of a box. A SWITCH\n"
+        "                     AND A ROUTER HAVE NO\n"
         "                     BUTTON, so this is theirs. PULLING THE PLUG ON A\n"
         "                     RUNNING MACHINE is a blackout with one machine in it,\n"
         "                     and it damages the filesystem exactly as one does --\n"
@@ -1711,26 +1725,20 @@ static void dead_box_why(Session *ses, int d, Buf *out)
     char w[48];
     room_label(ses, dev->room, w, sizeof w);
     if (!dev->mains) {
-        int have = site_room_outlets(&ses->s, dev->room);
-        int free = site_room_outlets_free(&ses->s, dev->room);
-        buf_printf(out, "  IT IS NOT PLUGGED INTO ANYTHING. There is no lead "
-                        "from %s to a wall\n  socket, so its power button does "
-                        "nothing at all.\n", dev->name);
-        buf_printf(out, "  %s has %d outlet%s and %d free.\n", w, have,
-                   have == 1 ? "" : "s", free);
-        if (free > 0)
-            buf_printf(out, "  from here: `mains %s on`, then `power %s on` "
-                            "and watch it come up.\n", dev->name, dev->name);
-        else if (site_room_outlets(&ses->s, dev->room) <
-                 site_room_outlets_max(&ses->s, dev->room))
-            buf_printf(out, "  from here: `outlet` puts another socket in this "
-                            "room for %ld, then\n  `mains %s on`. `outlets` is "
-                            "every room in the building and what is free.\n",
-                       site_outlet_price(&ses->s, dev->room), dev->name);
+        int tripped = -1;
+        site_dev_fed(&ses->s, d, &tripped);
+        buf_printf(out, "  NOTHING IS FEEDING IT. No conduit reaches %s, so its "
+                        "power button\n  does nothing at all.\n", dev->name);
+        if (tripped >= 0)
+            buf_printf(out, "  the run that would is carrying %d W of the %d W "
+                            "it can: it has\n  tripped. Take something off it, "
+                            "or run another from the core.\n",
+                       site_conduit_load(&ses->s, tripped),
+                       ses->s.cond[tripped].watts);
         else
-            buf_printf(out, "  this room is on one circuit and it is full. "
-                            "Something has to come out\n  of a socket, or %s has "
-                            "to stand somewhere else: `outlets`.\n", dev->name);
+            buf_printf(out, "  from here: `feed %s` pulls a run from the nearest "
+                            "source with a\n  hole in it, then `power %s on` and "
+                            "watch it come up.\n", dev->name, dev->name);
     } else {
         buf_printf(out, "  it is plugged in and switched off. From here: "
                         "`power %s on`, and the boot\n  comes up this line, "
@@ -2561,33 +2569,20 @@ static void drop_box(Session *ses, Buf *out)
     buf_printf(out, "%s is in %s now. %d port%s, and nothing in any of them "
                     "yet.\n", ses->s.dev[d].name, w, ses->s.dev[d].nports,
                ses->s.dev[d].nports == 1 ? "" : "s");
-    /* AND WHETHER THE LEAD WENT IN THE WALL, said at the moment it does or
-     * does not, because this is where the player is standing and this is the
-     * last moment before they wonder why the button does nothing. */
+    /* AND WHETHER ANYTHING IS FEEDING IT, said at the moment it is put down,
+     * because this is where the player is standing and this is the last
+     * moment before they wonder why the button does nothing. */
     if (ses->s.dev[d].kind == SDEV_DESK) return;
     if (ses->s.dev[d].mains) {
-        buf_printf(out, "  the lead goes into a wall socket: %d of this room's "
-                        "%d left.\n",
-                   site_room_outlets_free(&ses->s, ses->room),
-                   site_room_outlets(&ses->s, ses->room));
+        buf_puts(out, "  and a run already reaches it, so it is fed.\n");
         return;
     }
-    buf_printf(out, "  THERE IS NOWHERE TO PLUG IT IN. This room has %d outlet%s "
-                    "and every one of\n  them is in use, so %s is a box on a "
-                    "floor: its power button does nothing.\n",
-               site_room_outlets(&ses->s, ses->room),
-               site_room_outlets(&ses->s, ses->room) == 1 ? "" : "s",
-               ses->s.dev[d].name);
-    if (site_room_outlets(&ses->s, ses->room) <
-        site_room_outlets_max(&ses->s, ses->room))
-        buf_printf(out, "  `outlet` has another one put in for %ld, and then "
-                        "`mains %s on`.\n  `outlets` is every room in the "
-                        "building and what is free in each.\n",
-                   site_outlet_price(&ses->s, ses->room), ses->s.dev[d].name);
-    else
-        buf_puts(out, "  and this room is on one final circuit that is already "
-                      "full, so there is no\n  more power to bring into it. "
-                      "`outlets` says where there is.\n");
+    buf_printf(out, "  NOTHING IS FEEDING IT. Power comes down conduit and none "
+                    "reaches %s,\n  so it is a box on a floor: its power button "
+                    "does nothing.\n", ses->s.dev[d].name);
+    buf_printf(out, "  `feed %s` pulls a run from the nearest source with a hole "
+                    "in it, and\n  `conduits` says what each run is carrying "
+                    "against what it can.\n", ses->s.dev[d].name);
 }
 
 /* --------------------------------------------------------- getting there
@@ -2796,7 +2791,7 @@ static bool is_devverb(const char *v)
  */
 static const char *TOWERVERB[] = {
     /* the crash cart and the rack */
-    "plug", "unplug", "eject", "rescue", "power", "mains", "outlet", "outlets",
+    "plug", "unplug", "eject", "rescue", "power", "mains",
     /* your hands and your legs */
     "carry", "drop", "go", "walk", "lift", "open", "buy", "deliver", "map",
     "look", "where", "desk", "sit", "stand", "desks",
@@ -3352,7 +3347,6 @@ bool session_line(Session *ses, const char *line, Buf *out)
          * because they are being made now rather than remembered. */
         if (strcmp(t[0], "power") == 0 || strcmp(t[0], "mains") == 0 ||
             strcmp(t[0], "rescue") == 0 || strcmp(t[0], "eject") == 0 ||
-            strcmp(t[0], "outlet") == 0 || strcmp(t[0], "outlets") == 0 ||
             strcmp(t[0], "show") == 0) {
             char cmd[NOM_ARG_MAX];
             if (n < 2 || dev_arg(ses, t[1]) != d) {
@@ -3362,9 +3356,6 @@ bool session_line(Session *ses, const char *line, Buf *out)
                     snprintf(cmd + l, sizeof cmd - l, " %s", t[i]);
                 }
             } else snprintf(cmd, sizeof cmd, "%s", raw);
-            /* `outlet` and `outlets` are about the ROOM, not the box. */
-            if (strcmp(t[0], "outlet") == 0 || strcmp(t[0], "outlets") == 0)
-                snprintf(cmd, sizeof cmd, "%s", raw);
             int was = ses->where;
             ses->where = SES_BODY;
             session_line(ses, cmd, out);
@@ -3510,7 +3501,7 @@ bool session_line(Session *ses, const char *line, Buf *out)
                           "on the other end of the lead. A box that\n  is not in "
                           "one cannot be switched on at all, and a switch has no "
                           "button,\n  so for a switch and a router this IS the "
-                          "button.\n  `outlets` is every room and what is free in "
+                          "button.\n  `feed <box>` pulls a run of conduit to it. "
                           "it.\n");
             return true;
         }
@@ -3527,29 +3518,6 @@ bool session_line(Session *ses, const char *line, Buf *out)
             ses->where = SES_NOCON;
             buf_puts(out, "the console goes dead. The lead is still in it.\n");
         }
-        return true;
-    }
-    if (strcmp(t[0], "outlets") == 0) {
-        /* This floor by default -- the whole tower is `outlets -1`, and a
-         * player standing on floor three wanting the tower's power map is
-         * rarer than one wanting the floor they are on. */
-        char cmd[64];
-        if (n < 2) snprintf(cmd, sizeof cmd, "outlets %d", here_floor(ses));
-        else if (strcmp(t[1], "all") == 0) snprintf(cmd, sizeof cmd, "outlets -1");
-        else snprintf(cmd, sizeof cmd, "outlets %s", t[1]);
-        site_cmd(&ses->s, cmd, out);
-        if (n < 2) buf_puts(out, "  (`outlets all` is the whole building; "
-                                 "`outlets <floor>` is one)\n");
-        return true;
-    }
-    if (strcmp(t[0], "outlet") == 0) {
-        /* THE ROOM YOU ARE STANDING IN, because that is where the sparky is
-         * being asked to come and it is the only room you can see. Naming
-         * another one still works: the money goes the same way. */
-        char cmd[96];
-        if (n >= 2) snprintf(cmd, sizeof cmd, "outlet %s", t[1]);
-        else snprintf(cmd, sizeof cmd, "outlet #%d", ses->room);
-        site_cmd(&ses->s, cmd, out);
         return true;
     }
     /* THE LIVE MEDIUM ON THE CRASH CART, and the tower had no way to reach it.

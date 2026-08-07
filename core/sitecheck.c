@@ -664,11 +664,11 @@ static void check_plug_pulled(const Building *b)
     ck("and the battery is what `events` says saved it",
        has(o.p, "battery shut it down cleanly"));
 
-    /* AND THE SOCKETS ARE FREE AGAIN, which is the only reason a player
-     * would ever pull one on purpose. */
-    ck("both sockets are back on the wall for something else",
-       site_room_outlets_used(&ses.s, ses.room) <
-       site_room_outlets(&ses.s, ses.room));
+    /* AND THE RUN COMES OUT WITH IT, which is the only reason a player would
+     * ever pull one on purpose: the way out of the core it was using is free
+     * for something else. */
+    ck("pulling the plug frees the way out of the core it was using",
+       !site_dev_fed(&ses.s, site_dev_by_name(&ses.s, "one"), NULL));
 done:
     buf_free(&o);
     session_end(&ses);
@@ -3059,79 +3059,12 @@ static void check_worst_is_wall_time(void)
     bld_free(&b);
 }
 
-/* ----------------------------------------------------- C. the power map
- * `outlets` hid exactly the rooms the sockets run out in. Standing in a comms
- * cupboard whose own `look` said "4 outlets on the wall, 4 free", `outlets`
- * listed eleven let offices with thirteen free sockets each and no cupboard,
- * no riser and no server room -- because the filter was "something is in it".
- * The rooms it hid are the scarce ones and the rooms it showed are the ones
- * that never matter. */
-static void check_power_map(const Building *b)
-{
-    printf("\nthe power map shows the rooms the sockets run out in\n");
-    Site s;
-    site_new(&s, b, GATE_SEED, 100000);
-    int comms = bld_find(b, 1, RM_COMMS);
-    int riser = bld_find(b, 1, RM_RISER);
-    if (comms < 0) { ck("floor 1 has a comms cupboard", false); site_free(&s); return; }
-    Buf o = {0};
-    site_dump_outlets(&s, 1, &o);
-    char row[64];
-    snprintf(row, sizeof row, "#%d", comms);
-    ck("an EMPTY comms cupboard is on the map, before anything is in it",
-       has(o.p, row));
-    /* And with the numbers `look` gives standing in it -- one source. */
-    snprintf(row, sizeof row, "#%d %*s%5d", comms, 0, "",
-             site_room_outlets_built(&s, comms));
-    ck("with the count the room was really wired with",
-       site_room_outlets_built(&s, comms) == 4 &&
-       site_room_outlets_free(&s, comms) == 4);
-    if (riser >= 0) {
-        snprintf(row, sizeof row, "#%d", riser);
-        ck("and the riser, which has one socket in it and no room for a mistake",
-           has(o.p, row) && site_room_outlets_built(&s, riser) == 1);
-    }
-    /* The corridors are still not on it: a nine-floor tower is four hundred
-     * rooms and the cleaner's socket is not a decision. */
-    int corr = bld_find(b, 1, RM_CORRIDOR);
-    if (corr >= 0) {
-        snprintf(row, sizeof row, "#%d", corr);
-        ck("and an empty corridor is still not, so the page stays readable",
-           !has(o.p, row));
-    }
-    buf_free(&o);
+/* THE POWER MAP GATE IS GONE TOO, and it went with the page it was about.
+ * `outlets` drew every room kit can live in and what its wall had; there is
+ * no wall. What replaced the page is `conduits`, which draws every run and
+ * what each is carrying against what it can, and check_conduits() is what
+ * asserts about it. */
 
-    /* THE WHOLE BUILDING, and the question the page exists for: how many
-     * sockets has the empty cupboard I am about to fill, on a floor I have
-     * not touched. */
-    Buf all = {0};
-    site_dump_outlets(&s, -1, &all);
-    int missing = 0, kitrooms = 0;
-    for (int r = 0; r < b->nrooms; r++) {
-        if (b->rooms[r].kind != RM_COMMS && b->rooms[r].kind != RM_PLANT &&
-            b->rooms[r].kind != RM_SERVER && b->rooms[r].kind != RM_MDF)
-            continue;
-        kitrooms++;
-        snprintf(row, sizeof row, "#%d ", r);
-        if (!has(all.p, row)) missing++;
-    }
-    ck("`outlets all` has every room in the tower kit can live in, empty or not",
-       kitrooms > 0 && missing == 0);
-    printf("    %d equipment rooms in the tower, %d missing from the map\n",
-           kitrooms, missing);
-    buf_free(&all);
-    site_free(&s);
-}
-
-/* ------------------------------- and the two decisions the same report asked
- *
- * `serve <t> <sw>` with no vlan told the player, AFTER the copper was billed,
- * that this tenancy had asked for a segment of its own -- and putting it
- * right cost twenty-one hand-typed `vlan` lines, because `serve` skipped
- * every desk that was already patched. The warning is above the bill now,
- * and the same line with the vlan on the end is the whole remedy: it lays no
- * copper and it moves the ports that are already there. See core/site.c for
- * why this is not a refusal. */
 static void check_serve_vlan_remedy(const Building *b)
 {
     printf("\nsaying `serve` again with the vlan on it is the whole remedy\n");
@@ -4190,7 +4123,6 @@ int site_selfcheck(void)
     check_dhcp_diagnosis(&b);
     check_headline_sums_the_rows();
     check_worst_is_wall_time();
-    check_power_map(&b);
     check_serve_vlan_remedy(&b);
     check_demand_says_what_a_server_is_for(&b);
     /* D43: ten things the game said about itself that another command in

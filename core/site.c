@@ -466,11 +466,9 @@ const char *site_err_text(int e)
     case SITE_ENOMAINS: return "power comes down a conduit now, not out of a "
                                "wall: `conduit core0:<n> <box>` or `feed <box>`. "
                                "`conduits` says what each run is carrying";
-    case SITE_ENOWALL:  return "there is no free outlet on that room's wall -- "
-                               "`outlet` puts another socket in, `outlets` says "
-                               "which rooms have one free";
-    case SITE_EUNPLUGGED: return "it is not plugged into anything -- there is no "
-                                 "lead from it to a wall socket. `mains <box> on`";
+    case SITE_EUNPLUGGED: return "nothing is feeding it -- no conduit reaches "
+                                 "it. `feed <box>` pulls a run from the nearest "
+                                 "source with a hole in it";
     case SITE_ELOOP:    return "a conduit cannot feed the thing it comes out "
                                "of";
     case SITE_ECIRCUIT: return "that room is on one final circuit and it is "
@@ -886,50 +884,6 @@ int site_run_metres(const Site *s, int room_a, int room_b)
  */
 static void power_down(Site *s, int dev);        /* defined with the button */
 
-/* WHAT THE BUILDING WAS WIRED WITH, and every number is a defensible figure
- * for that kind of space rather than a difficulty knob. The shape of the
- * table is the argument: the rooms built to hold equipment have a handful of
- * sockets on a spur and the rooms built to hold PEOPLE have them everywhere,
- * because that is how buildings are wired -- and it is why the decision this
- * makes lands in a comms cupboard and never in an office.
- *
- * The owner asked that "each room should have at least one power outlet",
- * and every room a person can walk into has one. A lift shaft is not a room
- * anybody walks into, and a riser is a shaft with one maintenance socket in
- * it -- both of those are the building generator's own words. */
-static int outlets_built_in(const Room *r)
-{
-    double a = bld_room_area(r);
-    switch (r->kind) {
-    /* The building's own frame room: it was wired for a frame. */
-    case RM_MDF:      return 8;
-    /* A TENANT'S SERVER ROOM. The one space in this world built to hold
-     * equipment, which is the same sentence the heat model makes about it. */
-    case RM_SERVER:   return 6 + (int)(a / 10.0);
-    /* AND THE ONE THAT BITES. A floor's comms cupboard is a cupboard: a
-     * twin socket and a spare off a spur, and no more, because nobody ran a
-     * distribution board up a riser for a cupboard with a switch in it. Four
-     * is exactly the owner's own example -- "a cupboard with three switches
-     * and a server in it" -- sitting on the limit, which is what makes it a
-     * decision rather than an assumption. */
-    case RM_COMMS:    return 4;
-    case RM_PLANT:    return 4;
-    case RM_GOODS:    return 2;
-    case RM_RISER:    return 1;
-    case RM_LIFT:     return 0;         /* not a room anybody walks into    */
-    case RM_TOILET:   return 1;         /* the shaver socket                */
-    /* LET SPACE IS WIRED FOR PEOPLE, so it has a socket every few metres and
-     * running out of them is not a thing that happens to a floor of desks.
-     * That is not generosity, it is the truth about an office, and it is
-     * what keeps the mechanic where the equipment is. */
-    case RM_OFFICE: case RM_RESIDENCE: case RM_RETAIL:
-        return 2 + (int)(a / 8.0);
-    /* Corridors, stairs, lift lobbies, the entrance hall: the cleaner's
-     * socket, and it is one. A corridor is not somewhere kit lives, and the
-     * count is what says so. */
-    default:          return 1;
-    }
-}
 
 /* ====================================================== THE CONDUIT TREE
  *
@@ -1191,43 +1145,10 @@ void site_dump_conduits(const Site *s, Buf *out)
                spent, SITE_CONDUIT_W);
 }
 
-int site_room_outlets_built(const Site *s, int room)
-{
-    if (!s->b || room < 0 || room >= s->b->nrooms) return 0;
-    return outlets_built_in(&s->b->rooms[room]);
-}
 
-int site_room_outlets(const Site *s, int room)
-{
-    int n = site_room_outlets_built(s, room);
-    if (n <= 0) return 0;                     /* nothing to extend from     */
-    for (int i = 0; i < s->nsock; i++) if (s->sock[i].room == room) n++;
-    return n;
-}
 
-/* AS MANY AGAIN AS IT WAS BUILT WITH, and then the room is finished. A final
- * circuit takes the sockets it takes; the way to power a tenth box in a
- * four-socket cupboard is not a bigger cheque, it is a different room. This
- * is the one limit in the power model that money cannot move, which is why
- * it is here and not in the price. */
-int site_room_outlets_max(const Site *s, int room)
-{
-    return site_room_outlets_built(s, room) * 2;
-}
 
-int site_room_outlets_used(const Site *s, int room)
-{
-    int n = 0;
-    for (int i = 0; i < s->ndev; i++)
-        if (s->dev[i].room == room && s->dev[i].mains) n++;
-    return n;
-}
 
-int site_room_outlets_free(const Site *s, int room)
-{
-    int f = site_room_outlets(s, room) - site_room_outlets_used(s, room);
-    return f > 0 ? f : 0;
-}
 
 int site_room_outlet_dev(const Site *s, int room, int nth)
 {
@@ -1379,33 +1300,7 @@ static int power_source_room(const Site *s, int room)
     return -1;
 }
 
-long site_outlet_price(const Site *s, int room)
-{
-    int src = power_source_room(s, room);
-    int m = src < 0 ? 0 : site_metres(s, room, src);
-    if (m < 0) m = 0;
-    return OUTLET_FIT + (long)OUTLET_PER_M * m;
-}
 
-int site_outlet(Site *s, int room)
-{
-    s->err = SITE_OK;
-    if (!s->b || room < 0 || room >= s->b->nrooms) { s->err = SITE_ENOROOM; return -1; }
-    if (s->nsock >= SITE_MAX_SOCKET) { s->err = SITE_ESPACE; return -1; }
-    if (site_room_outlets(s, room) >= site_room_outlets_max(s, room)) {
-        s->err = SITE_ECIRCUIT; return -1;
-    }
-    long price = site_outlet_price(s, room);
-    if (s->money < price) { s->err = SITE_EMONEY; return -1; }
-    s->money -= price;
-    s->spent += price;
-    SiteSocket *k = &s->sock[s->nsock];
-    memset(k, 0, sizeof *k);
-    k->room = (uint16_t)room;
-    k->day = s->day;
-    k->cost = (int)price;
-    return s->nsock++;
-}
 
 /* ---------------------------------------------------------- installation */
 /* A BOX IN A ROOM, whoever put it there. site_install() is the player buying
@@ -2609,63 +2504,6 @@ static bool room_holds_kit(int kind)
     }
 }
 
-/* THE POWER MAP. The owner asked for "a way to view the mini map for the
- * entire area and request/order additional power", and this is the first
- * half: every room kit can live in plus every room with something in it --
- * what the wiring gave it, what has been bought, what is in it, and what one
- * more would cost. */
-void site_dump_outlets(const Site *s, int floor, Buf *out)
-{
-    if (!s->b) return;
-    buf_printf(out, "  power, %s\n", floor < 0 ? "the whole building" : "one floor");
-    buf_puts(out, "  room                     built  added  in use  free   "
-                  "another\n");
-    int shown = 0, spent = 0;
-    for (int r = 0; r < s->b->nrooms; r++) {
-        if (floor >= 0 && s->b->rooms[r].floor != floor) continue;
-        int built = site_room_outlets_built(s, r);
-        int have  = site_room_outlets(s, r);
-        int used  = site_room_outlets_used(s, r);
-        int here  = 0;
-        for (int i = 0; i < s->ndev; i++) if (s->dev[i].room == r) here++;
-        if (!room_holds_kit(s->b->rooms[r].kind) &&
-            !used && !here && have == built) continue;
-        char w[48];
-        snprintf(w, sizeof w, "f%d %s #%d", s->b->rooms[r].floor,
-                 bld_kind_name(s->b->rooms[r].kind), r);
-        buf_printf(out, "  %-24s %5d  %5d  %6d  %4d", w, built, have - built,
-                   used, have - used);
-        if (have >= site_room_outlets_max(s, r))
-            buf_puts(out, "   the circuit is full\n");
-        else
-            buf_printf(out, "   %ld\n", site_outlet_price(s, r));
-        shown++;
-        /* WHAT IS NOT PLUGGED IN, named, because that is the whole point of
-         * the page: a box standing in a room with no socket left for it is
-         * the reason nothing happens when its button is pressed. */
-        for (int i = 0; i < s->ndev; i++) {
-            if (s->dev[i].room != r || s->dev[i].kind == SDEV_DESK) continue;
-            if (s->dev[i].mains) continue;
-            /* AND WHAT TO DO ABOUT IT DEPENDS ON THE WALL, which this line
-             * did not look at: it told a player standing in a room with two
-             * empty sockets to buy a third or carry the box somewhere else.
-             * A socket free is a lead away. */
-            if (site_room_outlets_free(s, r) > 0)
-                buf_printf(out, "      %s is NOT plugged in, and there is a "
-                                "socket free -- `mains %s on`\n",
-                           s->dev[i].name, s->dev[i].name);
-            else
-                buf_printf(out, "      %s is NOT plugged in -- `outlet` here, or "
-                                "carry it somewhere with a socket free\n",
-                           s->dev[i].name);
-        }
-    }
-    for (int i = 0; i < s->nsock; i++) spent += s->sock[i].cost;
-    if (!shown) buf_puts(out, "  nothing on it draws power yet.\n");
-    if (s->nsock)
-        buf_printf(out, "  %d outlet%s ordered over the run, %d paid.\n",
-                   s->nsock, s->nsock == 1 ? "" : "s", spent);
-}
 
 void site_dump_links(const Site *s, Buf *out)
 {
@@ -3018,11 +2856,19 @@ static void dump_dev(Site *s, int dev, Buf *out, bool empties)
      * doing nothing has to be here: it is not drawing power, and no amount
      * of pressing the button is going to change that. */
     if (dev != s->uplink && d->kind != SDEV_DESK && !d->mains) {
-        int have = site_room_outlets(s, d->room);
-        buf_printf(out, "  NOT PLUGGED IN -- there is no lead from it to a wall "
-                        "socket, so its\n  power button does nothing. %s has %d "
-                        "outlet%s and %d free.\n", w, have, have == 1 ? "" : "s",
-                   site_room_outlets_free(s, d->room));
+        int tripped = -1;
+        site_dev_fed(s, dev, &tripped);
+        if (tripped >= 0)
+            buf_printf(out, "  NOT PLUGGED IN -- the run feeding it has tripped: "
+                            "conduit %d carries\n  %d W and %d W is on it. Take "
+                            "something off it, or run another from the core.\n",
+                       tripped, s->cond[tripped].watts,
+                       site_conduit_load(s, tripped));
+        else
+            buf_printf(out, "  NOT PLUGGED IN -- no conduit reaches it, so its "
+                            "power button does\n  nothing. `feed %s` pulls a run "
+                            "from the nearest source with a\n  hole in it.\n",
+                       d->name);
     }
     if (empties) net_dump_ports(s->net, d->node, out);
     else net_dump_ports_used(s->net, d->node, out);
@@ -3287,16 +3133,6 @@ static const struct { const char *verb; int need; const char *usage; } VERB[] = 
                      "                      out. A box that is not in one cannot\n"
                      "                      be switched on at all, and a switch\n"
                      "                      has no button, so this is its" },
-    { "outlet",   2, "outlet <room>         have another socket put into that\n"
-                     "                      room. Priced on the run back to the\n"
-                     "                      riser, charged now, and it does not\n"
-                     "                      come out again" },
-    { "outlets",  1, "outlets [<floor>]     every room kit can live in -- comms\n"
-                     "                      cupboards, plant, risers, the MDF, goods\n"
-                     "                      in -- empty or not, plus any other room\n"
-                     "                      with something in it: what it was wired\n"
-                     "                      with, what is plugged in, what is free\n"
-                     "                      and what another socket would cost" },
     { "gw",       3, "gw <box> <ip>" },
     { "router",   3, "router <box> on|off" },
     { "subif",    5, "subif <box> <nic> <vlan> <ip>/<bits>   add one\n"
@@ -3455,10 +3291,6 @@ bool site_cmd(Site *s, const char *line, Buf *out)
             "                               button -- and pulling the plug on a\n"
             "                               running machine is a blackout with one\n"
             "                               machine in it\n"
-            "outlets [<floor>|all]          every room kit can live in and what its\n"
-            "                               wall has: built, added, in use, free, and\n"
-            "                               what another socket there would cost\n"
-            "outlet <room>                  have one more put in, today, for money.\n"
             "                               A room takes as many again as it was\n"
             "                               wired with and then its circuit is full\n"
             "gw <dev> <ip>                  default gateway\n"
@@ -4109,54 +3941,17 @@ bool site_cmd(Site *s, const char *line, Buf *out)
              * and `mains` are two verbs and the refusal from one used to
              * name neither: a pc in goods in, which has two free sockets,
              * was told there was no free outlet on that room's wall. */
-            if (s->err == SITE_EUNPLUGGED) {
-                int free = site_room_outlets_free(s, s->dev[d].room);
-                if (free > 0)
-                    buf_printf(out, "  #%d has %d socket%s free: `mains %s on`, "
-                                    "then `power %s on`.\n",
-                               s->dev[d].room, free, free == 1 ? "" : "s",
-                               s->dev[d].name, s->dev[d].name);
-                else
-                    buf_printf(out, "  #%d has no socket free: `outlet %s` puts "
-                                    "one in, or carry it\n  somewhere that has "
-                                    "one. `outlets` says which rooms do.\n",
-                               s->dev[d].room, t[1]);
-            }
+            if (s->err == SITE_EUNPLUGGED)
+                buf_printf(out, "  nothing feeds %s. `feed %s` pulls a run from "
+                                "the nearest source\n  with a hole in it, or "
+                                "`conduit core0:<n> %s` picks the end yourself.\n",
+                           s->dev[d].name, s->dev[d].name, s->dev[d].name);
             return true;
         }
         buf_printf(out, "%s is %s\n", s->dev[d].name, on ? "on" : "off");
         return true;
     }
     /* ------------------------------------------------------------- power */
-    if (strcmp(t[0], "outlets") == 0) {
-        int f = n >= 2 ? atoi(t[1]) : -1;
-        site_dump_outlets(s, f, out);
-        return true;
-    }
-    if (strcmp(t[0], "outlet") == 0 && n >= 2) {
-        int r = site_room_by_name(s, t[1]);
-        if (r < 0) { buf_printf(out, "no such room: %s\n", t[1]); return true; }
-        long price = site_outlet_price(s, r);
-        int have = site_room_outlets(s, r);
-        if (site_outlet(s, r) < 0) {
-            buf_printf(out, "refused: %s\n", site_err_text(s->err));
-            if (s->err == SITE_ECIRCUIT)
-                buf_printf(out, "  #%d has %d, which is every socket its final "
-                                "circuit will carry.\n  The way to power another "
-                                "box is another room.\n", r, have);
-            else if (s->err == SITE_EMONEY)
-                buf_printf(out, "  a socket in #%d is %ld and you have %ld.\n",
-                           r, price, s->money);
-            return true;
-        }
-        buf_printf(out, "a sparky runs a spur off the board: #%d has %d outlet%s "
-                        "now, %d free.\n  %ld paid, %ld left. It does not come "
-                        "out again and nothing is refunded.\n",
-                   r, site_room_outlets(s, r),
-                   site_room_outlets(s, r) == 1 ? "" : "s",
-                   site_room_outlets_free(s, r), price, s->money);
-        return true;
-    }
     if (strcmp(t[0], "mains") == 0 && n >= 2) {
         int d = dev_arg(s, t[1]);
         if (d < 0) { buf_printf(out, "no such box: %s\n", t[1]); return true; }
@@ -4173,9 +3968,11 @@ bool site_cmd(Site *s, const char *line, Buf *out)
             return true;
         }
         if (n < 3) {
-            buf_printf(out, "%s is %s. `mains %s %s`?\n", dv->name,
-                       dv->mains ? "plugged into the wall" : "not plugged in",
-                       dv->name, dv->mains ? "off" : "on");
+            buf_printf(out, "%s is %s.\n", dv->name,
+                       dv->mains ? "fed" : "not fed by anything");
+            if (dv->mains) buf_printf(out, "  `mains %s off` pulls the run.\n",
+                                      dv->name);
+            else buf_printf(out, "  `feed %s` pulls one to it.\n", dv->name);
             return true;
         }
         bool on = strcmp(t[2], "on") == 0;
@@ -4183,20 +3980,15 @@ bool site_cmd(Site *s, const char *line, Buf *out)
         if (!site_mains(s, d, on)) {
             buf_printf(out, "refused: %s\n", site_err_text(s->err));
             if (s->err == SITE_ENOMAINS)
-                buf_printf(out, "  %s is standing in a room with %d outlet%s and "
-                                "all of them are in use.\n  `outlets` says which "
-                                "rooms have one free; `outlet <room>` buys one.\n",
-                           dv->name, site_room_outlets(s, dv->room),
-                           site_room_outlets(s, dv->room) == 1 ? "" : "s");
+                buf_printf(out, "  `feed %s` pulls a run from the nearest source "
+                                "with a hole in it.\n  `conduits` says what each "
+                                "run is carrying against what it can.\n",
+                           dv->name);
             return true;
         }
         if (on) {
-            buf_printf(out, "%s is in a wall socket. %d of #%d's %d left.\n",
-                       dv->name, site_room_outlets_free(s, dv->room), dv->room,
-                       site_room_outlets(s, dv->room));
-            if (site_kind_has_os(dv->kind))
-                buf_printf(out, "  it is still switched off. `power %s on`.\n",
-                           dv->name);
+            /* `mains <box> on` cannot get here: there is no wall to plug into
+             * and site_mains() refuses it above, naming `feed`. */
             return true;
         }
         buf_printf(out, "the plug comes out of %s.\n", dv->name);

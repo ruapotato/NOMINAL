@@ -14,13 +14,14 @@
 # room moves the map moves with it because there is no second copy of where
 # anything is.
 #
-# WHY THE SOCKETS ARE ON IT. He asked for the map and for buyable power in one
-# breath: "have a way to view the mini map for the entire area and request or
-# order additional power for a fee. That then installs the power outlet into
-# that room." The count on each room is site_room_outlets_free()'s -- the same
-# number `outlets` prints and the same number the faceplates on the wall are
-# drawn from -- so the map is where you find out that the cupboard you were
-# about to carry a switch into has no socket left in it.
+# WHY POWER IS ON IT. He asked for the map and for power in one breath: "have
+# a way to view the mini map for the entire area and request or order
+# additional power". It was a count of sockets on each room's wall, and there
+# is no wall any more -- "per room outlets will go away, all things will be
+# powered by the new conduit power system". What is marked now is where power
+# can COME from: a source standing in that room -- the core, or a strip you
+# have fed -- with a way out still free. That is the thing you want to know
+# before you carry a switch up two decks, and it is the tree's own number.
 #
 # It is drawn, not built out of nodes: a floor is twenty-odd rectangles and a
 # dot, and twenty Controls that move every frame is what the HUD text pool was
@@ -101,18 +102,17 @@ func _draw() -> void:
 		var rc := Rect2(a, b - a)
 		draw_rect(rc, _fill(int(m.kind), bool(m.here)))
 		draw_rect(rc, Color(0.55, 0.62, 0.70, 0.75), false, 1.0)
-		# A ROOM WITH NO SOCKET LEFT IN IT IS THE ONE YOU NEED TO KNOW ABOUT
-		# BEFORE YOU CARRY A SWITCH INTO IT, so that is what gets the mark:
-		# a dot per free socket, up to four, and nothing at all when the wall
-		# is full. The number is the model's, not this file's.
+		# A ROOM YOU CAN PLUG SOMETHING IN IS THE ONE YOU NEED TO KNOW ABOUT
+		# BEFORE YOU CARRY A SWITCH INTO IT, so that is what gets the mark: a
+		# dot per free way out of a source standing there, up to four. A room
+		# with none is unmarked, which is most of them. The number is the
+		# model's, not this file's.
 		if int(m.outlets) > 0 and rc.size.x > 9.0 and rc.size.y > 7.0:
 			var n: int = min(int(m.free), 4)
 			for j in range(n):
 				draw_rect(Rect2(a + Vector2(2.0 + float(j) * 3.0, rc.size.y - 4.0),
 					Vector2(2.0, 2.0)), Color("#8fd6a0"))
-			if int(m.free) == 0:
-				draw_rect(Rect2(a + Vector2(2.0, rc.size.y - 4.0), Vector2(5.0, 2.0)),
-					Color("#e07a6a"))
+
 
 	# YOU, and which way you are looking. A dot alone on a plan is not enough
 	# to turn towards a door with.

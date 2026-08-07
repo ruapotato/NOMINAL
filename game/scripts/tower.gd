@@ -1727,69 +1727,11 @@ func site_devs() -> Array:
 
 # ------------------------------------------------------------------- power
 #
-# "None of the rooms seemed to have power outlets." -- the owner, walking his
-# own building. And: "it seems to not have a power cable, I don't see power
-# going to any of the networking gear, or the server... The goods room has a
-# few items that are not plugged into power, but seem to be working."
-#
-# Every one of those is true of the picture and false of the model. Core has
-# had a full power system since D37: sockets counted per room off the room's
-# kind and area, a plug that is a separate act from the button, another socket
-# buyable for money on a circuit that eventually fills up, and a five percent
-# chance of a filesystem to repair if you pull a live one. `outlets` prints
-# all of it. The 3D drew none of it, so the one system the player was told to
-# care about was the one system the world would not show -- and a box standing
-# on nothing, running, is the world flatly contradicting the model.
-#
-# So the wall gets its sockets, and every box that is really in one gets its
-# lead. Both come from the model on every reconcile: buy a socket with
-# `outlet`, pull a plug with `mains`, and the wall and the flex follow.
-
-func site_outlets() -> Dictionary:
-	var out: Dictionary = {}
-	if not site_up:
-		return out
-	for line in str(machine.site_outlets()).split("\n", false):
-		var f: PackedStringArray = line.split(" ", false)
-		if f.size() < 4:
-			continue
-		out[int(f[0])] = {"built": int(f[1]), "used": int(f[2]), "free": int(f[3])}
-	return out
-
-
-# WHERE THE SOCKETS ON A ROOM'S WALL ARE. Along the longest wall, at the height
-# a socket is really at, inset from the corners so a faceplate is never in one.
-# Computed rather than stored, for the same reason the lift's buttons are: a
-# thing drawn in one place and reached for in another is one fact with two
-# answers, and this one has a lead plugged into it.
-const OUTLET_Y := 0.32          # centre height, metres off the slab
-const OUTLET_W := 0.09
-const OUTLET_H := 0.13
-
-func outlet_points(room_i: int) -> Array:
-	var out: Array = []
-	var have: int = int(site_outlets().get(room_i, {}).get("built", 0))
-	if have <= 0 or room_i < 0 or room_i >= rooms.size():
-		return out
-	var r = rooms[room_i]
-	var y: float = float(r.floor) * fheight + OUTLET_Y
-	var wx: float = float(r.x1 - r.x0)
-	var wy: float = float(r.y1 - r.y0)
-	# the longest wall, and the inward normal of it
-	var along_x: bool = wx >= wy
-	var span: float = (wx if along_x else wy) - 0.8
-	if span < 0.3:
-		return out
-	for k in range(have):
-		var t: float = 0.4 + (span * (float(k) + 0.5) / float(have))
-		if along_x:
-			out.append({"pos": Vector3(float(r.x0) + t, y, float(r.y0) + 0.03),
-				"n": Vector3(0, 0, 1)})
-		else:
-			out.append({"pos": Vector3(float(r.x0) + 0.03, y, float(r.y0) + t),
-				"n": Vector3(1, 0, 0)})
-	return out
-
+# The wall sockets are gone from the model as well as from the picture: "per
+# room outlets will go away, all things will be powered by the new conduit
+# power system." What the window draws is the tree -- site_conduits() below --
+# and a run's colour is what it is carrying. site_outlets(), outlet_points()
+# and the faceplate constants went with the model they were a view of.
 
 # The plug end on a box: low on its back, which is where a kettle lead goes.
 func _inlet_point(d: Dictionary) -> Vector3:
@@ -4615,7 +4557,27 @@ func map_rows() -> Array:
 		return out
 	var f := player_floor()
 	var here := player_room()
-	var free := site_outlets()
+	# WHAT A ROOM OFFERS A BOX YOU CARRY INTO IT, which is no longer a count
+	# of sockets on its wall -- there is no wall. It is whether a SOURCE is
+	# standing in it with a way out still free: the core, or a strip you have
+	# fed. That is the fact worth having on a map you read before you carry
+	# something upstairs.
+	var holes := {}
+	for sd in site_devs():
+		if str(sd.kindname) != "powercore" and str(sd.kindname) != "strip":
+			continue
+		if str(sd.kindname) == "strip" and not bool(sd.get("mains", false)):
+			continue
+		var used := {}
+		for c in site_conduits():
+			if int(c.from) == int(sd.i):
+				used[int(c.fport)] = true
+		var lo: int = 1 if str(sd.kindname) == "strip" else 0
+		var n := 0
+		for p in range(lo, int(sd.nports)):
+			if not used.has(p):
+				n += 1
+		holes[int(sd.room)] = int(holes.get(int(sd.room), 0)) + n
 	for i in range(rooms.size()):
 		var r = rooms[i]
 		if int(r.floor) != f:
@@ -4625,8 +4587,12 @@ func map_rows() -> Array:
 			"x0": float(r.x0), "y0": float(r.y0),
 			"x1": float(r.x1), "y1": float(r.y1),
 			"here": i == here,
-			"outlets": int(free.get(i, {}).get("built", 0)),
-			"free": int(free.get(i, {}).get("free", 0)),
+			# `outlets` was how many sockets the wall had. `holes` is how
+			# many ways out of a power source standing in this room are
+			# still free -- the same question, asked of the thing that
+			# answers it now.
+			"outlets": int(holes.get(i, 0)),
+			"free": int(holes.get(i, 0)),
 		})
 	return out
 
