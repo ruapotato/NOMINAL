@@ -114,6 +114,11 @@ typedef struct {
 
 /* The tower, and you in the MDF of it. */
 bool session_start(Session *ses, uint64_t seed, long budget);
+
+/* The bridge is the top deck and it is in service on day one; every other
+ * deck opens from the bottom in order. See ses_deck_open() in session.c. */
+int  ses_bridge_deck(const Session *ses);
+bool ses_deck_open(const Session *ses, int f);
 /* A session plus the day-one delivery, charged for. This is the door a
  * PLAYER comes in through -- the 3D window, `--towersh`, a socket client --
  * and session_start() is the bare machinery the gates build on. See the

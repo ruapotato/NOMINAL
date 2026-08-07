@@ -168,11 +168,24 @@ func _init() -> void:
 		fail("no lift was built, and the shafts are on every floor")
 	else:
 		var lift = t.lifts[0]
-		var closed: int = t.nfloors - 1
-		if t.in_service(closed):
-			fail("every floor is in service at the start: the tower does not grow")
+		# NOT THE TOP DECK: that is the bridge, and it is in service on day
+		# one because the crew are already sitting at it. A dark deck is one
+		# of the ones in the middle -- the next one the player has to pay for.
+		var closed: int = t.floors_in_service
+		if closed >= t.bridge_deck():
+			closed = -1
+		if t.bridge_deck() != t.nfloors - 1 or not t.in_service(t.bridge_deck()):
+			fail("the bridge is not in service on day one: bridge deck %d, %d in service"
+				% [t.bridge_deck(), t.floors_in_service])
 		else:
-			ok("%d of %d floors in service at the start" % [t.floors_in_service, t.nfloors])
+			ok("the bridge is deck %d and it is open before anything is paid for"
+				% t.bridge_deck())
+		if closed < 0:
+			fail("this station has no dark deck between deck 0 and the bridge")
+		elif t.in_service(closed):
+			fail("every deck is in service at the start: the station does not grow")
+		else:
+			ok("%d of %d decks in service at the start" % [t.floors_in_service, t.nfloors])
 		var refused: String = t.lift_go(closed)
 		if refused.find("not in service") < 0:
 			fail("the lift went to a floor that is not in service: " + refused)

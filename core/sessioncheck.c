@@ -422,11 +422,41 @@ static void check_walking(int *passed, int *total)
     ck("a room kind on this deck is a spelling of that room",
        ses.b.rooms[ses.room].kind == RM_MDF && ses.walked > far);
 
-    /* The lift, which is the one thing `open` gates. Same words as lift.gd. */
+    /* The lift, which is the one thing `open` gates. Same words as lift.gd.
+     * NOT THE TOP DECK ANY MORE, and the reason is the whole of the bridge:
+     * the top of the station is in service on day one because the crew are
+     * already sitting on it. A dark deck is one of the ones in the MIDDLE. */
     int top = ses.b.floors - 1;
+    int dark = ses.floors;          /* the next one up, and nobody has paid */
+    if (dark >= top) dark = -1;
+    if (dark > 0) {
+        snprintf(cmd, sizeof cmd, "lift %d", dark);
+        ck("the lift refuses a deck nobody has put in service",
+           has(say(&ses, cmd, &o), "not in service") && has(o.p, "not lit"));
+    }
+
+    /* THE BRIDGE, WHICH IS THE POINT. Day one, no money spent, and the lift
+     * stops at the top of the station -- because the crew are up there at
+     * consoles with nothing plugged into them, and the run from Engineering
+     * to the top of the riser is the first job in the game. If this ever
+     * says "not in service" then the bridge is a label again. */
+    long before_lift = ses.walked;
     snprintf(cmd, sizeof cmd, "lift %d", top);
-    ck("the lift refuses a deck nobody has put in service",
-       has(say(&ses, cmd, &o), "not in service") && has(o.p, "not lit"));
+    ck("the bridge is in service on day one, with every deck under it dark",
+       ses_deck_open(&ses, top) && top == ses_bridge_deck(&ses) &&
+       !has(say(&ses, cmd, &o), "not in service") &&
+       ses.b.rooms[ses.room].floor == top && ses.walked > before_lift);
+    ck("and it is the bridge that is up there, not another deck of offices",
+       ses.b.fkind[top] == FL_BRIDGE &&
+       bld_find(&ses.b, top, RM_BRIDGE) >= 0);
+    ck("nobody rents the bridge: it is not let space and never was",
+       bld_find(&ses.b, top, RM_OFFICE) < 0 &&
+       ses.b.rooms[bld_find(&ses.b, top, RM_BRIDGE)].tenant == 0);
+    /* Back down to where the rest of this check thinks it is standing. */
+    snprintf(cmd, sizeof cmd, "lift %d", 0);
+    say(&ses, cmd, &o);
+    snprintf(cmd, sizeof cmd, "go #%d", dst);
+    say(&ses, cmd, &o);
 
     snprintf(cmd, sizeof cmd, "lift %d", ses.b.floors + 4);
     ck("and a deck the building has not got",

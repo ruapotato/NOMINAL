@@ -3975,16 +3975,23 @@ static void check_grades(void)
      * moved to the truthful place. A fast port feeding a slow one with a deep
      * buffer in between does not lose the traffic, it DELAYS it -- that is
      * bufferbloat, and it is what the same pair of boxes does on a real
-     * bench. The cheap tower's day takes 3100 ms against the dear one's
-     * 1752: seventy-seven percent longer, inside a four second busy period,
-     * which is a tower one tenancy away from not finishing at all.
+     * bench. The cheap tower's day takes 3079 ms against the dear one's
+     * 1752: seventy-six percent longer, inside a four second busy period,
+     * which is a tower one tenancy away from not finishing at all -- and on
+     * this station it IS one transfer away: 27 of 28 against 28 of 28.
+     *
+     * SO THE ASSERTION IS <=, NOT ==. The dear tower must never finish less
+     * work than the cheap one, and the cheap one must always be measurably
+     * slower; whether the last transfer falls off the end as well depends on
+     * the shape of the deck, and pinning it to one number would make this a
+     * check on seed 22's geometry rather than on the buffer.
      *
      * So the assertion is the penalty that exists rather than the one that
      * used to. A voice tenancy behind that buffer is worse off than before,
      * not better, because delay is what voice cannot survive -- which is
      * exactly the trade a deep buffer makes in the real world. */
     ck("and the cheap tower took measurably longer over the same work",
-       ct->finished == dt->finished && ct->worst_ms > dt->worst_ms * 5 / 4);
+       ct->finished <= dt->finished && ct->worst_ms > dt->worst_ms * 5 / 4);
     /* AND THE REASON IS PRINTED, IN WORDS, ON THE PORT. */
     {
         Buf o = {0};

@@ -96,7 +96,7 @@ const char *bld_kind_name(int k)
          * machine you sit at are: the room the game starts in. */
         "corridor", "lobby", "lift lobby", "lift shaft", "stairwell",
         "riser", "comms cupboard", "Engineering", "heads", "plant", "goods in",
-        "office", "residence", "server room", "retail"
+        "office", "residence", "server room", "retail", "bridge"
     };
     return (k >= 0 && k < RM_KIND_COUNT) ? N[k] : "?";
 }
@@ -105,14 +105,15 @@ char bld_kind_char(int k)
 {
     static const char C[RM_KIND_COUNT] = {
         ' ', 'L', 'l', 'V', 'X', 'R', 'C', 'M', 'W', 'P', 'G',
-        'o', 'r', 'S', 'e'
+        'o', 'r', 'S', 'e', 'B'
     };
     return (k >= 0 && k < RM_KIND_COUNT) ? C[k] : '?';
 }
 
 const char *bld_floor_kind_name(int k)
 {
-    static const char *N[FL_KIND_COUNT] = { "ground", "office", "residential", "plant" };
+    static const char *N[FL_KIND_COUNT] = { "ground", "office", "residential", "plant",
+                                            "bridge" };
     return (k >= 0 && k < FL_KIND_COUNT) ? N[k] : "?";
 }
 
@@ -207,6 +208,7 @@ static int perimeter_kind(FloorKind fk)
     case FL_GROUND:      return RM_RETAIL;
     case FL_OFFICE:      return RM_OFFICE;
     case FL_RESIDENTIAL: return RM_RESIDENCE;
+    case FL_BRIDGE:      return RM_BRIDGE;
     default:             return RM_PLANT;
     }
 }
@@ -294,10 +296,17 @@ bool bld_generate(Building *b, uint64_t seed)
      * tower, and the reason a residential floor's cabling problem is a
      * different problem from an office floor's. */
     int resi_from = rng_range(&r, 2, b->floors);
-    bool plant_top = rng_range(&r, 0, 99) < 35 && b->floors >= 6;
+    bool plant_top = rng_range(&r, 0, 99) < 35 && b->floors >= 7;
+    /* THE TOP DECK IS THE BRIDGE, on every station, always. It is not a
+     * random draw like the plant deck under it, because the bridge is what
+     * the station is FOR: the crew are at those consoles from day one, with
+     * nothing plugged in, and the whole first job is a cable run from
+     * Engineering on deck 0 to the top of the riser. Make it random and half
+     * the seeds have no such run. */
     for (int f = 0; f < b->floors; f++) {
-        b->fkind[f] = (uint8_t)(f == 0 ? FL_GROUND
-                      : (plant_top && f == b->floors - 1) ? FL_PLANT
+        b->fkind[f] = (uint8_t)(f == b->floors - 1 ? FL_BRIDGE
+                      : f == 0 ? FL_GROUND
+                      : (plant_top && f == b->floors - 2) ? FL_PLANT
                       : (f >= resi_from) ? FL_RESIDENTIAL : FL_OFFICE);
     }
 

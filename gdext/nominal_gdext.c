@@ -1039,8 +1039,12 @@ static void m_ses_state(Station *st, const GDExtensionConstTypePtr *args, void *
     if (!st->ses_ok) { c_to_gdstring(ret, ""); return; }
     const Session *e = &st->ses;
     Buf o; buf_init(&o);
-    buf_printf(&o, "where %d\nroom %d\nfloors %d\nwalked %ld\n",
-               e->where, e->room, e->floors, e->walked);
+    /* `bridge` is the deck that is in service without anybody paying for it,
+     * or -1 on a station too short to have one. The window must not work
+     * this out for itself -- that would be the same fact in two places, and
+     * the HUD would light a lift button core refuses to move. */
+    buf_printf(&o, "where %d\nroom %d\nfloors %d\nwalked %ld\nbridge %d\n",
+               e->where, e->room, e->floors, e->walked, ses_bridge_deck(e));
     buf_printf(&o, "carrying %d\nspool %d %d\ncab %d %d\nplugged %d %d\n",
                e->carrying, e->spool_kind, e->spool_left,
                e->cab_dev, e->cab_port, e->plugged, e->hdmi ? 1 : 0);

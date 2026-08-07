@@ -57,11 +57,13 @@ typedef enum {
     RM_RESIDENCE,
     RM_SERVER,       /* a tenant's own server room */
     RM_RETAIL,
+    RM_BRIDGE,       /* the top deck: command consoles, and a crew at them */
     RM_KIND_COUNT
 } RoomKind;
 
 /* What the floor as a whole is, which is what decides the mix. */
-typedef enum { FL_GROUND, FL_OFFICE, FL_RESIDENTIAL, FL_PLANT, FL_KIND_COUNT } FloorKind;
+typedef enum { FL_GROUND, FL_OFFICE, FL_RESIDENTIAL, FL_PLANT, FL_BRIDGE,
+               FL_KIND_COUNT } FloorKind;
 
 typedef struct {
     uint8_t floor;

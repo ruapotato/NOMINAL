@@ -396,19 +396,40 @@ static void check_blackout(void)
      * on floor 2 on day 6 and one on floor 3 on day 20. Each gets copper to
      * its own floor's switch, so each floor's server holds that floor's
      * files -- which is what `service` prints in its `files` column. */
+    /* WHICH TENANCY IS WHERE IS THE QUEUE'S BUSINESS, NOT THIS FILE'S. This
+     * used to name them: `serve 1 sw1`, `serve 2 sw2`, `serve 5 sw3`, and the
+     * numbers were read off one run of seed 7008. Then the top deck became
+     * the bridge, the station lost a deck of let space, and the queue handed
+     * out different ids on different days -- so a check about BLACKOUTS
+     * failed nineteen assertions about disk repair, because a tenant id in a
+     * string literal had gone stale. The gate asks the model instead: give me
+     * a tenancy on this deck, and wait for the letting queue if there is not
+     * one yet. */
+    int served[3] = { -1, -1, -1 };
     days(&ses, TENANT_IN, &o);
-    say(&ses, "go d1.comms", &o);
-    say(&ses, "serve 1 sw1 cat5e", &o);
-    days(&ses, 5, &o);
-    say(&ses, "go d2.comms", &o);
-    say(&ses, "serve 2 sw2 cat5e", &o);
-    days(&ses, 14, &o);
-    say(&ses, "go d3.comms", &o);
-    say(&ses, "serve 5 sw3 cat5e", &o);
+    for (int d = 1; d <= 3; d++) {
+        char cmd[64];
+        for (int tries = 0; tries < 60 && served[d - 1] < 0; tries++) {
+            for (int t = 0; t < ses.s.ntenant; t++) {
+                const SiteTenant *tn = &ses.s.tenant[t];
+                if (!tn->moved || ses.b.rooms[tn->room].floor != d) continue;
+                if (site_tenant_connected(&ses.s, t) > 0) continue;
+                served[d - 1] = t;
+                break;
+            }
+            if (served[d - 1] < 0) days(&ses, 1, &o);
+        }
+        if (served[d - 1] < 0) continue;
+        snprintf(cmd, sizeof cmd, "go d%d.comms", d);
+        say(&ses, cmd, &o);
+        snprintf(cmd, sizeof cmd, "serve %d sw%d cat5e", served[d - 1] + 1, d);
+        say(&ses, cmd, &o);
+    }
     ck("three tenancies, one on each deck, with copper to their own switch",
-       site_tenant_connected(&ses.s, 0) > 10 &&
-       site_tenant_connected(&ses.s, 1) > 10 &&
-       site_tenant_connected(&ses.s, 4) > 10);
+       served[0] >= 0 && served[1] >= 0 && served[2] >= 0 &&
+       site_tenant_connected(&ses.s, served[0]) > 10 &&
+       site_tenant_connected(&ses.s, served[1]) > 10 &&
+       site_tenant_connected(&ses.s, served[2]) > 10);
 
     BlackBox bx[BLACK_SERVERS] = {
         { "srv1", -1, {{0}}, 0, {{0}}, false, "" },
@@ -420,8 +441,10 @@ static void check_blackout(void)
     int sd = site_dev_by_name(&ses.s, "spare");
     int id = site_dev_by_name(&ses.s, "idle");
 
-    /* Up to the night before. */
-    days(&ses, CUT_ONE - 1 - TENANT_IN - 5 - 14, &o);
+    /* Up to the night before -- counted from the day the clock IS on, not
+     * from a sum of the waits above, because how long the letting queue took
+     * to put a tenancy on deck 3 is the queue's business. */
+    days(&ses, CUT_ONE - 1 - ses.s.day, &o);
     ck("on the night before, every box is up and nothing has been logged",
        ses.s.day == CUT_ONE - 1 && ses.s.dev[bx[0].dev].powered &&
        ses.s.dev[bx[1].dev].powered && ses.s.dev[bx[2].dev].powered &&
@@ -433,9 +456,9 @@ static void check_blackout(void)
      * whose three boxes were all idle would pass the variety check below by
      * dealing nothing to any of them. */
     ck("and each of the three decks pulled its files off its own deck's box",
-       ses.s.tenant[0].files_dev == bx[0].dev &&
-       ses.s.tenant[1].files_dev == bx[1].dev &&
-       ses.s.tenant[4].files_dev == bx[2].dev);
+       ses.s.tenant[served[0]].files_dev == bx[0].dev &&
+       ses.s.tenant[served[1]].files_dev == bx[1].dev &&
+       ses.s.tenant[served[2]].files_dev == bx[2].dev);
 
     /* What each machine looked like before the world touched it, so that
      * anything `pkg verify` says afterwards can be attributed. */
@@ -970,16 +993,28 @@ static void check_copper(void)
     ck("and it comes up at a gigabit, because it is inside what copper carries",
        net_port_speed(ses.s.net, ses.s.dev[cd].node, 0) == 1000);
 
-    /* The floor-3 tenancy moves in on day 20 and gets copper to that switch.
-     * Their files are in the basement, so every byte of a floor's work goes
-     * over the ninety-five metres. */
-    days(&ses, 20, &o);
-    say(&ses, "go f3.office", &o);
-    say(&ses, "serve 5 far cat5e", &o);
+    /* A tenancy on deck 3 gets copper to that switch. Their files are on
+     * deck 0, so every byte of a deck's work goes over the ninety-five
+     * metres. WHICH tenancy is the letting queue's business -- see the same
+     * repair in the blackout section above -- so the gate waits for one to
+     * arrive on deck 3 rather than naming an id it read off one run. */
+    int t3 = -1;
+    for (int tries = 0; tries < 60 && t3 < 0; tries++) {
+        days(&ses, 1, &o);
+        for (int t = 0; t < ses.s.ntenant; t++) {
+            const SiteTenant *tn = &ses.s.tenant[t];
+            if (tn->moved && ses.b.rooms[tn->room].floor == 3 &&
+                site_tenant_connected(&ses.s, t) == 0) { t3 = t; break; }
+        }
+    }
+    char scmd[64];
+    say(&ses, "go d3.office", &o);
+    snprintf(scmd, sizeof scmd, "serve %d far cat5e", t3 + 1);
+    say(&ses, scmd, &o);
     days(&ses, 1, &o);
     ck("a deck of desks behind it, and their day's work finishes",
-       ses.s.tenant[4].tried > 0 &&
-       ses.s.tenant[4].finished * 5 >= ses.s.tenant[4].tried * 4);
+       t3 >= 0 && ses.s.tenant[t3].tried > 0 &&
+       ses.s.tenant[t3].finished * 5 >= ses.s.tenant[t3].tried * 4);
 
     /* -------------------------------------------- and then it starts to go */
     int warned_on = 0, slowed_on = 0;
@@ -1024,7 +1059,7 @@ static void check_copper(void)
      * and the first slow day is the one after it. */
     days(&ses, 1, &o);
     ck("the deck behind it stops getting its work done",
-       ses.s.tenant[4].finished * 5 < ses.s.tenant[4].tried * 4);
+       ses.s.tenant[t3].finished * 5 < ses.s.tenant[t3].tried * 4);
 
     /* AND IT IS FIXABLE WITH WHAT EXISTS. Pull it and run it in fibre, which
      * has no such budget -- and the port comes back at what the kit can do,

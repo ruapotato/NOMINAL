@@ -1599,6 +1599,27 @@ static int lift_lobby(const Session *ses, int floor)
     return r;
 }
 
+/* WHICH DECKS ARE OPEN. Decks come into service from the bottom, one at a
+ * time, and `ses->floors` counts them -- except for the bridge, which is in
+ * service on day one because the crew are already sitting at it. That is the
+ * whole reason the bridge is a deck kind in the model and not a label: on day
+ * one the lift stops at the top, the longest cable run in the station is
+ * available to be paid for, and every deck between here and there is dark.
+ *
+ * `ses->floors` stays a COUNT and not a set: the decks below the bridge open
+ * in order, they always have, and a set would be a second way to say the same
+ * thing. There is exactly one deck that is special and it is named here. */
+int ses_bridge_deck(const Session *ses)
+{
+    return ses->b.floors >= 2 ? ses->b.floors - 1 : -1;
+}
+
+bool ses_deck_open(const Session *ses, int f)
+{
+    return f >= 0 && f < ses->b.floors &&
+           (f < ses->floors || f == ses_bridge_deck(ses));
+}
+
 static void do_lift(Session *ses, int f, Buf *out)
 {
     if (f < 0 || f >= ses->b.floors) {
@@ -1607,7 +1628,7 @@ static void do_lift(Session *ses, int f, Buf *out)
     }
     /* The button for a floor nobody has opened is not lit. Same rule as
      * lift.gd, same words, because it is the same lift. */
-    if (f >= ses->floors) {
+    if (!ses_deck_open(ses, f)) {
         buf_printf(out, "refused: the lift does not move -- deck %d is not in "
                         "service and its\n  button is not lit.\n"
                         "  `open` puts the next deck into service.\n", f);
@@ -1663,8 +1684,11 @@ static long open_price(const Session *ses, int floor)
 
 static void do_open(Session *ses, Buf *out)
 {
-    if (ses->floors >= ses->b.floors) {
-        buf_puts(out, "every deck in this tower is already in service.\n");
+    /* The bridge is never on this list: it was in service before the player
+     * arrived and nobody is going to be charged a fit-out for it. */
+    if (ses->floors >= ses->b.floors ||
+        ses->floors == ses_bridge_deck(ses)) {
+        buf_puts(out, "every deck in this station is already in service.\n");
         return;
     }
     int f = ses->floors;
@@ -2601,7 +2625,7 @@ static bool travel_to(Session *ses, int dst, Buf *out)
     if (dst < 0 || dst >= ses->b.nrooms) { buf_puts(out, "no such room.\n"); return false; }
     if (dst == ses->room) return true;
     int f = ses->b.rooms[dst].floor;
-    if (f != here_floor(ses) && f < ses->floors) {
+    if (f != here_floor(ses) && ses_deck_open(ses, f)) {
         int from = lift_lobby(ses, here_floor(ses));
         int to   = lift_lobby(ses, f);
         if (from >= 0 && to >= 0) {

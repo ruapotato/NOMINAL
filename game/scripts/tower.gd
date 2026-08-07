@@ -34,6 +34,7 @@ const K_OFFICE := 11
 const K_RESIDENCE := 12
 const K_SERVER := 13
 const K_RETAIL := 14
+const K_BRIDGE := 15
 
 const NOROOM := 65535
 
@@ -55,6 +56,7 @@ const FLOOR_COL := {
 	K_RESIDENCE: Color("#a8846b"),
 	K_SERVER: Color("#4b6f9b"),
 	K_RETAIL: Color("#a37f8c"),
+	K_BRIDGE: Color("#6f7fa8"),
 }
 const WALL_COL := Color("#cfc9bd")
 const OUTER_COL := Color("#8f9ba5")
@@ -1396,8 +1398,17 @@ func _build_lifts() -> void:
 # the space. What grows is how much of it is OPEN. A floor that is not in
 # service has no lit button in the lift and the car will not stop there.
 
+# WHICH DECKS ARE OPEN, and core is the one that decides. The bridge is in
+# service on day one -- the crew are already at those consoles -- and every
+# deck under it is paid for one at a time from the bottom. `bridge` arrives in
+# ses_state() from ses_bridge_deck(); working it out here as nfloors - 1 would
+# be the same fact in two places, and this file has been bitten by that.
+func bridge_deck() -> int:
+	return int(ses_state().get("bridge", -1))
+
+
 func in_service(f: int) -> bool:
-	return f >= 0 and f < floors_in_service
+	return f >= 0 and (f < floors_in_service or f == bridge_deck())
 
 
 func open_next_floor() -> String:
