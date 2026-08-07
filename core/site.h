@@ -944,6 +944,11 @@ bool site_power(Site *s, int dev, bool on);
  * Priced by the metre off the building's own cable graph, exactly as copper
  * is. Returns the run, or -1 and s->err. */
 int  site_conduit(Site *s, int from, int fport, int to);
+/* THE SAME RUN, WITHOUT PICKING THE END. Finds the nearest source with a hole
+ * in it -- nearest along the trays the cable will really lie in -- and runs
+ * it. For a client driving this over a socket, which cannot see the room.
+ * Same metres, same price, same refusals. */
+int  site_feed(Site *s, int to);
 bool site_unconduit(Site *s, int run);
 /* What is drawn through this run: everything downstream of it, added up. */
 int  site_conduit_load(const Site *s, int run);

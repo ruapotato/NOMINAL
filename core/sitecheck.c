@@ -3513,6 +3513,61 @@ static void check_conduits(const Building *b)
     ck("a box with no conduit to it is dark, and the core itself is not",
        !site_dev_fed(&s, lonely, &t2) && site_dev_fed(&s, core, &t2));
 
+    /* --- AND RUNNING ONE WITHOUT PICKING THE END. "For the AI placing lines
+     * we will need logic to automatically use the cable trays to connect
+     * things." The metres were always the trays' -- site_run_metres() is
+     * bld_cable_all() -- so what `feed` adds is the CHOICE a client driving
+     * this over a socket cannot make: which output of which source is the
+     * shortest honest run. It has to pick the nearest and charge the same. */
+    {
+        Site f;
+        site_new(&f, b, GATE_SEED, 100000);
+        int fcore = site_dev_by_name(&f, "core0");
+        int near_room = a_room(b, 0), far_room = a_room(b, 5);
+        int near_box = site_install(&f, SDEV_SWITCH8, near_room, "nb");
+        /* a strip out at the far end, fed, so it is a candidate source */
+        int fst = site_install(&f, SDEV_STRIP, far_room, "fst");
+        site_conduit(&f, fcore, 0, fst);
+        int far_box = site_install(&f, SDEV_SWITCH8, far_room, "fb");
+        int rn = site_feed(&f, near_box);
+        int rf = site_feed(&f, far_box);
+        ck("`feed` runs conduit without being told which end to take",
+           rn >= 0 && rf >= 0);
+        /* the near box should come off the core, the far one off the strip
+         * that is standing in its own room -- nearest, not first */
+        ck("and it picks the nearest source along the trays, not the first one",
+           f.cond[rn].from == fcore && f.cond[rf].from == fst);
+        printf("    near box: %d m off %s.  far box: %d m off %s\n",
+               f.cond[rn].metres, f.dev[f.cond[rn].from].name,
+               f.cond[rf].metres, f.dev[f.cond[rf].from].name);
+        /* the same metres and the same price as choosing by hand */
+        ck("and the metres are the ones the cable graph gives for that pair",
+           f.cond[rf].metres == site_run_metres(&f, f.dev[fst].room, f.dev[far_box].room) &&
+           f.cond[rf].cost == site_cable_price(CAB_CAT6, f.cond[rf].metres));
+        /* a strip nothing feeds is not a source: a limb dark from the moment
+         * it is built is metres nobody should have been charged for */
+        int orphan = site_install(&f, SDEV_STRIP, near_room, "orphan");
+        int ob = site_install(&f, SDEV_SWITCH8, near_room, "ob");
+        int ro = site_feed(&f, ob);
+        ck("and it will not run off a strip that nothing feeds",
+           ro >= 0 && f.cond[ro].from != orphan);
+        /* and when every hole really is used it says so rather than picking
+         * a bad one */
+        int guard = 0;
+        while (guard++ < 40) {
+            char nm[NET_NAME_MAX];
+            snprintf(nm, sizeof nm, "x%d", guard);
+            int d2 = site_install(&f, SDEV_SWITCH4, near_room, nm);
+            if (d2 < 0 || site_feed(&f, d2) < 0) break;
+        }
+        ck("and when every output in the building is in use it says which "
+           "thing to buy",
+           f.err == SITE_ENODEV && guard < 40);
+        printf("    the core and one strip fed %d boxes before running out\n",
+               site_conduit_count(&f) - 1);
+        site_free(&f);
+    }
+
     Buf o = {0};
     site_cmd(&s, "conduits", &o);
     ck("and `conduits` prints every run with what is on it",

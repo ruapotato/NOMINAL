@@ -1016,6 +1016,53 @@ bool site_dev_fed(const Site *s, int dev, int *tripped)
     return false;
 }
 
+/* ============================ RUNNING ONE WITHOUT CHOOSING THE END
+ *
+ * "For the AI placing lines we will need logic to automatically use the cable
+ * trays to connect things."
+ *
+ * The metres were never the problem: site_run_metres() is bld_cable_all(),
+ * which IS the tray graph -- a run is already priced along the trays and up
+ * the riser rather than through walls, and has been since there were trays.
+ * What a client driving this over a socket has to do by hand is the CHOICE:
+ * which output of which source, out of a core with eight and every strip with
+ * five, is the shortest honest run to this box.
+ *
+ * So this makes that choice the way a person would: the nearest source with a
+ * hole in it, nearest measured along the trays the cable will actually lie
+ * in. It is not a shortcut around the model -- it calls site_conduit() and
+ * pays the same metres at the same price -- it is the difference between a
+ * player who can see the room and a script that cannot.
+ *
+ * Returns the run, or -1 with s->err set by site_conduit(). ENODEV means
+ * every source in the building is full, which is a real answer: buy a strip,
+ * feed it, and there are five more holes.
+ */
+int site_feed(Site *s, int to)
+{
+    s->err = SITE_OK;
+    if (to < 0 || to >= s->ndev) { s->err = SITE_ENODEV; return -1; }
+    int best = -1, best_port = -1, best_m = -1;
+    for (int i = 0; i < s->ndev; i++) {
+        if (!power_source_kind(s->dev[i].kind)) continue;
+        if (i == to) continue;
+        /* A strip that nothing feeds is not a source: running off it would
+         * make a limb of the tree that is dark from the moment it is built,
+         * and the player would have paid for the metres. */
+        if (s->dev[i].kind == SDEV_STRIP && !site_dev_fed(s, i, NULL)) continue;
+        int lo = (s->dev[i].kind == SDEV_STRIP) ? 1 : 0;
+        int port = -1;
+        for (int p = lo; p < s->dev[i].nports; p++)
+            if (conduit_from(s, i, p) < 0) { port = p; break; }
+        if (port < 0) continue;                    /* every hole is in use  */
+        int m = site_run_metres(s, s->dev[i].room, s->dev[to].room);
+        if (m < 0) continue;                       /* no route for a cable  */
+        if (best < 0 || m < best_m) { best = i; best_port = port; best_m = m; }
+    }
+    if (best < 0) { s->err = SITE_ENODEV; return -1; }
+    return site_conduit(s, best, best_port, to);
+}
+
 int site_conduit(Site *s, int from, int fport, int to)
 {
     s->err = SITE_OK;
@@ -3088,6 +3135,11 @@ static const struct { const char *verb; int need; const char *usage; } VERB[] = 
                      "                      core, or of a strip, to a box or to\n"
                      "                      another strip. Priced by the metre off\n"
                      "                      the same graph copper is" },
+    { "feed",     2, "feed <box>            run conduit to it from the nearest\n"
+                     "                      source that still has a hole in it,\n"
+                     "                      nearest along the trays the cable will\n"
+                     "                      lie in. The same metres at the same\n"
+                     "                      price as choosing the end yourself" },
     { "unconduit", 2, "unconduit <n>         pull one out. `conduits` numbers them" },
     { "conduits", 1, "conduits              every run, what it carries and what it\n"
                      "                      is carrying" },
@@ -3222,6 +3274,11 @@ bool site_cmd(Site *s, const char *line, Buf *out)
             "                               more: over that it trips and everything\n"
             "                               behind it is dark until you take\n"
             "                               something off it or run another\n"
+            "feed <box>                     run conduit to it from the nearest\n"
+            "                               source with a hole left in it, nearest\n"
+            "                               along the trays the cable will lie in.\n"
+            "                               The same metres at the same price as\n"
+            "                               picking the end yourself\n"
             "unconduit <n>                  pull one out. `conduits` numbers them\n"
             "conduits                       every run, the metres, and what each is\n"
             "                               carrying against what it can\n"
@@ -3396,6 +3453,25 @@ bool site_cmd(Site *s, const char *line, Buf *out)
             buf_puts(out, "  that is over what it carries. It has tripped, and "
                           "everything behind it is dark\n  until you take "
                           "something off it or run another from the core.\n");
+        return true;
+    }
+    if (strcmp(t[0], "feed") == 0 && n >= 2) {
+        int to = dev_arg(s, t[1]);
+        if (to < 0) { buf_printf(out, "no such box: %s\n", t[1]); return true; }
+        int r = site_feed(s, to);
+        if (r < 0) {
+            buf_printf(out, "refused: %s\n", site_err_text(s->err));
+            if (s->err == SITE_ENODEV)
+                buf_puts(out, "  every output on the core and on every strip you "
+                              "have fed is in use.\n  A strip is 60 and gives you "
+                              "five more: `order strip`, carry it, `feed` it.\n");
+            return true;
+        }
+        buf_printf(out, "run %d: %d m of conduit from %s:%d to %s, %d paid, %ld left.\n",
+                   r, s->cond[r].metres, s->dev[s->cond[r].from].name,
+                   s->cond[r].fport, s->dev[to].name, s->cond[r].cost, s->money);
+        buf_printf(out, "  it carries %d W and %d W is on it: %d%%.\n",
+                   s->cond[r].watts, site_conduit_load(s, r), site_conduit_pct(s, r));
         return true;
     }
     if (strcmp(t[0], "unconduit") == 0 && n >= 2) {
