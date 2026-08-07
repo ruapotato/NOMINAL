@@ -1906,7 +1906,12 @@ func _init() -> void:
 		# tenancy's own columns. Nothing here is drawn as a node, so this is
 		# read off the instance buffers.
 		var pc: Array = t.people_counts()
-		var npeople: int = pc[0] + pc[1] + pc[2] + pc[3]
+		# MINUS THE BRIDGE CREW. They are drawn by the same instance buffers
+		# and they are not a tenancy: they were aboard on day zero and no
+		# `service` row will ever mention them. Counting them here made the
+		# building look like it had six desks nobody had let.
+		var ncrew: int = t.crew_stations().size()
+		var npeople: int = pc[0] + pc[1] + pc[2] + pc[3] - ncrew
 		var ndesk := 0
 		var nup := 0
 		for r2 in rows:
@@ -1920,6 +1925,8 @@ func _init() -> void:
 		# NOTHING IS CABLED YET, so nobody in the building can do any work and
 		# the rooms have to say so. `up 0` is the model's; hands up is the
 		# view's rendering of it, and one following the other is the point.
+		# `pc[0]` is the desk buffer, which the crew are deliberately not in
+		# (they bring their own console), so it needs no correction here.
 		if nup == 0 and pc[0] > 0:
 			fail("no desk in the building has a port and %d people are working" % pc[0])
 		elif nup == 0:

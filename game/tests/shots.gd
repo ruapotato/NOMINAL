@@ -1,0 +1,65 @@
+extends SceneTree
+# Photographs of the station, for review. Builds the tower exactly as the
+# window does and puts a camera at eye height in the middle of a room, looking
+# along its long axis. No input is synthesised: the camera is placed, the
+# frame is rendered, the image is saved.
+# WHERE THEY GO. Pass a directory after `--`; the default is the working
+# directory, so `Godot --headless --path game -s tests/shots.gd -- /tmp/x`
+# fills /tmp/x with one PNG a room.
+func _dir() -> String:
+	var a := OS.get_cmdline_user_args()
+	return (a[0] if a.size() > 0 else ".").rstrip("/")
+
+func _init() -> void:
+	var t = preload("res://scripts/tower.gd").new()
+	get_root().add_child(t)
+	await process_frame
+	await process_frame
+	var vp := get_root()
+	var cam := Camera3D.new()
+	cam.fov = 78.0
+	vp.add_child(cam)
+	cam.make_current()
+	var want := [
+		["bridge", t.bridge_deck(), t.K_BRIDGE],
+		["engineering", 0, t.K_MDF],
+		["corridor", 0, t.K_CORRIDOR],
+		["goods", 0, t.K_GOODS],
+		["liftlobby", 0, t.K_LIFTLOBBY],
+	]
+	for w in want:
+		var ri: int = t.find_room(int(w[1]), int(w[2]))
+		if ri < 0:
+			continue
+		var r: Dictionary = t.rooms[ri]
+		var cx := (float(r.x0) + float(r.x1)) * 0.5
+		var cz := (float(r.y0) + float(r.y1)) * 0.5
+		var y: float = float(r.floor) * t.fheight + 1.62
+		var wx: float = float(r.x1 - r.x0)
+		var wz: float = float(r.y1 - r.y0)
+		var eye: Vector3
+		var at: Vector3
+		if wx >= wz:
+			eye = Vector3(float(r.x0) + 0.7, y, cz)
+			at = Vector3(float(r.x1) - 0.5, y - 0.14, cz)
+		else:
+			eye = Vector3(cx, y, float(r.y0) + 0.7)
+			at = Vector3(cx, y - 0.14, float(r.y1) - 0.5)
+		if str(w[0]) == "engineering":
+			# from the doorway corner, so the rack row is seen down its face
+			eye = Vector3(float(r.x0) + 0.8, y, float(r.y1) - 0.8)
+			at = Vector3(float(r.x1) - 0.8, y - 0.3, float(r.y0) + 0.8)
+		# WALK THE PLAYER THERE FIRST. The HUD is the player's location, not
+		# the camera's, so a photograph of the bridge with "deck 0" across
+		# the top of it is a photograph of a lie. `go #<n>` is the same verb
+		# a socket client uses and it takes the lift on the way.
+		print("  ", t.command("go #%d" % ri).strip_edges().split("\n")[0])
+		for i in range(2):
+			await process_frame
+		cam.global_position = eye
+		cam.look_at(at, Vector3.UP)
+		for i in range(3):
+			await process_frame
+		vp.get_texture().get_image().save_png("%s/%s.png" % [_dir(), str(w[0])])
+		print("shot ", w[0], " deck ", r.floor, " room ", ri)
+	quit()

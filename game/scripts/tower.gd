@@ -47,22 +47,22 @@ const FLOOR_COL := {
 	K_LIFT: Color("#2f343a"),
 	K_STAIR: Color("#2e373d"),
 	K_RISER: Color("#3b3630"),
-	K_COMMS: Color("#25404f"),
-	K_MDF: Color("#27443c"),
+	K_COMMS: Color("#2c3a42"),
+	K_MDF: Color("#2d3b38"),
 	K_TOILET: Color("#3c474e"),
-	K_PLANT: Color("#443d33"),
-	K_GOODS: Color("#4e4227"),
+	K_PLANT: Color("#3d3a33"),
+	K_GOODS: Color("#413c31"),
 	K_OFFICE: Color("#3a4046"),
-	K_RESIDENCE: Color("#443a34"),
-	K_SERVER: Color("#2b4055"),
-	K_RETAIL: Color("#43393f"),
-	K_BRIDGE: Color("#26313c"),
+	K_RESIDENCE: Color("#3b3733"),
+	K_SERVER: Color("#303a44"),
+	K_RETAIL: Color("#3b383a"),
+	K_BRIDGE: Color("#28313a"),
 }
-const WALL_COL := Color("#98a1a9")
-const OUTER_COL := Color("#59636c")
-const CEIL_COL := Color("#8d959c")
+const WALL_COL := Color("#6d767e")
+const OUTER_COL := Color("#414a52")
+const CEIL_COL := Color("#5b636a")
 const SLAB_EDGE := Color("#3f464c")
-const SKIRT_COL := Color("#5a636b")
+const SKIRT_COL := Color("#333b42")
 
 const SLAB_T := 0.16       # slab thickness, metres
 const WALL_T := 0.14
@@ -653,9 +653,21 @@ func _walls(f: int) -> void:
 						var ls := size
 						ls.y = top - DOOR_H
 						_box(lin, ls, col)
+					_hatch(mn, size, dir, base)
 					continue
 				_box(mn, size, col)
 				_box(skirt_mn, skirt_sz, SKIRT_COL, false)
+				# the lower plate and the line along the top of it
+				var dm := skirt_mn
+				var ds := skirt_sz
+				dm.y = base + 0.12
+				ds.y = DADO_H - 0.12
+				_box(dm, ds, DADO_COL if not outer else OUTER_COL, false)
+				var tm2 := dm
+				var ts2 := ds
+				tm2.y = base + DADO_H
+				ts2.y = TRIM_H
+				_box(tm2, ts2, HATCH_TRIM, false)
 				_rib(mn, size, dir, x, y)
 
 
@@ -675,7 +687,73 @@ func _walls(f: int) -> void:
 const RIB_PITCH := 3
 const RIB_W := 0.16          # the frame itself
 const RIB_PROUD := 0.05      # how far it stands off the panel
-const RIB_COL := Color("#3e474f")
+const RIB_COL := Color("#2f373e")
+
+# A HATCH, NOT A HOLE IN A WALL. The single strongest cue that a room is on a
+# ship rather than in an office is that its opening has a HEAVY FRAME round it
+# -- a collar standing proud of the bulkhead on both faces, with a sill you
+# step over. A rectangle of absence in flat plasterboard is an office door,
+# and no amount of grey paint changes that.
+#
+# The sill is 40 mm and is deliberately below what the walking capsule steps
+# over without noticing: this is the look of a coaming, not an obstacle. A
+# doorway a body could trip on would be a way to make every room in the
+# building unreachable, which is the one thing --building will not forgive.
+const HATCH_W := 0.14        # the collar, across the opening
+const HATCH_PROUD := 0.09    # how far it stands off the bulkhead
+const HATCH_COL := Color("#39424a")
+const HATCH_TRIM := Color("#8a6a34")     # the ochre line every hatch carries
+const SILL_H := 0.04
+
+func _hatch(mn: Vector3, size: Vector3, dir: int, base: float) -> void:
+	var h: float = min(DOOR_H, size.y)
+	# the two jambs, one each side of the metre-wide opening
+	for k in [0.0, 1.0 - HATCH_W]:
+		var jm := mn
+		var js := size
+		js.y = h
+		if dir == 0:
+			jm.x -= HATCH_PROUD
+			js.x += HATCH_PROUD * 2.0
+			jm.z += k
+			js.z = HATCH_W
+		else:
+			jm.z -= HATCH_PROUD
+			js.z += HATCH_PROUD * 2.0
+			jm.x += k
+			js.x = HATCH_W
+		_box(jm, js, HATCH_COL, false)
+	# the head, and the ochre line under it
+	var hm := mn
+	var hs := size
+	hm.y = base + h - HATCH_W
+	hs.y = HATCH_W
+	if dir == 0:
+		hm.x -= HATCH_PROUD
+		hs.x += HATCH_PROUD * 2.0
+	else:
+		hm.z -= HATCH_PROUD
+		hs.z += HATCH_PROUD * 2.0
+	_box(hm, hs, HATCH_COL, false)
+	var tm := hm
+	var ts := hs
+	tm.y -= 0.04
+	ts.y = 0.04
+	_box(tm, ts, HATCH_TRIM, false)
+	# and the coaming underfoot
+	var sm := mn
+	var ss := size
+	ss.y = SILL_H
+	_box(sm, ss, HATCH_COL, false)
+
+
+# THE BULKHEAD IS NOT ONE FLAT COLOUR. A ship's wall is a dark lower plate, a
+# lighter panel above it and a line between the two -- which is what the eye
+# reads as "built out of parts" rather than "painted". The line is the same
+# ochre the hatches carry, so the whole deck has one accent and not five.
+const DADO_H := 1.05
+const DADO_COL := Color("#3a434b")
+const TRIM_H := 0.06
 
 func _rib(mn: Vector3, size: Vector3, dir: int, x: int, y: int) -> void:
 	# The rib runs from the skirting to the underside of the slab: the frame
@@ -1468,9 +1546,9 @@ func _riser_ladder(f: int) -> void:
 
 const TROFFER_KINDS := [K_CORRIDOR, K_LIFTLOBBY, K_LOBBY, K_MDF, K_COMMS,
 	K_GOODS, K_SERVER, K_PLANT, K_OFFICE, K_RETAIL, K_BRIDGE]
-const TROF_L := 1.20        # a 4 ft fitting, because that is the size they are
-const TROF_W := 0.30
-const TROF_PITCH := 3.0
+const TROF_L := 2.60        # a length of channel, not a fitting
+const TROF_W := 0.34
+const TROF_PITCH := 3.2
 const TUBE_COL := Color(1.61, 1.60, 1.52)   # white, through _shade()'s 0.62
 const TROF_BODY := Color("#e9e6df")
 
@@ -1503,31 +1581,40 @@ func _troffers(f: int) -> void:
 				g += 1
 
 
+# A LIGHT CHANNEL, WHICH IS NOT A CEILING TILE.
+#
+# David, looking at the first pass: "does not look very DS9, looks more like
+# an office building still." The single loudest office cue in the frame was
+# the light: a 4 ft twin-tube fitting in a suspended tile, which is what an
+# office ceiling IS. A ship lights its passageways from a recessed channel --
+# a slot in the deckhead with a glowing strip at the bottom of it and a dark
+# reveal each side -- and that is the same three boxes, arranged to read as
+# built-in rather than hung.
+#
+# The strip is still geometry brighter than white, for the reason the old
+# fitting was: _shade() multiplies a downward face by 0.62, so a face given
+# 1/0.62 comes out at full white, and a headless test and the window render
+# exactly the same thing. No lights were added. See TUBE_COL.
+const CHAN_REVEAL := Color("#2a3138")
+
 func _troffer(mn: Vector3, lx: float, lz: float, along_x: bool) -> void:
-	# the steel tray, recessed: a shallow open box with its mouth downwards
-	_box(mn, Vector3(lx, 0.06, lz), TROF_BODY, false)
-	# two tubes, in from the long edges, hanging under the tray
-	var tw := 0.05
-	for k in [0.26, 0.74]:
-		var tm := mn
-		if along_x:
-			tm.z += lz * k - tw * 0.5
-			tm.x += 0.06
-			_box(Vector3(tm.x, mn.y - 0.045, tm.z), Vector3(lx - 0.12, 0.045, tw),
-				TUBE_COL, false)
-		else:
-			tm.x += lx * k - tw * 0.5
-			tm.z += 0.06
-			_box(Vector3(tm.x, mn.y - 0.045, tm.z), Vector3(tw, 0.045, lz - 0.12),
-				TUBE_COL, false)
-	# the reflector between them, which is what makes it read as a fitting
-	# rather than as two glowing sticks stuck to the ceiling
+	# the recess: a dark slot the strip sits up inside
+	_box(mn, Vector3(lx, 0.07, lz), CHAN_REVEAL, false)
+	# the strip itself, narrow and the full length of the slot
+	var w := 0.10
 	if along_x:
-		_box(Vector3(mn.x + 0.04, mn.y - 0.022, mn.z + lz * 0.44),
-			Vector3(lx - 0.08, 0.022, lz * 0.12), Color("#f6f3ea"), false)
+		_box(Vector3(mn.x + 0.03, mn.y - 0.03, mn.z + (lz - w) * 0.5),
+			Vector3(lx - 0.06, 0.03, w), TUBE_COL, false)
+		# and the two reveals that make it read as a slot and not a panel
+		for k in [0.0, lz - 0.05]:
+			_box(Vector3(mn.x, mn.y - 0.05, mn.z + k), Vector3(lx, 0.05, 0.05),
+				CHAN_REVEAL, false)
 	else:
-		_box(Vector3(mn.x + lx * 0.44, mn.y - 0.022, mn.z + 0.04),
-			Vector3(lx * 0.12, 0.022, lz - 0.08), Color("#f6f3ea"), false)
+		_box(Vector3(mn.x + (lx - w) * 0.5, mn.y - 0.03, mn.z + 0.03),
+			Vector3(w, 0.03, lz - 0.06), TUBE_COL, false)
+		for k in [0.0, lx - 0.05]:
+			_box(Vector3(mn.x + k, mn.y - 0.05, mn.z), Vector3(0.05, 0.05, lz),
+				CHAN_REVEAL, false)
 
 
 # -------------------------------------------------------------- the lifts
@@ -2929,7 +3016,9 @@ func _seats() -> Array:
 # console, facing it, which is the same relationship a tenant has with their
 # desk and is drawn by the same instance buffers.
 func _crew_seats() -> Array:
-	var S = preload("res://scripts/people.gd")
+	# T_OFFICE is screens.gd's, not people.gd's -- the trade numbering belongs
+	# to the thing that paints the glass.
+	var S = preload("res://scripts/screens.gd")
 	var out: Array = []
 	var per := {}
 	for c in crew:
@@ -2948,11 +3037,14 @@ func _crew_seats() -> Array:
 		# a metre out from the console, on the side you can walk up to
 		var p := Vector3(mn.x + (CON_W if bool(g.along_x) else CON_D) * 0.5,
 			mn.y, mn.z + (CON_D if bool(g.along_x) else CON_W) * 0.5)
-		p -= f * 0.85
+		# ON THE ROOM SIDE OF IT. `face` is the direction the console's front
+		# looks in, so a person at it stands that way from its centre --
+		# subtracting put six officers inside the wall behind their desks.
+		p += f * 0.85
 		out.append({"pos": p, "yaw": atan2(f.x, f.z), "mood": 0 if bool(c.up) else 2,
 			"floor": int(rooms[int(c.room)].floor), "dev": -1,
 			"trade": S.T_OFFICE, "state": 0, "done": 1.0 if bool(c.up) else 0.0,
-			"who": str(c.name)})
+			"nodesk": true, "who": str(c.name)})
 	return out
 
 
@@ -2999,8 +3091,11 @@ func _people() -> void:
 	# crew station's is whether the model says it is WORKING. On day one they
 	# are all sitting at dead consoles, which is the mood the player is meant
 	# to feel bad about.
-	seats.append_array(_crew_seats())
-	_people_node.rebuild(seats)
+	# THE CREW GO TO people.gd AND NOT TO screens.gd. What is on a tenant's
+	# monitor is that tenancy's trade and that tenancy's day, and a crew
+	# station has neither -- its glass is the console's own, drawn by
+	# _crew_consoles(), dark until the model says the station works.
+	_people_node.rebuild(seats + _crew_seats())
 	# THE DESK YOU ARE SITTING AT DOES NOT GET A PICTURE OF A DESK. There is a
 	# real machine behind that one glass for as long as you are in the chair,
 	# and a depiction painted over the top of the real thing would be the one
@@ -4735,12 +4830,22 @@ func hud_lines() -> String:
 	# An empty world that gives no reason for being empty reads as a broken
 	# one.
 	var ppl: Array = people_counts()
-	var nppl: int = ppl[0] + ppl[1] + ppl[2] + ppl[3]
+	# MINUS THE CREW, who are drawn by the same instance buffers and are not
+	# tenants. "0 tenancies in, 6 at their desks" is a contradiction a player
+	# would have to work out for themselves, and the bridge gets its own line.
+	var nc: int = crew.size()
+	var nppl: int = ppl[0] + ppl[1] + ppl[2] + ppl[3] - nc
 	var ntn: int = service_rows().size()
 	s += "\nday %d: %d tenanc%s in, %d at their desks" \
-		% [int(ses_state().get("day", 0)), ntn, "y" if ntn == 1 else "ies", nppl]
+		% [int(ses_state().get("day", 0)), ntn, "y" if ntn == 1 else "ies", max(0, nppl)]
 	if ntn == 0:
 		s += "   nobody has moved in yet"
+	if nc > 0:
+		var up := 0
+		for c in crew_stations():
+			if bool(c.up):
+				up += 1
+		s += "\nbridge: %d of %d crew stations working" % [up, nc]
 	if not run_over:
 		s += "\n[N] the next day"
 	else:

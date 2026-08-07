@@ -342,7 +342,12 @@ func rebuild(seats: Array) -> void:
 			for i in range(_mesh.size()):
 				lists.append([])
 			want[f] = lists
-		want[f][0].append([t, look])
+		# A SEAT THAT BRINGS ITS OWN FURNITURE. A bridge station is a console
+		# tower.gd has already drawn, so the crew get the person and not the
+		# desk -- otherwise an officer sits at a desk standing inside their
+		# own console, which is what the first bridge looked like.
+		if not bool(s.get("nodesk", false)):
+			want[f][0].append([t, look])
 		want[f][1 + m].append([t, look])
 	for f in _mm.keys():
 		if not want.has(f):
