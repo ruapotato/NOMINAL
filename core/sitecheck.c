@@ -36,6 +36,35 @@ static bool has(const char *hay, const char *needle)
     return hay && strstr(hay, needle) != NULL;
 }
 
+/* ================================ A BOX, POWERED, FOR A GATE THAT IS NOT
+ * MEASURING POWER.
+ *
+ * Every tower in this file is built to measure something about the NETWORK --
+ * a vlan, a lease, a riser's copper, a day's work -- and every one of them
+ * needs its kit switched on to measure anything at all. Power used to be free
+ * for them: a box installed in a room took one of that room's wall sockets and
+ * came up. It comes down a conduit now, and a gate that had to design a power
+ * tree before it could ask about a DHCP pool would be a gate nobody could read.
+ *
+ * So this is install-and-feed, and it REFUNDS the conduit, because the price
+ * of power is measured in check_conduits() and nowhere else -- every money
+ * assertion in this file was written against a tower where power cost nothing,
+ * and they are still asking the question they were written to ask.
+ *
+ * What it does NOT do is soften the model. site_feed() is the same call a
+ * player makes, it takes the same refusals, and when the core and every strip
+ * are full a gate gets -1 exactly as a player would. */
+static int gate_box(Site *s, int kind, int room, const char *name)
+{
+    int d = site_install(s, kind, room, name);
+    if (d < 0) return d;
+    long money = s->money, spent = s->spent;
+    site_feed(s, d);
+    s->money = money;
+    s->spent = spent;
+    return d;
+}
+
 static void ck(const char *what, bool ok)
 {
     total++;
@@ -94,14 +123,14 @@ static void check_empty(const Building *b)
     ck("it is running, plugged into the wall, and not for sale",
        s.dev[site_workstation(&s)].powered && s.dev[site_workstation(&s)].mains &&
        !site_kind_for_sale(SDEV_WORKSTATION) &&
-       site_install(&s, SDEV_WORKSTATION, bld_find(b, 0, RM_MDF), "ws2") < 0 &&
+       gate_box(&s, SDEV_WORKSTATION, bld_find(b, 0, RM_MDF), "ws2") < 0 &&
        site_order(&s, SDEV_WORKSTATION, "ws3") < 0);
 
     /* Buy a machine, put it in an office, give it an address. It is not
      * plugged into anything, so it can reach nothing -- including the socket
      * in the same building. */
     int room = a_room(b, 3);
-    int pc = site_install(&s, SDEV_PC, room, "pc1");
+    int pc = gate_box(&s, SDEV_PC, room, "pc1");
     /* A COMPUTER ARRIVES SWITCHED OFF. Nothing of it is on the network until
      * somebody presses the button, which is what site_power is. */
     site_power(&s, pc, true);
@@ -115,8 +144,8 @@ static void check_empty(const Building *b)
     /* Now build the smallest network that works: a switch in the comms
      * cupboard, a router beside the handoff, and three cables. */
     int comms = bld_find(b, 3, RM_COMMS), mdf = bld_find(b, 0, RM_MDF);
-    int sw = site_install(&s, SDEV_SWITCH8, comms, "sw3");
-    int rt = site_install(&s, SDEV_ROUTER, mdf, "rt");
+    int sw = gate_box(&s, SDEV_SWITCH8, comms, "sw3");
+    int rt = gate_box(&s, SDEV_ROUTER, mdf, "rt");
     int l0 = site_cable(&s, rt, 0, s.uplink, 0, CAB_CAT6);
     int l1 = site_cable(&s, rt, 1, sw, 0, CAB_CAT6);
     int l2 = site_cable(&s, pc, 0, sw, 1, CAB_CAT6);
@@ -152,7 +181,7 @@ static void check_ports(const Building *b)
     Site s;
     site_new(&s, b, GATE_SEED, 100000);
     int comms = bld_find(b, 4, RM_COMMS);
-    int sw = site_install(&s, SDEV_SWITCH8, comms, "sw4");
+    int sw = gate_box(&s, SDEV_SWITCH8, comms, "sw4");
 
     /* Fill it. Seven machines and an uplink is what an eight-port switch is,
      * and the eighth machine has nowhere to go. */
@@ -161,14 +190,14 @@ static void check_ports(const Building *b)
     for (int i = 0; i < 8; i++) {
         char nm[NET_NAME_MAX];
         snprintf(nm, sizeof nm, "pc%d", i);
-        int pc = site_install(&s, SDEV_PC, room, nm);
+        int pc = gate_box(&s, SDEV_PC, room, nm);
         if (pc < 0) break;
         site_power(&s, pc, true);
         if (site_cable(&s, pc, 0, sw, i, CAB_CAT6) >= 0) filled++;
     }
     ck("an eight port switch takes eight cables and no more", filled == 8);
 
-    int pc = site_install(&s, SDEV_PC, room, "pc-too-many");
+    int pc = gate_box(&s, SDEV_PC, room, "pc-too-many");
     site_power(&s, pc, true);
     int l = site_cable(&s, pc, 0, sw, 8, CAB_CAT6);
     ck("the ninth is refused, by port number",
@@ -196,8 +225,8 @@ static void check_addresses(const Building *b)
     Site s;
     site_new(&s, b, GATE_SEED, 100000);
     int comms = bld_find(b, 5, RM_COMMS), room = a_room(b, 5);
-    int sw = site_install(&s, SDEV_SWITCH24, comms, "sw5");
-    int rt = site_install(&s, SDEV_ROUTER, comms, "rt5");
+    int sw = gate_box(&s, SDEV_SWITCH24, comms, "sw5");
+    int rt = gate_box(&s, SDEV_ROUTER, comms, "rt5");
     site_cable(&s, rt, 0, sw, 0, CAB_CAT6);
     site_addr(&s, rt, 0, net_ip(10, 0, 5, 1), net_mask_bits(29));
     /* A pool of four, which is what is left of a /29 after the router and
@@ -209,7 +238,7 @@ static void check_addresses(const Building *b)
     for (int i = 0; i < 6; i++) {
         char nm[NET_NAME_MAX];
         snprintf(nm, sizeof nm, "d%d", i);
-        int pc = site_install(&s, SDEV_PC, room, nm);
+        int pc = gate_box(&s, SDEV_PC, room, nm);
         site_power(&s, pc, true);
         site_cable(&s, pc, 0, sw, i + 1, CAB_CAT6);
         if (site_dhcp(&s, pc)) got++; else refused++;
@@ -242,8 +271,8 @@ static void check_copper(const Building *b)
 
     Site s;
     site_new(&s, b, GATE_SEED, 100000);
-    int sw = site_install(&s, SDEV_SWITCH24, mdf, "core");
-    int pc = site_install(&s, SDEV_PC, far, "topfloor");
+    int sw = gate_box(&s, SDEV_SWITCH24, mdf, "core");
+    int pc = gate_box(&s, SDEV_PC, far, "topfloor");
     site_power(&s, pc, true);
     int l = site_cable(&s, pc, 0, sw, 1, CAB_CAT6);
     ck("the cable is sold, laid and paid for", l >= 0 && s.link[l].cost > 0);
@@ -254,7 +283,7 @@ static void check_copper(const Building *b)
 
     /* The fix a real installer makes: a switch on that floor instead. */
     int comms = bld_find(b, floor, RM_COMMS);
-    int fsw = site_install(&s, SDEV_SWITCH8, comms, "swtop");
+    int fsw = gate_box(&s, SDEV_SWITCH8, comms, "swtop");
     site_uncable(&s, l);
     int l2 = site_cable(&s, pc, 0, fsw, 1, CAB_CAT6);
     int l3 = site_cable(&s, fsw, 0, sw, 2, CAB_CAT6);
@@ -283,10 +312,10 @@ static void check_port_speed(const Building *b)
     int mdf = bld_find(b, 0, RM_MDF);
     Site s;
     site_new(&s, b, GATE_SEED, 200000);
-    int core = site_install(&s, SDEV_SWITCH24, mdf, "core");
-    int edge = site_install(&s, SDEV_ROUTER, mdf, "edge");
-    int srv  = site_install(&s, SDEV_SERVER, mdf, "files");
-    int sw8  = site_install(&s, SDEV_SWITCH8, mdf, "little");
+    int core = gate_box(&s, SDEV_SWITCH24, mdf, "core");
+    int edge = gate_box(&s, SDEV_ROUTER, mdf, "edge");
+    int srv  = gate_box(&s, SDEV_SERVER, mdf, "files");
+    int sw8  = gate_box(&s, SDEV_SWITCH8, mdf, "little");
     if (core < 0 || edge < 0 || srv < 0 || sw8 < 0) {
         ck("four boxes in the MDF", false); site_free(&s); return;
     }
@@ -404,7 +433,7 @@ static void check_boxes(const Building *b)
          * about is checked in check_conduits(). */
         if (k == SDEV_POWERCORE || k == SDEV_STRIP) continue;
         int d = (k == SDEV_WORKSTATION) ? site_workstation(&s)
-                                        : site_install(&s, k, room, nm);
+                                        : gate_box(&s, k, room, nm);
         if (d < 0) { agree = false; continue; }
         if (net_node_ports(s.net, s.dev[d].node) != site_kind_ports(k) ||
             s.dev[d].nports != site_kind_ports(k)) agree = false;
@@ -423,7 +452,7 @@ static void check_boxes(const Building *b)
 
     /* A vlan on a router's port was accepted and did nothing at all: a host
      * reads its interface's tag and never its port's. */
-    int rt = site_install(&s, SDEV_ROUTER, room, "rtv");
+    int rt = gate_box(&s, SDEV_ROUTER, room, "rtv");
     ck("a vlan on a router's port is refused, and names what to use instead",
        !site_port_vlan(&s, rt, 1, 10) && s.err == SITE_ENOTSW &&
        strstr(site_err_text(s.err), "subif") != NULL);
@@ -453,9 +482,9 @@ static void check_power(const Building *b)
     Site s;
     site_new(&s, b, GATE_SEED, 100000);
     int mdf = bld_find(b, 0, RM_MDF);
-    int sw = site_install(&s, SDEV_SWITCH8, mdf, "sw");
-    int rt = site_install(&s, SDEV_ROUTER, mdf, "rt");
-    int pc = site_install(&s, SDEV_PC, mdf, "probe");
+    int sw = gate_box(&s, SDEV_SWITCH8, mdf, "sw");
+    int rt = gate_box(&s, SDEV_ROUTER, mdf, "rt");
+    int pc = gate_box(&s, SDEV_PC, mdf, "probe");
     site_cable(&s, rt, 0, sw, 0, CAB_CAT6);
     site_cable(&s, pc, 0, sw, 1, CAB_CAT6);
     site_addr(&s, rt, 0, net_ip(10, 0, 1, 1), net_mask_bits(24));
@@ -529,7 +558,7 @@ static void check_mains(const Building *b)
     for (int i = 0; i < have; i++) {
         char nm[NET_NAME_MAX];
         snprintf(nm, sizeof nm, "sw%d", i);
-        dev[i] = site_install(&s, SDEV_SWITCH8, comms, nm);
+        dev[i] = gate_box(&s, SDEV_SWITCH8, comms, nm);
     }
     ck("putting a box down in a room with a socket free plugs it in",
        s.dev[dev[0]].mains && s.dev[dev[0]].powered);
@@ -538,7 +567,7 @@ static void check_mains(const Building *b)
        site_room_outlets_free(&s, comms) == 0);
 
     /* ---------------------------------- 3. AND THE NEXT ONE IS NOT -------- */
-    int dead = site_install(&s, SDEV_SERVER, comms, "dead");
+    int dead = gate_box(&s, SDEV_SERVER, comms, "dead");
     ck("the next box into a full room is NOT plugged in, and is not powered",
        dead >= 0 && !s.dev[dead].mains && !s.dev[dead].powered);
     ck("its power button does nothing, and says which of the two things "
@@ -644,8 +673,8 @@ static void check_mains(const Building *b)
      * it has no link lights, and the box at the far end of every one of its
      * ports sees that -- which is what makes an unplugged switch diagnosable
      * from somewhere other than the cupboard it is in. */
-    int up = site_install(&s, SDEV_SWITCH8, mdf, "core2");
-    int host = site_install(&s, SDEV_PC, mdf, "peer");
+    int up = gate_box(&s, SDEV_SWITCH8, mdf, "core2");
+    int host = gate_box(&s, SDEV_PC, mdf, "peer");
     site_power(&s, host, true);
     int lk = site_cable(&s, host, 0, up, 1, CAB_CAT6);
     ck("a link into a powered switch comes up", site_link_state(&s, lk) == PORT_UP);
@@ -670,7 +699,7 @@ static void check_mains(const Building *b)
      * fills it -- which is the point of the table: some rooms are places
      * kit lives and some are not, and the count is what says so. */
     if (wc >= 0) {
-        site_install(&s, SDEV_SWITCH8, wc, "loo");
+        gate_box(&s, SDEV_SWITCH8, wc, "loo");
         ck("one box fills a room that was wired with one socket",
            site_room_outlets_free(&s, wc) == 0);
         site_power(&s, ord, true);
@@ -761,10 +790,10 @@ static void check_tenants(const Building *b)
     if (ra < 0 || rb < 0) { ck("the floor has two tenancies on it", false);
                             site_free(&s); return; }
 
-    int sw = site_install(&s, SDEV_SWITCH24, comms, "sw3");
-    int rt = site_install(&s, SDEV_ROUTER, mdf, "rt");
-    int a  = site_install(&s, SDEV_PC, ra, "theirs");
-    int c  = site_install(&s, SDEV_PC, rb, "ours");
+    int sw = gate_box(&s, SDEV_SWITCH24, comms, "sw3");
+    int rt = gate_box(&s, SDEV_ROUTER, mdf, "rt");
+    int a  = gate_box(&s, SDEV_PC, ra, "theirs");
+    int c  = gate_box(&s, SDEV_PC, rb, "ours");
     site_power(&s, a, true);
     site_power(&s, c, true);
     site_cable(&s, rt, 0, sw, 0, CAB_CAT6);
@@ -882,7 +911,7 @@ static void check_bills(const Building *b)
      * and gives nothing else back, so the route somebody chose is a route
      * they paid for. */
     int mdf = bld_find(b, 0, RM_MDF);
-    int sw = site_install(&s, SDEV_SWITCH8, mdf, "sw");
+    int sw = gate_box(&s, SDEV_SWITCH8, mdf, "sw");
     long m0 = s.money;
     int l = site_cable(&s, sw, 0, s.uplink, 0, CAB_CAT6);
     ck("a run costs money the moment it is laid",
@@ -925,7 +954,7 @@ static void check_agreement(const Building *b)
     site_credit(&s, 200000);
 
     int mdf = bld_find(b, 0, RM_MDF);
-    int rt = site_install(&s, SDEV_ROUTER, mdf, "rt");
+    int rt = gate_box(&s, SDEV_ROUTER, mdf, "rt");
     site_cable(&s, rt, 0, s.uplink, 0, CAB_CAT6);
     site_addr(&s, rt, 0, s.wan_you, s.wan_mask);
     site_addr(&s, rt, 1, net_ip(10, 0, 0, 1), net_mask_bits(16));
@@ -936,7 +965,7 @@ static void check_agreement(const Building *b)
     for (int i = 0; i < 400 && !s.tenant[0].moved; i++) site_day(&s, NULL);
     if (!s.tenant[0].moved) { ck("a tenancy moves in", false); site_free(&s); return; }
 
-    int sw = site_install(&s, SDEV_SWITCH24,
+    int sw = gate_box(&s, SDEV_SWITCH24,
                           comms_on(b, s.tenant[0].floor, s.tenant[0].room), "sw");
     site_cable(&s, rt, 1, sw, 0, CAB_CAT6);
     int got = site_serve(&s, 0, sw, CAB_CAT5E);
@@ -980,7 +1009,7 @@ static void check_agreement(const Building *b)
      * correct and used to be silent, so a tenancy hairpinning six floors
      * down through a riser looked exactly like one that was not. */
     {
-        int srv = site_install(&s, SDEV_SERVER, mdf, "fs");
+        int srv = gate_box(&s, SDEV_SERVER, mdf, "fs");
         site_cable(&s, rt, 2, srv, 0, CAB_CAT6);
         site_power(&s, srv, true);
         site_addr(&s, srv, 0, net_ip(10, 0, 1, 10), net_mask_bits(16));
@@ -1044,7 +1073,7 @@ static void check_floor_server(const Building *b)
     site_credit(&s, 400000);
 
     int mdf = bld_find(b, 0, RM_MDF);
-    int rt = site_install(&s, SDEV_ROUTER, mdf, "rt");
+    int rt = gate_box(&s, SDEV_ROUTER, mdf, "rt");
     site_cable(&s, rt, 0, s.uplink, 0, CAB_CAT6);
     site_addr(&s, rt, 0, s.wan_you, s.wan_mask);
     site_gateway(&s, rt, s.wan_isp);
@@ -1058,12 +1087,12 @@ static void check_floor_server(const Building *b)
     /* The basement server everybody's files were on before the floor got its
      * own: one card, one address, plain eth0. It is the WRONG answer for
      * this floor, and until this check it was the one the game picked. */
-    int base = site_install(&s, SDEV_SERVER, mdf, "basement");
+    int base = gate_box(&s, SDEV_SERVER, mdf, "basement");
     site_power(&s, base, true);
     site_addr(&s, base, 0, net_ip(10, 0, 0, 10), net_mask_bits(24));
     site_gateway(&s, base, net_ip(10, 0, 0, 1));
     site_httpd(&s, base, 80);
-    int csw = site_install(&s, SDEV_SWITCH24, mdf, "core");
+    int csw = gate_box(&s, SDEV_SWITCH24, mdf, "core");
     site_cable(&s, rt, 1, csw, 0, CAB_CAT6);
     site_cable(&s, base, 0, csw, 1, CAB_CAT6);
     site_addr(&s, rt, 1, net_ip(10, 0, 0, 1), net_mask_bits(24));
@@ -1071,14 +1100,14 @@ static void check_floor_server(const Building *b)
     /* The floor: its own switch, its own vlan, its own server in its own
      * cupboard, and the router's leg into that vlan for the way out. */
     const int V = 31;
-    int fsw = site_install(&s, SDEV_SWITCH24, comms, "fsw");
+    int fsw = gate_box(&s, SDEV_SWITCH24, comms, "fsw");
     site_cable(&s, csw, 2, fsw, 0, CAB_FIBRE);
     site_port_trunk(&s, csw, 2, V);
     site_port_trunk(&s, fsw, 0, V);
     site_subif(&s, rt, 1, V, net_ip(10, 0, 31, 1), net_mask_bits(24));
     site_port_trunk(&s, csw, 0, V);
 
-    int fsrv = site_install(&s, SDEV_SERVER, comms, "floorsrv");
+    int fsrv = gate_box(&s, SDEV_SERVER, comms, "floorsrv");
     site_power(&s, fsrv, true);
     site_cable(&s, fsrv, 0, fsw, 1, CAB_CAT6);
     site_port_trunk(&s, fsw, 1, V);
@@ -1141,11 +1170,11 @@ static void check_flat(const Building *b)
     /* ONE flat network: a twenty-four port switch and everybody on it. */
     Site flat;
     site_new(&flat, b, GATE_SEED, 400000);
-    int sw = site_install(&flat, SDEV_SWITCH24, comms, "flat");
+    int sw = gate_box(&flat, SDEV_SWITCH24, comms, "flat");
     for (int i = 0; i < BIG; i++) {
         char nm[NET_NAME_MAX];
         snprintf(nm, sizeof nm, "pc%d", i);
-        pc[i] = site_install(&flat, SDEV_PC, room[i % 4], nm);
+        pc[i] = gate_box(&flat, SDEV_PC, room[i % 4], nm);
         site_power(&flat, pc[i], true);
         site_cable(&flat, pc[i], 0, sw, i, CAB_CAT6);
         site_addr(&flat, pc[i], 0, net_ip(10, 0, 0, 10 + i), net_mask_bits(24));
@@ -1174,14 +1203,14 @@ static void check_flat(const Building *b)
     Site seg;
     site_new(&seg, b, 400000 + GATE_SEED, 400000);
     int gsw[3], grt;
-    grt = site_install(&seg, SDEV_ROUTER, bld_find(b, 0, RM_MDF), "rt");
-    int core = site_install(&seg, SDEV_SWITCH8, bld_find(b, 0, RM_MDF), "core");
+    grt = gate_box(&seg, SDEV_ROUTER, bld_find(b, 0, RM_MDF), "rt");
+    int core = gate_box(&seg, SDEV_SWITCH8, bld_find(b, 0, RM_MDF), "core");
     site_cable(&seg, grt, 0, core, 0, CAB_CAT6);
     site_port_trunk(&seg, core, 0, 0);
     for (int g = 0; g < 3; g++) {
         char nm[NET_NAME_MAX];
         snprintf(nm, sizeof nm, "sw%d", g);
-        gsw[g] = site_install(&seg, SDEV_SWITCH8, bld_find(b, g + 2, RM_COMMS), nm);
+        gsw[g] = gate_box(&seg, SDEV_SWITCH8, bld_find(b, g + 2, RM_COMMS), nm);
         site_cable(&seg, gsw[g], 0, core, g + 1, CAB_CAT6);
         site_port_trunk(&seg, core, g + 1, 10 + g);
         site_port_trunk(&seg, core, 0, 10 + g);
@@ -1196,7 +1225,7 @@ static void check_flat(const Building *b)
         int g = i / 7, k = i % 7;
         char nm[NET_NAME_MAX];
         snprintf(nm, sizeof nm, "pc%d", i);
-        spc[i] = site_install(&seg, SDEV_PC, room[g], nm);
+        spc[i] = gate_box(&seg, SDEV_PC, room[g], nm);
         site_power(&seg, spc[i], true);
         site_cable(&seg, spc[i], 0, gsw[g], k + 1, CAB_CAT6);
         site_port_vlan(&seg, gsw[g], k + 1, 10 + g);
@@ -1269,7 +1298,7 @@ static void check_demand(const Building *b)
 
     /* MONEY IS A LIMIT TOO. A site with forty pounds in it cannot buy a
      * switch, and says so rather than quietly succeeding. */
-    int sw = site_install(&a, SDEV_SWITCH24, bld_find(b, 1, RM_COMMS), "sw");
+    int sw = gate_box(&a, SDEV_SWITCH24, bld_find(b, 1, RM_COMMS), "sw");
     ck("and a site with ninety pounds in it cannot buy a switch",
        sw < 0 && a.err == SITE_EMONEY);
     site_free(&a);
@@ -1475,8 +1504,8 @@ static void check_dhcp_scope(const Building *b)
     /* A desk on each vlan. The one on thirteen must get nothing from a
      * router that serves eleven, and the router's own answer says so. */
     int room = a_room(b, 2);
-    int d11 = site_install(&s, SDEV_PC, room, "d11");
-    int d13 = site_install(&s, SDEV_PC, room, "d13");
+    int d11 = gate_box(&s, SDEV_PC, room, "d11");
+    int d13 = gate_box(&s, SDEV_PC, room, "d13");
     site_power(&s, d11, true);
     site_power(&s, d13, true);
     site_cable(&s, d11, 0, site_dev_by_name(&s, "core"), 1, CAB_CAT5E);
@@ -1505,7 +1534,7 @@ static void check_dhcp_scope(const Building *b)
     site_cmd(&s, "dhcpd edge", &o);
     ck("and afterwards the box says it serves nothing",
        has(o.p, "serves no addresses"));
-    int d11b = site_install(&s, SDEV_PC, room, "d11b");
+    int d11b = gate_box(&s, SDEV_PC, room, "d11b");
     site_power(&s, d11b, true);
     site_cable(&s, d11b, 0, site_dev_by_name(&s, "core"), 3, CAB_CAT5E);
     site_cmd(&s, "vlan core 3 11", &o);
@@ -1587,14 +1616,14 @@ static void check_trunk_line(const Building *b)
     int mdf = bld_find(b, 0, RM_MDF);
     int comms = bld_find(b, 2, RM_COMMS);
     int room = a_room(b, 2);
-    int csw = site_install(&s, SDEV_SWITCH24, mdf, "core");
-    int fsw = site_install(&s, SDEV_SWITCH24, comms, "fsw");
+    int csw = gate_box(&s, SDEV_SWITCH24, mdf, "core");
+    int fsw = gate_box(&s, SDEV_SWITCH24, comms, "fsw");
     site_cable(&s, csw, 0, fsw, 0, CAB_FIBRE);
 
     /* Two machines in the FOURTEENTH vlan of the line below, one each side
      * of the trunk. Nothing else joins them. */
-    int a = site_install(&s, SDEV_PC, mdf, "a24");
-    int c = site_install(&s, SDEV_PC, room, "c24");
+    int a = gate_box(&s, SDEV_PC, mdf, "a24");
+    int c = gate_box(&s, SDEV_PC, room, "c24");
     site_power(&s, a, true);
     site_power(&s, c, true);
     site_cable(&s, a, 0, csw, 1, CAB_CAT6);
@@ -1653,8 +1682,8 @@ static void check_trunk_line(const Building *b)
      * `trunk core 0 100` answered "set" about a trunk that could not carry
      * vlan 100 and never would. Same lie, one layer down. */
     {
-        int a2 = site_install(&s, SDEV_PC, mdf, "a100");
-        int c2 = site_install(&s, SDEV_PC, room, "c100");
+        int a2 = gate_box(&s, SDEV_PC, mdf, "a100");
+        int c2 = gate_box(&s, SDEV_PC, room, "c100");
         site_power(&s, a2, true);
         site_power(&s, c2, true);
         site_cable(&s, a2, 0, csw, 2, CAB_CAT6);
@@ -1714,7 +1743,7 @@ static void check_arity(const Building *b)
     Site s;
     site_new(&s, b, GATE_SEED, 100000);
     site_credit(&s, 400000);
-    site_install(&s, SDEV_SWITCH24, bld_find(b, 0, RM_MDF), "core");
+    gate_box(&s, SDEV_SWITCH24, bld_find(b, 0, RM_MDF), "core");
     Buf o = {0};
     bool denied = false, silent = false;
     for (int i = 0; i < site_verb_count(); i++) {
@@ -1843,8 +1872,8 @@ static void check_reports(const Building *b)
     Site s; Buf o; buf_init(&o);
     site_new(&s, b, GATE_SEED, 100000);
     int mdf = bld_find(b, 0, RM_MDF);
-    int srv = site_install(&s, SDEV_SERVER, mdf, "files");
-    int sw  = site_install(&s, SDEV_SWITCH8, mdf, "core");
+    int srv = gate_box(&s, SDEV_SERVER, mdf, "files");
+    int sw  = gate_box(&s, SDEV_SWITCH8, mdf, "core");
     site_power(&s, srv, true);
     int lu = site_cable(&s, sw, 0, s.uplink, 0, CAB_CAT6);
     int lf = site_cable(&s, sw, 1, srv, 0, CAB_CAT6);
@@ -1872,7 +1901,7 @@ static void check_reports(const Building *b)
 
     /* And a running box with nothing plugged into it is not on the network
      * either, whatever the light on the front says. */
-    int lonely = site_install(&s, SDEV_PC, a_room(b, 3), "lonely");
+    int lonely = gate_box(&s, SDEV_PC, a_room(b, 3), "lonely");
     site_power(&s, lonely, true);
     buf_clear(&o);
     site_cmd(&s, "show lonely", &o);
@@ -1946,7 +1975,7 @@ static void check_jack(const Building *b)
     site_new(&s, b, GATE_SEED, 100000);
     int mdf = bld_find(b, 0, RM_MDF);
     int up  = a_room(b, 2);
-    int core = site_install(&s, SDEV_SWITCH24, mdf, "core");
+    int core = gate_box(&s, SDEV_SWITCH24, mdf, "core");
 
     int m = site_metres(&s, up, mdf);
     ck("a jack is measured on the same tray metres the spool is",
@@ -1977,7 +2006,7 @@ static void check_jack(const Building *b)
      * against the same s->day the tenancy strike clock runs on. */
     ck("it takes the trade days, from the metres they have to pull",
        site_jack_days(m) >= 2 && s.jack[j].ready == s.day + site_jack_days(m));
-    int sw = site_install(&s, SDEV_SWITCH8, up, "fsw");
+    int sw = gate_box(&s, SDEV_SWITCH8, up, "fsw");
     ck("nothing plugs into it before the trade has been",
        site_patch(&s, j, sw, 0) < 0 && s.err == SITE_EEARLY);
     buf_clear(&o);
@@ -2015,7 +2044,7 @@ static void check_jack(const Building *b)
 
     /* AND A BOX THAT IS NOT IN THE ROOM DOES NOT, which is the whole of what
      * makes this a decision about a room rather than a discount. */
-    int away = site_install(&s, SDEV_SWITCH8, a_room(b, 3), "elsewhere");
+    int away = gate_box(&s, SDEV_SWITCH8, a_room(b, 3), "elsewhere");
     ck("a box in another room cannot reach it, however much it would like to",
        site_patch(&s, j, away, 0) < 0 && s.err == SITE_ENOROOM);
 
@@ -2102,7 +2131,7 @@ static void check_quote(const Building *b)
     Site s; Buf o = {0};
     site_new(&s, b, GATE_SEED, 200000);
     int mdf = bld_find(b, 0, RM_MDF);
-    int core = site_install(&s, SDEV_SWITCH24, mdf, "core");
+    int core = gate_box(&s, SDEV_SWITCH24, mdf, "core");
 
     /* ---- THE THING THE PLAYTESTER COULD NOT SEE. One floor, two rooms, and
      * the difference between them is the whole marginal-copper rule. */
@@ -2197,7 +2226,7 @@ static void check_quote(const Building *b)
     ck("and it says so, so nobody has to wonder", has(o.p, "nothing was bought"));
 
     /* ---- AND THE ONE THAT MATTERS: THE QUOTE IS THE BILL. */
-    int sw = site_install(&s, SDEV_SWITCH8, far, "sw3");
+    int sw = gate_box(&s, SDEV_SWITCH8, far, "sw3");
     buf_clear(&o);
     site_cmd(&s, "quote sw3:0 core:0", &o);
     int quoted_m = metres_in(o.p);
@@ -2224,7 +2253,7 @@ static void check_quote(const Building *b)
      * frames, turn the days, and let `events` say which of the two the world
      * thinks is marginal. If that number ever moves in siteday.c and not
      * here, this fails. */
-    int rt = site_install(&s, SDEV_ROUTER, mdf, "rt");
+    int rt = gate_box(&s, SDEV_ROUTER, mdf, "rt");
     site_cable(&s, rt, 0, s.uplink, 0, CAB_CAT6);
     int shortm = site_cable(&s, rt, 1, core, 1, CAB_CAT6);
     site_addr(&s, rt, 0, s.wan_you, s.wan_mask);
@@ -2385,8 +2414,8 @@ static void tower_up(Tower *w, const Building *b, uint64_t seed, int comms,
     site_new(s, b, seed, 100000);
     site_credit(s, 900000);
     w->mdf = bld_find(b, 0, RM_MDF);
-    w->rt = site_install(s, SDEV_ROUTER, w->mdf, "edge");
-    w->core = site_install(s, SDEV_SWITCH24, w->mdf, "core");
+    w->rt = gate_box(s, SDEV_ROUTER, w->mdf, "edge");
+    w->core = gate_box(s, SDEV_SWITCH24, w->mdf, "core");
     site_cable(s, w->rt, 0, s->uplink, 0, CAB_CAT6);
     site_cable(s, w->rt, 1, w->core, 0, CAB_CAT6);
     site_addr(s, w->rt, 0, s->wan_you, s->wan_mask);
@@ -2399,10 +2428,10 @@ static void tower_up(Tower *w, const Building *b, uint64_t seed, int comms,
     for (int i = 0; i < nsw; i++) {
         char nm[NET_NAME_MAX];
         snprintf(nm, sizeof nm, "sw%d", i + 1);
-        w->sw[i] = site_install(s, SDEV_SWITCH24, comms, nm);
+        w->sw[i] = gate_box(s, SDEV_SWITCH24, comms, nm);
         site_cable(s, w->core, 1 + i, w->sw[i], 0, riser);
     }
-    w->srv = site_install(s, SDEV_SERVER, floor_files ? comms : w->mdf, "files");
+    w->srv = gate_box(s, SDEV_SERVER, floor_files ? comms : w->mdf, "files");
     site_power(s, w->srv, true);
     if (floor_files) site_cable(s, w->sw[0], 22, w->srv, 0, CAB_CAT6);
     else             site_cable(s, w->core, 22, w->srv, 0, CAB_CAT6);
@@ -2538,7 +2567,7 @@ static void check_industry_uptime(void)
     tower_until(&w, host);
     /* Their own machine, in their own room, because that is what `demand`
      * said they wanted and it is where their site lives. */
-    int wsrv = site_install(s, SDEV_SERVER, s->tenant[host].room, "wsrv");
+    int wsrv = gate_box(s, SDEV_SERVER, s->tenant[host].room, "wsrv");
     site_power(s, wsrv, true);
     site_cable(s, w.sw[1], 21, wsrv, 0, CAB_CAT6);
     site_addr(s, wsrv, 0, net_ip(10, 0, 0, 20), net_mask_bits(16));
@@ -3196,7 +3225,7 @@ static void check_serve_vlan_remedy(const Building *b)
     site_new(&s, b, GATE_SEED, 100000);
     site_credit(&s, 400000);
     int mdf = bld_find(b, 0, RM_MDF);
-    int rt = site_install(&s, SDEV_ROUTER, mdf, "rt");
+    int rt = gate_box(&s, SDEV_ROUTER, mdf, "rt");
     site_cable(&s, rt, 0, s.uplink, 0, CAB_CAT6);
     site_addr(&s, rt, 0, s.wan_you, s.wan_mask);
     site_gateway(&s, rt, s.wan_isp);
@@ -3209,9 +3238,9 @@ static void check_serve_vlan_remedy(const Building *b)
     /* A pool that answers ON ONE VLAN AND NOWHERE ELSE, so an address is
      * proof the port really moved into it. */
     const int V = 31;
-    int csw = site_install(&s, SDEV_SWITCH24, mdf, "core");
+    int csw = gate_box(&s, SDEV_SWITCH24, mdf, "core");
     site_cable(&s, rt, 1, csw, 0, CAB_CAT6);
-    int fsw = site_install(&s, SDEV_SWITCH24, comms, "fsw");
+    int fsw = gate_box(&s, SDEV_SWITCH24, comms, "fsw");
     site_cable(&s, csw, 2, fsw, 0, CAB_CAT6);
     site_port_trunk(&s, csw, 2, V);
     site_port_trunk(&s, fsw, 0, V);
@@ -3421,6 +3450,12 @@ static void check_catalogue(const Building *b)
  * adds up, and a run over its rating takes everything behind it down. The
  * fourth is the one the whole station design rests on.
  */
+/* AND THIS ONE BUILDS ITS OWN POWER, which is the point of it. Everywhere
+ * else in this file a box arrives fed, because those gates are measuring the
+ * network and gate_box() takes the ceremony away. Here the ceremony IS the
+ * subject: a run has to be pulled, and what happens when it is not pulled --
+ * or is pulled and overloaded -- is what is being asserted. So these are
+ * site_install() and nothing feeds them but the lines below. */
 static void check_conduits(const Building *b)
 {
     printf("\nconduit: a tree from the core, and what it carries\n");
@@ -3712,7 +3747,7 @@ static void check_one_fact_two_answers(const Building *b)
      * MESSAGE. A pool of 180 addresses was refused with a sentence that led
      * with "a pool of no addresses serves nobody". */
     {
-        int rt = site_install(&s, SDEV_ROUTER, bld_find(b, 0, RM_MDF), "rt9");
+        int rt = gate_box(&s, SDEV_ROUTER, bld_find(b, 0, RM_MDF), "rt9");
         site_cable(&s, rt, 0, core, 3, CAB_CAT6);
         site_addr(&s, rt, 0, net_ip(10, 9, 0, 1), net_mask_bits(24));
         for (int v = 0; v < 8; v++)
@@ -3844,7 +3879,7 @@ static void check_ambiguity_and_the_diary(void)
         if (!s.tenant[i].moved) { later = i; break; }
     if (later < 0) { ck("seed 22 has a tenancy still to come", false); }
     else {
-        int sw = site_install(&s, SDEV_SWITCH8, bld_find(&b, 0, RM_MDF), "sw9");
+        int sw = gate_box(&s, SDEV_SWITCH8, bld_find(&b, 0, RM_MDF), "sw9");
         (void)sw;
         char line[64];
         snprintf(line, sizeof line, "serve %d sw9 cat5e 30", s.tenant[later].tenant);
@@ -3923,8 +3958,8 @@ static void grade_up(Grade *g, const Building *b, uint64_t seed, int comms,
     site_new(s, b, seed, 100000);
     site_credit(s, 900000);
     int mdf = bld_find(b, 0, RM_MDF);
-    g->rt   = site_install(s, SDEV_ROUTER, mdf, "edge");
-    g->core = site_install(s, SDEV_SWITCH24, mdf, "core");
+    g->rt   = gate_box(s, SDEV_ROUTER, mdf, "edge");
+    g->core = gate_box(s, SDEV_SWITCH24, mdf, "core");
     site_cable(s, g->rt, 0, s->uplink, 0, CAB_CAT6);
     site_cable(s, g->rt, 1, g->core, 0, CAB_CAT6);
     site_addr(s, g->rt, 0, s->wan_you, s->wan_mask);
@@ -3933,9 +3968,9 @@ static void grade_up(Grade *g, const Building *b, uint64_t seed, int comms,
     site_forwarding(s, g->rt, true);
     site_dhcpd(s, g->rt, net_ip(10, 0, 1, 1), 250, net_mask_bits(16),
                net_ip(10, 0, 0, 1), s->wan_isp);
-    g->fsw = site_install(s, swkind, comms, "fsw");
+    g->fsw = gate_box(s, swkind, comms, "fsw");
     site_cable(s, g->core, 1, g->fsw, 0, CAB_CAT6);
-    g->srv = site_install(s, SDEV_SERVER, comms, "files");
+    g->srv = gate_box(s, SDEV_SERVER, comms, "files");
     site_power(s, g->srv, true);
     site_cable(s, g->core, 22, g->srv, 0, CAB_CAT6);
     site_addr(s, g->srv, 0, net_ip(10, 0, 0, 9), net_mask_bits(16));
@@ -4045,7 +4080,7 @@ static void check_grades(void)
         Grade *g[2]; g[0] = &cheap; g[1] = &dear;
         for (int k = 0; k < 2; k++) {
             Site *s = &g[k]->s;
-            int leaf = site_install(s, SDEV_SWITCH8, comms, "leaf");
+            int leaf = gate_box(s, SDEV_SWITCH8, comms, "leaf");
             site_cable(s, g[k]->fsw, 1, leaf, 0, CAB_CAT6);
             for (int i = 0; i < ndesk; i++)
                 site_cable(s, leaf, 1 + i, s->tenant[ti].desk0 + i, 0, CAB_CAT6);
@@ -4116,7 +4151,7 @@ static void check_grades(void)
      * riser in port 0 has three holes left, `serve` fills them and stops,
      * and the refusal is the box rather than the budget. */
     {
-        int tiny = site_install(&cheap.s, SDEV_SWITCH4, comms, "tiny");
+        int tiny = gate_box(&cheap.s, SDEV_SWITCH4, comms, "tiny");
         site_cable(&cheap.s, cheap.core, 2, tiny, 0, CAB_CAT6);
         int before = site_ports_spare(&cheap.s, tiny);
         int got = site_serve(&cheap.s, ti, tiny, CAB_CAT5E);
@@ -4156,8 +4191,8 @@ static void check_grades(void)
         site_new(&s, &b, 22ull, 100000);
         site_credit(&s, 900000);
         int mdf = bld_find(&b, 0, RM_MDF);
-        int mini = site_install(&s, SDEV_MINITOWER, mdf, "mini");
-        int big  = site_install(&s, SDEV_RACKSERVER, mdf, "rack");
+        int mini = gate_box(&s, SDEV_MINITOWER, mdf, "mini");
+        int big  = gate_box(&s, SDEV_RACKSERVER, mdf, "rack");
         site_power(&s, mini, true);
         site_power(&s, big, true);
         ck("a rack server arrives with a battery in it and a minitower does not",

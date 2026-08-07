@@ -81,6 +81,17 @@ static int comms_on(const Building *b, int floor, int fallback)
 static int put(Site *s, int kind, int room, const char *name)
 {
     int d = site_install(s, kind, room, name);
+    /* AND IT IS FED, refunded, for the reason gate_box() gives in
+     * core/sitecheck.c: the calibration measures what a network carries, and
+     * a curve that also had to design a power tree would be measuring two
+     * things at once. site_feed() is the player's own call and takes the
+     * player's own refusals. */
+    if (d >= 0) {
+        long money = s->money, spent = s->spent;
+        site_feed(s, d);
+        s->money = money;
+        s->spent = spent;
+    }
     return d;
 }
 
