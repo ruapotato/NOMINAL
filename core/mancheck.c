@@ -623,6 +623,169 @@ static void check_shop(void)
     buf_free(&gone);
 }
 
+/* ------------------------------------------------- the tower's own help */
+/* THE PAGE IS A SECOND LIST OF VERBS, AND A SECOND LIST OF ANYTHING IS THE
+ * defect this project keeps re-finding: one fact with two answers. The
+ * tower's commands live in VERB[] in core/site.c, and `help` is a page
+ * somebody wrote by hand beside it. Nothing held the two together.
+ *
+ * WHAT THAT COST, measured rather than imagined. `mains`, `outlet` and
+ * `outlets` were verbs the site answered to and no help text named. A player
+ * who bought a machine and typed `power box on` was refused, and the verb
+ * that unblocked them was in neither the refusal nor the page -- three
+ * places to look and the answer in none of them. It went unnoticed because
+ * nothing counted.
+ *
+ * SO THIS COUNTS, IN BOTH DIRECTIONS.
+ *
+ *   1. The page must not name a command the tower does not answer to. This
+ *      is a hard failure and always has been true; it is asserted so it
+ *      stays true. A page that documents a verb that was renamed sends a
+ *      player to type something that gets "no such command".
+ *
+ *   2. Every verb the tower answers to must be named on the page. This is a
+ *      hard failure too, with an explicit list of exceptions below -- each
+ *      one written down with its reason, so the gap is a thing somebody
+ *      chose rather than a thing nobody noticed. A NEW verb that nobody
+ *      documented fails this gate on the day it is added.
+ *
+ * WHAT COUNTS AS NAMED, and it is deliberately stricter than "the word
+ * appears somewhere". At the time of writing, `mains` DID appear in the page
+ * -- inside the prose of the `ups` entry, "it rides a mains failure out" --
+ * so a word-search would have called the bug documented. A verb is named
+ * only where a verb is presented: first word of a line, or first word of a
+ * `|`-separated column in one of the summary rows. That is exactly the
+ * shape the page uses for everything it really documents. */
+/* The page is the same page in every building -- it is written down rather
+ * than generated -- so the seed only has to be one that makes a tower with
+ * somewhere for the handoff to land. It is the one the rest of the project
+ * measures on, so a failure here can be reproduced with `bf --sitesh 7008`
+ * and the same `help`. */
+#define MANCHECK_SEED 7008ull
+
+static bool named_in_help(const char *help, const char *verb)
+{
+    size_t vl = strlen(verb);
+    const char *line = help;
+    while (*line) {
+        const char *nl = strchr(line, '\n');
+        size_t len = nl ? (size_t)(nl - line) : strlen(line);
+        /* Each `|`-separated column of the line is somewhere a verb may be
+         * presented: `status | service | load` documents three. */
+        const char *seg = line;
+        const char *end = line + len;
+        while (seg < end) {
+            const char *bar = memchr(seg, '|', (size_t)(end - seg));
+            const char *stop = bar ? bar : end;
+            while (seg < stop && *seg == ' ') seg++;
+            if ((size_t)(stop - seg) >= vl && strncmp(seg, verb, vl) == 0 &&
+                (seg + vl == stop || seg[vl] == ' ' || seg[vl] == '\t'))
+                return true;
+            seg = bar ? bar + 1 : stop;
+        }
+        line = nl ? nl + 1 : line + len;
+    }
+    return false;
+}
+
+/* THE VERBS THE PAGE DELIBERATELY DOES NOT LIST. Every entry is a decision
+ * with a reason, and the list is short on purpose: it is the only way a verb
+ * may be missing from `help` without failing this gate, so adding to it is
+ * an act somebody has to justify in a diff. */
+static const struct { const char *verb; const char *why; } HELP_SILENT[] = {
+    { "help",   "the page itself; a page that documented itself would be the "
+                "only entry a player did not need" },
+    { "credit", "a lever for a gate to pull, not a move a player has -- money "
+                "the tower did not earn is not in the game" },
+    { "buy",    "an alias of `order`, and the page documents it under that "
+                "name. Two entries would be two names for one fact" },
+    { NULL, NULL }
+};
+
+static const char *silent_why(const char *verb)
+{
+    for (int i = 0; HELP_SILENT[i].verb; i++)
+        if (strcmp(HELP_SILENT[i].verb, verb) == 0) return HELP_SILENT[i].why;
+    return NULL;
+}
+
+static void check_help(void)
+{
+    printf("\nand the tower's own `help` against the verbs the tower answers to\n");
+    Building b;
+    if (!bld_generate(&b, MANCHECK_SEED)) {
+        ck("a building to ask for help in", false, "bld_generate refused the seed");
+        return;
+    }
+    Site s;
+    if (!site_new(&s, &b, MANCHECK_SEED, 60000)) {
+        ck("a building to ask for help in", false, "site_new found nowhere for the uplink");
+        bld_free(&b);
+        return;
+    }
+    Buf help = {0};
+    site_cmd(&s, "help", &help);
+    ck("`help` prints a page at all", help.p && help.len > 200,
+       "site_cmd answered `help` with nothing worth reading");
+
+    if (help.p) {
+        /* 1. NOTHING THE PAGE NAMES IS INVENTED. Every first word of every
+         * line has to be a verb, an indented continuation, or blank. */
+        int invented = 0;
+        char firstbad[160] = {0};
+        const char *line = help.p;
+        while (*line) {
+            const char *nl = strchr(line, '\n');
+            size_t len = nl ? (size_t)(nl - line) : strlen(line);
+            if (len && islower((unsigned char)line[0])) {
+                char word[40];
+                size_t w = 0;
+                while (w < len && w < sizeof word - 1 &&
+                       islower((unsigned char)line[w])) { word[w] = line[w]; w++; }
+                word[w] = 0;
+                bool real = false;
+                for (int i = 0; i < site_verb_count(); i++)
+                    if (strcmp(site_verb_name(i), word) == 0) { real = true; break; }
+                if (!real) {
+                    invented++;
+                    if (!firstbad[0])
+                        snprintf(firstbad, sizeof firstbad,
+                                 "`help` documents `%s` and the tower has no such "
+                                 "verb -- a player who types it gets \"no such command\"",
+                                 word);
+                }
+            }
+            line = nl ? nl + 1 : line + len;
+        }
+        ck("`help` names no command the tower does not answer to",
+           invented == 0, firstbad);
+
+        /* 2. AND IT LEAVES NOTHING OUT. */
+        int missing = 0;
+        char firstmissing[240] = {0};
+        for (int i = 0; i < site_verb_count(); i++) {
+            const char *v = site_verb_name(i);
+            if (named_in_help(help.p, v)) continue;
+            if (silent_why(v)) continue;
+            missing++;
+            if (!firstmissing[0])
+                snprintf(firstmissing, sizeof firstmissing,
+                         "`%s` is a verb the tower answers to and `help` does not "
+                         "name it. Document it beside the verbs it belongs with, or "
+                         "-- if a player is not meant to have it -- put it in "
+                         "HELP_SILENT in core/mancheck.c with the reason", v);
+        }
+        char what[96];
+        snprintf(what, sizeof what, "every one of the tower's %d verbs is on the page",
+                 site_verb_count());
+        ck(what, missing == 0, firstmissing);
+    }
+
+    buf_free(&help);
+    site_free(&s);
+    bld_free(&b);
+}
+
 int man_check(void)
 {
     passed = total = 0;
@@ -713,6 +876,7 @@ int man_check(void)
     check_docs(&m, &ran, &skipped);
     check_web(&m, &ran, &skipped);
     check_shop();
+    check_help();
     machine_free(&m);
 
     printf("\n%d page(s), %d example(s) run, %d skipped as not read-only\n",
