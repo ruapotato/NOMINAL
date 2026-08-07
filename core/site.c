@@ -2819,9 +2819,11 @@ static const struct { const char *verb; int need; const char *usage; } VERB[] = 
                      "Three grades of switch and three of server, and the difference\n"
                      "is a SPEC: sockets, what each one clocks, what the disk is\n"
                      "rated for, whether a battery is in it. Nothing multiplies\n"
-                     "anything by a grade. `links halbert.co.uk/catalogue` is the\n"
-                     "price list, generated off the same table the counter charges\n"
-                     "off." },
+                     "anything by a grade. `catalogue` prints the whole list\n"
+                     "with the specs and charges nothing." },
+    { "catalogue", 1, "catalogue             every kind, its price and its spec,\n"
+                     "                      off the same table the counter charges\n"
+                     "                      from. Nothing is bought." },
     { "buy",      2, "buy <kind> [name]     switch4 switch8 switch24 router pc\n"
                      "                      minitower server rackserver" },
     { "move",     3, "move <box> <room>     rooms: #41, f3.comms, f0.mdf" },
@@ -2942,6 +2944,11 @@ bool site_cmd(Site *s, const char *line, Buf *out)
 
     if (strcmp(t[0], "help") == 0) {
         buf_puts(out,
+            "catalogue                      every kind the shop sells, its price\n"
+            "                               and its spec: sockets, what each one\n"
+            "                               clocks, what the disk is rated for,\n"
+            "                               whether a battery is in it. It buys\n"
+            "                               nothing -- it is `quote` for kit\n"
             "order <kind> [name]            kinds: switch4 switch8 switch24 router pc\n"
             "                               minitower server rackserver -- THREE GRADES\n"
             "                               of switch and three of server. The cheap end\n"
@@ -3081,6 +3088,41 @@ bool site_cmd(Site *s, const char *line, Buf *out)
         return true;
     }
     if (strcmp(t[0], "links") == 0) { site_dump_links(s, out); return true; }
+    /* THE PRICE LIST, BEFORE THE MONEY. `quote` exists so that copper can be
+     * priced before it is committed to, and there was no equivalent for kit:
+     * a blind playtester learned the catalogue by ordering one of everything
+     * in a throwaway run, and said so -- "there is no way to see a price
+     * before you buy... that undercuts the whole 'the opening is a decision'
+     * premise". The `order` line pointed at `links halbert.co.uk/catalogue`,
+     * which prints the CABLE LIST, because `links` ignores its argument. So
+     * the one route the game named to its own price list did not exist.
+     *
+     * Off KIT[] through the same accessors the counter charges from, so a
+     * grade added to core arrives here on the same commit. */
+    if (strcmp(t[0], "catalogue") == 0) {
+        buf_puts(out, "  kind         price  sockets  each at             disk      battery\n");
+        for (int k = 0; k < SDEV_KIND_COUNT; k++) {
+            if (!site_kind_for_sale(k)) continue;
+            int np = site_kind_ports(k);
+            int top = site_kind_port_mb(k, 0);
+            int fast = top;
+            for (int p = 1; p < np; p++)
+                if (site_kind_port_mb(k, p) > fast) fast = site_kind_port_mb(k, p);
+            char speed[40];
+            if (fast != top) snprintf(speed, sizeof speed, "%d Mb, top %d", top, fast);
+            else             snprintf(speed, sizeof speed, "%d Mb", top);
+            int days = site_kind_disk_days(k);
+            char disk[24];
+            if (days > 0) snprintf(disk, sizeof disk, "%d days", days);
+            else          snprintf(disk, sizeof disk, "%s", "-");
+            buf_printf(out, "  %-11s %6d  %7d  %-18s  %-8s  %s\n",
+                       site_kind_name(k), site_kind_price(k), np, speed, disk,
+                       site_kind_has_ups(k) ? "yes" : "no");
+        }
+        buf_puts(out, "  Nothing here is bought. `order <kind> [name]` buys one and it\n"
+                      "  is delivered to goods in; somebody carries it from there.\n");
+        return true;
+    }
     if (strcmp(t[0], "rooms") == 0) {
         /* `rooms f2` PRINTED FLOOR 0. atoi("f2") is 0, silently, so the one
          * spelling every other verb in this game takes -- `f1.comms`,

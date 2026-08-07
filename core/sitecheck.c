@@ -3309,6 +3309,91 @@ static void check_demand_says_what_a_server_is_for(const Building *b)
  * wrong, it asserts the number against the other place the game prints it,
  * so the two can never drift apart again without something going red.
  */
+/* THE PRICE LIST IS THE COUNTER'S LIST OR IT IS A SECOND ONE.
+ *
+ * `catalogue` was added because a blind playtester could not price kit before
+ * committing to it: "there is no way to see a price before you buy... that
+ * undercuts the whole 'the opening is a decision' premise." The one route the
+ * game named to its own price list -- `links halbert.co.uk/catalogue` -- did
+ * not work, because `links` ignores its argument and prints the cable list.
+ *
+ * A price list that is typed out is worse than none: it goes stale silently
+ * and it lies at the moment a player trusts it most. So this walks every kind
+ * the shop sells and holds the printed row against the accessors the counter
+ * charges from -- and buys one of each to prove the charged price is the
+ * printed one, which is the only version of "the same table" that cannot be
+ * argued with. */
+static void check_catalogue(const Building *b)
+{
+    printf("\nthe catalogue against the counter\n");
+    Site s;
+    site_new(&s, b, GATE_SEED, 100000);
+    site_credit(&s, 400000);
+    Buf o = {0};
+    site_cmd(&s, "catalogue", &o);
+    const char *page = o.p ? o.p : "";
+    int sold = 0, missing = 0, wrong = 0;
+    char first[160] = {0};
+    for (int k = 0; k < SDEV_KIND_COUNT; k++) {
+        if (!site_kind_for_sale(k)) continue;
+        sold++;
+        const char *row = strstr(page, site_kind_name(k));
+        if (!row) {
+            missing++;
+            if (!first[0])
+                snprintf(first, sizeof first, "%s is for sale and not on the page",
+                         site_kind_name(k));
+            continue;
+        }
+        char want[64];
+        snprintf(want, sizeof want, "%d", site_kind_price(k));
+        const char *eol = strchr(row, '\n');
+        size_t len = eol ? (size_t)(eol - row) : strlen(row);
+        char line[200];
+        snprintf(line, sizeof line, "%.*s", (int)(len < sizeof line ? len : sizeof line - 1), row);
+        if (!strstr(line, want)) {
+            wrong++;
+            if (!first[0])
+                snprintf(first, sizeof first, "%s costs %d and its row says: %s",
+                         site_kind_name(k), site_kind_price(k), line);
+        }
+    }
+    ck("every kind the shop sells is on the catalogue page", missing == 0);
+    ck("and the price printed beside it is site_kind_price()'s", wrong == 0);
+    if (first[0]) printf("      %s\n", first);
+    printf("    %d kinds priced\n", sold);
+
+    /* AND THE COUNTER CHARGES IT. A printed price nobody tested against a
+     * purchase is a number in a table. */
+    long before = s.money;
+    int bad_charge = 0;
+    for (int k = 0; k < SDEV_KIND_COUNT; k++) {
+        if (!site_kind_for_sale(k)) continue;
+        long was = s.money;
+        char cmd[64];
+        snprintf(cmd, sizeof cmd, "order %s", site_kind_name(k));
+        buf_clear(&o);
+        site_cmd(&s, cmd, &o);
+        if (was - s.money != site_kind_price(k)) bad_charge++;
+    }
+    ck("and one of each really costs what the page said", bad_charge == 0);
+    printf("    one of everything: %ld\n", before - s.money);
+
+    /* NOTHING WAS BOUGHT BY READING IT. */
+    Site s2;
+    site_new(&s2, b, GATE_SEED, 100000);
+    long m0 = s2.money;
+    int nd0 = s2.ndev;
+    buf_clear(&o);
+    site_cmd(&s2, "catalogue", &o);
+    ck("and reading the catalogue costs nothing and installs nothing",
+       s2.money == m0 && s2.ndev == nd0);
+    site_free(&s2);
+
+    buf_free(&o);
+    site_free(&s);
+}
+
 static void check_one_fact_two_answers(const Building *b)
 {
     printf("\nD43: the reports the playtest caught contradicting themselves\n");
@@ -3959,6 +4044,7 @@ int site_selfcheck(void)
     check_demand_says_what_a_server_is_for(&b);
     /* D43: ten things the game said about itself that another command in
      * the same session disproved. */
+    check_catalogue(&b);
     check_one_fact_two_answers(&b);
     check_ambiguity_and_the_diary();
     /* D43: and the decision the first twenty days did not have. */
