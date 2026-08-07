@@ -162,7 +162,25 @@ static void record(const Site *s, const SiteDay *r, int steps, Step *st)
 static void show(const char *what, const Step *st, int n)
 {
     printf("\n%s\n", what);
-    printf("  tenancies  floors  desks   work done   slowest   busiest port"
+    /* "work done" IS THE TOWER'S CARRIED TOTAL, WHICH IS NOT WHAT `service`
+     * COUNTS, and the difference has already caused one confusion in the
+     * played game: `status` printed SiteDay.sessions -- every unit of work
+     * the tower carried -- while the rows printed each tenancy's own
+     * tried/finished, and a voice agent's CRM traffic is in the first and not
+     * the second. That was fixed for the player by making the headline the
+     * literal sum of the rows.
+     *
+     * This table is deliberately NOT that. The curve it measures is whether
+     * the BUILDING carried what was asked of it, which is the right question
+     * for a load model and the one the owner's sentence -- slow at three
+     * floors, breaking at five -- was calibrated against. Changing it to the
+     * per-tenancy sum would move the curve, and the curve is the
+     * specification.
+     *
+     * So the column keeps its meaning and stops being coy about it. A
+     * developer reading this table and the game's own `status` should not
+     * have to work out why two "work done" numbers differ. */
+    printf("  tenancies  floors  desks   carried     slowest   busiest port"
            "        util   frames lost\n");
     for (int i = 0; i < n; i++) {
         if (!st[i].sessions) continue;
@@ -172,8 +190,13 @@ static void show(const char *what, const Step *st, int n)
     }
 }
 
-/* The first tenancy count at which fewer than four fifths of the building's
- * people got their work done, or 0 if it never happened. */
+/* The first tenancy count at which the building carried fewer than four
+ * fifths of the units of work asked of it, or 0 if it never happened.
+ *
+ * "Carried", not "each tenancy's own" -- see the note on the column heading
+ * in show(). This is the load question and it is what the owner's sentence
+ * was calibrated against; a tenancy-weighted version would be a different
+ * curve, not a more accurate one. */
 static int broke_at(const Step *st, int n)
 {
     for (int i = 0; i < n; i++)
