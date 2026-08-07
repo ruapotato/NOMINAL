@@ -367,6 +367,83 @@ func _init() -> void:
 	# not fallen through, not perched on a tread half a metre up.
 	# What a standing body reads as its own y when it is on a floor, measured
 	# rather than assumed: the capsule's origin is not at the slab.
+	# ---- THE MAP IS A READING OF THE BUILDING, NOT A PICTURE OF ONE.
+	#
+	# "It would be better if that window just said the floor you were on and
+	# the room you were on like it does now, but also included a mini-map."
+	# A map is the one HUD element a blind test cannot look at, so it is fed
+	# from map_rows() and map_rows() is what gets walked: every room of this
+	# floor, in metres, exactly one of them marked as the one you are in, and
+	# the socket counts the same ones `outlets` prints.
+	# STAND SOMEWHERE KNOWN FIRST. Left where the previous leg finished, the
+	# body was between rooms and player_room() was NOROOM, so the assertion
+	# about the marked room silently did not run -- a check that skips itself
+	# is a check that passes for the wrong reason.
+	var mdf0: int = t.find_room(0, t.K_MDF)
+	if mdf0 >= 0:
+		t.teleport(t.room_centre(mdf0) + Vector3(0, 0.4, 0))
+		for i in range(12):
+			await process_frame
+	var mrows: Array = t.map_rows()
+	var want_rooms := 0
+	for r3 in t.rooms:
+		if int(r3.floor) == t.player_floor():
+			want_rooms += 1
+	if mrows.size() != want_rooms:
+		fail("floor %d has %d rooms and the map draws %d"
+			% [t.player_floor(), want_rooms, mrows.size()])
+	else:
+		ok("the map holds every one of floor %d's %d rooms" % [t.player_floor(), want_rooms])
+	var marked := 0
+	for m3 in mrows:
+		if bool(m3.here):
+			marked += 1
+			if int(m3.i) != t.player_room():
+				fail("the map marks %s and the body is in %s"
+					% [str(m3.name), "nowhere" if t.player_room() == t.NOROOM
+						else str(t.rooms[t.player_room()].name)])
+	if t.player_room() != t.NOROOM and marked != 1:
+		fail("the body is in a room and the map marks %d of them" % marked)
+	elif t.player_room() != t.NOROOM:
+		ok("and it marks the one you are standing in: %s"
+			% str(t.rooms[t.player_room()].name))
+	# the sockets on it are the model's, not a second count
+	var owall2: Dictionary = t.site_outlets()
+	var wrongsock := 0
+	for m4 in mrows:
+		if int(m4.outlets) != int(owall2.get(int(m4.i), {}).get("built", 0)):
+			wrongsock += 1
+	if wrongsock > 0:
+		fail("%d rooms on the map show a socket count the model does not have" % wrongsock)
+	else:
+		ok("every socket count on it is site_room_outlets()'s own")
+	# and it can be read with no window at all
+	var mtext: String = t.command("map")
+	if mtext.find("floor %d" % t.player_floor()) < 0 or mtext.split("\n").size() < 3:
+		fail("`map` over the socket says nothing useful:\n" + mtext)
+	else:
+		ok("`map` over the socket: %s" % mtext.split("\n")[0].strip_edges())
+	# it follows the body upstairs
+	if t.floors_in_service > 1:
+		var before_f: int = t.player_floor()
+		t.teleport(t.room_centre(t.find_room(1, t.K_CORRIDOR)) + Vector3(0, 0.4, 0))
+		for i in range(12):
+			await process_frame
+		if t.player_floor() == before_f:
+			fail("could not stand on another floor to check the map follows")
+		else:
+			var up_rows: Array = t.map_rows()
+			var same := true
+			for m5 in up_rows:
+				if int(t.rooms[int(m5.i)].floor) != t.player_floor():
+					same = false
+			if not same:
+				fail("stood on floor %d and the map still holds another floor's rooms"
+					% t.player_floor())
+			else:
+				ok("the map follows the body: floor %d, %d rooms"
+					% [t.player_floor(), up_rows.size()])
+
 	# ---- THE HUD SAYS WHY THE BUILDING IS EMPTY.
 	#
 	# "Walking around the building, I don't see anybody else." Nothing was

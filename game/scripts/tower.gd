@@ -2511,6 +2511,7 @@ func _place_devices() -> void:
 # install order: t7d0 first. That is a presentation of a number, and it is the
 # same order the room was cabled in, which is the order they really would be.
 var _desks: Array = []          # {tenant, k, pos, yaw, dev} -- one per desk device
+var minimap: Control = null
 var _people_node: Node3D = null
 var _screens_node: Node3D = null    # what is on their monitors -- see screens.gd
 
@@ -4089,6 +4090,15 @@ func _hud() -> void:
 	block.add_child(_hud_alert)
 	hud = block
 	layer.add_child(hud)
+	# THE PLAN OF THIS FLOOR, under the block, bottom left. It is a Control of
+	# its own because it is drawn rather than written, and it is fed from
+	# map_rows() every frame -- the same reading a socket client gets from
+	# `map`, so the picture and the words cannot disagree about the building.
+	minimap = preload("res://scripts/minimap.gd").new()
+	minimap.tower = self
+	minimap.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
+	minimap.position = Vector2(12, -162)
+	layer.add_child(minimap)
 	# THE DATE AND THE MONEY, always up and never shouting. Top right, out of
 	# the way of the crosshair and of the location line, in `status`'s own
 	# sentences: "day 49. 58460 in hand, 1540 spent, 0 taken in rent."
@@ -4330,6 +4340,64 @@ func hud_lines() -> String:
 		s += "\n[N] the next day"
 	else:
 		s += "\nTHE RUN IS OVER"
+	return s
+
+
+# ------------------------------------------------------------- the mini-map
+#
+# "It would be better if that window just said the floor you were on and the
+# room you were on like it does now, but also included a mini-map instead of
+# that confusing blurb." And, when he asked for buyable sockets: "have a way
+# to view the mini map for the entire area and request or order additional
+# power for a fee."
+#
+# WHAT IT IS A VIEW OF, and the answer is the same as everything else here:
+# the model. Rooms come out of the generator's own room table in metres, where
+# you are comes out of the walking body, and how many sockets a room has left
+# comes out of site_room_outlets_free() through the extension -- the identical
+# number `outlets` prints and the faceplates on the wall are drawn from. There
+# is no map data anywhere. This is a reading.
+#
+# AND IT IS READABLE WITHOUT A WINDOW. map_rows() is the whole picture as
+# data, so a socket client can be told what the player can see; the gate in
+# game/tests/tower.gd walks it against the room table rather than against a
+# screenshot. A map that could only be checked by looking at it is a map that
+# would rot the first time a room moved.
+func map_rows() -> Array:
+	var out: Array = []
+	if player == null:
+		return out
+	var f := player_floor()
+	var here := player_room()
+	var free := site_outlets()
+	for i in range(rooms.size()):
+		var r = rooms[i]
+		if int(r.floor) != f:
+			continue
+		out.append({
+			"i": i, "name": str(r.name), "kind": int(r.kind),
+			"x0": float(r.x0), "y0": float(r.y0),
+			"x1": float(r.x1), "y1": float(r.y1),
+			"here": i == here,
+			"outlets": int(free.get(i, {}).get("built", 0)),
+			"free": int(free.get(i, {}).get("free", 0)),
+		})
+	return out
+
+
+# The same thing in words, for a client with no window. One line per room on
+# this floor, the one you are standing in marked, and the sockets counted.
+func map_text() -> String:
+	if player == null:
+		return ""
+	var p: Vector3 = player.global_position
+	var s := "floor %d, %d rooms, you at (%.0f, %.0f m)\n" \
+		% [player_floor(), map_rows().size(), p.x, p.z]
+	for m in map_rows():
+		s += "%s %-18s %2.0f,%2.0f to %2.0f,%2.0f  %d socket%s, %d free\n" \
+			% ["*" if bool(m.here) else " ", str(m.name),
+				float(m.x0), float(m.y0), float(m.x1), float(m.y1),
+				int(m.outlets), "" if int(m.outlets) == 1 else "s", int(m.free)]
 	return s
 
 
@@ -5534,6 +5602,13 @@ func command(line: String) -> String:
 		if run_over and run_over_why != "":
 			s += "\n" + run_over_why
 		return s + "\n"
+	# THE MAP, IN WORDS. Same rule as `hud`: a client with no window is told
+	# exactly what the panel in the corner is drawn from -- the rooms of this
+	# floor in metres, the one the body is standing in, and the sockets each
+	# has left. The gate walks this against the room table, so the picture is
+	# checkable without anybody looking at it.
+	if line == "map":
+		return map_text()
 	# WHAT THE FRAME COSTS, from the engine's own counters rather than from a
 	# stopwatch in a comment. A tower fills up with people, racks and copper as
 	# it is played and nothing else in this project could say what that did to
@@ -5958,6 +6033,10 @@ func _process(_dt: float) -> void:
 		return
 	if desk_open() or seat_open():
 		return                 # the world waits while you are sitting at it
+	if minimap != null and is_instance_valid(minimap):
+		minimap.show_floor(player_floor(), map_rows(),
+			Vector2(player.global_position.x, player.global_position.z),
+			player.rotation.y)
 	# THE CLIPBOARD, RE-READ WHEN SOMETHING HAPPENED AND NOT OTHERWISE. Four
 	# session verbs is nothing once, and a great deal sixty times a second.
 	if _snap_dirty:
