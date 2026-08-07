@@ -53,6 +53,8 @@ const SLOT := 112.0
 const KIT := {
 	"spool": {"label": "cable spool",
 		"hint": ["run copper between", "two boxes"]},
+	"power": {"label": "power lead",
+		"hint": ["a box into a socket", "on the room's wall"]},
 	"serial": {"label": "debugger: serial",
 		"hint": ["a console, even on a box", "that never booted"]},
 	"display": {"label": "debugger: display",
@@ -61,6 +63,7 @@ const KIT := {
 
 const COL := {
 	"spool": Color("#2f6fd0"),
+	"power": Color("#8a5a3e"),
 	"serial": Color("#1e6f3a"),
 	"display": Color("#20304f"),
 	"box": Color("#7c828c"),
@@ -71,8 +74,16 @@ var tower: Node3D = null
 # What is in each hand: "" , "spool", "serial", "display". A box in your arms
 # is not stored here -- it is read off tower.carrying, because that is where it
 # really is.
+# WHAT IS IN YOUR HANDS WHEN THE DAY STARTS, and it used to be the two
+# debugger leads: serial in the left, display in the right. So both mouse
+# buttons were a debugger and the spool -- the drum that runs the cable this
+# whole game is about -- was in the bag, reachable only by opening the
+# inventory and dragging it into a hand. The owner never got that far: "by
+# default you should have right click be the spool. The spool does not seem to
+# work." It worked. Nothing armed it, and the one key that could was the
+# inventory he also could not open.
 var left := "serial"
-var right := "display"
+var right := "spool"
 
 var msg := ""
 var _drag := ""
@@ -146,6 +157,10 @@ func use(side: int, dev: int, port := -1) -> String:
 				return "aim at a port. Every socket on the back of a box is a "  \
 					+ "place a cable goes, and which one matters."
 			return tower.cable_at(dev, port)
+		"power":
+			if dev < 0:
+				return "nothing under the crosshair to plug into the wall."
+			return tower.mains_at(dev)
 		"serial", "display":
 			if dev < 0:
 				if tower.phone and tower.phone.plugged >= 0:

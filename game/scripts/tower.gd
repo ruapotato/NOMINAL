@@ -3362,7 +3362,7 @@ func aim_text(a: Dictionary) -> Array:
 		# the terminal when the bag moved to [I] and has done nothing here
 		# since. One dead key was the whole distance between a player and the
 		# central verb of this game.
-		var key := "[LMB]" if spool_in_hand() else "[C]"
+		var key: String = hand_key("spool") if spool_in_hand() else "[C]"
 		if _cable_from >= 0:
 			# THE END THAT IS ALREADY IN IT. It has no link yet, so the model
 			# still calls this port empty; offering to plug the other end into
@@ -3397,6 +3397,15 @@ func aim_text(a: Dictionary) -> Array:
 	# first cable anybody runs in this building, so it gets the offer too.
 	if s >= 0 and not d.get("ports", []).is_empty():
 		hint += "  [C] cable" if _cable_from < 0 else "  [C] this end in"
+	# AND THE PLUG, WHEN THE LEAD IS IN A HAND. Which of the two things it
+	# would do comes off the model rather than off a guess, so the crosshair
+	# never offers to plug in a box that is already in the wall.
+	var pkey: String = hand_key("power")
+	if s >= 0 and pkey != "":
+		var sd2 := _site_dev(s)
+		if not sd2.is_empty():
+			hint += "  %s %s" % [pkey,
+				"pull the plug" if bool(sd2.get("mains", false)) else "into the wall"]
 	return [str(d.name), hint]
 
 
@@ -3435,6 +3444,21 @@ func spool_in_hand() -> bool:
 	if bag == null:
 		return false
 	return str(bag.hand(0)) == "spool" or str(bag.hand(1)) == "spool"
+
+
+# WHICH BUTTON, NAMED AFTER THE HAND IT IS REALLY IN. The crosshair used to
+# say "[LMB]" whenever a spool was anywhere in the hands, which was true while
+# the only way to arm one was to drag it into the left. The spool is in the
+# RIGHT hand on day one now, and a hint that names the wrong button is the
+# same defect as the dead [Tab] this line was written to replace.
+func hand_key(item: String) -> String:
+	if bag == null:
+		return ""
+	if str(bag.hand(0)) == item:
+		return "[LMB]"
+	if str(bag.hand(1)) == item:
+		return "[RMB]"
+	return ""
 
 
 # What the keys act on: what the crosshair is on if it is on anything, and
@@ -4327,6 +4351,35 @@ func cable_here(dev: int) -> String:
 # run itself is core's: site_cable() measures it through the building's own
 # cable graph and prices it by the metre, and this only says which two ports
 # the player meant.
+# THE POWER LEAD, WHICH IS `mains` AND NOTHING ELSE.
+#
+# "In the inventory we should have a power cable spool, that lets you run
+# power cables from wall outlets to power input."
+#
+# There is no route to work out and no metres to charge: core does not price a
+# kettle lead, it asks whether the room has a socket left. So this is the
+# session's own `mains <box> on|off`, aimed instead of typed -- the same
+# refusals in the same words, including the two that matter most: the room
+# whose wall is full, and pulling the plug on something that is running, which
+# is a blackout with one machine in it and a one-in-twenty chance of a
+# filesystem to repair afterwards.
+func mains_at(dev: int) -> String:
+	if dev < 0 or not site_up:
+		return ""
+	var s: int = int(devices[dev].get("site", -1))
+	if s < 0:
+		return "%s is the view's own scenery: there is no plug on the back of it." \
+			% devices[dev].name
+	var sd := _site_dev(s)
+	if sd.is_empty():
+		return ""
+	var room := player_room()
+	if room != NOROOM:
+		_be_here(room)
+	var on: bool = not bool(sd.get("mains", false))
+	return site("mains %s %s" % [str(sd.name), "on" if on else "off"]).strip_edges()
+
+
 func cable_at(dev: int, port: int) -> String:
 	if dev < 0 or not site_up:
 		return ""

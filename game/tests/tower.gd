@@ -823,6 +823,67 @@ func _init() -> void:
 				% [bag.hand(0), bag.hand(1)])
 		else:
 			ok("hands start as %s / %s" % [bag.hand(0), bag.hand(1)])
+		# ---- THE SPOOL IS ARMED WITHOUT OPENING ANYTHING.
+		#
+		# "By default you should have right click be the spool. The spool does
+		# not seem to work." It worked -- this file has walked a run with it
+		# for weeks -- but both hands held a debugger lead, so the only way to
+		# reach the drum was the inventory, which is the other thing he could
+		# not open. A verb the game is about, behind a screen that would not
+		# come up.
+		if not t.spool_in_hand():
+			fail("the day starts with no spool in either hand: %s / %s"
+				% [bag.hand(0), bag.hand(1)])
+		else:
+			ok("the spool is in a hand on day one: %s" % t.hand_key("spool"))
+		# and the crosshair names the button it is really under
+		var swk: int = -1
+		for i in range(t.devices.size()):
+			if int(t.devices[i].get("site", -1)) >= 0 and not t.devices[i].get("ports", []).is_empty():
+				swk = i
+				break
+		if swk >= 0:
+			var ht: Array = t.aim_text({"kind": "port", "dev": swk, "port": 0})
+			var want_key: String = t.hand_key("spool")
+			if str(ht[1]).find(want_key) < 0 and str(ht[1]).find("link up") < 0 					and str(ht[1]).find("too long") < 0:
+				fail("the spool is under %s and the crosshair offers: %s"
+					% [want_key, ht[1]])
+			else:
+				ok("the crosshair over a socket names the button the spool is under")
+		# ---- AND THERE IS A POWER LEAD, which is `mains` with a mouse.
+		if not t.bag.KIT.has("power"):
+			fail("there is no power lead in the kit")
+		else:
+			var pdev := -1
+			for i in range(t.devices.size()):
+				var sdp: Dictionary = t._site_dev(int(t.devices[i].get("site", -1)))
+				if not sdp.is_empty() and str(sdp.kindname) != "uplink" 						and bool(sdp.get("mains", false)):
+					pdev = i
+					break
+			if pdev < 0:
+				fail("nothing plugged in to try the power lead on")
+			else:
+				var pname: String = str(t.devices[pdev].name)
+				t.teleport(t.room_centre(int(t._site_dev(int(t.devices[pdev].site)).room))
+					+ Vector3(0, 0.3, 0))
+				for i in range(10):
+					await process_frame
+				var out_said: String = t.mains_at(pdev)
+				var still: bool = bool(t._site_dev(int(t.devices[pdev].site)).get("mains", false))
+				if still:
+					fail("the power lead would not pull %s out of the wall: %s"
+						% [pname, out_said])
+				else:
+					ok("the power lead pulled %s out of the wall: %s"
+						% [pname, out_said.split("\n")[0]])
+					var in_said: String = t.mains_at(pdev)
+					if not bool(t._site_dev(int(t.devices[pdev].site)).get("mains", false)):
+						fail("and it would not put it back: %s" % in_said)
+					else:
+						ok("and put it back in")
+					t.site("power %s on" % t._site_dev(int(t.devices[pdev].site)).name)
+					t._reconcile()
+					await process_frame
 		if bag.equip("spool", 0) != "":
 			fail("could not put the spool in a free hand")
 		elif bag.hand(0) != "spool":
@@ -1117,14 +1178,20 @@ func _init() -> void:
 			if t.bag:
 				t.bag.equip("spool", 0)
 			var armed: Array = t.aim_text(hole)
-			if str(armed[1]).find("[LMB]") < 0:
+			if str(armed[1]).find(t.hand_key("spool")) < 0:
 				fail("the spool is in a hand and the crosshair does not offer the mouse: '%s'"
 					% str(armed[1]))
 			else:
 				ok("spool in hand, the crosshair on an empty port: '%s   %s'"
 					% [armed[0], armed[1]])
+			# BOTH HANDS, because the spool now starts in the right one. This
+			# put "serial" in the left and expected [C], which was true while
+			# the right hand held the display debugger and is not any more:
+			# the spool was still armed and the crosshair still, correctly,
+			# offered the mouse.
 			if t.bag:
 				t.bag.equip("serial", 0)
+				t.bag.equip("power", 1)
 			var say: Array = t.aim_text(hole)
 			if str(say[1]).find("[C]") < 0:
 				fail("the crosshair on an empty port does not offer [C]: '%s'"
