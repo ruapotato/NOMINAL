@@ -36,6 +36,17 @@ static bool has(const char *hay, const char *needle)
     return hay && strstr(hay, needle) != NULL;
 }
 
+/* Run one line at the site and ask whether the answer says something. The
+ * gates that assert on prose all did this by hand, with a Buf each. */
+static bool out_has(Site *s, const char *line, const char *needle)
+{
+    Buf o = {0};
+    site_cmd(s, line, &o);
+    bool yes = has(o.p, needle);
+    buf_free(&o);
+    return yes;
+}
+
 /* ================================ A BOX, POWERED, FOR A GATE THAT IS NOT
  * MEASURING POWER.
  *
@@ -3303,6 +3314,115 @@ static void check_catalogue(const Building *b)
  * subject: a run has to be pulled, and what happens when it is not pulled --
  * or is pulled and overloaded -- is what is being asserted. So these are
  * site_install() and nothing feeds them but the lines below. */
+/* THE BRIDGE CREW, WHO WERE ABOARD BEFORE THE PLAYER WAS.
+ *
+ * David: "From day one the Bridge crew should be around, perhaps with no
+ * computers/setup so all needed that to get working."
+ *
+ * The thing this gate exists to stop is a bridge that is SCENERY -- geometry
+ * with people drawn on it and nothing the model can be wrong about. So every
+ * assertion here is about a state the model computes rather than stores: the
+ * station's machine is derived from what is standing in the room, and the
+ * three separate things a station needs to work are each shown MISSING and
+ * then shown supplied, in the order a player would supply them.
+ *
+ * The run in the middle of it is the point of the pivot: the bridge is the
+ * top deck, the power core is in the plant room on deck 0, and the conduit
+ * between them is the longest in the station. That is a decision on the
+ * first morning rather than a corridor to walk down.
+ */
+static void check_crew(const Building *b)
+{
+    printf("\nthe bridge: a crew at stations with nothing on them\n");
+    Site s;
+    site_new(&s, b, GATE_SEED, 200000);
+
+    ck("the station has a bridge, on its top deck, with stations on it",
+       s.ncrew > 0 && s.b->rooms[s.crew[0].room].kind == RM_BRIDGE &&
+       s.b->rooms[s.crew[0].room].floor == b->floors - 1);
+    ck("every station has a name that is a job, and no two the same",
+       strcmp(s.crew[0].name, "helm") == 0 &&
+       strcmp(s.crew[s.ncrew - 1].name, s.crew[0].name) != 0);
+    bool empty = true;
+    for (int i = 0; i < s.ncrew; i++)
+        if (s.crew[i].dev >= 0 || site_crew_up(&s, i)) empty = false;
+    ck("and on the first morning not one of them has a machine at it",
+       empty && site_crew_working(&s) == 0);
+    ck("`crew` says so in words, and says who was here first",
+       out_has(&s, "crew", "no machine at it") &&
+       out_has(&s, "crew", "0 of") &&
+       out_has(&s, "crew", "aboard before you were"));
+
+    /* THEY ARE NOT A TENANCY, which is the distinction the whole model turns
+     * on: nobody rents the bridge, nobody moves in on a day, and no rent
+     * arrives for it. A crew that could be lost like a tenancy would be a
+     * tenancy with a different word on it. */
+    bool let = false;
+    for (int i = 0; i < s.ntenant; i++)
+        if (s.b->rooms[s.tenant[i].room].floor == b->floors - 1) let = true;
+    ck("nobody rents the bridge and nobody moves onto it",
+       !let && s.b->rooms[s.crew[0].room].tenant == 0);
+
+    /* --- AND NOW THE THREE THINGS, ONE AT A TIME. */
+    int pc = site_install(&s, SDEV_PC, s.crew[0].room, "helm1");
+    ck("a console carried onto the bridge fills the first empty station",
+       pc >= 0 && s.crew[0].dev == pc && s.crew[1].dev < 0);
+    ck("but nothing is feeding it, and `crew` names that and not something else",
+       !site_crew_up(&s, 0) &&
+       strcmp(site_crew_why(&s, 0), "nothing feeding it") == 0);
+
+    int core = site_dev_by_name(&s, "core0");
+    long before = s.money;
+    int run = site_feed(&s, pc);
+    ck("the run to it comes off the core in the plant room, on deck 0",
+       run >= 0 && s.dev[core].floor == 0 &&
+       s.b->rooms[s.dev[core].room].kind == RM_PLANT &&
+       s.money < before);
+    /* THE LONGEST RUN IN THE STATION, and it is measured, not asserted: the
+     * plant room is on the bottom deck and the bridge is on the top one, so
+     * this run is longer than the one the building came with to the
+     * workstation in Engineering beside it. */
+    int day_one = -1;
+    for (int i = 0; i < s.ncond; i++)
+        if (s.cond[i].to == s.ws) day_one = i;
+    ck("and it is longer than any run the station came with",
+       day_one >= 0 && s.cond[run].metres > s.cond[day_one].metres);
+    printf("    the core is %d m of tray from the helm and %d m from the "
+           "workstation beside it\n",
+           s.cond[run].metres, s.cond[day_one].metres);
+
+    site_power(&s, pc, true);
+    ck("powered, and it still does not work: nothing is plugged into it",
+       !site_crew_up(&s, 0) &&
+       strcmp(site_crew_why(&s, 0), "no cable in it") == 0);
+
+    /* The deck's own switch, in the deck's own cupboard, like every other. */
+    int cup = bld_find(b, b->floors - 1, RM_COMMS);
+    if (cup < 0) cup = s.crew[0].room;
+    int sw = site_install(&s, SDEV_SWITCH8, cup, "bsw");
+    site_feed(&s, sw);
+    site_power(&s, sw, true);
+    int l = site_cable(&s, sw, 0, pc, 0, CAB_CAT5E);
+    ck("cabled to the deck's switch, the helm comes up",
+       l >= 0 && site_crew_up(&s, 0) && site_crew_working(&s) == 1 &&
+       out_has(&s, "crew", "working"));
+
+    /* AND IT CAN GO BACK. Carry the console off the bridge and the station
+     * is empty again -- because `dev` is derived from where the box IS and
+     * not from an assignment somebody made once. A stored answer would have
+     * left the helm claiming a machine that was standing in goods in. */
+    /* Pull the lead first: a box with a cable in it does not move, which is
+     * site_move()'s rule and not this gate's. */
+    site_uncable(&s, l);
+    site_move(&s, pc, site_goods_room(&s));
+    ck("carry it off the bridge and the station is empty again",
+       s.crew[0].dev < 0 && site_crew_working(&s) == 0 &&
+       strcmp(site_crew_why(&s, 0), "no machine at it") == 0);
+
+    site_free(&s);
+}
+
+
 static void check_conduits(const Building *b)
 {
     printf("\nconduit: a tree from the core, and what it carries\n");
@@ -4136,6 +4256,7 @@ int site_selfcheck(void)
      * the same session disproved. */
     check_catalogue(&b);
     check_conduits(&b);
+    check_crew(&b);
     check_one_fact_two_answers(&b);
     check_ambiguity_and_the_diary();
     /* D43: and the decision the first twenty days did not have. */

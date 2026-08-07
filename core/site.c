@@ -680,6 +680,41 @@ bool site_new(Site *s, const Building *b, uint64_t seed, long budget)
     site_gateway(s, ws, s->wan_isp);
     site_resolver(s, ws, s->wan_isp);
 
+    /* ------------------------------------------------- who was here first */
+    /* THE BRIDGE CREW. They are on the top deck on the first morning, at
+     * stations with nothing on them, and getting those stations working is
+     * the first job on the station. See SiteCrew in site.h for why they are
+     * a model and not scenery.
+     *
+     * The names are the jobs, not decoration: each one is a station the
+     * player has to put a machine at, and `crew` reports each by name so a
+     * refusal can say WHICH one is still dark. Six of them, or as many as the
+     * bridge has room for -- a station is 3 m of deck, the same 3 m a desk
+     * gets, because a person at a console needs the same space here as
+     * anywhere else in this building. */
+    {
+        static const char *POST[] = { "helm", "ops", "tactical", "science",
+                                      "comms", "damage" };
+        const int NPOST = (int)(sizeof POST / sizeof *POST);
+        int deck = b->floors - 1;
+        for (int i = 0; i < b->nrooms && s->ncrew < NPOST; i++) {
+            if (b->rooms[i].floor != deck || b->rooms[i].kind != RM_BRIDGE)
+                continue;
+            int area = (b->rooms[i].x1 - b->rooms[i].x0) *
+                       (b->rooms[i].y1 - b->rooms[i].y0);
+            int fits = area / 9;                    /* 3 m x 3 m a station */
+            for (int k = 0; k < fits && s->ncrew < NPOST; k++) {
+                SiteCrew *c = &s->crew[s->ncrew];
+                c->room = (uint16_t)i;
+                c->slot = (uint8_t)k;
+                c->dev  = -1;
+                snprintf(c->name, sizeof c->name, "%s", POST[s->ncrew]);
+                s->ncrew++;
+            }
+        }
+        site_crew_sync(s);
+    }
+
     /* --------------------------------------------------- who is moving in */
     /* One tenancy per Room.tenant, each with an arrival day and a set of
      * requirements drawn from this seed and no other. The building decided
@@ -1230,6 +1265,104 @@ static void mains_detach(Site *s, int dev, bool dirty)
  * That is the cascade, and it is the whole reason for the work: one run over
  * its rating takes down everything behind it, including the switch three
  * other rooms were reaching the network through. */
+/* ----------------------------------------------------------- the bridge */
+/*
+ * WHICH BOX IS AT WHICH STATION IS NOT A FLAG, IT IS WHERE THE BOX IS.
+ *
+ * The alternative was an `assign` verb -- put this machine at the helm --
+ * and it would have been a second place the same fact lived: the station
+ * would say the helm had a box while the box stood in goods in. So the
+ * stations in a room take the boxes standing in that room, in device order,
+ * and a machine carried out of the bridge leaves its station empty on the
+ * next sync. There is nothing to keep in step because there is nothing
+ * stored.
+ *
+ * A WORKSTATION IS WHAT A CREW STATION TAKES. Not a switch, not a server: a
+ * console is something a person sits at. The switch that feeds the deck is a
+ * different problem and it lives in the comms cupboard like every other
+ * deck's does.
+ */
+static bool crew_kind(int kind)
+{
+    return kind == SDEV_WORKSTATION || kind == SDEV_PC ||
+           kind == SDEV_MINITOWER;
+}
+
+void site_crew_sync(Site *s)
+{
+    for (int i = 0; i < s->ncrew; i++) s->crew[i].dev = -1;
+    for (int i = 0; i < s->ncrew; i++) {
+        SiteCrew *c = &s->crew[i];
+        /* how many stations in this room come before this one */
+        int before = 0;
+        for (int k = 0; k < i; k++)
+            if (s->crew[k].room == c->room) before++;
+        int seen = 0;
+        for (int d = 0; d < s->ndev; d++) {
+            if (s->dev[d].room != c->room || !crew_kind(s->dev[d].kind))
+                continue;
+            if (seen++ != before) continue;
+            c->dev = d;
+            break;
+        }
+    }
+}
+
+/* A STATION IS UP WHEN THE PERSON AT IT CAN WORK, which is three things and
+ * not one: a machine at the station, power in it, and a cable out of it. Each
+ * is something the player does separately and each can be the missing one --
+ * which is why site_crew_why() names the FIRST thing missing rather than
+ * answering yes or no. A bridge officer looking at a dead console does not
+ * want a boolean. */
+const char *site_crew_why(const Site *s, int i)
+{
+    if (i < 0 || i >= s->ncrew) return "no such station";
+    const SiteCrew *c = &s->crew[i];
+    if (c->dev < 0) return "no machine at it";
+    const SiteDev *d = &s->dev[c->dev];
+    if (!d->mains) return "nothing feeding it";
+    if (!d->powered) return "switched off";
+    if (!site_dev_cabled(s, c->dev)) return "no cable in it";
+    return NULL;
+}
+
+bool site_crew_up(const Site *s, int i)
+{
+    return site_crew_why(s, i) == NULL;
+}
+
+int site_crew_working(const Site *s)
+{
+    int n = 0;
+    for (int i = 0; i < s->ncrew; i++) if (site_crew_up(s, i)) n++;
+    return n;
+}
+
+/* WHAT THE CREW CAN SEE FROM WHERE THEY SIT. One line a station, and the
+ * last column is the SENTENCE, not a tick: a player looking at a dark bridge
+ * wants to be told it is the cable and not the power. */
+void site_dump_crew(const Site *s, Buf *out)
+{
+    if (s->ncrew == 0) {
+        buf_puts(out, "this station has no bridge.\n");
+        return;
+    }
+    buf_puts(out, "  station   deck  room            machine   state\n");
+    for (int i = 0; i < s->ncrew; i++) {
+        const SiteCrew *c = &s->crew[i];
+        const char *why = site_crew_why(s, i);
+        char box[24];
+        if (c->dev >= 0) snprintf(box, sizeof box, "%s", s->dev[c->dev].name);
+        else             snprintf(box, sizeof box, "-");
+        buf_printf(out, "  %-9s d%-4d %-15s %-9s %s\n",
+                   c->name, s->b->rooms[c->room].floor,
+                   bld_kind_name(s->b->rooms[c->room].kind), box,
+                   why ? why : "working");
+    }
+    buf_printf(out, "%d of %d bridge stations working. They were aboard "
+                    "before you were.\n", site_crew_working(s), s->ncrew);
+}
+
 void site_mains_sync(Site *s)
 {
     for (int i = 0; i < s->ndev; i++) {
@@ -1384,7 +1517,9 @@ int site_install(Site *s, int kind, int room, const char *name)
     if (!site_kind_for_sale(kind) && kind != SDEV_DESK) {
         s->err = SITE_ENODEV; return -1;
     }
-    return install_dev(s, kind, room, name);
+    int made = install_dev(s, kind, room, name);
+    if (made >= 0) site_crew_sync(s);
+    return made;
 }
 
 /* ------------------------------------------------------------- goods in */
@@ -1486,6 +1621,10 @@ bool site_move(Site *s, int dev, int room)
      * the tree, and the tree is asked rather than guessed at. A box carried
      * out of reach of its own run is a thing the model can say. */
     site_mains_sync(s);
+    /* AND THE BRIDGE. A console carried onto the bridge fills the next empty
+     * station and one carried off empties it, because the station's `dev` is
+     * derived from where the box is rather than stored beside it. */
+    site_crew_sync(s);
     /* WHOSE BOX IT IS WAS DECIDED WHEN IT WAS INSTALLED, and carrying it
      * somewhere does not change it. This used to reassign ownership from
      * whatever room the thing was put down in -- so a playtester bought a
@@ -2124,7 +2263,8 @@ int site_room_by_name(const Site *s, const char *spec)
          * Engineering now; `mdf` still works, because a player who learned
          * the old word should not be told there is no such room. */
         { "comms", RM_COMMS }, { "mdf", RM_MDF }, { "eng", RM_MDF },
-        { "engineering", RM_MDF }, { "riser", RM_RISER },
+        { "engineering", RM_MDF }, { "bridge", RM_BRIDGE },
+        { "riser", RM_RISER },
         { "goods", RM_GOODS }, { "lobby", RM_LOBBY }, { "plant", RM_PLANT },
         { "server", RM_SERVER }, { "office", RM_OFFICE },
         { "residence", RM_RESIDENCE }, { "retail", RM_RETAIL },
@@ -3108,6 +3248,8 @@ static const struct { const char *verb; int need; const char *usage; } VERB[] = 
     { "unconduit", 2, "unconduit <n>         pull one out. `conduits` numbers them" },
     { "conduits", 1, "conduits              every run, what it carries and what it\n"
                      "                      is carrying" },
+    { "crew",     1, "crew                  the bridge stations, what is at each\n"
+                     "                      one and what it is still short of" },
     { "catalogue", 1, "catalogue             every kind, its price and its spec,\n"
                      "                      off the same table the counter charges\n"
                      "                      from. Nothing is bought." },
@@ -3237,6 +3379,8 @@ bool site_cmd(Site *s, const char *line, Buf *out)
             "unconduit <n>                  pull one out. `conduits` numbers them\n"
             "conduits                       every run, the metres, and what each is\n"
             "                               carrying against what it can\n"
+            "crew                           the bridge stations, what machine is at\n"
+            "                               each one, and what it is still short of\n"
             "catalogue                      every kind the shop sells, its price\n"
             "                               and its spec: sockets, what each one\n"
             "                               clocks, what the disk is rated for,\n"
@@ -3378,6 +3522,7 @@ bool site_cmd(Site *s, const char *line, Buf *out)
     }
     if (strcmp(t[0], "links") == 0) { site_dump_links(s, out); return true; }
     if (strcmp(t[0], "conduits") == 0) { site_dump_conduits(s, out); return true; }
+    if (strcmp(t[0], "crew") == 0) { site_dump_crew(s, out); return true; }
     if (strcmp(t[0], "conduit") == 0 && n >= 3) {
         int from = -1, fport = -1;
         char spec[64];

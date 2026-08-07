@@ -117,7 +117,9 @@ static int room_arg(const Session *ses, const char *spec)
      * what `go comms` should mean in a tower with nine of them. The
      * spellings are site.c's, because two spellings of one room is a bug. */
     static const struct { const char *n; int k; } K[] = {
-        { "comms", RM_COMMS }, { "mdf", RM_MDF }, { "riser", RM_RISER },
+        { "comms", RM_COMMS }, { "mdf", RM_MDF }, { "eng", RM_MDF },
+        { "engineering", RM_MDF }, { "bridge", RM_BRIDGE },
+        { "riser", RM_RISER },
         { "goods", RM_GOODS }, { "lobby", RM_LOBBY }, { "plant", RM_PLANT },
         { "server", RM_SERVER }, { "office", RM_OFFICE },
         { "residence", RM_RESIDENCE }, { "retail", RM_RETAIL },
@@ -1395,6 +1397,9 @@ static void do_help(const Session *ses, Buf *out)
         "                     an output of the core, or of a strip. A strip takes a\n"
         "                     load or another strip, which is how a run forks\n"
         "  unconduit <n>      pull one out. `conduits` numbers them\n"
+        "  crew               the bridge stations, what machine is at each one\n"
+        "                     and what it is still short of. They were aboard\n"
+        "                     before you were and their consoles are dark\n"
         "  mains <box> off    the plug itself: pull the run out of a box. A SWITCH\n"
         "                     AND A ROUTER HAVE NO\n"
         "                     BUTTON, so this is theirs. PULLING THE PLUG ON A\n"
@@ -2832,7 +2837,7 @@ static const char *TOWERVERB[] = {
     "resolver", "dnsd", "dns", "ups", "disk", "show", "links",
     /* the tower's own view of itself */
     "day", "service", "status", "load", "isp", "events", "demand", "money",
-    "frames", "rooms", NULL
+    "frames", "rooms", "crew", NULL
 };
 
 static bool is_towerverb(const char *v)
@@ -3947,6 +3952,7 @@ bool session_line(Session *ses, const char *line, Buf *out)
         strcmp(t[0], "credit") == 0 || strcmp(t[0], "status") == 0 ||
         strcmp(t[0], "service") == 0 || strcmp(t[0], "load") == 0 ||
         strcmp(t[0], "events") == 0 || strcmp(t[0], "jacks") == 0 ||
+        strcmp(t[0], "crew") == 0 ||
         (strcmp(t[0], "show") == 0)) {
         site_cmd(&ses->s, raw, out);
         return true;

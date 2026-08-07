@@ -41,28 +41,28 @@ const NOROOM := 65535
 # Floor colour by room kind. A comms cupboard has to read differently from a
 # flat from across a corridor, which is the whole job of this table.
 const FLOOR_COL := {
-	K_CORRIDOR: Color("#8d8b84"),
-	K_LOBBY: Color("#b9ad93"),
-	K_LIFTLOBBY: Color("#a39a8c"),
-	K_LIFT: Color("#3c3f45"),
-	K_STAIR: Color("#6f7378"),
-	K_RISER: Color("#4a4139"),
-	K_COMMS: Color("#3c6072"),
-	K_MDF: Color("#3d6b5c"),
-	K_TOILET: Color("#9fb3bd"),
-	K_PLANT: Color("#7a6a55"),
-	K_GOODS: Color("#a08349"),
-	K_OFFICE: Color("#9b8f7d"),
-	K_RESIDENCE: Color("#a8846b"),
-	K_SERVER: Color("#4b6f9b"),
-	K_RETAIL: Color("#a37f8c"),
-	K_BRIDGE: Color("#6f7fa8"),
+	K_CORRIDOR: Color("#333a40"),
+	K_LOBBY: Color("#3a4149"),
+	K_LIFTLOBBY: Color("#373e45"),
+	K_LIFT: Color("#2f343a"),
+	K_STAIR: Color("#2e373d"),
+	K_RISER: Color("#3b3630"),
+	K_COMMS: Color("#25404f"),
+	K_MDF: Color("#27443c"),
+	K_TOILET: Color("#3c474e"),
+	K_PLANT: Color("#443d33"),
+	K_GOODS: Color("#4e4227"),
+	K_OFFICE: Color("#3a4046"),
+	K_RESIDENCE: Color("#443a34"),
+	K_SERVER: Color("#2b4055"),
+	K_RETAIL: Color("#43393f"),
+	K_BRIDGE: Color("#26313c"),
 }
-const WALL_COL := Color("#cfc9bd")
-const OUTER_COL := Color("#8f9ba5")
-const CEIL_COL := Color("#d6d3cc")
-const SLAB_EDGE := Color("#6d6a64")
-const SKIRT_COL := Color("#8a8378")
+const WALL_COL := Color("#98a1a9")
+const OUTER_COL := Color("#59636c")
+const CEIL_COL := Color("#8d959c")
+const SLAB_EDGE := Color("#3f464c")
+const SKIRT_COL := Color("#5a636b")
 
 const SLAB_T := 0.16       # slab thickness, metres
 const WALL_T := 0.14
@@ -486,6 +486,7 @@ func _build_mesh() -> void:
 		_stair_run(s)
 	for i in range(racks.size()):
 		_rack_geom(i)
+	_crew_consoles()
 	_roof()
 
 	var mesh := ArrayMesh.new()
@@ -655,6 +656,171 @@ func _walls(f: int) -> void:
 					continue
 				_box(mn, size, col)
 				_box(skirt_mn, skirt_sz, SKIRT_COL, false)
+				_rib(mn, size, dir, x, y)
+
+
+# HULL FRAMES. A wall of one flat colour reads as plasterboard however cool
+# the colour is; the thing that says "pressure vessel" is the RIBS -- the
+# structural frames a hull is built on, standing proud of the panel between
+# them, at the same pitch all the way round.
+#
+# THREE METRES, and it is the same three metres as everything else in this
+# building: RIB_PITCH divides the 1 m cell grid the generator works in, so a
+# rib lands on a whole-metre line on every deck and the frames of deck 4 stand
+# directly over the frames of deck 3. Pick 2.5 and they would wander.
+#
+# They are drawn per wall CELL, so a cell only carries a rib when its own
+# coordinate is on the pitch -- which means a doorway (`continue`d above)
+# simply has no rib, exactly as a real frame is interrupted by a hatch.
+const RIB_PITCH := 3
+const RIB_W := 0.16          # the frame itself
+const RIB_PROUD := 0.05      # how far it stands off the panel
+const RIB_COL := Color("#3e474f")
+
+func _rib(mn: Vector3, size: Vector3, dir: int, x: int, y: int) -> void:
+	# The rib runs from the skirting to the underside of the slab: the frame
+	# is the full height of the deck, because that is what is carrying it.
+	var rm := mn
+	var rs := size
+	rm.y += 0.12
+	rs.y -= 0.12
+	if rs.y <= 0.0:
+		return
+	if dir == 0:
+		if y % RIB_PITCH != 0:
+			return
+		rm.x -= RIB_PROUD
+		rs.x += RIB_PROUD * 2.0
+		rm.z += (1.0 - RIB_W) * 0.5
+		rs.z = RIB_W
+	else:
+		if x % RIB_PITCH != 0:
+			return
+		rm.z -= RIB_PROUD
+		rs.z += RIB_PROUD * 2.0
+		rm.x += (1.0 - RIB_W) * 0.5
+		rs.x = RIB_W
+	_box(rm, rs, RIB_COL, false)
+
+
+# ---------------------------------------------------------- the bridge
+#
+# THE CONSOLES THE CREW SIT AT, and every fact about them comes from core.
+# site_crew() gives one line a station: index, room, slot, name, the device
+# standing at it (-1 for none) and whether it is WORKING -- which is the
+# model's three-part answer (a machine, power in it, a cable out of it), not
+# something this file re-derives from the geometry.
+#
+# What the view adds is where the console physically is, and that is the same
+# rule the racks and the desks already use: along a wall with no door in it,
+# evenly spaced, front out. A player walks up to the helm console the way they
+# walk up to a rack.
+#
+# A DARK CONSOLE IS THE POINT. On the first morning every one of these has a
+# dead grey slab where the screen goes, because there is no machine at it --
+# and that is what the crew are sitting in front of until the player runs
+# conduit up eleven decks and a cable along the top of the riser.
+const CON_W := 1.40         # a console is wider than a desk and shallower
+const CON_D := 0.70
+const CON_H := 0.78
+const CON_BODY := Color("#2b3138")
+const CON_TOP := Color("#39414a")
+const CON_DARK := Color("#20262c")           # the screen with nothing behind it
+const CON_LIVE := Color("#1d4f63")           # ...and with a machine that works
+
+var crew: Array = []        # [{i, room, slot, name, dev, up}]
+
+func crew_stations() -> Array:
+	# Re-read every time it is asked for: a console lights up the moment the
+	# cable goes in, and a cached copy would be a second answer to a question
+	# core is already answering.
+	var out: Array = []
+	if not site_up:
+		return out
+	for line in str(machine.site_crew()).split("\n", false):
+		var f: PackedStringArray = line.split(" ", false)
+		if f.size() < 6:
+			continue
+		out.append({"i": int(f[0]), "room": int(f[1]), "slot": int(f[2]),
+			"name": str(f[3]), "dev": int(f[4]), "up": int(f[5]) == 1})
+	return out
+
+
+func _crew_consoles() -> void:
+	crew = crew_stations()
+	# ONE BAND PER ROOM, not one per console. Asking _wall_band() again for
+	# every station let each one pick a different wall of the same room --
+	# the helm on the north side and ops on the west, which is not a bridge,
+	# it is furniture scattered round a hall. The row is planned once, for
+	# the number of stations that room actually has, exactly as a rack row is.
+	var per := {}
+	for c in crew:
+		per[int(c.room)] = int(per.get(int(c.room), 0)) + 1
+	var band := {}
+	for room in per:
+		band[room] = _wall_band(int(room), CON_D, 0.35, 1.00,
+			CON_W + float(int(per[room]) - 1) * CON_STEP)
+	for c in crew:
+		var g: Dictionary = _crew_place(band.get(int(c.room), {}), int(c.room),
+			int(c.slot))
+		if g.is_empty():
+			continue
+		var mn: Vector3 = g.mn
+		var along_x: bool = bool(g.along_x)
+		var w: float = CON_W if along_x else CON_D
+		var d: float = CON_D if along_x else CON_W
+		# the body, and a top surface a shade lighter so it reads as a desk
+		_box(mn, Vector3(w, CON_H, d), CON_BODY, true, CON_TOP)
+		# the screen, standing off the back edge of it, leaning back a little
+		# -- drawn as a thin upright slab because that is what _box gives us
+		var sc := mn
+		var sw: float = w * 0.80
+		var sd: float = 0.06
+		if along_x:
+			sc.x += (w - sw) * 0.5
+			sc.z += d - 0.12
+		else:
+			sc.z += (d - sw) * 0.5
+			sc.x += w - 0.12
+		sc.y += CON_H
+		var col: Color = CON_LIVE if bool(c.up) else CON_DARK
+		if along_x:
+			_box(sc, Vector3(sw, 0.52, sd), col, false)
+		else:
+			_box(sc, Vector3(sd, 0.52, sw), col, false)
+
+
+# Where a station stands in the row that was planned for its room. `slot` is
+# its number in that room, so the helm is always the same console and walking
+# up to it means something. Off the end of the wall it wraps back along the
+# row at half a pitch, which is what a second rank of consoles looks like --
+# rather than not being drawn at all, which is what it used to do.
+const CON_STEP := 1.70
+
+func _crew_place(b: Dictionary, room: int, slot: int) -> Dictionary:
+	if b.is_empty():
+		return {}
+	var r: Dictionary = rooms[room]
+	var y: float = r.floor * fheight + 0.02
+	var run: float = b.hi - b.lo
+	var fits: int = max(1, int(floor((run - CON_W) / CON_STEP)) + 1)
+	var rank: int = slot / fits
+	var t: float = b.lo + float(slot % fits) * CON_STEP
+	if rank > 0:
+		t += CON_STEP * 0.5
+		if t > b.hi - CON_W:
+			t = b.hi - CON_W
+	# A second rank stands a metre and a half in front of the first, facing
+	# the same way -- the shape of a real bridge, and it keeps the walking
+	# space between them that every other row in this building leaves.
+	var inset: float = float(rank) * 1.60
+	if b.along_x:
+		var z: float = b.band.position.y
+		z += inset * (1.0 if b.face.z > 0.0 else -1.0)
+		return {"mn": Vector3(t, y, z), "along_x": true}
+	var x: float = b.band.position.x
+	x += inset * (1.0 if b.face.x > 0.0 else -1.0)
+	return {"mn": Vector3(x, y, t), "along_x": false}
 
 
 func _roof() -> void:
@@ -1301,7 +1467,7 @@ func _riser_ladder(f: int) -> void:
 # every headless test that passed before this passes after it.
 
 const TROFFER_KINDS := [K_CORRIDOR, K_LIFTLOBBY, K_LOBBY, K_MDF, K_COMMS,
-	K_GOODS, K_SERVER, K_PLANT, K_OFFICE, K_RETAIL]
+	K_GOODS, K_SERVER, K_PLANT, K_OFFICE, K_RETAIL, K_BRIDGE]
 const TROF_L := 1.20        # a 4 ft fitting, because that is the size they are
 const TROF_W := 0.30
 const TROF_PITCH := 3.0
@@ -2758,6 +2924,38 @@ func _seats() -> Array:
 	return out
 
 
+# The crew, as seats. `_crew_consoles()` already worked out where every
+# station stands and which way it faces; a person stands in FRONT of their
+# console, facing it, which is the same relationship a tenant has with their
+# desk and is drawn by the same instance buffers.
+func _crew_seats() -> Array:
+	var S = preload("res://scripts/people.gd")
+	var out: Array = []
+	var per := {}
+	for c in crew:
+		per[int(c.room)] = int(per.get(int(c.room), 0)) + 1
+	var band := {}
+	for room in per:
+		band[room] = _wall_band(int(room), CON_D, 0.35, 1.00,
+			CON_W + float(int(per[room]) - 1) * CON_STEP)
+	for c in crew:
+		var g: Dictionary = _crew_place(band.get(int(c.room), {}), int(c.room),
+			int(c.slot))
+		if g.is_empty():
+			continue
+		var mn: Vector3 = g.mn
+		var f: Vector3 = band[int(c.room)].face
+		# a metre out from the console, on the side you can walk up to
+		var p := Vector3(mn.x + (CON_W if bool(g.along_x) else CON_D) * 0.5,
+			mn.y, mn.z + (CON_D if bool(g.along_x) else CON_W) * 0.5)
+		p -= f * 0.85
+		out.append({"pos": p, "yaw": atan2(f.x, f.z), "mood": 0 if bool(c.up) else 2,
+			"floor": int(rooms[int(c.room)].floor), "dev": -1,
+			"trade": S.T_OFFICE, "state": 0, "done": 1.0 if bool(c.up) else 0.0,
+			"who": str(c.name)})
+	return out
+
+
 # `service`'s trade column, as screens.gd numbers the trades. The words are
 # core's -- "office", "voice", "web host", "studio" -- and anything else lands
 # on office, which is the baseline trade rather than a guess.
@@ -2794,6 +2992,14 @@ func _people() -> void:
 		_screens_node.name = "Screens"
 		add_child(_screens_node)
 	var seats := _seats()
+	# AND THE BRIDGE CREW, who are not a tenancy and are drawn by the same
+	# code for the same reason: a person at a station is a person at a desk
+	# as far as the view is concerned. What makes them different is where the
+	# mood comes from -- a tenant's mood is `service`'s strike count, and a
+	# crew station's is whether the model says it is WORKING. On day one they
+	# are all sitting at dead consoles, which is the mood the player is meant
+	# to feel bad about.
+	seats.append_array(_crew_seats())
 	_people_node.rebuild(seats)
 	# THE DESK YOU ARE SITTING AT DOES NOT GET A PICTURE OF A DESK. There is a
 	# real machine behind that one glass for as long as you are in the chair,

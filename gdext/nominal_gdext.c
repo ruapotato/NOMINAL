@@ -1053,6 +1053,25 @@ static void m_ses_state(Station *st, const GDExtensionConstTypePtr *args, void *
     buf_free(&o);
 }
 
+/* site_crew() -> String — one line a bridge station: index, room, slot, name,
+ * the device at it (or -1) and whether it is working. The window draws a
+ * console at each and a person standing at it; whether the console has a
+ * machine in it and whether that machine works are the MODEL's answers, not
+ * the view's. See SiteCrew in core/site.h. */
+static void m_site_crew(Station *st, const GDExtensionConstTypePtr *args, void *ret)
+{
+    (void)args;
+    if (!st->ses_ok) { c_to_gdstring(ret, ""); return; }
+    const Site *s = &st->ses.s;
+    Buf o; buf_init(&o);
+    for (int i = 0; i < s->ncrew; i++)
+        buf_printf(&o, "%d %d %d %s %d %d\n", i, (int)s->crew[i].room,
+                   (int)s->crew[i].slot, s->crew[i].name, s->crew[i].dev,
+                   site_crew_up(s, i) ? 1 : 0);
+    c_to_gdstring(ret, o.p ? o.p : "");
+    buf_free(&o);
+}
+
 /* ses_prompt() -> String — what to print in front of the cursor, and it is
  * session_prompt(), not a second opinion about it.
  *
@@ -1155,6 +1174,7 @@ static const MethodDef METHODS[] = {
     { "ses_start",     m_ses_start,     2, { GDEXTENSION_VARIANT_TYPE_INT, GDEXTENSION_VARIANT_TYPE_INT }, GDEXTENSION_VARIANT_TYPE_STRING },
     { "ses_cmd",       m_ses_cmd,       1, { GDEXTENSION_VARIANT_TYPE_STRING }, GDEXTENSION_VARIANT_TYPE_STRING },
     { "ses_state",     m_ses_state,     0, { 0 },                            GDEXTENSION_VARIANT_TYPE_STRING },
+    { "site_crew",     m_site_crew,     0, { 0 },                            GDEXTENSION_VARIANT_TYPE_STRING },
     { "ses_here",      m_ses_here,      1, { GDEXTENSION_VARIANT_TYPE_INT }, GDEXTENSION_VARIANT_TYPE_STRING },
     { "ses_prompt",    m_ses_prompt,    0, { 0 },                            GDEXTENSION_VARIANT_TYPE_STRING },
 };

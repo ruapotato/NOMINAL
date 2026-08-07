@@ -180,6 +180,60 @@ func _init() -> void:
 		else:
 			ok("the bridge is deck %d and it is open before anything is paid for"
 				% t.bridge_deck())
+		# ---- AND THE CREW ARE ON IT, at consoles with nothing in them.
+		# Every fact here comes back over site_crew(); the window's job is
+		# where the console physically stands, and nothing else. A bridge
+		# that drew six consoles from a constant in this file would pass a
+		# looks-right test and be scenery.
+		var st: Array = t.crew_stations()
+		if st.is_empty():
+			fail("the bridge has no crew stations on it")
+		else:
+			var lit := 0
+			var named := {}
+			for c in st:
+				if bool(c.up):
+					lit += 1
+				named[str(c.name)] = true
+				if int(t.rooms[int(c.room)].kind) != t.K_BRIDGE:
+					fail("station %s is in a %s, not on the bridge"
+						% [str(c.name), str(t.rooms[int(c.room)].name)])
+				if int(t.rooms[int(c.room)].floor) != t.bridge_deck():
+					fail("station %s is on deck %d, not the bridge deck %d"
+						% [str(c.name), int(t.rooms[int(c.room)].floor),
+						t.bridge_deck()])
+			if lit != 0:
+				fail("%d bridge stations are working on day one -- nothing has been plugged in yet" % lit)
+			elif named.size() != st.size():
+				fail("two crew stations share a name: %d names for %d stations"
+					% [named.size(), st.size()])
+			else:
+				ok("%d crew stations on the bridge, every one of them dark"
+					% st.size())
+			# and each one is somewhere a body could actually stand
+			var placed := 0
+			var per := {}
+			for c in st:
+				per[int(c.room)] = int(per.get(int(c.room), 0)) + 1
+			for c in st:
+				var bnd = t._wall_band(int(c.room), t.CON_D, 0.35, 1.00,
+					t.CON_W + float(int(per[int(c.room)]) - 1) * t.CON_STEP)
+				var g: Dictionary = t._crew_place(bnd, int(c.room), int(c.slot))
+				if g.is_empty():
+					continue
+				var rm: Dictionary = t.rooms[int(c.room)]
+				var mn: Vector3 = g.mn
+				if mn.x < float(rm.x0) or mn.x > float(rm.x1) \
+						or mn.z < float(rm.y0) or mn.z > float(rm.y1):
+					fail("the %s console is drawn outside the room it belongs to"
+						% str(c.name))
+				else:
+					placed += 1
+			if placed < st.size():
+				fail("only %d of %d crew consoles found a wall to stand against"
+					% [placed, st.size()])
+			else:
+				ok("all %d consoles stand inside the bridge, against its wall" % placed)
 		if closed < 0:
 			fail("this station has no dark deck between deck 0 and the bridge")
 		elif t.in_service(closed):

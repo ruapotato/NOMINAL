@@ -508,6 +508,31 @@ typedef struct {
     uint8_t  live;             /* 0 once pulled out                         */
 } SiteConduit;
 
+/* A CREW STATION: a place on the bridge where a machine GOES.
+ *
+ * David: "From day one the Bridge crew should be around, perhaps with no
+ * computers/setup so all needed that to get working."
+ *
+ * A crew that is only geometry is scenery, and scenery is what the pivot is
+ * trying to get away from -- so a station is a thing the model can be WRONG
+ * about. It exists before the player does, it is empty, and it is up only
+ * when there is a box standing at it that has power in it and a cable out of
+ * it. Nothing here is a flag somebody sets: `dev` is derived from what is
+ * actually standing in the room (site_crew_sync), and "up" is derived from
+ * that box's own mains and links.
+ *
+ * They are NOT a tenancy. A tenancy arrives on a day, pays rent, files
+ * complaints and can be lost; the crew were on this station before the player
+ * came aboard and they are not going anywhere. What they cost you is that the
+ * station does not work until they can work. */
+typedef struct {
+    uint16_t room;             /* the bridge room this station stands in    */
+    uint8_t  slot;             /* which station in that room, 0..n          */
+    char     name[12];         /* helm, ops, tactical, ...                  */
+    int      dev;              /* the box standing at it, or -1             */
+} SiteCrew;
+#define SITE_MAX_CREW 24
+
 /* ================================================= WHAT KIND OF BUSINESS
  *
  * Until D30 every tenancy was the same business. They differed in how many
@@ -724,6 +749,9 @@ typedef struct {
     long     money, spent;
     int      ntenant;
     SiteTenant tenant[SITE_MAX_TENANT];
+    /* The bridge crew, who were here first. See SiteCrew. */
+    int      ncrew;
+    SiteCrew crew[SITE_MAX_CREW];
     int      err;              /* why the last operation refused            */
     /* ------------------------------------------------------- the clock */
     /* Nothing in this game came back for the player because nothing ever
@@ -923,6 +951,16 @@ int  site_conduit_count(const Site *s);
 /* Make every device's `mains` agree with the conduit tree. Called by every
  * path that changes the tree; see the note on the definition. */
 void site_mains_sync(Site *s);
+
+/* THE BRIDGE. site_crew_sync() makes each station's `dev` agree with what is
+ * actually standing in its room -- call it after anything that moves a box.
+ * site_crew_why() names the FIRST thing a station is missing, or NULL when it
+ * is working; site_crew_up() is that as a bool. See SiteCrew. */
+void        site_crew_sync(Site *s);
+const char *site_crew_why(const Site *s, int i);
+bool        site_crew_up(const Site *s, int i);
+int         site_crew_working(const Site *s);
+void        site_dump_crew(const Site *s, Buf *out);
 void site_dump_conduits(const Site *s, Buf *out);
 
 /* Which box is in the nth used socket of a room, or -1. This is the surface
