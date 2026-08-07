@@ -953,6 +953,28 @@ static void m_site_opening_money(Station *st, const GDExtensionConstTypePtr *arg
     *(int64_t *)ret = (int64_t)SITE_OPENING_MONEY;
 }
 
+/* site_conduits() -> String — "i from fport to metres cost watts load pct"
+ * per live run. The power tree, so the window can draw the runs the model
+ * charged for and put the utilisation on them -- which is the number the
+ * owner asked to see when you look at one: "when you hover over a conduit,
+ * it'll tell you its percent of utilisation." */
+static void m_site_conduits(Station *st, const GDExtensionConstTypePtr *args, void *ret)
+{
+    (void)args;
+    if (!site_ready(st)) { c_to_gdstring(ret, ""); return; }
+    const Site *s = SITE(st);
+    Buf o; buf_init(&o);
+    for (int i = 0; i < site_conduit_count(s); i++) {
+        const SiteConduit *c = &s->cond[i];
+        if (!c->live) continue;
+        buf_printf(&o, "%d %d %d %d %d %d %d %d %d\n", i, c->from, c->fport,
+                   c->to, c->metres, c->cost, c->watts,
+                   site_conduit_load(s, i), site_conduit_pct(s, i));
+    }
+    c_to_gdstring(ret, o.p ? o.p : "");
+    buf_free(&o);
+}
+
 /* site_links() -> String — "i a aport b bport room_a room_b metres cost kind
  * state" per line. The cables that really exist, so the tray above the
  * corridor carries the runs the site model was charged for and no others. */
@@ -1153,6 +1175,7 @@ static const MethodDef METHODS[] = {
     { "site_cmd",      m_site_cmd,      1, { GDEXTENSION_VARIANT_TYPE_STRING }, GDEXTENSION_VARIANT_TYPE_STRING },
     { "site_devs",     m_site_devs,     0, { 0 },                            GDEXTENSION_VARIANT_TYPE_STRING },
     { "site_outlets",  m_site_outlets,  0, { 0 },                            GDEXTENSION_VARIANT_TYPE_STRING },
+    { "site_conduits", m_site_conduits, 0, { 0 },                            GDEXTENSION_VARIANT_TYPE_STRING },
     { "site_opening_money", m_site_opening_money, 0, { 0 },                 GDEXTENSION_VARIANT_TYPE_INT },
     { "site_links",    m_site_links,    0, { 0 },                            GDEXTENSION_VARIANT_TYPE_STRING },
     { "site_room_of",  m_site_room_of,  1, { GDEXTENSION_VARIANT_TYPE_INT }, GDEXTENSION_VARIANT_TYPE_INT },

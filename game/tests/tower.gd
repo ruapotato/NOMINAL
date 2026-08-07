@@ -367,6 +367,80 @@ func _init() -> void:
 	# not fallen through, not perched on a tread half a metre up.
 	# What a standing body reads as its own y when it is on a floor, measured
 	# rather than assumed: the capsule's origin is not at the slab.
+	# ---- CONDUIT IS DRAWN THROUGH THE TRAYS, AND SAYS WHAT IT CARRIES.
+	#
+	# "When you hover over a conduit, it'll tell you its percent of
+	# utilisation. So you have to run fresh conduits from the power core once
+	# they've hit a maximum load." A run is a thing in the world: you look at
+	# it and read the number off, no key involved.
+	t.command("credit 40000")
+	t.command("order strip cst")
+	t.command("deliver cst #%d" % t.find_room(0, t.K_MDF))
+	t.command("order rackserver crs")
+	t.command("deliver crs #%d" % t.find_room(0, t.K_MDF))
+	t.command("go mdf")
+	for i in range(8):
+		await process_frame
+	var pcore: int = -1
+	for sd3 in t.site_devs():
+		if str(sd3.kindname) == "powercore":
+			pcore = int(sd3.i)
+	if pcore < 0:
+		fail("the building has no power core for the window to draw runs from")
+	else:
+		var was_drawn: int = t.power_drawn()
+		t.command("feed cst")
+		t.command("feed crs")
+		t._reconcile()
+		for i in range(6):
+			await process_frame
+		var runs: Array = t.site_conduits()
+		if runs.size() < 2:
+			fail("ran two conduits and the window reads %d" % runs.size())
+		else:
+			ok("the window reads the power tree: %d runs" % runs.size())
+		if t.power_drawn() <= was_drawn:
+			fail("conduit was run and nothing more is drawn: %d then %d"
+				% [was_drawn, t.power_drawn()])
+		else:
+			ok("and there is more copper in the world for it: %d -> %d vertices"
+				% [was_drawn, t.power_drawn()])
+		# IT FOLLOWS THE TRAYS, which is the same route copper takes: the
+		# drawn polyline has to climb to the containment rather than cut
+		# through the room at socket height.
+		var r0: Dictionary = runs[0]
+		var pa: Vector3 = t._dev_anchor(int(r0.from))
+		var pb: Vector3 = t._dev_anchor(int(r0.to))
+		var route: Array = t._route_between(pa, pb)
+		var high := 0.0
+		for pt in route:
+			high = max(high, float(pt.y))
+		if route.size() < 3 or high < t.tray_y(0) - 0.5:
+			fail("a conduit run is drawn as %d points topping out at %.2f m, "
+				% [route.size(), high] + "and the tray is at %.2f" % t.tray_y(0))
+		else:
+			ok("and it climbs into the tray like copper does: %d points, up to %.2f m"
+				% [route.size(), high])
+		# AND THE CROSSHAIR READS THE NUMBER OFF IT
+		var mid: Vector3 = route[route.size() / 2]
+		var seen := {}
+		for pct in [10, 70, 95, 130]:
+			seen[pct] = t.aim_text({"kind": "conduit", "dev": -1, "port": -1,
+				"run": 0, "pct": pct, "load": pct * 15, "watts": 1500,
+				"metres": int(r0.metres)})
+		if str(seen[70][1]).find("%") < 0 or str(seen[130][1]).find("TRIPPED") < 0:
+			fail("the crosshair on a run reads: %s / %s"
+				% [str(seen[70][1]), str(seen[130][1])])
+		else:
+			ok("the crosshair on one reads: %s -- %s" % [seen[70][0], seen[70][1]])
+			ok("and on a tripped one: %s" % seen[130][1])
+		# and the colour is the utilisation, not the grade
+		if t._conduit_colour(10) == t._conduit_colour(95) \
+				or t._conduit_colour(130) == t._conduit_colour(95):
+			fail("a run at 10%, 95% and 130% are all drawn the same colour")
+		else:
+			ok("and a run is coloured by what it is carrying, not by what it is")
+
 	# ---- THE RISER HAS A LADDER AND A BODY CAN CLIMB IT.
 	#
 	# "There's a room in called riser, that seems to be an empty elevator

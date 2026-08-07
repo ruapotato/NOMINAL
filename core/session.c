@@ -2802,6 +2802,12 @@ static const char *TOWERVERB[] = {
     "look", "where", "desk", "sit", "stand", "desks",
     /* copper */
     "spool", "cable", "uncable", "quote", "jack", "patch", "jacks", "serve",
+    /* AND POWER, which is the same act with a different colour of cable:
+     * run it from the core or off a strip, or let `feed` pick the nearest
+     * source with a hole in it. These were in the site shell and not in
+     * this one, so the window -- and every socket client, which is
+     * everything that can be tested -- could not run a metre of conduit. */
+    "conduit", "unconduit", "conduits", "feed", "catalogue",
     /* the box, from the room */
     "addr", "gw", "router", "subif", "vlan", "trunk", "dhcpd", "dhcp",
     "resolver", "dnsd", "dns", "ups", "disk", "show", "links",
@@ -3925,6 +3931,19 @@ bool session_line(Session *ses, const char *line, Buf *out)
                        want, tn->day, ses->s.day);
             return true;
         }
+        site_cmd(&ses->s, raw, out);
+        return true;
+    }
+
+    /* POWER, WHICH IS THE SAME ACT AS COPPER WITH A DIFFERENT CABLE ON THE
+     * DRUM. These lived in the site shell only, so the window and every
+     * socket client -- which is everything that can be tested -- could not
+     * run a metre of conduit. `feed` and `conduit` name their own ends, and
+     * the metres are charged off the same graph, so there is nothing here
+     * about legs that `cable` does not already say. */
+    if (strcmp(t[0], "conduit") == 0 || strcmp(t[0], "unconduit") == 0 ||
+        strcmp(t[0], "conduits") == 0 || strcmp(t[0], "feed") == 0 ||
+        strcmp(t[0], "catalogue") == 0) {
         site_cmd(&ses->s, raw, out);
         return true;
     }

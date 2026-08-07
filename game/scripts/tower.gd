@@ -1799,6 +1799,38 @@ func _inlet_point(d: Dictionary) -> Vector3:
 	return Vector3(c.x, float(d.mn.y) + 0.04, c.z) + back * (half - 0.01)
 
 
+# THE POWER TREE, AS THE MODEL HOLDS IT. One entry per live run: which output
+# of which source, what it feeds, the metres it was charged for, and what is
+# flowing through it against what it carries.
+func site_conduits() -> Array:
+	var out: Array = []
+	if not site_up or not machine.has_method("site_conduits"):
+		return out
+	for line in str(machine.site_conduits()).split("\n", false):
+		var f: PackedStringArray = line.split(" ", false)
+		if f.size() < 9:
+			continue
+		out.append({"i": int(f[0]), "from": int(f[1]), "fport": int(f[2]),
+			"to": int(f[3]), "metres": int(f[4]), "cost": int(f[5]),
+			"watts": int(f[6]), "load": int(f[7]), "pct": int(f[8])})
+	return out
+
+
+# WHAT COLOUR A RUN IS, WHICH IS ITS UTILISATION AND NOTHING ELSE. The owner
+# asked for the number on hover; this is the same fact at a glance, so a
+# corridor of conduit reads as a system with headroom or a system without one
+# before you have looked at anything. Green to amber to red, and a run that
+# has tripped is dark because nothing is flowing through it at all.
+func _conduit_colour(pct: int) -> Color:
+	if pct > 100:
+		return Color("#4a2020")
+	if pct >= 85:
+		return Color("#c8543a")
+	if pct >= 60:
+		return Color("#c99a3a")
+	return Color("#4f8f5a")
+
+
 func _draw_power() -> void:
 	if _power_node:
 		_power_node.name = "PowerGone"
@@ -1845,10 +1877,42 @@ func _draw_power() -> void:
 		var a: Vector3 = _inlet_point(d)
 		var b: Vector3 = Vector3(pts[k].pos) + Vector3(pts[k].n) * 0.02
 		_run_cable(g, [a, a + (b - a) * 0.5 + Vector3(0, -0.10, 0), b], flex, 9000 + si)
+	# --- AND THE CONDUIT, THROUGH THE TRAYS THE MODEL PRICED IT ALONG.
+	#
+	# "For the AI placing lines we will need logic to automatically use the
+	# cable trays to connect things." The metres were always the trays' --
+	# site_run_metres() is the cable graph -- and _route_between() is the same
+	# route drawn: out of the box, up into the containment, along it, down the
+	# riser, down to the thing at the far end. Copper has been drawn that way
+	# since there were trays; power is drawn by the same function, so a
+	# conduit and a patch lead between two rooms follow the same path in the
+	# world as well as costing the same in the model.
+	#
+	# It is thicker than copper because it is, and its colour is what it is
+	# carrying rather than what grade it is: a run at 93% is the thing you
+	# need to see from the doorway.
+	for c in site_conduits():
+		var a2: Vector3 = _dev_anchor(int(c.from))
+		var b2: Vector3 = _dev_anchor(int(c.to))
+		if a2 == Vector3.INF or b2 == Vector3.INF:
+			continue
+		var pts: Array = _route_between(a2, b2)
+		if pts.size() < 2:
+			continue
+		_run_cable(g, pts, _conduit_colour(int(c.pct)), 4000 + int(c.i))
 	_power_node = MeshInstance3D.new()
 	_power_node.name = "Power"
 	_power_node.mesh = g.mesh()
 	add_child(_power_node)
+
+
+# WHERE A RUN ENDS ON A BOX: the back of it, low, which is where a lead goes
+# and is the same point the flex to the wall used.
+func _dev_anchor(site_i: int) -> Vector3:
+	for d in devices:
+		if int(d.get("site", -1)) == site_i:
+			return _inlet_point(d)
+	return Vector3.INF
 
 
 # HOW MUCH FLEX AND FACEPLATE IS REALLY DRAWN, in vertices, so a headless test
@@ -3376,6 +3440,38 @@ const REACH := 2.2
 
 
 # Ray against an axis-aligned box: the distance in, or -1.
+# HOW FAR ALONG THE EYE RAY A SEGMENT IS, if the ray passes within `tol` of
+# it. The closest approach between two lines, clamped to both ends, which is
+# the honest way to point at something that is a line rather than a box.
+func _ray_seg(o: Vector3, dir: Vector3, a: Vector3, b: Vector3, tol: float) -> float:
+	var ab := b - a
+	var abl := ab.length()
+	if abl < 0.001:
+		return -1.0
+	var u := ab / abl
+	var w0 := o - a
+	var d1 := dir.dot(u)
+	var den := 1.0 - d1 * d1
+	var tr := 0.0
+	var ts := 0.0
+	if absf(den) < 0.0001:
+		tr = -w0.dot(dir)
+		ts = 0.0
+	else:
+		var b1 := w0.dot(dir)
+		var b2 := w0.dot(u)
+		tr = (d1 * b2 - b1) / den
+		ts = (b2 - d1 * b1) / den
+	if tr < 0.0:
+		return -1.0
+	ts = clampf(ts, 0.0, abl)
+	var pr := o + dir * tr
+	var ps := a + u * ts
+	if pr.distance_to(ps) > tol:
+		return -1.0
+	return tr
+
+
 static func _ray_box(o: Vector3, dir: Vector3, mn: Vector3, mx: Vector3) -> float:
 	var t0 := -1.0e9
 	var t1 := 1.0e9
@@ -3472,6 +3568,32 @@ func aim() -> Dictionary:
 		if t2 >= 0.0 and t2 < bt:
 			bt = t2
 			best = {"kind": "lift", "dev": -1, "port": -1, "point": o + dir * t2}
+	# AND THE CONDUIT, WHICH IS A THING YOU LOOK AT TO READ A NUMBER OFF.
+	#
+	# "When you hover over a conduit, it'll tell you its percent of
+	# utilisation. So you have to run fresh conduits from the power core once
+	# they've hit a maximum load." That is the whole loop of the power system
+	# and it needs no key: a run is a thing in the world and the crosshair
+	# already names what it is on.
+	#
+	# The run is a polyline through the trays, so what is tested is the
+	# SEGMENTS: the nearest point on each to the eye ray. A tolerance rather
+	# than a box, because 30 mm of conduit six metres up needs a little help
+	# to be pointed at, and there is nothing behind it to hit by mistake.
+	for c in site_conduits():
+		var ca: Vector3 = _dev_anchor(int(c.from))
+		var cb: Vector3 = _dev_anchor(int(c.to))
+		if ca == Vector3.INF or cb == Vector3.INF:
+			continue
+		var pts: Array = _route_between(ca, cb)
+		for si in range(pts.size() - 1):
+			var t4: float = _ray_seg(o, dir, pts[si], pts[si + 1], 0.10)
+			if t4 >= 0.0 and t4 < bt:
+				bt = t4
+				best = {"kind": "conduit", "dev": -1, "port": -1,
+					"run": int(c.i), "pct": int(c.pct), "load": int(c.load),
+					"watts": int(c.watts), "metres": int(c.metres),
+					"point": o + dir * t4}
 	# AND THE BUTTONS INSIDE THE CAR, which until now were paint.
 	#
 	# The owner got in, aimed at a lit button, pressed [E] and nothing
@@ -3520,6 +3642,13 @@ func aim_text(a: Dictionary) -> Array:
 		return ["", ""]
 	if a.kind == "lift":
 		return ["lift call plate", "[E] call"]
+	if a.kind == "conduit":
+		var pct := int(a.pct)
+		var head := "conduit run %d, %d m" % [int(a.run), int(a.metres)]
+		if pct > 100:
+			return [head, "%d W of %d W: TRIPPED, and everything behind it is dark"
+				% [int(a.load), int(a.watts)]]
+		return [head, "%d W of %d W -- %d%%" % [int(a.load), int(a.watts), pct]]
 	# A BUTTON SAYS WHAT PRESSING IT WOULD DO, INCLUDING NOTHING. An unlit
 	# button is a floor that exists and is not open yet, which is a true and
 	# useful thing to be told while you are standing in the car looking at it
