@@ -621,9 +621,13 @@ func _init() -> void:
 				continue                      # the ISP handoff, outside
 			if int(d.room) == goods: delivered += 1
 			else: elsewhere += " " + str(d.name)
-		if delivered < 3:
-			fail("only %d of the delivery is in goods in;%s is elsewhere"
-				% [delivered, elsewhere])
+		# HOW MANY IS THE GAME'S OWN LIST, not a 3 written here. This said
+		# "at least three" and broke the day the starting kit got shorter --
+		# a second copy of START_KIT living in a test.
+		var want_kit: int = t.START_KIT.size()
+		if delivered < want_kit:
+			fail("only %d of the %d-box delivery is in goods in;%s is elsewhere"
+				% [delivered, want_kit, elsewhere])
 		else:
 			ok("%d boxes delivered to goods in, not to the room you start in" % delivered)
 
@@ -634,8 +638,8 @@ func _init() -> void:
 			var df: int = int(floor((d.pos.y + 0.3) / t.fheight))
 			if t.room_of(df, int(floor(d.pos.x)), int(floor(d.pos.z))) == goods:
 				seen += 1
-		if seen < 3:
-			fail("goods in holds 3 boxes and the view draws %d of them" % seen)
+		if seen < want_kit:
+			fail("goods in holds %d boxes and the view draws %d of them" % [want_kit, seen])
 		else:
 			ok("and all %d of them are standing on the floor of it" % seen)
 
@@ -829,10 +833,18 @@ func _init() -> void:
 		t.teleport(t.room_centre(goods) + Vector3(0, 0.4, 0))
 		for i in range(10):
 			await process_frame
+		# WHATEVER IS STILL IN GOODS IN, by where it is rather than by name.
+		# This looked for "edge", which was the router in the old starting
+		# kit -- a third copy of START_KIT, and it broke when the kit did.
 		var carry := -1
 		for i in range(t.devices.size()):
-			if int(t.devices[i].get("site", -1)) >= 0 and t.devices[i].name == "edge":
+			var di: Dictionary = t.devices[i]
+			if int(di.get("site", -1)) < 0:
+				continue
+			var dfy: int = int(floor((di.pos.y + 0.3) / t.fheight))
+			if t.room_of(dfy, int(floor(di.pos.x)), int(floor(di.pos.z))) == goods:
 				carry = i
+				break
 		if carry < 0:
 			fail("nothing left in goods in to pick up")
 		else:
@@ -1213,10 +1225,28 @@ func _init() -> void:
 				# metres and the same price -- and if those two numbers ever
 				# stop matching, one of the two ways of playing this game is
 				# cheaper than the other.
+				# A SECOND BOX AT THE FAR END, BOUGHT FOR IT. This ran to
+				# `files:1`, which was port 1 of the old starting kit's
+				# server. The starting kit is a minitower now: one socket,
+				# and the walked run above is already in it, so there was no
+				# hole left for the typed run and the line was refused. What
+				# this leg is comparing is two ways of getting copper between
+				# the SAME TWO ROOMS, so anything with a free port standing in
+				# the far room will do.
+				t.command("order switch8 far2")
 				t.command("spool back")
+				t.command("deliver far2 #%d" % comms0)
+				for i in range(10):
+					await process_frame
+				var far_i: int = _device(t, "far2")
+				if far_i < 0:
+					fail("could not stand a second box in the comms cupboard")
+				var far_p: int = t._free_port(int(t.devices[far_i].site)) if far_i >= 0 else 0
+				# The purse is read AFTER the box is bought and carried, so
+				# what this leg compares is copper against copper.
 				var money2: int = int(t.ses_state().get("money", 0))
-				var typed: String = t.command("cable core:%d files:1 %s"
-					% [t._free_port(int(t.devices[swi2].site)),
+				var typed: String = t.command("cable core:%d far2:%d %s"
+					% [t._free_port(int(t.devices[swi2].site)), far_p,
 						str(t.drum_grade())])
 				var links2: Array = t.site_links()
 				if links2.size() != links1.size() + 1:
@@ -1691,8 +1721,20 @@ func _init() -> void:
 			# kept so that a failure says which of them the tower refused.
 			# `spool back` first because both hands are still on the drum from
 			# the run above -- core's rule, and the same refusal a player reads.
-			var script: Array = ["spool back", "carry files", "go mdf", "drop",
-				"spool cat6", "plug files:0", "plug core:9"]
+			# THE PORTS ARE ASKED FOR, NOT TYPED. This said `plug files:0` and
+			# `plug core:9`: port 0 of the old starting kit's server and port
+			# 9 of its switch24. The starting kit is a switch4 and a minitower
+			# now -- there is no port 9, and files:0 already has the walked
+			# run in it -- so both lines were refused and the socket leg
+			# blamed the socket. A box is ordered for this and the free ports
+			# come from the model, which is what a player reads off `show`.
+			await _tell(self, c, "order switch8 sock1")
+			for i in range(4):
+				await process_frame
+			var core_i: int = _device(t, "core")
+			var core_p: int = t._free_port(int(t.devices[core_i].site)) if core_i >= 0 else 0
+			var script: Array = ["spool back", "carry sock1", "go mdf", "drop",
+				"spool cat6", "plug sock1:0", "plug core:%d" % core_p]
 			var talk := ""
 			var laid := ""
 			for cmd in script:

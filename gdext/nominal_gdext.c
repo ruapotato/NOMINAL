@@ -941,6 +941,18 @@ static void m_site_outlets(Station *st, const GDExtensionConstTypePtr *args, voi
     buf_free(&o);
 }
 
+/* site_opening_money() -> int — what a new session starts with.
+ *
+ * The window used to type 60000 into ses_start() and that was the FOURTH copy
+ * of the number; see SITE_OPENING_MONEY in core/site.h for what it costs to
+ * have four. No site is needed to answer this -- it is the constant, not a
+ * reading of a game -- which is what lets the window ask before it starts one. */
+static void m_site_opening_money(Station *st, const GDExtensionConstTypePtr *args, void *ret)
+{
+    (void)st; (void)args;
+    *(int64_t *)ret = (int64_t)SITE_OPENING_MONEY;
+}
+
 /* site_links() -> String — "i a aport b bport room_a room_b metres cost kind
  * state" per line. The cables that really exist, so the tray above the
  * corridor carries the runs the site model was charged for and no others. */
@@ -1141,6 +1153,7 @@ static const MethodDef METHODS[] = {
     { "site_cmd",      m_site_cmd,      1, { GDEXTENSION_VARIANT_TYPE_STRING }, GDEXTENSION_VARIANT_TYPE_STRING },
     { "site_devs",     m_site_devs,     0, { 0 },                            GDEXTENSION_VARIANT_TYPE_STRING },
     { "site_outlets",  m_site_outlets,  0, { 0 },                            GDEXTENSION_VARIANT_TYPE_STRING },
+    { "site_opening_money", m_site_opening_money, 0, { 0 },                 GDEXTENSION_VARIANT_TYPE_INT },
     { "site_links",    m_site_links,    0, { 0 },                            GDEXTENSION_VARIANT_TYPE_STRING },
     { "site_room_of",  m_site_room_of,  1, { GDEXTENSION_VARIANT_TYPE_INT }, GDEXTENSION_VARIANT_TYPE_INT },
     { "ses_start",     m_ses_start,     2, { GDEXTENSION_VARIANT_TYPE_INT, GDEXTENSION_VARIANT_TYPE_INT }, GDEXTENSION_VARIANT_TYPE_STRING },

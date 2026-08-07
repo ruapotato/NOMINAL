@@ -3217,7 +3217,7 @@ bool session_line(Session *ses, const char *line, Buf *out)
             strcmp(t[0], "site") == 0) {
             if (!ses->up) {
                 uint64_t seed = ses->seed;
-                if (!session_start(ses, seed, 60000)) {
+                if (!session_start(ses, seed, SITE_OPENING_MONEY)) {
                     buf_puts(out, "that seed makes no building.\n");
                     return true;
                 }

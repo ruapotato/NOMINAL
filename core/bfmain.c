@@ -485,7 +485,7 @@ int main(int argc, char **argv)
     if (argc > 2 && strcmp(argv[1], "--towersh") == 0) {
         Session ses;
         uint64_t seed = strtoull(argv[2], NULL, 10);
-        long budget = argc > 3 ? strtol(argv[3], NULL, 10) : 60000;
+        long budget = argc > 3 ? strtol(argv[3], NULL, 10) : SITE_OPENING_MONEY;
         if (!session_start(&ses, seed, budget)) {
             printf("seed %llu makes no building with an MDF in it\n",
                    (unsigned long long)seed);
@@ -515,7 +515,7 @@ int main(int argc, char **argv)
     if (argc > 2 && (strcmp(argv[1], "--sitesh") == 0 ||
                      strcmp(argv[1], "--site") == 0)) {
         uint64_t seed = strtoull(argv[2], NULL, 10);
-        long budget = argc > 3 ? strtol(argv[3], NULL, 10) : 60000;
+        long budget = argc > 3 ? strtol(argv[3], NULL, 10) : SITE_OPENING_MONEY;
         Building b;
         if (!bld_generate(&b, seed)) {
             printf("seed %llu makes no building\n", (unsigned long long)seed);

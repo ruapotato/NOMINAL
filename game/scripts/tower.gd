@@ -1511,10 +1511,25 @@ func _ses_start() -> void:
 	site_up = false
 	if machine == null or not machine.has_method("ses_start"):
 		return
-	if str(machine.ses_start(seed_no, 60000)).strip_edges() == "":
+	if str(machine.ses_start(seed_no, int(machine.site_opening_money()))).strip_edges() == "":
 		return
 	site_up = true
-	for line in ["order router edge", "order switch24 core", "order server files"]:
+	# WHAT IS IN THE VAN ON DAY ONE, and it is deliberately not much.
+	#
+	# It was a router, a switch24 and a server: 2,400 of the best kit in the
+	# shop, free, standing in goods in before the player had made a single
+	# decision. The owner: "I suspect the default gear given to the player is
+	# too much. You should start with basic server, basic uplink, and a switch
+	# with a few ports. Just enough to get off the ground, not enough to keep
+	# the whole system running until day thirty."
+	#
+	# So it is the bottom of each range -- a switch4 and a minitower, 505 the
+	# pair -- and no router at all, because routing between two subnets is a
+	# thing you decide you need and then buy. Measured on seed 7008: this kit
+	# carries three desks and cannot address a second segment, and the first
+	# twenty-desk tenancy pays nothing until a real server is under it. That
+	# is the decision the grades were built for, arriving on day one.
+	for line in START_KIT:
 		machine.ses_cmd(line)
 	# HOW MUCH OF THE TOWER IS OPEN IS THE SESSION'S NUMBER. It used to be a 2
 	# written in this file, which was right on day one and a second source of
@@ -2312,6 +2327,12 @@ func _spawn_player() -> void:
 # standing in a rack slot, or a 3400 machine that looks like the 45 one. The
 # grades landed in core/site.c (D43) and the game test now walks the shop's
 # own list against these, so a fourth grade cannot arrive unpainted.
+# WHAT IS IN THE VAN ON DAY ONE. Named here rather than typed into the line
+# that sends it, because game/tests/tower.gd used to assert "at least three
+# boxes are in goods in" -- a second copy of this list, and it broke the day
+# the list got shorter. The test reads this now.
+const START_KIT := ["order switch4 core", "order minitower files"]
+
 const DEV_U := {"uplink": 1, "switch4": 1, "switch8": 1, "switch24": 1,
 	"router": 1, "pc": 4, "minitower": 4, "server": 2, "rackserver": 2,
 	"workstation": 4}

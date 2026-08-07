@@ -56,6 +56,45 @@
                                  /* a function of the room, not a table.    */
 #define SITE_PATCH_M       3     /* a patch lead at each end of every run   */
 
+/* WHAT YOU START WITH, AND WHY IT IS THIS NUMBER.
+ *
+ * It was 60,000, written out four times -- twice in core/bfmain.c, once in
+ * core/session.c and once in game/scripts/tower.gd -- which is this project's
+ * standing defect in its purest form: one fact with four answers, and no way
+ * to change it without finding all of them.
+ *
+ * The number itself was the bigger problem. A blind playtester played to day
+ * 70 and reported the opening as the weakest part of the game: "Days 1-20 are
+ * too easy and slightly boring... money accumulates... there is no pressure
+ * at all in the first three tenancies; the build is mechanical and there is
+ * no decision in it." The owner had already reached the same conclusion from
+ * the other side -- "I suspect the default gear given to the player is too
+ * much... just enough to get off the ground, not enough to keep the whole
+ * system running until day thirty" -- and asked for grades of kit so that
+ * what to buy is a decision. Grades landed in D43. They decide nothing while
+ * the player can afford the best of everything twelve times over.
+ *
+ * So the number was MEASURED against the thing it has to make hard, on seed
+ * 7008, playing the opening out:
+ *
+ *   a first tenancy that actually pays        4,901   switch24, server, router
+ *   the same build with the cheap server      4,011   and it earns NOTHING:
+ *                                                     20 of 80 transfers, no
+ *                                                     rent, because a 100 Mb
+ *                                                     port cannot carry 20 desks
+ *   the same build with the dear server       6,951
+ *
+ * 6,000 sits between the middle build and the dear one. You can afford a
+ * tower that works; you cannot afford to stop thinking about it. The cheap
+ * server is a real trap with a real cost, and the difference is legible --
+ * `load` names the port, `show` says its egress buffer is full.
+ *
+ * IT IS DELIBERATELY POSSIBLE TO SPEND THIS BADLY AND BE STUCK. The owner
+ * ruled on exactly that case for the network -- "that is end game, not a
+ * failure of the game, but a you did not do it right, try again" -- and the
+ * same answer applies to the money. There is no `sell`. */
+#define SITE_OPENING_MONEY 6000
+
 /* ---------------------------------------------------------- the catalogue */
 /* What the player can order. The port counts are the limit that bites first
  * and the prices are what the tenants have to cover. */
