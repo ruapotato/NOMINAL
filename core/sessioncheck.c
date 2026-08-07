@@ -1856,30 +1856,45 @@ static void check_inventory(int *passed, int *total)
     ck("and it warns that money does not come back, because there is no `sell`",
        has(say(&ses, "help", &o), "NO `sell`"));
 
-    /* game/scripts/tower.gd's _ses_start(), line for line. A keyboard player
-     * in the window cannot type `buy`, so the delivery is how they get any
-     * kit at all -- it stays, and the text stops lying about it. */
-    say(&ses, "order router edge", &o);
-    say(&ses, "order switch24 core", &o);
-    say(&ses, "order server files", &o);
+    /* AND THE OTHER WORLD IS A REAL GAME, NOT THREE LINES TYPED HERE.
+     *
+     * This used to type `order router edge / switch24 core / server files`
+     * itself and assert the total came to 2400 -- a third copy of the
+     * starting kit, living in a gate, describing a delivery that had already
+     * changed twice. It starts a GAME now, through the same door the window
+     * and `--towersh` come in by, so what is asserted is what a player really
+     * finds in goods in on day one. */
+    session_end(&ses);
+    if (!session_new_game(&ses, GATE_SEED, SITE_OPENING_MONEY)) {
+        ck("a new game starts", false);
+        buf_free(&o);
+        return;
+    }
     long spent = ses.s.spent;
-    ck("the 3D window's own starting kit costs 2400 and is already paid for",
-       spent == 2400);
+    ck("a new game's delivery is a switch4 and a minitower, 505 the pair",
+       spent == site_kind_price(SDEV_SWITCH4) + site_kind_price(SDEV_MINITOWER));
+
+    /* IN GOODS IN, which is the half a player walks to. */
+    int in_goods = 0;
+    int goods = bld_find(&ses.b, 0, RM_GOODS);
+    for (int i = 0; i < ses.s.ndev; i++)
+        if (ses.s.dev[i].room == goods && ses.s.dev[i].tenant == 0 &&
+            ses.s.dev[i].kind != SDEV_UPLINK) in_goods++;
+    ck("and it is standing in goods in, not at your feet", in_goods == 2);
 
     h = say(&ses, "help", &o);
-    ck("and now the same help names all three, where they are, and what each cost",
-       has(h, "edge") && has(h, "core") && has(h, "files") &&
-       has(h, "goods in") && has(h, "650 already paid") &&
-       has(h, "1350 already paid"));
+    ck("and the same help names both, where they are, and what each cost",
+       has(h, "core") && has(h, "files") && has(h, "goods in") &&
+       has(h, "45 already paid") && has(h, "460 already paid"));
     ck("and it says how much of the budget has already gone on them",
-       has(h, "2400 of the budget"));
+       has(h, "505 of the budget"));
 
     /* AND THE PLAYER WHO NEVER TYPES `help`. The intro is the first thing a
      * blind tester reads and it named goods in without saying what was in it. */
     say(&ses, "desk", &o);
     const char *in = say(&ses, "tower", &o);
     ck("the way in names the delivery already on the floor of goods in",
-       has(in, "ALREADY A DELIVERY") && has(in, "edge") && has(in, "files") &&
+       has(in, "ALREADY A DELIVERY") && has(in, "core") && has(in, "files") &&
        has(in, "do not order those again"));
 
     buf_free(&o);

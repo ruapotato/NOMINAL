@@ -3060,8 +3060,68 @@ bool session_start(Session *ses, uint64_t seed, long budget)
      * exactly as far as the copper does. */
     int ws = site_workstation(&ses->s);
     if (ws >= 0) box_of(ses, ws, NULL);
+    /* WHAT IS IN THE VAN ON DAY ONE, AND IT IS THE SAME VAN FOR EVERYBODY.
+     *
+     * This used to be two `order` lines in game/scripts/tower.gd, run after
+     * the window started a session. So the 3D player was handed a switch and
+     * a server and a socket client was handed nothing, and a blind playtester
+     * said so in the first paragraph of their report: "the opening you
+     * describe is not the opening I got... two devices, both the landlord's
+     * own furniture, nothing in goods in, 0 spent."
+     *
+     * Two starting states for one game, and the one every gate and every
+     * blind playtest measures was not the one a person plays. That is the
+     * architectural rule failing in the direction that is hardest to notice,
+     * and it is the same mistake SITE_OPENING_MONEY was moved into core to
+     * stop: a fact about the game living in the view.
+     *
+     * The kit itself is the owner's brief -- "basic server, basic uplink, and
+     * a switch with a few ports. Just enough to get off the ground, not
+     * enough to keep the whole system running until day thirty" -- so it is
+     * the bottom of each range and no router, because routing between two
+     * subnets is a thing you decide you need and then buy. It is CHARGED for
+     * out of the opening balance, at the price the counter charges, rather
+     * than being a gift beside it.
+     *
+     * Not in site_new(): --loadcheck and --sitecheck build their own towers
+     * out of site_new() and must keep starting from an empty building, or
+     * the calibration would be measuring a tower somebody else part-built. */
     ses->where = SES_BODY;
     ses->up = true;
+    return true;
+}
+
+/* A NEW GAME, WHICH IS A SESSION PLUS WHAT THE VAN BROUGHT.
+ *
+ * The two lines below used to live in game/scripts/tower.gd and be run after
+ * the window had started a session. So a 3D player was handed a switch and a
+ * server and a socket client was handed nothing, and a blind playtester
+ * opened their report with it: "the opening you describe is not the opening I
+ * got... two devices, both the landlord's own furniture, nothing in goods in,
+ * 0 spent." Two starting states for one game, and the one every gate measured
+ * was not the one a person played -- the architectural rule failing in the
+ * direction hardest to notice, and the same mistake SITE_OPENING_MONEY was
+ * moved into core to stop.
+ *
+ * IT IS NOT IN session_start(), and that was measured rather than assumed.
+ * Putting it there broke 21 assertions in --sitecheck and 6 in --eventcheck,
+ * because a Session is what the gates build their own towers on top of: they
+ * start from an empty building on purpose, and two boxes already standing in
+ * goods in with names of their own is a different experiment. So a Session is
+ * the machinery and a GAME is a session plus a delivery, and this is the door
+ * the window, `--towersh` and any socket client come in through.
+ *
+ * The kit is the owner's brief -- "basic server, basic uplink, and a switch
+ * with a few ports. Just enough to get off the ground, not enough to keep the
+ * whole system running until day thirty" -- so it is the bottom of each range
+ * and no router, because routing between two subnets is something you decide
+ * you need and then buy. It is CHARGED at the price the counter charges,
+ * out of the opening balance, rather than being a gift beside it. */
+bool session_new_game(Session *ses, uint64_t seed, long budget)
+{
+    if (!session_start(ses, seed, budget)) return false;
+    site_order(&ses->s, SDEV_SWITCH4, "core");
+    site_order(&ses->s, SDEV_MINITOWER, "files");
     return true;
 }
 

@@ -879,6 +879,25 @@ func _init() -> void:
 		# HOW MANY IS THE GAME'S OWN LIST, not a 3 written here. This said
 		# "at least three" and broke the day the starting kit got shorter --
 		# a second copy of START_KIT living in a test.
+		#
+		# AND THE DELIVERY IS CORE'S NOW. The window used to `order` these
+		# itself, so a socket client started a different game -- a blind
+		# playtester opened their report with it. session_new_game() delivers
+		# them; START_KIT is what the window EXPECTS to find, and this is
+		# where the two are held together.
+		var missing := ""
+		for want_name in t.START_KIT:
+			var got_it := false
+			for sd2 in t.site_devs():
+				if str(sd2.name) == str(want_name):
+					got_it = true
+			if not got_it:
+				missing += " " + str(want_name)
+		if missing != "":
+			fail("the session did not deliver what the window expects:%s" % missing)
+		else:
+			ok("the session delivered the window's day-one kit: %s"
+				% " ".join(t.START_KIT))
 		var want_kit: int = t.START_KIT.size()
 		if delivered < want_kit:
 			fail("only %d of the %d-box delivery is in goods in;%s is elsewhere"

@@ -486,7 +486,7 @@ int main(int argc, char **argv)
         Session ses;
         uint64_t seed = strtoull(argv[2], NULL, 10);
         long budget = argc > 3 ? strtol(argv[3], NULL, 10) : SITE_OPENING_MONEY;
-        if (!session_start(&ses, seed, budget)) {
+        if (!session_new_game(&ses, seed, budget)) {
             printf("seed %llu makes no building with an MDF in it\n",
                    (unsigned long long)seed);
             return 1;

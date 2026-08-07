@@ -1014,7 +1014,7 @@ static void m_ses_start(Station *st, const GDExtensionConstTypePtr *args, void *
     uint64_t seed = (uint64_t)(*(const int64_t *)args[0]);
     long budget = (long)(*(const int64_t *)args[1]);
     if (st->ses_ok) { session_end(&st->ses); st->ses_ok = false; }
-    if (!session_start(&st->ses, seed, budget)) { c_to_gdstring(ret, ""); return; }
+    if (!session_new_game(&st->ses, seed, budget)) { c_to_gdstring(ret, ""); return; }
     st->ses_ok = true;
     Buf o; buf_init(&o);
     site_dump(&st->ses.s, &o);

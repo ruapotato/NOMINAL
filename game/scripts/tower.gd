@@ -1637,8 +1637,11 @@ func _ses_start() -> void:
 	# carries three desks and cannot address a second segment, and the first
 	# twenty-desk tenancy pays nothing until a real server is under it. That
 	# is the decision the grades were built for, arriving on day one.
-	for line in START_KIT:
-		machine.ses_cmd(line)
+	# THE VAN IS CORE'S NOW. These two `order` lines lived here, which meant
+	# the window's opening and a socket client's opening were different games
+	# -- see session_new_game() in core/session.c. START_KIT is kept as what
+	# the window EXPECTS to have been delivered, and the game test asserts the
+	# session really delivered it, so the two cannot drift apart in silence.
 	# HOW MUCH OF THE TOWER IS OPEN IS THE SESSION'S NUMBER. It used to be a 2
 	# written in this file, which was right on day one and a second source of
 	# truth for every day after it -- a socket client that typed `open` moved
@@ -2440,7 +2443,7 @@ func _spawn_player() -> void:
 # that sends it, because game/tests/tower.gd used to assert "at least three
 # boxes are in goods in" -- a second copy of this list, and it broke the day
 # the list got shorter. The test reads this now.
-const START_KIT := ["order switch4 core", "order minitower files"]
+const START_KIT := ["core", "files"]
 
 const DEV_U := {"uplink": 1, "switch4": 1, "switch8": 1, "switch24": 1,
 	"router": 1, "pc": 4, "minitower": 4, "server": 2, "rackserver": 2,
