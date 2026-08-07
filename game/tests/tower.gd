@@ -367,6 +367,42 @@ func _init() -> void:
 	# not fallen through, not perched on a tread half a metre up.
 	# What a standing body reads as its own y when it is on a floor, measured
 	# rather than assumed: the capsule's origin is not at the slab.
+	# ---- THE HUD SAYS WHY THE BUILDING IS EMPTY.
+	#
+	# "Walking around the building, I don't see anybody else." Nothing was
+	# broken: people.gd draws a person at every desk a tenancy has, and on day
+	# zero no tenancy has moved in. Measured on seed 7008: 0 people on day 0,
+	# 20 on day 1, 38 by day 6. The building really is empty and the only
+	# thing that fills it is [N] -- and the HUD never said either half.
+	var hud0: String = t.hud_lines()
+	if hud0.find("day ") < 0:
+		fail("the HUD does not say what day it is:\n" + hud0)
+	elif t.service_rows().is_empty() and hud0.find("nobody has moved in") < 0:
+		fail("nobody is in the building and the HUD does not say so:\n" + hud0)
+	else:
+		for hl in hud0.split("\n"):
+			if hl.begins_with("day "):
+				ok("the HUD says: %s" % hl.strip_edges())
+	# ---- AND IT DOES NOT PRINT CORE'S WHOLE REFUSAL AT YOU.
+	#
+	# The owner read this one back to us clause by clause -- "go hash 55, F2
+	# stairwell 55, then open. It will cost you 12,096... It doesn't make any
+	# sense at all." That is `open`'s reply, which is a fine reply and a
+	# terrible permanent caption. Typing `open` still prints every word.
+	var openish := 0
+	for hl2 in hud0.split("\n"):
+		if hl2.find("stairwell") >= 0 or hl2.find("let space") >= 0 \
+				or hl2.find("fit-out") >= 0 or hl2.find("fit out") >= 0:
+			openish += 1
+	if openish > 0:
+		fail("the HUD is still reciting `open`'s refusal:\n" + hud0)
+	else:
+		ok("the HUD does not recite `open`; the full answer is still one `open` away")
+	if str(t.site("open")).find("in service") < 0 and str(t.site("open")).find("standing") < 0:
+		fail("`open` stopped explaining itself: " + str(t.site("open")))
+	else:
+		ok("and `open` itself still says the whole thing")
+
 	# ---- THE CONSOLE IS A SOCKET OF ITS OWN, AND THE RJ45 REFUSES THE LEAD.
 	#
 	# "The debugger attaches to the same port as the computer on the network
@@ -1834,8 +1870,15 @@ func _init() -> void:
 				fail("standing on the next floor and the HUD does not offer [O]")
 			else:
 				ok("standing on it, the HUD offers [O]")
-		elif says.find("standing on it") < 0 or says.find("cost") < 0:
-			fail("the HUD offers a floor without saying what it needs or costs:\n" + says)
+		elif says.find("floor %d is next" % t.floors_in_service) < 0 \
+				or says.find("[O]") < 0:
+			# NOT THE WHOLE REFUSAL ANY MORE. This used to demand the words
+			# "standing on it" and "cost" in the HUD, which is to say it
+			# demanded the six-clause paragraph the owner read back to us as
+			# nonsense. What the caption owes you is which floor is next and
+			# which key; what it costs and what it needs are `open`'s to say,
+			# and the assertion above proves `open` still says them.
+			fail("the HUD does not name the next floor and the key for it:\n" + says)
 		else:
 			ok("the HUD says what [O] needs first: "
 				+ _line_with(says, "it will cost").strip_edges())

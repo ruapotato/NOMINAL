@@ -4293,7 +4293,39 @@ func hud_lines() -> String:
 		if ses_floor() == floors_in_service:
 			s += "   [O] sign floor %d off and put it into service" % floors_in_service
 		else:
-			s += "\n" + str(_snap.open).strip_edges()
+			# ONE LINE, NOT CORE'S WHOLE REFUSAL. This printed `open`'s answer
+			# verbatim, and the owner read it back to us as what it is:
+			#
+			#   "It says floor two is not in service and you are on floor zero.
+			#    Somebody has to be standing on it to sign off. And the lift
+			#    button is not lit. So is the stairs. Go hash 55, F2 stairwell
+			#    55, then open. It will cost you 12,096... It doesn't make any
+			#    sense at all."
+			#
+			# Six clauses, two of them room numbers, one of them a price, and
+			# the whole paragraph on screen at all times whether or not the
+			# player was thinking about opening a floor. It is a fine REPLY --
+			# that is what `open` is for, and typing `open` still prints every
+			# word of it -- and it is a terrible permanent caption. The HUD
+			# says the one thing you would act on and stops.
+			s += "\n" + "floor %d is next: the stairs go up to it. Stand on it and [O]" \
+				% floors_in_service
+	# WHO IS ACTUALLY IN THE BUILDING, which is the fact that was missing.
+	#
+	# The owner walked the tower and reported "I don't see anybody else". He
+	# was right and nothing was broken: people.gd draws a person at every desk
+	# a tenancy has, and on DAY ZERO no tenancy has moved in yet -- measured,
+	# 0 people on day 0, 20 on day 1, 38 by day 6. The building really is
+	# empty, the only thing that fills it is [N], and the HUD never said so.
+	# An empty world that gives no reason for being empty reads as a broken
+	# one.
+	var ppl: Array = people_counts()
+	var nppl: int = ppl[0] + ppl[1] + ppl[2] + ppl[3]
+	var ntn: int = service_rows().size()
+	s += "\nday %d: %d tenanc%s in, %d at their desks" \
+		% [int(ses_state().get("day", 0)), ntn, "y" if ntn == 1 else "ies", nppl]
+	if ntn == 0:
+		s += "   nobody has moved in yet"
 	if not run_over:
 		s += "\n[N] the next day"
 	else:
