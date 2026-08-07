@@ -367,6 +367,39 @@ func _init() -> void:
 	# not fallen through, not perched on a tread half a metre up.
 	# What a standing body reads as its own y when it is on a floor, measured
 	# rather than assumed: the capsule's origin is not at the slab.
+	# ---- EVERY SOCKET IS ONE YOU CAN GET AT.
+	#
+	# "The default setup has the player's computer too close to a wall to get
+	# to the back of it." It was worse than that. aim() ends with the same
+	# physics ray a walking body uses, and the workstation stood UNDER its own
+	# desk: a body standing where the game says you use that machine, looking
+	# straight at its only socket, got nothing back -- not the port, not even
+	# the box. There was no angle from which the player's own computer could be
+	# cabled, which is a large part of why the spool appeared not to work.
+	#
+	# So this stands in front of each socket in turn, at arm's length, and
+	# looks at it. A port nothing can see is a port nothing can plug into.
+	for i in range(t.devices.size()):
+		var dd: Dictionary = t.devices[i]
+		if int(dd.get("site", -1)) < 0 or dd.get("ports", []).is_empty():
+			continue
+		var pf0: Dictionary = dd.ports[0]
+		var pcc: Vector3 = pf0.c
+		var stand: Vector3 = pcc + Vector3(pf0.n) * 0.65 - Vector3(0, 0.24, 0)
+		t.teleport(stand + Vector3(0, 0.3, 0))
+		for j in range(12):
+			await process_frame
+		t.aim_at(pcc)
+		for j in range(4):
+			await process_frame
+		var aa: Dictionary = t.aim()
+		if aa.is_empty() or str(aa.get("kind", "")) != "port" or int(aa.get("dev", -1)) != i:
+			fail("nothing can reach port 0 of %s: standing in front of it and looking "
+				% str(dd.name) + "at it finds %s"
+				% ("nothing" if aa.is_empty() else str(aa.get("kind", ""))))
+		else:
+			ok("port 0 of %s can be stood in front of and aimed at" % str(dd.name))
+
 	# ---- EVERYTHING THE SHOP SELLS HAS A SHAPE AND A COLOUR IN THE WORLD.
 	#
 	# DEV_U and DEV_COL are a second list of the catalogue, and a second list

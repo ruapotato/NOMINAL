@@ -2851,8 +2851,22 @@ func _workstation(room: int, ws := {}) -> void:
 	# DEVICE: it has a display output and a console, and the leads go into the
 	# back of it, which is why it is a real box in a real place rather than a
 	# picture painted on the desk.
-	var t0: Vector3 = fr.org + fr.along * (u + DESK_W - 0.52) + fr.out * 0.14
-	var t1: Vector3 = fr.org + fr.along * (u + DESK_W - 0.32) + fr.out * 0.60
+	# BESIDE THE DESK, NOT UNDER IT, AND THIS WAS MEASURED RATHER THAN
+	# REDECORATED. The owner: "the default setup has the player's computer too
+	# close to a wall to get to the back of it."
+	#
+	# He was right and it was worse than he could see. The tower stood under
+	# the desk, and aim() ends with the same physics ray a walking body uses --
+	# so the desk was in the way of its own computer. A probe standing exactly
+	# where the game says you use this machine, looking exactly at its only
+	# socket, got NOTHING back: not the port, not even the box. There was no
+	# angle from which the one port on the player's own machine could be
+	# clicked, which is why the spool appeared not to work on it.
+	#
+	# So it stands at the end of the desk with clear floor in front of it. Its
+	# ports already faced into the room; what they lacked was a line of sight.
+	var t0: Vector3 = fr.org + fr.along * (u + DESK_W + 0.10) + fr.out * 0.10
+	var t1: Vector3 = fr.org + fr.along * (u + DESK_W + 0.32) + fr.out * 0.56
 	var mn := Vector3(min(t0.x, t1.x), y + 0.02, min(t0.z, t1.z))
 	var size := Vector3(absf(t1.x - t0.x), 0.45, absf(t1.z - t0.z))
 	size.x = max(size.x, 0.20)
