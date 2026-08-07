@@ -251,7 +251,7 @@ func _init() -> void:
 		var bpos: Vector3 = lift.button_pos(up)
 		var txt: Array = t.aim_text({"kind": "liftbtn", "dev": -1, "port": -1,
 			"floor": up, "point": bpos})
-		if txt[0].find("floor %d" % up) < 0 or txt[1].find("[E]") < 0:
+		if txt[0].find("deck %d" % up) < 0 or txt[1].find("[E]") < 0:
 			fail("the crosshair on the floor %d button says: %s / %s" % [up, txt[0], txt[1]])
 		else:
 			ok("the crosshair on it reads: %s -- %s" % [txt[0], txt[1]])
@@ -560,7 +560,7 @@ func _init() -> void:
 		ok("every way out on the map belongs to a source standing in that room")
 	# and it can be read with no window at all
 	var mtext: String = t.command("map")
-	if mtext.find("floor %d" % t.player_floor()) < 0 or mtext.split("\n").size() < 3:
+	if mtext.find("deck %d" % t.player_floor()) < 0 or mtext.split("\n").size() < 3:
 		fail("`map` over the socket says nothing useful:\n" + mtext)
 	else:
 		ok("`map` over the socket: %s" % mtext.split("\n")[0].strip_edges())
@@ -2006,7 +2006,7 @@ func _init() -> void:
 		# at head height. The second is D36's answer to "I don't see cabling for
 		# any of the boxes" and it is the kind of thing only a check like this
 		# keeps true, because it looks right in the data either way.
-		var sw_room: String = "f%d.comms" % int(row.floor)
+		var sw_room: String = "d%d.comms" % int(row.floor)
 		for cmd2 in ["spool back", "buy switch24 tsw", "go goods", "carry tsw",
 				"go " + sw_room, "drop",
 				"serve %d tsw cat5e 10" % int(row.tenant)]:
@@ -2115,7 +2115,7 @@ func _init() -> void:
 				fail("standing on the next floor and the HUD does not offer [O]")
 			else:
 				ok("standing on it, the HUD offers [O]")
-		elif says.find("floor %d is next" % t.floors_in_service) < 0 \
+		elif says.find("deck %d is next" % t.floors_in_service) < 0 \
 				or says.find("[O]") < 0:
 			# NOT THE WHOLE REFUSAL ANY MORE. This used to demand the words
 			# "standing on it" and "cost" in the HUD, which is to say it

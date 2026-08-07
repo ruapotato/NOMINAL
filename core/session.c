@@ -72,7 +72,7 @@ static void room_label(const Session *ses, int r, char *out, size_t cap)
 {
     const Room *rm = room_of(ses, r);
     if (!rm) { snprintf(out, cap, "nowhere"); return; }
-    snprintf(out, cap, "f%d %s #%d", rm->floor, bld_kind_name(rm->kind), r);
+    snprintf(out, cap, "d%d %s #%d", rm->floor, bld_kind_name(rm->kind), r);
 }
 
 static int here_floor(const Session *ses)
@@ -102,7 +102,7 @@ static int room_arg(const Session *ses, const char *spec)
     int r = site_room_by_name(&ses->s, low);
     if (r >= 0) return r;
     char buf[64];
-    snprintf(buf, sizeof buf, "f%d.%s", here_floor(ses), low);
+    snprintf(buf, sizeof buf, "d%d.%s", here_floor(ses), low);
     r = site_room_by_name(&ses->s, buf);
     if (r >= 0) return r;
     int d = site_dev_by_name(&ses->s, spec);
@@ -143,7 +143,7 @@ static bool dev_here(const Session *ses, int dev)
 }
 
 /* A device by name or index, and where it is if it is not here -- because
- * "no such device" and "it is four floors up" are different problems and a
+ * "no such device" and "it is four decks up" are different problems and a
  * player who is told the first when the second is true goes looking in the
  * wrong place. */
 static int dev_arg(const Session *ses, const char *a)
@@ -673,7 +673,7 @@ static void do_sit(Session *ses, const char *what, Buf *out)
         if (t->tenant != tn || !t->moved) continue;
         /* THREE THINGS WERE WRONG WITH THIS AND A PLAYTESTER HIT ALL THREE.
          *
-         * It said "on this floor" while reading `tried`, which is per
+         * It said "on this deck" while reading `tried`, which is per
          * TENANCY -- and floors hold two or three of them, so a studio with
          * nothing working said the floor was dead while the web host beside
          * it served 24 of 24 visitors.
@@ -775,7 +775,7 @@ static void do_desks(Session *ses, int n, char *t[MAXTOK], Buf *out)
     if (!shown) {
         if (want >= 0)
             buf_printf(out, "tenancy %d has not moved in, so there are no desks "
-                            "on that floor yet.\n  `demand` says when they "
+                            "on that deck yet.\n  `demand` says when they "
                             "come.\n", want);
         else
             buf_puts(out, "nobody has moved in yet, so there is not a desk in "
@@ -943,7 +943,7 @@ static void do_look(Session *ses, Buf *out)
         if (!n++) buf_puts(out, "  kit in this room:\n");
         dev_line(ses, i, out);
         if (i == ses->carrying)
-            buf_puts(out, "      -- and it is in your hands, not on the floor\n");
+            buf_puts(out, "      -- and it is in your hands, not on the deck\n");
     }
     if (!n) buf_puts(out, "  there is no kit in this room.\n");
     /* WHAT IS ON THE WALL, which is not kit and does not move. A jack is the
@@ -1010,7 +1010,7 @@ static void do_look(Session *ses, Buf *out)
                           "pulls a run from\n         wherever the nearest one "
                           "with a hole in it is.\n");
     }
-    buf_puts(out, "  (`go #<n>` by number, `go <kind>` for one on this floor,\n"
+    buf_puts(out, "  (`go #<n>` by number, `go <kind>` for one on this deck,\n"
                   "   `go <box>` for the room a box is in)\n");
 }
 
@@ -1022,7 +1022,7 @@ static void do_where(Session *ses, Buf *out)
                w, ses->walked, ses->s.money);
     int n = 0;
     for (int i = 0; i < ses->s.ndev; i++) if (ses->s.dev[i].room == ses->room) n++;
-    buf_printf(out, "%d box%s in reach, %d of %d floors in service\n",
+    buf_printf(out, "%d box%s in reach, %d of %d decks in service\n",
                n, n == 1 ? "" : "es", ses->floors, ses->b.floors);
     if (ses->carrying >= 0)
         buf_printf(out, "you are carrying %s, in both hands\n",
@@ -1179,7 +1179,7 @@ static void do_help(const Session *ses, Buf *out)
             "                               one here that remembers yesterday --\n"
             "                               and it names the port that threw the\n"
             "                               audio away, which is usually not on\n"
-            "                               this floor\n"
+            "                               this deck\n"
             "\n"
             "  stand                        get up. Their machine goes back to\n"
             "                               being a card on a wire, and anything\n"
@@ -1260,13 +1260,13 @@ static void do_help(const Session *ses, Buf *out)
         "\n"
         "WHERE YOU ARE -- and it matters. You can only touch what is in the\n"
         "room with you, and walking is metres of real building.\n"
-        "  where              floor, room, what is in reach, how far you walked\n"
+        "  where              deck, room, what is in reach, how far you walked\n"
         "  look               what is in this room, and the ways out of it\n"
-        "  map                an ASCII plan of this floor\n"
+        "  map                an ASCII plan of this deck\n"
         "  go <room>          walk. `go comms` `go f3.office` `go #41` `go core`\n"
         "                     -- a box's name walks you to the room it is in\n"
-        "  lift <floor>       take the lift. Only floors in service have a button\n"
-        "  open               put the next floor in service. Go and stand on it\n"
+        "  lift <deck>       take the lift. Only decks in service have a button\n"
+        "  open               put the next deck in service. Go and stand on it\n"
         "                     first -- by the stairs, because its lift button is\n"
         "                     not lit yet -- and it costs the landlord's fit-out\n"
         "                     charge, by the square metre of let space on it\n"
@@ -1274,7 +1274,7 @@ static void do_help(const Session *ses, Buf *out)
         "                     where the support tickets are\n"
         "\n"
         "BUYING, AND CARRYING IT IN. Kit is delivered to GOODS IN on the\n"
-        "ground floor -- not to your hands and not to the room you are\n"
+        "ground deck -- not to your hands and not to the room you are\n"
         "standing in. Getting it where it goes is a walk, and the walk is\n"
         "metres of real building.\n"
         "  buy <kind> [name]  switch8 120   switch24 400   router 650\n"
@@ -1329,7 +1329,7 @@ static void do_help(const Session *ses, Buf *out)
         "  uncable <n>        pull one out\n"
         "\n"
         "AND WHAT IT WOULD COST, BEFORE ANY OF IT IS BOUGHT. The tray metres are\n"
-        "not the metres you walk and there is no way to guess them from the floor\n"
+        "not the metres you walk and there is no way to guess them from the deck\n"
         "plan, so ask:\n"
         "  quote <room|box>   from the room you are standing in. One name is the\n"
         "                     common case: you are in the cupboard with the drum,\n"
@@ -1429,9 +1429,9 @@ static void do_help(const Session *ses, Buf *out)
         "                            interface it makes is eth0.21. Spelling it\n"
         "                            `eth0` is refused\n"
         "                            an address on a card FOR ONE VLAN, which is how\n"
-        "                            one socket terminates a subnet per floor. It is\n"
+        "                            one socket terminates a subnet per deck. It is\n"
         "                            an address like any other: a server addressed\n"
-        "                            only on subinterfaces serves its floor's files\n"
+        "                            only on subinterfaces serves its deck's files\n"
         "                            and holds its pools exactly as eth0 would, and\n"
         "                            all of it is on its disk and comes back after a\n"
         "                            power cut\n"
@@ -1465,7 +1465,7 @@ static void do_help(const Session *ses, Buf *out)
         "  dns <box> <name> <ip>     one name in that server's zone, written onto\n"
         "                            the box's disk beside its address. A name it\n"
         "                            has not got is forwarded to whatever\n"
-        "                            `resolver <box> <ip>` set, so a floor's own\n"
+        "                            `resolver <box> <ip>` set, so a deck's own\n"
         "                            server resolves the internet too\n"
         "  ups <box>          a battery under it, so a mains failure is not a\n"
         "                     filesystem to check in the morning\n"
@@ -1586,7 +1586,7 @@ static void do_help(const Session *ses, Buf *out)
         "                     `rescue`. `unplug` first\n"
         "\n"
         "READING THE STATE\n"
-        "  show [box]  links  money  demand  rooms [floor]  frames\n"
+        "  show [box]  links  money  demand  rooms [deck]  frames\n"
         "  demand             who is moving in, when, and what they want. The\n"
         "                     arithmetic at the bottom is the shape of the job\n");
 }
@@ -1602,21 +1602,21 @@ static int lift_lobby(const Session *ses, int floor)
 static void do_lift(Session *ses, int f, Buf *out)
 {
     if (f < 0 || f >= ses->b.floors) {
-        buf_printf(out, "this lift does not pass floor %d.\n", f);
+        buf_printf(out, "this lift does not pass deck %d.\n", f);
         return;
     }
     /* The button for a floor nobody has opened is not lit. Same rule as
      * lift.gd, same words, because it is the same lift. */
     if (f >= ses->floors) {
-        buf_printf(out, "refused: the lift does not move -- floor %d is not in "
+        buf_printf(out, "refused: the lift does not move -- deck %d is not in "
                         "service and its\n  button is not lit.\n"
-                        "  `open` puts the next floor into service.\n", f);
+                        "  `open` puts the next deck into service.\n", f);
         return;
     }
     /* Ask for the floor you are on and you get told, not walked to the lift
      * and then told -- the walk is a cost and charging it for nothing is
      * the game taking metres off a player for a typo. */
-    if (f == here_floor(ses)) { buf_puts(out, "you are on that floor already.\n"); return; }
+    if (f == here_floor(ses)) { buf_puts(out, "you are on that deck already.\n"); return; }
     int from = lift_lobby(ses, here_floor(ses));
     int to = lift_lobby(ses, f);
     if (from < 0 || to < 0) { buf_puts(out, "there is no lift in this building.\n"); return; }
@@ -1625,7 +1625,7 @@ static void do_lift(Session *ses, int f, Buf *out)
     /* THE LIFT IS WHY ANYBODY PUTS A SWITCH ON THE EIGHTH FLOOR. What is in
      * your hands rides up in it with you. */
     if (ses->carrying >= 0) site_move(&ses->s, ses->carrying, to);
-    buf_printf(out, "floor %d.\n", f);
+    buf_printf(out, "deck %d.\n", f);
     do_look(ses, out);
 }
 
@@ -1633,7 +1633,7 @@ static void do_lift(Session *ses, int f, Buf *out)
  *
  * `open` was free, took no time and could be typed from anywhere, so there
  * was no reason not to open every floor in the tower in the first minute --
- * which made the one decision in the verb ("can I carry another floor yet?")
+ * which made the one decision in the verb ("can I carry another deck yet?")
  * not a decision at all. Two things fix it and both are things about the
  * world rather than rules about the player:
  *
@@ -1664,7 +1664,7 @@ static long open_price(const Session *ses, int floor)
 static void do_open(Session *ses, Buf *out)
 {
     if (ses->floors >= ses->b.floors) {
-        buf_puts(out, "every floor in this tower is already in service.\n");
+        buf_puts(out, "every deck in this tower is already in service.\n");
         return;
     }
     int f = ses->floors;
@@ -1684,7 +1684,7 @@ static void do_open(Session *ses, Buf *out)
         if (up < 0) up = bld_find(&ses->b, f, RM_CORRIDOR);
         char w[48];
         room_label(ses, up, w, sizeof w);
-        buf_printf(out, "floor %d is not in service and you are on floor %d. "
+        buf_printf(out, "deck %d is not in service and you are on deck %d. "
                         "Somebody has to be\n  standing on it to sign it off -- "
                         "and the lift button is not lit, so that\n  is the "
                         "stairs: `go #%d` (%s), then `open`.\n",
@@ -1695,15 +1695,15 @@ static void do_open(Session *ses, Buf *out)
         return;
     }
     if (ses->s.money < fee) {
-        buf_printf(out, "refused: floor %d is not in service -- its fit-out is %ld "
-                        "and you have %ld.\n  A floor comes into service when it "
+        buf_printf(out, "refused: deck %d is not in service -- its fit-out is %ld "
+                        "and you have %ld.\n  A deck comes into service when it "
                         "has been paid for.\n", f, fee, ses->s.money);
         return;
     }
     ses->s.money -= fee;
     ses->s.spent += fee;
     ses->floors++;
-    buf_printf(out, "floor %d is in service, %ld paid for the fit-out, %ld left. "
+    buf_printf(out, "deck %d is in service, %ld paid for the fit-out, %ld left. "
                     "%d let space%s\n  on it, wanting %d drop%s between them.\n",
                f, fee, ses->s.money, lets, lets == 1 ? "" : "s",
                drops, drops == 1 ? "" : "s");
@@ -2334,7 +2334,7 @@ static void do_jack(Session *ses, int n, char *t[MAXTOK], Buf *out)
     if (home < 0) {
         buf_printf(out, "there is no box called %s in this building. The far end "
                         "of a jack is a port\n  on a box you own -- usually the "
-                        "core switch, or the floor's own.\n", box);
+                        "core switch, or the deck's own.\n", box);
         return;
     }
     if (!colon) {
@@ -2499,7 +2499,7 @@ static bool carry_box(Session *ses, int d, Buf *out)
     }
     if (ses->spool_kind >= 0) {
         buf_printf(out, "refused: you have a drum of cable in your hands, so "
-                        "%s is still on\n  the floor -- you did not pick it up. "
+                        "%s is still on\n  the deck -- you did not pick it up. "
                         "`spool back` puts the drum on the\n  shelf, and then "
                         "`carry %s`.\n",
                    ses->s.dev[d].name, ses->s.dev[d].name);
@@ -2510,7 +2510,7 @@ static bool carry_box(Session *ses, int d, Buf *out)
      * out of a leased floor with the machine somebody works on is not a
      * thing the building's IT department gets to do. */
     if (ses->s.dev[d].tenant != 0) {
-        buf_printf(out, "refused: %s belongs to the tenant on floor %d, not "
+        buf_printf(out, "refused: %s belongs to the tenant on deck %d, not "
                         "to you, and it\n  stays where it is. Their kit is "
                         "theirs; you are here for the wall, the\n  cupboard "
                         "and the copper.\n",
@@ -2578,7 +2578,7 @@ static void drop_box(Session *ses, Buf *out)
         return;
     }
     buf_printf(out, "  NOTHING IS FEEDING IT. Power comes down conduit and none "
-                    "reaches %s,\n  so it is a box on a floor: its power button "
+                    "reaches %s,\n  so it is a box on a deck: its power button "
                     "does nothing.\n", ses->s.dev[d].name);
     buf_printf(out, "  `feed %s` pulls a run from the nearest source with a hole "
                     "in it, and\n  `conduits` says what each run is carrying "
@@ -2609,7 +2609,7 @@ static bool travel_to(Session *ses, int dst, Buf *out)
             if (to != ses->room) {
                 ses->room = to;
                 if (ses->carrying >= 0) site_move(&ses->s, ses->carrying, to);
-                buf_printf(out, "you take the lift to floor %d.\n", f);
+                buf_printf(out, "you take the lift to deck %d.\n", f);
             }
         }
     }
@@ -2669,7 +2669,7 @@ static void do_deliver(Session *ses, int n, char *t[MAXTOK], Buf *out)
             buf_printf(out, "there is no room or box called %s. The last word is "
                             "where it goes:\n  `deliver <box> <room>`, `deliver "
                             "<box>` on its own for the room you are\n  standing "
-                            "in. `rooms` lists them, `map` draws the floor.\n",
+                            "in. `rooms` lists them, `map` draws the deck.\n",
                        t[n - 1]);
             return;
         }
@@ -3180,7 +3180,7 @@ void session_prompt(const Session *ses, char *out, size_t cap)
                     break;
     case SES_BODY: {
         const Room *rm = room_of(ses, ses->room);
-        snprintf(out, cap, "f%d %s> ", rm ? rm->floor : 0,
+        snprintf(out, cap, "d%d %s> ", rm ? rm->floor : 0,
                  rm ? bld_kind_name(rm->kind) : "?");
         break; }
     default: snprintf(out, cap, "you@desk# "); break;
@@ -3192,9 +3192,9 @@ void session_prompt(const Session *ses, char *out, size_t cap)
  * bottom of `demand` is the whole shape of the problem in two lines. */
 static void intro(Session *ses, Buf *out)
 {
-    buf_printf(out, "\n--- %llu, a tower of %d floors and %d rooms ---\n",
+    buf_printf(out, "\n--- %llu, a tower of %d decks and %d rooms ---\n",
                (unsigned long long)ses->seed, ses->b.floors, ses->b.nrooms);
-    buf_printf(out, "you stand up from your desk and walk into the MDF. There is "
+    buf_printf(out, "you stand up from your desk and walk into Engineering. There is "
                     "an ISP handoff\non the wall (%d/%d) and nothing is plugged "
                     "into it. You have %ld to spend.\n",
                ses->s.uplink >= 0 ? 1 : 0, 1, ses->s.money);
@@ -3231,7 +3231,7 @@ static void intro(Session *ses, Buf *out)
             for (int i = 0; i < ses->s.ndev; i++)
                 if (ses->s.dev[i].room == g && ses->s.dev[i].tenant == 0) k++;
             if (k) {
-                buf_printf(out, "AND THERE IS ALREADY A DELIVERY ON THE FLOOR OF "
+                buf_printf(out, "AND THERE IS ALREADY A DELIVERY ON THE DECK OF "
                                 "IT -- %d box%s, paid for:\n", k,
                            k == 1 ? "" : "es");
                 for (int i = 0; i < ses->s.ndev; i++) {
@@ -3460,7 +3460,7 @@ bool session_line(Session *ses, const char *line, Buf *out)
         int r = room_arg(ses, t[1]);
         if (r < 0) {
             buf_printf(out, "there is no room or box called %s. `look` lists the "
-                            "ways out of this one, `map` draws the floor.\n", t[1]);
+                            "ways out of this one, `map` draws the deck.\n", t[1]);
             return true;
         }
         if (walk_to(ses, r, out, false)) do_look(ses, out);
@@ -3468,7 +3468,7 @@ bool session_line(Session *ses, const char *line, Buf *out)
     }
     if (strcmp(t[0], "lift") == 0) {
         if (n < 2) {
-            buf_printf(out, "lift to which floor? %d of %d are in service.\n",
+            buf_printf(out, "lift to which deck? %d of %d are in service.\n",
                        ses->floors, ses->b.floors);
             return true;
         }
@@ -3769,7 +3769,7 @@ bool session_line(Session *ses, const char *line, Buf *out)
      * Nothing here is a teleport and nothing here is free -- walk_to charges
      * the metres, one box at a time, because both hands are on it. */
     /* `lift` is the lift, and it is handled above: a verb that meant both
-     * "ride to floor 3" and "pick that switch up" would be one typo away
+     * "ride to deck 3" and "pick that switch up" would be one typo away
      * from a walk nobody asked for. */
     if (strcmp(t[0], "carry") == 0 || strcmp(t[0], "pick") == 0) {
         int at = (strcmp(t[0], "pick") == 0 && n > 2 &&
@@ -3893,7 +3893,7 @@ bool session_line(Session *ses, const char *line, Buf *out)
             if (tn->tenant != want || tn->moved) continue;
             buf_printf(out, "tenancy %d does not move in until day %d, and their "
                             "desks arrive with\n  them -- there is nothing on that "
-                            "floor to run copper to yet. It is day %d.\n"
+                            "deck to run copper to yet. It is day %d.\n"
                             "  `demand` lists who is coming and when. The switch "
                             "can go in early; the\n  drops cannot.\n",
                        want, tn->day, ses->s.day);

@@ -405,7 +405,7 @@ int main(int argc, char **argv)
             printf("\naverage tower: %.1f floors, %.0f rooms, %.0f doors, %.0f m2 of plate\n",
                    (double)floors / n, (double)rooms / n, (double)doors / n, area / floors);
         if (diffn)
-            printf("MDF to a comms cupboard: walking and cabling differ by %.1f m on average\n",
+            printf("Engineering to a comms cupboard: walking and cabling differ by %.1f m on average\n",
                    diffsum / (double)diffn);
         printf("%d/%d deliberately broken buildings were caught by the check that owns them\n",
                caught, mut);
@@ -430,7 +430,7 @@ int main(int argc, char **argv)
             double *w = nom_alloc(sizeof(double) * (size_t)b.nrooms);
             double *c = nom_alloc(sizeof(double) * (size_t)b.nrooms);
             bld_walk_all(&b, mdf, w); bld_cable_all(&b, mdf, c);
-            printf("\nfrom the MDF on the ground floor to this floor's comms cupboard:\n");
+            printf("\nfrom Engineering on the lowest deck to this deck's comms cupboard:\n");
             printf("  carrying it   %6.1f m   (corridors, doors, stairs or the lift)\n", w[comms]);
             printf("  cabling it    %6.1f m   (tray, comms cupboard, riser)\n", c[comms]);
             nom_free(w); nom_free(c);
@@ -487,7 +487,7 @@ int main(int argc, char **argv)
         uint64_t seed = strtoull(argv[2], NULL, 10);
         long budget = argc > 3 ? strtol(argv[3], NULL, 10) : SITE_OPENING_MONEY;
         if (!session_new_game(&ses, seed, budget)) {
-            printf("seed %llu makes no building with an MDF in it\n",
+            printf("seed %llu makes no station with Engineering in it\n",
                    (unsigned long long)seed);
             return 1;
         }

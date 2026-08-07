@@ -122,7 +122,7 @@ func _draw() -> void:
 	draw_circle(me, 2.6, Color("#ffd479"))
 
 	if _font:
-		draw_string(_font, Vector2(PAD, PAD + 8.0), "FLOOR %d" % floor_no,
+		draw_string(_font, Vector2(PAD, PAD + 8.0), "DECK %d" % floor_no,
 			HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(0.78, 0.84, 0.90))
 
 

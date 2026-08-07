@@ -2,8 +2,8 @@
  *
  * THE QUESTION THIS GATE ANSWERS, and it is the one the brief made the
  * deliverable: *"A naive build -- everything flat on one switch, one subnet,
- * cheap copper -- must start to feel slow around three floors and genuinely
- * break by about five. A thought-through build -- segmented per floor or per
+ * cheap copper -- must start to feel slow around three decks and genuinely
+ * break by about five. A thought-through build -- segmented per deck or per
  * tenant, a router doing real work, uplinks sized for what is behind them --
  * must carry substantially further. Measure this and print the numbers."*
  *
@@ -219,7 +219,7 @@ static void show(const char *what, const Step *st, int n)
      * So the column keeps its meaning and stops being coy about it. A
      * developer reading this table and the game's own `status` should not
      * have to work out why two "work done" numbers differ. */
-    printf("  tenancies  floors  desks   carried     slowest   busiest port"
+    printf("  tenancies  decks  desks   carried     slowest   busiest port"
            "        util   frames lost\n");
     for (int i = 0; i < n; i++) {
         if (!st[i].sessions) continue;
@@ -722,7 +722,7 @@ static void check_capacity(Building *b)
      * would be demanding the stack lie. */
     char line[96];
     snprintf(line, sizeof line,
-             "a hundred megabit run under two floors of desks fills up (%d%%)", util);
+             "a hundred megabit run under two decks of desks fills up (%d%%)", util);
     ck(line, util >= 75);
     ck("and the port it fills up on is the one that drops", d1 > d0);
     ck("and the drops are the egress buffer, counted as such", q1 > q0);
@@ -893,38 +893,38 @@ int load_selfcheck(void)
     naive(&b, nv);
     planned(&b, pl);
     show("NAIVE: one flat 10.0.0.0/16, cheap copper, DHCP off the router, a\n"
-         "switch per floor with a second one daisy-chained off it when the\n"
-         "floor fills up, and one file server in the basement holding\n"
+         "switch per deck with a second one daisy-chained off it when the\n"
+         "deck fills up, and one file server in the basement holding\n"
          "everybody's files.", nv, STEPS);
-    show("PLANNED: a vlan per floor down one trunk, fibre to every floor switch,\n"
-         "and a server in each floor's own cupboard holding that floor's files\n"
+    show("PLANNED: a vlan per deck down one trunk, fibre to every deck switch,\n"
+         "and a server in each deck's own cupboard holding that deck's files\n"
          "and doing its DHCP.", pl, STEPS);
 
     int nb = broke_at(nv, STEPS), ns = slow_at(nv, STEPS);
     int pb = broke_at(pl, STEPS), grown = 0;
     for (int i = 0; i < STEPS; i++) if (nv[i].sessions) grown = nv[i].steps;
     if (ns) printf("\nthe naive build is visibly working hard at %d tenancies, "
-                   "which is %d floor%s",
+                   "which is %d deck%s",
                    ns, floors_at(nv, STEPS, ns),
                    floors_at(nv, STEPS, ns) == 1 ? "" : "s");
     else printf("\nthe naive build never even works hard in %d tenancies", grown);
-    if (nb) printf(", and falls over at %d (%d floors).\n",
+    if (nb) printf(", and falls over at %d (%d decks).\n",
                    nb, floors_at(nv, STEPS, nb));
     else printf(", and never falls over in %d.\n", grown);
     if (pb) printf("the planned build falls over at %d tenancies.\n", pb);
     else printf("the planned build carries all %d tenancies it was grown to, "
-                "on %d floors.\n", grown, floors_at(pl, STEPS, grown));
+                "on %d decks.\n", grown, floors_at(pl, STEPS, grown));
     /* SAY IT, BECAUSE A PLAYER READS THIS TABLE BY THE WRONG ROW OTHERWISE.
      * A floor of this building holds two and three tenancies, so a tower with
      * three floors in service is well down the table, not on its third row. */
-    printf("a floor holds more than one tenancy, so a tower with three floors\n"
+    printf("a deck holds more than one tenancy, so a tower with three decks\n"
            "in service is further down this table than its third row.\n");
     printf("the same tenants, the same money, the same building: the difference\n"
            "is where the frames go.\n\n");
 
     /* THE GATE ON THE CURVE ITSELF, AND IT IS COUNTED IN FLOORS.
      *
-     * The target was always said in floors -- *"slow around three floors,
+     * The target was always said in floors -- *"slow around three decks,
      * outright break at five"* -- and this gate used to assert it in
      * tenancies, which is a different number in every building the generator
      * makes. A floor here holds two and three tenancies. So the assertions
@@ -933,15 +933,15 @@ int load_selfcheck(void)
     int pbf = floors_at(pl, STEPS, pb);
     ck("and every server in it had an operating system running on it",
        servers_booted > 0);
-    ck("a naive build is comfortable on its first floor",
+    ck("a naive build is comfortable on its first deck",
        nv[0].sessions && nv[0].pct >= 95);
-    ck("a naive build is visibly working hard by three floors",
+    ck("a naive build is visibly working hard by three decks",
        ns > 0 && nsf <= 3);
-    ck("a naive build has fallen over by five floors",
+    ck("a naive build has fallen over by five decks",
        nb > 0 && nbf <= 5);
-    ck("and it did not fall over on the second floor, which would be a different game",
+    ck("and it did not fall over on the second deck, which would be a different game",
        nb > 0 && nbf >= 3);
-    ck("a planned build carries the floors the naive one could not",
+    ck("a planned build carries the decks the naive one could not",
        pb == 0 || pbf > nbf);
     /* And it is not carrying them by doing less work. */
     int nvd = 0, pld = 0;

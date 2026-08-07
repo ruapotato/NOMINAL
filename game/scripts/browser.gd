@@ -246,7 +246,7 @@ func _confirm(kind: String) -> void:
 		+ "price is whatever the catalogue says it is.</p>" \
 		+ "<ul><li><a href=\"orderyes:%s\">yes -- order a %s</a></li>" % [kind, kind] \
 		+ "<li><a href=\"halbert.co.uk/catalogue\">no -- back to the catalogue</a></li></ul>" \
-		+ "<p>It will be delivered to goods in, on the ground floor, in its " \
+		+ "<p>It will be delivered to goods in, on the lowest deck, in its " \
 		+ "box. Somebody still has to carry it.</p>"
 	_relayout()
 	status = "confirm: order " + kind

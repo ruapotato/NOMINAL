@@ -279,7 +279,7 @@ static void check_empty(const Building *b)
     site_addr(&s, rt, 1, net_ip(10, 0, 1, 1), net_mask_bits(24));
     site_forwarding(&s, rt, true);
     site_gateway(&s, rt, s.wan_isp);
-    ck("configured, the machine on floor 3 reaches the internet",
+    ck("configured, the machine on deck 3 reaches the internet",
        net_ping(s.net, s.dev[pc].node, s.wan_isp, &rtt) == PING_OK);
 
     /* And the cable is what carries it: pull it out and it stops. */
@@ -383,14 +383,14 @@ static void check_copper(const Building *b)
     nom_free(dm);
     if (far < 0) { ck("the tower has a room to cable", false); return; }
     int floor = b->rooms[far].floor;
-    printf("    the farthest lettable room is on floor %d, %.1f m of tray "
-           "from the MDF\n", floor, d);
+    printf("    the farthest lettable room is on deck %d, %.1f m of tray "
+           "from the Engineering\n", floor, d);
     ck("a tall tower puts a room past what copper carries", d + SITE_PATCH_M > 100);
 
     Site s;
     site_new(&s, b, GATE_SEED, 100000);
     int sw = gate_box(&s, SDEV_SWITCH24, mdf, "core");
-    int pc = gate_box(&s, SDEV_PC, far, "topfloor");
+    int pc = gate_box(&s, SDEV_PC, far, "topdeck");
     site_power(&s, pc, true);
     int l = site_cable(&s, pc, 0, sw, 1, CAB_CAT6);
     ck("the cable is sold, laid and paid for", l >= 0 && s.link[l].cost > 0);
@@ -405,7 +405,7 @@ static void check_copper(const Building *b)
     site_uncable(&s, l);
     int l2 = site_cable(&s, pc, 0, fsw, 1, CAB_CAT6);
     int l3 = site_cable(&s, fsw, 0, sw, 2, CAB_CAT6);
-    ck("a switch in that floor's cupboard fixes it, and both runs come up",
+    ck("a switch in that deck's cupboard fixes it, and both runs come up",
        site_link_state(&s, l2) == PORT_UP && site_link_state(&s, l3) == PORT_UP);
     printf("    %d m to the cupboard and %d m up the riser: both up\n",
            s.link[l2].metres, s.link[l3].metres);
@@ -435,7 +435,7 @@ static void check_port_speed(const Building *b)
     int srv  = gate_box(&s, SDEV_SERVER, mdf, "files");
     int sw8  = gate_box(&s, SDEV_SWITCH8, mdf, "little");
     if (core < 0 || edge < 0 || srv < 0 || sw8 < 0) {
-        ck("four boxes in the MDF", false); site_free(&s); return;
+        ck("four boxes in the Engineering", false); site_free(&s); return;
     }
     int last = site_kind_ports(SDEV_SWITCH24) - 1;   /* the SFP+ pair       */
 
@@ -632,7 +632,7 @@ static void check_plug_pulled(const Building *b)
     int a = site_dev_by_name(&ses.s, "one");
     int c = site_dev_by_name(&ses.s, "two");
     if (a < 0 || c < 0 || !ses.mach[a] || !ses.mach[c]) {
-        ck("two servers boot in the MDF", false);
+        ck("two servers boot in the Engineering", false);
         goto done;
     }
     ck("two servers are up, one of them on a battery",
@@ -677,7 +677,7 @@ done:
 /* --------------------------------------------------------- the tenants */
 static void check_tenants(const Building *b)
 {
-    printf("\ntwo tenants who share a floor and must not share a network\n");
+    printf("\ntwo tenants who share a deck and must not share a network\n");
     Site s;
     site_new(&s, b, GATE_SEED, 100000);
     int comms = bld_find(b, 3, RM_COMMS), mdf = bld_find(b, 0, RM_MDF);
@@ -690,7 +690,7 @@ static void check_tenants(const Building *b)
         if (ra < 0) ra = i;
         else if (r->tenant != b->rooms[ra].tenant && rb < 0) rb = i;
     }
-    if (ra < 0 || rb < 0) { ck("the floor has two tenancies on it", false);
+    if (ra < 0 || rb < 0) { ck("the deck has two tenancies on it", false);
                             site_free(&s); return; }
 
     int sw = gate_box(&s, SDEV_SWITCH24, comms, "sw3");
@@ -937,10 +937,10 @@ static void check_agreement(const Building *b)
         site_dump_service(&s, &sv);
         ck("`service` names the server a tenancy's people actually pulled off",
            s.tenant[0].files_dev == srv && sv.p && strstr(sv.p, "fs") != NULL);
-        ck("and marks it when that server is not on their floor",
+        ck("and marks it when that server is not on their deck",
            s.dev[srv].floor != s.tenant[0].floor &&
            strstr(sv.p, "fs <-") != NULL &&
-           strstr(sv.p, "served from another floor") != NULL);
+           strstr(sv.p, "served from another deck") != NULL);
         site_power(&s, srv, false);
         site_day(&s, NULL);
         sv.len = 0; if (sv.p) sv.p[0] = 0;
@@ -956,9 +956,9 @@ static void check_agreement(const Building *b)
 /* ----------------------------- the floor server D27 recommends, on a vlan
  *
  * THE BUILD THE DOCUMENTATION RECOMMENDS, SILENTLY DISQUALIFIED. D27's
- * competent tower is "a vlan per floor on a subinterface of the router, a
- * switch per floor home-run to the core, a server in each floor's cupboard
- * doing that floor's DHCP and holding its files". A server doing several
+ * competent tower is "a vlan per deck on a subinterface of the router, a
+ * switch per deck home-run to the core, a server in each deck's cupboard
+ * doing that deck's DHCP and holding its files". A server doing several
  * vlans' DHCP MUST live on subinterfaces -- one address per segment -- and
  * file_server_for() asked for an address on interface 0 specifically, so
  * that server was skipped and its floor's tenancies pulled their files off a
@@ -970,7 +970,7 @@ static void check_agreement(const Building *b)
  */
 static void check_floor_server(const Building *b)
 {
-    printf("\na floor's own server, addressed only on the floor's vlan\n");
+    printf("\na deck's own server, addressed only on the deck's vlan\n");
     Site s;
     site_new(&s, b, GATE_SEED, 100000);
     site_credit(&s, 400000);
@@ -1010,7 +1010,7 @@ static void check_floor_server(const Building *b)
     site_subif(&s, rt, 1, V, net_ip(10, 0, 31, 1), net_mask_bits(24));
     site_port_trunk(&s, csw, 0, V);
 
-    int fsrv = gate_box(&s, SDEV_SERVER, comms, "floorsrv");
+    int fsrv = gate_box(&s, SDEV_SERVER, comms, "decksrv");
     site_power(&s, fsrv, true);
     site_cable(&s, fsrv, 0, fsw, 1, CAB_CAT6);
     site_port_trunk(&s, fsw, 1, V);
@@ -1020,23 +1020,23 @@ static void check_floor_server(const Building *b)
     site_dhcpd(&s, fsrv, net_ip(10, 0, 31, 100), 40, net_mask_bits(24),
                net_ip(10, 0, 31, 1), net_ip(10, 0, 31, 1));
 
-    ck("the floor server has no address on eth0 and one on its vlan",
+    ck("the deck server has no address on eth0 and one on its vlan",
        net_if_get_addr(s.net, s.dev[fsrv].node, 0) == 0 &&
        net_if_get_addr(s.net, s.dev[fsrv].node, 2) == net_ip(10, 0, 31, 10));
 
     int got = site_serve_vlan(&s, 0, fsw, CAB_CAT5E, V);
-    ck("their desks are cabled into the floor's own vlan", got > 1);
+    ck("their desks are cabled into the deck's own vlan", got > 1);
     site_day(&s, NULL);
-    ck("and the floor's own server is what gave them their addresses",
+    ck("and the deck's own server is what gave them their addresses",
        site_tenant_addressed(&s, 0) == got);
 
     Buf sv = {0};
     site_dump_service(&s, &sv);
     ck("a server addressed only on a vlan subinterface is still a file server",
        s.tenant[0].files_dev == fsrv);
-    ck("so `service` names it, and does not mark them as served off-floor",
-       sv.p && strstr(sv.p, "floorsrv") != NULL &&
-       strstr(sv.p, "floorsrv <-") == NULL);
+    ck("so `service` names it, and does not mark them as served off-deck",
+       sv.p && strstr(sv.p, "decksrv") != NULL &&
+       strstr(sv.p, "decksrv <-") == NULL);
     {
         Buf lg = {0};
         site_cmd(&s, "service ?", &lg);
@@ -1048,7 +1048,7 @@ static void check_floor_server(const Building *b)
        s.last.finished > 0 && s.tenant[0].finished > 0);
     /* AND IT IS THE FLOOR'S LEG THAT ANSWERED, not a hairpin through the
      * router to some other address of the same box. */
-    ck("and the traffic never left the floor: the vlan's leg is what answered",
+    ck("and the traffic never left the deck: the vlan's leg is what answered",
        net_port_busy_us(s.net, s.dev[fsrv].node, 0) > 0 &&
        net_port_busy_us(s.net, s.dev[base].node, 0) == 0);
     buf_free(&sv);
@@ -1224,8 +1224,8 @@ static void check_dns_verbs(const Building *b)
     site_credit(&s, 200000);
     Buf o = {0};
     static const char *SCRIPT[] = {
-        "order router edge",  "move edge f0.mdf",
-        "order server dns1",  "move dns1 f0.mdf",
+        "order router edge",  "move edge d0.eng",
+        "order server dns1",  "move dns1 d0.eng",
         "cable edge:1 dns1:0 cat6",
         "cable edge:0 uplink:0 cat6",
         "addr edge 198.51.100.2/30",
@@ -1253,14 +1253,14 @@ static void check_dns_verbs(const Building *b)
 
     /* THE VERB THAT DID NOT EXIST. */
     buf_clear(&o);
-    site_cmd(&s, "dns dns1 files.floor3 10.0.0.50", &o);
+    site_cmd(&s, "dns dns1 files.deck3 10.0.0.50", &o);
     ck("`dns <box> <name> <ip>` puts a name in the zone",
-       has(o.p, "files.floor3 -> 10.0.0.50") && has(o.p, "serves 1 name"));
+       has(o.p, "files.deck3 -> 10.0.0.50") && has(o.p, "serves 1 name"));
 
     buf_clear(&o);
     site_cmd(&s, "resolver edge 10.0.0.10", &o);
     buf_clear(&o);
-    site_cmd(&s, "resolve edge files.floor3", &o);
+    site_cmd(&s, "resolve edge files.deck3", &o);
     ck("and a box pointed at it resolves that name over the wire",
        has(o.p, "10.0.0.50"));
 
@@ -1320,8 +1320,8 @@ static void check_ping_blames_the_filter(const Building *b)
     site_credit(&s, 200000);
     Buf o = {0};
     static const char *SCRIPT[] = {
-        "order router edge",  "move edge f0.mdf",
-        "order server files", "move files f0.mdf",
+        "order router edge",  "move edge d0.eng",
+        "order server files", "move files d0.eng",
         "cable edge:1 files:0 cat6",
         "addr edge:1 10.0.0.1/24",
         "router edge on",
@@ -1384,8 +1384,8 @@ static void check_dhcp_scope(const Building *b)
     site_credit(&s, 200000);
     Buf o = {0};
     static const char *SCRIPT[] = {
-        "order router edge",   "move edge f0.mdf",
-        "order switch24 core", "move core f0.mdf",
+        "order router edge",   "move edge d0.eng",
+        "order switch24 core", "move core d0.eng",
         "cable edge:1 core:0 cat6",
         "vlan core 1 11",
         "vlan core 2 13",
@@ -1753,7 +1753,7 @@ static void check_tolerance(const Building *b)
     ck("and the gate had enough tenancies on this seed to mean it", most >= 12);
 
     /* NOTHING BEFORE NINE MOVES, which is what keeps --loadcheck's curve --
-     * the owner's "slow at three floors, breaking at five" -- untouched by
+     * the owner's "slow at three decks, breaking at five" -- untouched by
      * this change. */
     bool early_same = true;
     for (int n = 0; n <= 9 && n <= s.ntenant; n++) {
@@ -2050,11 +2050,11 @@ static void check_quote(const Building *b)
     int far = -1, near = -1;
     far_and_near(&s, b, 3, mdf, &far, &near);
     int mfar = site_metres(&s, mdf, far), mnear = site_metres(&s, mdf, near);
-    ck("one floor spans safe to marginal, which is why a room name tells "
+    ck("one deck spans safe to marginal, which is why a room name tells "
        "you nothing",
        far >= 0 && near >= 0 && mfar >= SITE_COPPER_MARGIN_M &&
        mnear < SITE_COPPER_MARGIN_M);
-    printf("    floor 3 from the MDF: #%d is %d m and #%d is %d m\n",
+    printf("    deck 3 from the Engineering: #%d is %d m and #%d is %d m\n",
            near, mnear, far, mfar);
 
     /* ---- THE METRES ARE bld_cable_all()'s, THROUGH site_metres(). */
@@ -2123,7 +2123,7 @@ static void check_quote(const Building *b)
     buf_clear(&o);
     snprintf(line, sizeof line, "quote core #%d", near);
     site_cmd(&s, line, &o);
-    ck("and the room on the same floor that is not does not",
+    ck("and the room on the same deck that is not does not",
        metres_in(o.p) == mnear && !has(o.p, "copper has margin for"));
 
     /* ---- A QUOTE IS A QUOTE. Nothing is bought, nothing is booked, nothing
@@ -2216,9 +2216,9 @@ static void check_shell(const Building *b)
      * core/sessioncheck.c is where the walk itself is charged. */
     static const char *SCRIPT[] = {
         "order switch8 sw2",
-        "move sw2 f2.comms",
+        "move sw2 d2.comms",
         "order router rt",
-        "move rt f0.mdf",
+        "move rt d0.eng",
         "order pc pc1",
         /* AND THE BUTTON COMES AFTER THE WALK, since D37. This line used to
          * sit above the `move` and switch a machine on while it was still
@@ -2226,7 +2226,7 @@ static void check_shell(const Building *b)
          * there was a plug nothing in this game drew power from anywhere.
          * A pc in goods in is in its box; it is switched on in the room it
          * is carried to, out of a socket on that room's wall. */
-        "move pc1 f2.office",
+        "move pc1 d2.office",
         "power pc1 on",
         "cable rt:0 uplink:0 cat6",
         "cable rt:1 sw2:0 cat6",
@@ -2283,7 +2283,7 @@ static void check_shell(const Building *b)
  * Every tenancy in this game used to be the same business, so a floor only
  * ever asked one question -- is there enough throughput -- and a playtester
  * who reached day 62 said what that cost: *"I made the riser decision on
- * floor 1 and then repeated it on floors 2 and 3 without thinking."*
+ * deck 1 and then repeated it on decks 2 and 3 without thinking."*
  *
  * These checks are the answer, and the thing they have to prove is not that
  * four words appear in `demand`. It is that THE RIGHT BUILD FOR ONE TENANCY
@@ -2388,7 +2388,7 @@ static int got_pct(const Site *s, int ti)
  * every tenancy in it pulled the same bytes in the same direction. */
 static void check_industry_upload(void)
 {
-    printf("\nan office and a studio on one floor, wanting opposite things\n");
+    printf("\nan office and a studio on one deck, wanting opposite things\n");
     Building b;
     if (!bld_generate(&b, 22ull)) { ck("seed 22 makes a building", false); return; }
     int comms = bld_find(&b, 1, RM_COMMS);
@@ -2399,7 +2399,7 @@ static void check_industry_upload(void)
     Site *s = &w.s;
     int off = trade_on(s, TEN_OFFICE, 1), stu = trade_on(s, TEN_STUDIO, 1);
     if (off < 0 || stu < 0) {
-        ck("seed 22 lets an office and a studio onto floor 1", false);
+        ck("seed 22 lets an office and a studio onto deck 1", false);
         site_free(s); bld_free(&b); return;
     }
     tower_until(&w, stu);
@@ -2432,7 +2432,7 @@ static void check_industry_upload(void)
      * still falls apart, because the suites next door are filling the only
      * way out of the building with a stream that cannot be slowed down. */
     snprintf(line, sizeof line, "and takes the OFFICE down with it, whose files "
-             "never leave the floor (%d%% from %d%%)", got_pct(s, off), off_was);
+             "never leave the deck (%d%% from %d%%)", got_pct(s, off), off_was);
     ck(line, got_pct(s, off) < off_was - 20);
     /* AND THE FIX IS A MONTHLY BILL RATHER THAN A CABLE, which is the only
      * recurring decision in this game and the one a studio makes expensive. */
@@ -2475,7 +2475,7 @@ static void check_industry_uptime(void)
     Site *s = &w.s;
     int off = trade_on(s, TEN_OFFICE, 1), host = trade_on(s, TEN_WEBHOST, 1);
     if (off < 0 || host < 0) {
-        ck("seed 23 lets an office and a web host onto floor 1", false);
+        ck("seed 23 lets an office and a web host onto deck 1", false);
         site_free(s); bld_free(&b); return;
     }
     tower_until(&w, host);
@@ -2568,7 +2568,7 @@ static void check_industry_voice(void)
     Site *s = &w.s;
     int off = trade_on(s, TEN_OFFICE, 1), voi = trade_on(s, TEN_VOICE, 1);
     if (off < 0 || voi < 0) {
-        ck("seed 22 lets an office and a call centre onto floor 1", false);
+        ck("seed 22 lets an office and a call centre onto deck 1", false);
         site_free(s); bld_free(&b); return;
     }
     tower_until(&w, voi);
@@ -2576,7 +2576,7 @@ static void check_industry_voice(void)
     site_serve(s, voi, w.sw[2], CAB_CAT5E);
     site_day(s, NULL);
     char line[120];
-    snprintf(line, sizeof line, "with the files on the floor both are served "
+    snprintf(line, sizeof line, "with the files on the deck both are served "
              "(office %d%%, calls %d%%)", got_pct(s, off), got_pct(s, voi));
     ck(line, got_pct(s, off) >= 80 && got_pct(s, voi) >= 80);
     ck("and the calls were real UDP through the stack, not a number beside it",
@@ -2693,7 +2693,7 @@ static void check_desk_rooms(const Building *b)
     int ti = -1;
     for (int i = 0; i < s->ntenant; i++)
         if (s->tenant[i].floor == floor) { ti = i; break; }
-    if (ti < 0) { ck("the gate's tower lets a tenancy on floor 1", false);
+    if (ti < 0) { ck("the gate's tower lets a tenancy on deck 1", false);
                   site_free(s); return; }
     tower_until(&w, ti);
     SiteTenant *t = &s->tenant[ti];
@@ -2752,7 +2752,7 @@ static void check_desk_rooms(const Building *b)
      * does when it is at least twice the size. */
     ck("a bigger room takes more desks than a smaller one",
        big_desks > small_desks && small_desks >= 1);
-    ck("and twice the floor area takes at least twice the people",
+    ck("and twice the deck area takes at least twice the people",
        biggest >= 2 * smallest && small_desks >= 1 &&
        big_desks >= 2 * small_desks);
     /* No pair of their rooms is the wrong way round: over the whole
@@ -2794,7 +2794,7 @@ static void check_desk_rooms(const Building *b)
        mfar - mnear >= 10);
     ck("which is a different price for the identical drop",
        site_cable_price(CAB_CAT5E, mfar) > site_cable_price(CAB_CAT5E, mnear));
-    printf("    from the floor's cupboard #%d: %s is %d m at %d, %s is %d m "
+    printf("    from the deck's cupboard #%d: %s is %d m at %d, %s is %d m "
            "at %d\n", comms, s->dev[dnear].name, mnear,
            site_cable_price(CAB_CAT5E, mnear), s->dev[dfar].name, mfar,
            site_cable_price(CAB_CAT5E, mfar));
@@ -2880,7 +2880,7 @@ static void check_dhcp_diagnosis(const Building *b)
     int ti = -1;
     for (int i = 0; i < s->ntenant; i++)
         if (s->tenant[i].floor == 1) { ti = i; break; }
-    if (ti < 0) { ck("the gate's tower lets a tenancy on floor 1", false);
+    if (ti < 0) { ck("the gate's tower lets a tenancy on deck 1", false);
                   site_free(s); return; }
     tower_until(&w, ti);
     /* tower_up's router holds a pool over the whole flat /16 these desks
@@ -2938,7 +2938,7 @@ static void check_headline_sums_the_rows(void)
     Site *s = &w.s;
     int off = trade_on(s, TEN_OFFICE, 1), voi = trade_on(s, TEN_VOICE, 1);
     if (off < 0 || voi < 0) {
-        ck("seed 22 lets an office and a call centre onto floor 1", false);
+        ck("seed 22 lets an office and a call centre onto deck 1", false);
         site_free(s); bld_free(&b); return;
     }
     tower_until(&w, voi);
@@ -3029,7 +3029,7 @@ static void check_worst_is_wall_time(void)
     tower_up(&w, &b, 22ull, comms, CAB_CAT5E, true, 3);
     Site *s = &w.s;
     int voi = trade_on(s, TEN_VOICE, 1);
-    if (voi < 0) { ck("seed 22 lets a call centre onto floor 1", false);
+    if (voi < 0) { ck("seed 22 lets a call centre onto deck 1", false);
                    site_free(s); bld_free(&b); return; }
     tower_until(&w, voi);
     site_serve(s, voi, w.sw[2], CAB_CAT5E);
@@ -3142,8 +3142,8 @@ static void check_demand_says_what_a_server_is_for(const Building *b)
     Buf d = {0};
     site_dump_demand(&s, &d);
     ck("`demand` still prints +server as a want", has(d.p, "+server"));
-    ck("and now says a shared server on their floor discharges it",
-       has(d.p, "WHAT DISCHARGES `+server`") && has(d.p, "their floor"));
+    ck("and now says a shared server on their deck discharges it",
+       has(d.p, "WHAT DISCHARGES `+server`") && has(d.p, "their deck"));
     ck("and that a web host's origin is the exception, in their own room",
        has(d.p, "own room"));
     buf_free(&d);
@@ -3176,11 +3176,11 @@ static void check_demand_says_what_a_server_is_for(const Building *b)
         int shared = 0;
         for (int i = 0; i < t->ntenant; i++)
             if (t->tenant[i].moved && t->tenant[i].files_dev == w.srv) shared++;
-        ck("one server in the floor's cupboard is the file server of every "
+        ck("one server in the deck's cupboard is the file server of every "
            "tenancy on it", shared >= 2 && t->tenant[off].files_dev == w.srv);
         printf("    %d tenancies served off the one box in the cupboard\n", shared);
     } else {
-        ck("seed 22 lets two tenancies onto floor 1", false);
+        ck("seed 22 lets two tenancies onto deck 1", false);
     }
     site_free(t);
     bld_free(&b22);
@@ -3580,19 +3580,19 @@ static void check_one_fact_two_answers(const Building *b)
      * every other verb in the game takes `f2.something`. */
     buf_clear(&o);
     site_cmd(&s, "rooms 2", &o);
-    bool two = has(o.p, "floor 2");
+    bool two = has(o.p, "deck 2");
     buf_clear(&o);
-    site_cmd(&s, "rooms f2", &o);
-    ck("`rooms f2` and `rooms 2` are the same floor", two && has(o.p, "floor 2"));
-    ck("and it is not floor 0 wearing floor 2's name", !has(o.p, "floor 0"));
+    site_cmd(&s, "rooms d2", &o);
+    ck("`rooms d2` and `rooms 2` are the same deck", two && has(o.p, "deck 2"));
+    ck("and it is not deck 0 wearing deck 2's name", !has(o.p, "deck 0"));
     buf_clear(&o);
-    site_cmd(&s, "rooms f99", &o);
-    ck("a floor that does not exist is refused, not rounded to the ground floor",
-       has(o.p, "there is no floor 99") && !has(o.p, "floor 0\n"));
+    site_cmd(&s, "rooms d99", &o);
+    ck("a deck that does not exist is refused, not rounded to the ground deck",
+       has(o.p, "there is no deck 99") && !has(o.p, "deck 0\n"));
     buf_clear(&o);
-    site_cmd(&s, "rooms f2.comms", &o);
+    site_cmd(&s, "rooms d2.comms", &o);
     ck("and a room name is refused here and sent to the verbs that take one",
-       has(o.p, "is not a floor") && !has(o.p, "floor 0\n"));
+       has(o.p, "is not a deck") && !has(o.p, "deck 0\n"));
 
     /* --- 7. THE DHCP POOL CAP, DELIVERED BY THE WRONG HALF OF ITS OWN
      * MESSAGE. A pool of 180 addresses was refused with a sentence that led
@@ -3651,7 +3651,7 @@ static void check_one_fact_two_answers(const Building *b)
            has(lg.p, "worst is WALL TIME and not delay") &&
            has(lg.p, "files is the server their people actually pulled off") &&
            has(lg.p, "ANY address it holds") &&
-           has(lg.p, "<- is a tenancy being served from another floor"));
+           has(lg.p, "<- is a tenancy being served from another deck"));
         ck("and the short page still prints the number that ends the run",
            has(sh.p, "filed complaints ends the run") &&
            has(sh.p, "service ?"));
@@ -3694,20 +3694,20 @@ static void check_ambiguity_and_the_diary(void)
      * shorthand stays -- it is how the tower gets built without a floor
      * plan -- and it now says when it was a choice. */
     int first = -1;
-    int n2 = site_room_name_matches(&s, "f2.office", &first);
-    printf("    f2.office matches %d rooms; f1.comms matches %d\n", n2,
-           site_room_name_matches(&s, "f1.comms", NULL));
-    ck("floor 2 really has more than one office for the shorthand to pick from",
+    int n2 = site_room_name_matches(&s, "d2.office", &first);
+    printf("    d2.office matches %d rooms; d1.comms matches %d\n", n2,
+           site_room_name_matches(&s, "d1.comms", NULL));
+    ck("deck 2 really has more than one office for the shorthand to pick from",
        n2 > 1 && first >= 0);
     ck("and an unambiguous name still matches exactly one",
-       site_room_name_matches(&s, "f1.comms", NULL) == 1 &&
-       site_room_name_matches(&s, "f0.mdf", NULL) == 1);
+       site_room_name_matches(&s, "d1.comms", NULL) == 1 &&
+       site_room_name_matches(&s, "d0.eng", NULL) == 1);
     site_cmd(&s, "order pc pcx", &o);
     buf_clear(&o);
-    site_cmd(&s, "move pcx f2.office", &o);
+    site_cmd(&s, "move pcx d2.office", &o);
     char want[64];
     snprintf(want, sizeof want, "picked one: #%d", first);
-    ck("`move pcx f2.office` says which room it picked, and why that one",
+    ck("`move pcx d2.office` says which room it picked, and why that one",
        has(o.p, "matches") && has(o.p, want) && has(o.p, "lowest-numbered"));
     ck("and names the spelling that would not have been a guess",
        has(o.p, "`#<n>` names one for certain") && has(o.p, "rooms 2"));
@@ -3716,7 +3716,7 @@ static void check_ambiguity_and_the_diary(void)
     /* THE SHORTHAND IS NOT REMOVED, and an unambiguous one says nothing at
      * all -- a note on every `move f1.comms` would be the other failure. */
     buf_clear(&o);
-    site_cmd(&s, "move pcx f1.comms", &o);
+    site_cmd(&s, "move pcx d1.comms", &o);
     ck("an unambiguous room name moves the box and prints no note",
        !has(o.p, "matches") && !has(o.p, "picked one") &&
        s.dev[site_dev_by_name(&s, "pcx")].room == bld_find(&b, 1, RM_COMMS));
@@ -3914,7 +3914,7 @@ static void check_grades(void)
     grade_up(&dear,  &b, 22ull, comms, SDEV_SWITCH8);
     int ti = trade_on(&cheap.s, TEN_OFFICE, 1);
     if (ti < 0) {
-        ck("seed 22 lets an office onto floor 1", false);
+        ck("seed 22 lets an office onto deck 1", false);
         site_free(&cheap.s); site_free(&dear.s); bld_free(&b); return;
     }
     grade_until(&cheap.s, ti);
@@ -4087,7 +4087,7 @@ int site_selfcheck(void)
         printf("the gate's own tower would not generate\n");
         return 1;
     }
-    printf("tower %llu: %d floors, %d rooms, %d tenancies\n\n",
+    printf("tower %llu: %d decks, %d rooms, %d tenancies\n\n",
            (unsigned long long)GATE_SEED, b.floors, b.nrooms, b.ntenants);
 
     check_empty(&b);

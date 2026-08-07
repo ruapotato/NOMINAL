@@ -97,7 +97,7 @@ func prompt() -> String:
 	var r: int = int(tower.ses_state().get("room", -1))
 	if r < 0 or r >= tower.rooms.size():
 		return "> "
-	return "f%d %s> " % [int(tower.rooms[r].floor), str(tower.rooms[r].name)]
+	return "d%d %s> " % [int(tower.rooms[r].floor), str(tower.rooms[r].name)]
 
 
 func _send(c: Dictionary, s: String) -> void:

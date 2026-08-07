@@ -1402,14 +1402,14 @@ func in_service(f: int) -> bool:
 
 func open_next_floor() -> String:
 	if floors_in_service >= nfloors:
-		return "every floor in this tower is already in service."
+		return "every deck in this station is already in service."
 	var f := floors_in_service
 	if not site_up:
 		floors_in_service += 1
 		for l in lifts:
 			l.rebuild_panels()
 		_signage()
-		return "floor %d is in service." % f
+		return "deck %d is in service." % f
 	# `open` IS THE SESSION'S VERB, and so are its refusals. It costs the
 	# landlord's fit-out and it wants somebody standing on the floor to sign it
 	# off -- the lift will not take you to a floor that is not in service, so
@@ -1441,7 +1441,7 @@ func lift_for(f: int) -> Object:
 
 var _signs: Node3D = null
 
-const SIGNED := {K_MDF: "MDF", K_COMMS: "COMMS", K_GOODS: "GOODS IN",
+const SIGNED := {K_MDF: "ENGINEERING", K_COMMS: "COMMS", K_GOODS: "GOODS IN",
 	K_PLANT: "PLANT", K_STAIR: "STAIRS", K_SERVER: "SERVER ROOM",
 	K_TOILET: "WC", K_RISER: "RISER"}
 
@@ -1455,7 +1455,7 @@ func _signage() -> void:
 	for r in rooms:
 		if r.kind != K_LIFTLOBBY:
 			continue
-		var t := "FLOOR %d" % r.floor
+		var t := "DECK %d" % r.floor
 		if not in_service(r.floor):
 			t += "  NOT IN SERVICE"
 		# ON THE WALLS, not floating in the middle of the room. A sign at the
@@ -1487,7 +1487,7 @@ func _signage() -> void:
 			if SIGNED.has(kind):
 				what = SIGNED[kind]
 			elif kind == K_LIFTLOBBY and rooms[pair[1]].kind == K_CORRIDOR:
-				what = "LIFTS  FLOOR %d" % d.floor
+				what = "LIFTS  DECK %d" % d.floor
 			else:
 				continue
 			var p := Vector3(d.x + (1.0 if d.dir == 0 else 0.5),
@@ -1520,7 +1520,7 @@ func _signage() -> void:
 # hung with the sign is the one into the neighbour that is nearer. It is the
 # building's own metric, so a sign cannot point at a route that is not there.
 const WAY_KINDS := [K_CORRIDOR, K_LIFTLOBBY, K_LOBBY]
-const WAY_TO := [[K_STAIR, "STAIRS"], [K_GOODS, "GOODS IN"], [K_MDF, "MDF"]]
+const WAY_TO := [[K_STAIR, "STAIRS"], [K_GOODS, "GOODS IN"], [K_MDF, "ENGINEERING"]]
 
 
 func _wayfinding() -> void:
@@ -3598,10 +3598,10 @@ func aim_text(a: Dictionary) -> Array:
 	if a.kind == "liftbtn":
 		var bf := int(a.floor)
 		if not in_service(bf):
-			return ["lift button, floor %d" % bf, "not in service -- the button is not lit"]
+			return ["lift button, deck %d" % bf, "not in service -- the button is not lit"]
 		if bf == player_floor():
-			return ["lift button, floor %d" % bf, "you are on floor %d" % bf]
-		return ["lift button, floor %d" % bf, "[E] go to floor %d" % bf]
+			return ["lift button, deck %d" % bf, "you are on deck %d" % bf]
+		return ["lift button, deck %d" % bf, "[E] go to deck %d" % bf]
 	var d: Dictionary = devices[int(a.dev)]
 	var s: int = int(d.get("site", -1))
 	# THE CONSOLE SOCKET SAYS WHAT IT IS FOR, AND WHAT IT IS NOT FOR. A player
@@ -4221,7 +4221,7 @@ func _hud_tier(line: String, first: bool) -> String:
 		return "now"
 	# The continuation lines of core's refusals arrive indented; so does the
 	# rest of the `open` paragraph, which is the longest thing on the screen.
-	if line.begins_with("  ") or t.begins_with("floor ") and t.find("not in service") > 0:
+	if line.begins_with("  ") or t.begins_with("deck ") and t.find("not in service") > 0:
 		return "hint"
 	if t.begins_with("load:") or t.begins_with("phone:") \
 			or t.begins_with("cable in hand") or t.begins_with("carrying kit") \
@@ -4428,7 +4428,7 @@ func hud_lines() -> String:
 		s += "carrying kit in both hands   [G] put it down here\n"
 	var car: Object = lift_in()
 	if car != null:
-		s += "in the lift: press a floor number.  in service: %s\n" % str(car.serviced())
+		s += "in the lift: press a deck number.  in service: %s\n" % str(car.serviced())
 	if bag:
 		s += "hands: %s / %s   [I] inventory\n" % [_hand_name(0), _hand_name(1)]
 	# WHO IS WAITING. A tenancy with the keys and no ports is the job, and it
@@ -4470,7 +4470,7 @@ func hud_lines() -> String:
 				"" if int(row.strikes) == 1 else "s"]
 		if bool(row.complained):
 			tail += "   *complaint filed"
-		s += "tenant %d on floor %d: %d desks, %d up, %d addr%s\n" \
+		s += "tenant %d on deck %d: %d desks, %d up, %d addr%s\n" \
 			% [int(row.tenant), int(row.floor), int(row.desks), int(row.up),
 				int(row.addr), tail]
 	if trouble.size() > HUD_TENANCIES:
@@ -4486,10 +4486,10 @@ func hud_lines() -> String:
 	# A KEY THAT REFUSES IS WORSE THAN A KEY THAT IS NOT OFFERED. Signing a
 	# floor off means standing on it and paying the landlord's fit-out, and
 	# both of those sentences are core's, printed by `open` when it refuses.
-	s += "%d of %d floors in service" % [floors_in_service, nfloors]
+	s += "%d of %d decks in service" % [floors_in_service, nfloors]
 	if floors_in_service < nfloors:
 		if ses_floor() == floors_in_service:
-			s += "   [O] sign floor %d off and put it into service" % floors_in_service
+			s += "   [O] sign deck %d off and put it into service" % floors_in_service
 		else:
 			# ONE LINE, NOT CORE'S WHOLE REFUSAL. This printed `open`'s answer
 			# verbatim, and the owner read it back to us as what it is:
@@ -4506,7 +4506,7 @@ func hud_lines() -> String:
 			# that is what `open` is for, and typing `open` still prints every
 			# word of it -- and it is a terrible permanent caption. The HUD
 			# says the one thing you would act on and stops.
-			s += "\n" + "floor %d is next: the stairs go up to it. Stand on it and [O]" \
+			s += "\n" + "deck %d is next: the stairs go up to it. Stand on it and [O]" \
 				% floors_in_service
 	# WHO IS ACTUALLY IN THE BUILDING, which is the fact that was missing.
 	#
@@ -4603,7 +4603,7 @@ func map_text() -> String:
 	if player == null:
 		return ""
 	var p: Vector3 = player.global_position
-	var s := "floor %d, %d rooms, you at (%.0f, %.0f m)\n" \
+	var s := "deck %d, %d rooms, you at (%.0f, %.0f m)\n" \
 		% [player_floor(), map_rows().size(), p.x, p.z]
 	for m in map_rows():
 		s += "%s %-18s %2.0f,%2.0f to %2.0f,%2.0f  %d socket%s, %d free\n" \
@@ -4620,7 +4620,7 @@ func where_am_i() -> String:
 	var p := player.global_position
 	var r := room_of(f, int(floor(p.x)), int(floor(p.z)))
 	var what: String = "outside" if r == NOROOM else str(rooms[r].name)
-	return "floor %d  %s  (%.0f, %.0f m)" % [f, what, p.x, p.z]
+	return "deck %d  %s  (%.0f, %.0f m)" % [f, what, p.x, p.z]
 
 
 # ------------------------------------------------------------- carrying it
@@ -5256,12 +5256,12 @@ func service_rows() -> Array:
 	# tokens, so nothing to the right of it can be found by counting forwards
 	# either. The header says how far each name is from the last column and the
 	# row is read from its own end -- and a `files` cell that ends in the "<-"
-	# that means "served off another floor" has that taken off first.
+	# that means "served off another deck" has that taken off first.
 	var back := {}
 	var wide := 0
 	for line in str(_snap.service).split("\n", false):
 		var f: PackedStringArray = line.split(" ", false)
-		if f.size() >= 4 and str(f[0]) == "floor" and str(f[1]) == "tenant":
+		if f.size() >= 4 and str(f[0]) == "deck" and str(f[1]) == "tenant":
 			back.clear()
 			wide = f.size()
 			for i in range(f.size()):
@@ -6001,7 +6001,7 @@ func _face(what: String) -> String:
 		# photographs the plaster in between. The session's rule is the right
 		# one here as well: you can only see what is in the room with you.
 		if here >= 0 and int(d.room) != here:
-			return "refused: the camera did not move -- %s is in f%d %s #%d " \
+			return "refused: the camera did not move -- %s is in d%d %s #%d " \
 				% [name, int(rooms[int(d.room)].floor),
 					str(rooms[int(d.room)].name), int(d.room)] \
 				+ "and you\n  are not, so there is a wall between you and it. " \
@@ -6027,9 +6027,9 @@ func _face(what: String) -> String:
 				want = i
 	if want < 0 or want >= rooms.size():
 		return "there is no box or room called %s to look at. `look` says what " \
-			% what + "is in\n  this room, `map` draws the floor.\n"
+			% what + "is in\n  this room, `map` draws the deck.\n"
 	aim_at(room_centre(want))
-	return "you look towards f%d %s #%d.\n" \
+	return "you look towards d%d %s #%d.\n" \
 		% [int(rooms[want].floor), str(rooms[want].name), want]
 
 

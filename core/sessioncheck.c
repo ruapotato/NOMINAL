@@ -160,7 +160,7 @@ static void check_verbs(int *passed, int *total)
 
     /* AND WITH YOUR OWN MACHINE, in the same room, cabled to that handoff.
      * Two devices on the first morning and the player bought neither. */
-    ck("you start in the MDF, on the ground floor, with the ISP handoff",
+    ck("you start in the Engineering, on the ground deck, with the ISP handoff",
        ses.b.rooms[ses.room].kind == RM_MDF && ses.b.rooms[ses.room].floor == 0 &&
        ses.s.ndev == 3 && ses.s.dev[ses.s.uplink].room == ses.room);
     ck("and the machine you sit at is standing in that room too",
@@ -215,9 +215,9 @@ static void check_verbs(int *passed, int *total)
        has(say(&ses, "plug uplink:0", &o), "one end into uplink port 0"));
     say(&ses, "spool back", &o);
 
-    ck("`where` says the floor, the room, the money and the metres walked",
-       has(say(&ses, "where", &o), "MDF") && has(o.p, "walked") &&
-       has(o.p, "floors in service"));
+    ck("`where` says the deck, the room, the money and the metres walked",
+       has(say(&ses, "where", &o), "Engineering") && has(o.p, "walked") &&
+       has(o.p, "decks in service"));
 
     ck("`demand` ends by doing the arithmetic on what the tower will need",
        has(say(&ses, "demand", &o), "drops in all") &&
@@ -398,7 +398,7 @@ static void check_walking(int *passed, int *total)
     if (stair0 >= 0 && stair_up >= 0 && bld_walk_all(&ses.b, stair0, dm))
         stairs = dm[stair_up];
     nom_free(dm);
-    ck("the floor above is reachable up the ladder", ladder < BLD_INF);
+    ck("the deck above is reachable up the ladder", ladder < BLD_INF);
     ck("and the ladder is dearer than the stairs, per storey",
        ladder < BLD_INF && stairs < BLD_INF && ladder > stairs);
 
@@ -419,26 +419,26 @@ static void check_walking(int *passed, int *total)
 
     long far = ses.walked;
     say(&ses, "go mdf", &o);
-    ck("a room kind on this floor is a spelling of that room",
+    ck("a room kind on this deck is a spelling of that room",
        ses.b.rooms[ses.room].kind == RM_MDF && ses.walked > far);
 
     /* The lift, which is the one thing `open` gates. Same words as lift.gd. */
     int top = ses.b.floors - 1;
     snprintf(cmd, sizeof cmd, "lift %d", top);
-    ck("the lift refuses a floor nobody has put in service",
+    ck("the lift refuses a deck nobody has put in service",
        has(say(&ses, cmd, &o), "not in service") && has(o.p, "not lit"));
 
     snprintf(cmd, sizeof cmd, "lift %d", ses.b.floors + 4);
-    ck("and a floor the building has not got",
-       has(say(&ses, cmd, &o), "does not pass floor"));
+    ck("and a deck the building has not got",
+       has(say(&ses, cmd, &o), "does not pass deck"));
 
     /* A FLOOR COMING INTO SERVICE COSTS SOMETHING AND HAPPENS SOMEWHERE.
      * `open` used to be free and typeable from anywhere, so there was no
      * reason not to open the whole tower in the first minute. */
     int before = ses.floors;
     long had = ses.s.money;
-    ck("`open` from another floor is refused, and says which stairs to take",
-       has(say(&ses, "open", &o), "not in service and you are on floor") &&
+    ck("`open` from another deck is refused, and says which stairs to take",
+       has(say(&ses, "open", &o), "not in service and you are on deck") &&
        has(o.p, "the stairs") && has(o.p, "it will cost") &&
        ses.floors == before && ses.s.money == had);
 
@@ -448,11 +448,11 @@ static void check_walking(int *passed, int *total)
        ses.b.rooms[ses.room].floor == before && ses.walked > far);
 
     long walked_up = ses.walked;
-    ck("`open` puts the next floor in service and says what is on it",
+    ck("`open` puts the next deck in service and says what is on it",
        has(say(&ses, "open", &o), "in service") && ses.floors == before + 1);
     ck("and it is paid for: the landlord's fit-out comes out of the budget",
        ses.s.money < had && ses.s.spent >= had - ses.s.money);
-    printf("    floor %d cost %ld to commission, and %ld m of stairs\n",
+    printf("    deck %d cost %ld to commission, and %ld m of stairs\n",
            before, had - ses.s.money, ses.walked - far);
 
     /* Come back down, so the lift below is a lift ride and not a no-op. */
@@ -502,7 +502,7 @@ static void check_reach(int *passed, int *total)
      * were two given devices and is the power core now that there are three:
      * a test that counts on the order of a list is a test that breaks the
      * next time anything is added to the front of it. */
-    ck("and carrying it to the MDF is what puts it in the MDF",
+    ck("and carrying it to the Engineering is what puts it in the Engineering",
        ses.room == mdf && ses.s.dev[bought].room == (uint16_t)mdf);
 
     /* Take a walk, and everything about that switch goes out of reach. */
@@ -560,7 +560,7 @@ static void check_goods(int *passed, int *total)
     Buf o = {0};
 
     int goods = site_goods_room(&ses.s);
-    ck("the tower has a goods in, on the ground floor, and it is not the MDF",
+    ck("the tower has a goods in, on the ground deck, and it is not the Engineering",
        goods >= 0 && ses.b.rooms[goods].kind == RM_GOODS &&
        ses.b.rooms[goods].floor == 0 && goods != ses.room);
 
@@ -571,7 +571,7 @@ static void check_goods(int *passed, int *total)
     int up = ses.room;
     const char *bought = say(&ses, "buy switch24 core", &o);
     int d = site_dev_by_name(&ses.s, "core");
-    ck("a box ordered from floor two is delivered to the ground floor",
+    ck("a box ordered from deck two is delivered to the ground deck",
        d > 0 && ses.s.dev[d].room == (uint16_t)goods && ses.room == up &&
        has(bought, "goods in"));
     ck("and the answer says how far away that is, in metres of building",
@@ -579,7 +579,7 @@ static void check_goods(int *passed, int *total)
 
     ck("it is not where you are, so you cannot reach it",
        has(say(&ses, "addr core 10.0.1.1/24", &o), "and you are not"));
-    ck("nor carry it from another floor",
+    ck("nor carry it from another deck",
        has(say(&ses, "carry core", &o), "and you are not") && ses.carrying < 0);
 
     /* Fetch it. */
@@ -627,7 +627,7 @@ static void check_goods(int *passed, int *total)
        ses.walked > walked);
 
     ck("`drop` is what puts it in the room",
-       has(say(&ses, "drop", &o), "is in f2 comms cupboard") &&
+       has(say(&ses, "drop", &o), "is in d2 comms cupboard") &&
        ses.carrying < 0 && ses.s.dev[d].room == (uint16_t)up);
 
     /* THE MEASUREMENT. The same cable, from where the van left it and from
@@ -636,7 +636,7 @@ static void check_goods(int *passed, int *total)
     int mdf = bld_find(&ses.b, 0, RM_MDF);
     int from_goods = site_metres(&ses.s, goods, mdf);
     int from_comms = site_metres(&ses.s, up, mdf);
-    printf("    a run to the MDF is %d m from goods in and %d m from the "
+    printf("    a run to the Engineering is %d m from goods in and %d m from the "
            "cupboard it was carried to\n", from_goods, from_comms);
     ck("and where it ended up is what the copper is measured from",
        from_goods > 0 && from_comms > 0 && from_goods != from_comms);
@@ -684,7 +684,7 @@ static void check_goods(int *passed, int *total)
 static void check_build(int *passed, int *total)
 {
     P = passed; T = total;
-    printf("\nan empty MDF to a working network and a shell on a server\n");
+    printf("\nan empty Engineering to a working network and a shell on a server\n");
     Session ses;
     if (!session_start(&ses, GATE_SEED, 100000)) { ck("a session starts", false); return; }
     Buf o = {0};
@@ -859,7 +859,7 @@ done:
 /* ------------------------------------ what the person in the chair says */
 /* THREE BUGS IN ONE SENTENCE, and a playtester hit all three in one sitting.
  *
- * It said "on this floor" while reading `tried`, which is per TENANCY: their
+ * It said "on this deck" while reading `tried`, which is per TENANCY: their
  * studio said the floor was dead while the web host on the same floor served
  * 24 of 24 visitors. It tested `!tried` BEFORE `complained`, so a tenancy
  * that had filed and never had one working desk -- the worst state there is
@@ -900,8 +900,8 @@ static void check_desk_complaint(int *passed, int *total)
         const char *r = say(&ses, line, &o);
         ck("a tenancy that has filed says so, even with nothing working",
            has(r, "we filed with the landlord"));
-        ck("and says THIS OFFICE, not this floor -- floors hold two or three "
-           "tenancies", has(r, "in this office") && !has(r, "on this floor"));
+        ck("and says THIS OFFICE, not this deck -- decks hold two or three "
+           "tenancies", has(r, "in this office") && !has(r, "on this deck"));
         say(&ses, "stand", &o);
 
         /* 2. FILED, AND SOME OF IT WORKS -- counted in the trade's own unit. */
@@ -984,7 +984,7 @@ static void check_tenant_kit(int *passed, int *total)
         snprintf(line, sizeof line, "go %s", nm);
         say(&ses, line, &o);
         int room = ses.s.dev[d].room;
-        ck("you can walk to a tenant's desk: their floor is not sealed off",
+        ck("you can walk to a tenant's desk: their deck is not sealed off",
            ses.room == room);
 
         snprintf(line, sizeof line, "carry %s", nm);
@@ -1260,22 +1260,22 @@ static void check_services(int *passed, int *total)
      * exactly the way an address does, or the tower's own resolver comes
      * back from a mains failure denying every machine in the building. */
     ck("`dns <box> <name> <ip>` gives that server a name of its own",
-       has(say(&ses, "dns files store.floor1 10.0.1.77", &o),
-           "store.floor1 -> 10.0.1.77"));
+       has(say(&ses, "dns files store.deck1 10.0.1.77", &o),
+           "store.deck1 -> 10.0.1.77"));
     ck("and says where it went, because for some boxes there is no disk",
        has(o.p, "/etc/net/services"));
     ck("`dnsd <box>` says what it will serve rather than the word `serving`",
        has(say(&ses, "dnsd files", &o), "serves 1 name"));
     say(&ses, "resolver desk1 10.0.1.10", &o);
     ck("a desk pointed at it resolves that name over real copper",
-       has(say(&ses, "resolve desk1 store.floor1", &o), "10.0.1.77"));
+       has(say(&ses, "resolve desk1 store.deck1", &o), "10.0.1.77"));
     say(&ses, "power files off", &o);
     say(&ses, "power files on", &o);
     ck("and after the power cut the zone is still there, off the disk",
-       has(say(&ses, "dnsd files", &o), "store.floor1") &&
+       has(say(&ses, "dnsd files", &o), "store.deck1") &&
        has(o.p, "10.0.1.77"));
     ck("and the desk still resolves it, having been told nothing",
-       has(say(&ses, "resolve desk1 store.floor1", &o), "10.0.1.77"));
+       has(say(&ses, "resolve desk1 store.deck1", &o), "10.0.1.77"));
     /* NXDOMAIN IS AN ANSWER, AND IT IS NOT SILENCE. */
     ck("a name that server has never held is `no such name`, not `no answer`",
        has(say(&ses, "resolve desk1 nowhere.example", &o), "no such name") &&
@@ -1387,8 +1387,8 @@ static void check_help(int *passed, int *total)
 
     /* ---- THE NAME THE GAME PRINTS IS THE NAME THE GAME TAKES. */
     say(&ses, "go goods", &o);
-    ck("`go MDF` works, and the prompt, `look` and `rooms` all print MDF",
-       has(say(&ses, "go MDF", &o), "you walk") &&
+    ck("`go Engineering` works, and the prompt, `look` and `rooms` all print Engineering",
+       has(say(&ses, "go Engineering", &o), "you walk") &&
        ses.b.rooms[ses.room].kind == RM_MDF);
     say(&ses, "go GOODS", &o);
     ck("and so does any other room the game shouts at you in capitals",
@@ -1460,7 +1460,7 @@ static void check_refusals(int *passed, int *total)
       { "spool back|spool cat6|plug sw1:0|plug sw2:0", "plug sw1:0",
         "a second end into a port that already has a cable" },
       { NULL,          "lift 9",
-        "the lift to a floor nobody has put in service" },
+        "the lift to a deck nobody has put in service" },
       { NULL,          "rescue sw1",
         "the rescue stick into a box with no drive" },
       { "spool back|go goods", "cable sw1:2 sw2:2",
@@ -1549,8 +1549,8 @@ static void check_prompt(int *passed, int *total)
     char body[96], mgmt[96], shell[96], desk[96];
 
     session_prompt(&ses, body, sizeof body);
-    ck("standing in a room, the prompt is the floor and the room",
-       has(body, "MDF") && has(body, "f0"));
+    ck("standing in a room, the prompt is the deck and the room",
+       has(body, "Engineering") && has(body, "d0"));
 
     say(&ses, "plug uplink", &o);
     session_prompt(&ses, mgmt, sizeof mgmt);
@@ -1884,7 +1884,7 @@ done:
 /* ================= THE OPENING TEXT COUNTS, IT DOES NOT PROMISE ===========
  *
  * `help` opened with *"On day one it holds exactly one thing: the ISP's
- * socket on the wall of the MDF."* True of a session started over the socket
+ * socket on the wall of the Engineering."* True of a session started over the socket
  * and FALSE of the one the 3D window starts, which pre-orders a router, a
  * switch24 and a server into goods in and has spent 2400 doing it. A
  * playtester believed the sentence, re-bought two of the three, and lost
@@ -1946,7 +1946,7 @@ static void check_inventory(int *passed, int *total)
      * blind tester reads and it named goods in without saying what was in it. */
     say(&ses, "desk", &o);
     const char *in = say(&ses, "tower", &o);
-    ck("the way in names the delivery already on the floor of goods in",
+    ck("the way in names the delivery already on the deck of goods in",
        has(in, "ALREADY A DELIVERY") && has(in, "core") && has(in, "files") &&
        has(in, "do not order those again"));
 
@@ -1956,7 +1956,7 @@ static void check_inventory(int *passed, int *total)
 
 /* ==================== `cable` PUTS YOU BACK WHERE YOU ASKED ===============
  *
- * *"I queued seven fibre runs from the MDF; the first succeeded and walked me
+ * *"I queued seven fibre runs from the Engineering; the first succeeded and walked me
  * to f1, and the other six all failed with 'you are in neither room'."*
  *
  * `cable` is a macro for four things a person does, and the fourth left them
@@ -1990,12 +1990,12 @@ static void check_cable_batch(int *passed, int *total)
         say(&ses, "go goods", &o);
         snprintf(c, sizeof c, "carry %s", nm);
         say(&ses, c, &o);
-        say(&ses, "go f1.comms", &o);
+        say(&ses, "go d1.comms", &o);
         say(&ses, "drop", &o);
         made++;
     }
     say(&ses, "go mdf", &o);
-    ck("three boxes carried into the cupboard upstairs, and you back in the MDF",
+    ck("three boxes carried into the cupboard upstairs, and you back in the Engineering",
        made == 3 && ses.room == mdf);
 
     long walked = ses.walked;
@@ -2009,11 +2009,11 @@ static void check_cable_batch(int *passed, int *total)
             all = false;
         }
         if (ses.room != mdf) {
-            printf("    run %d left you in room %d, not the MDF\n", i, ses.room);
+            printf("    run %d left you in room %d, not the Engineering\n", i, ses.room);
             home = false;
         }
     }
-    ck("three runs typed one after another from the MDF, and all three come up",
+    ck("three runs typed one after another from the Engineering, and all three come up",
        all && ses.s.nlink == 4);   /* + the lead the building came with */
     ck("because every one of them walks you back to the room you typed it in",
        home && ses.room == mdf);
@@ -2037,7 +2037,7 @@ static void check_cable_batch(int *passed, int *total)
     ck("a fresh drum is a whole drum", start > 0);
     say(&ses, "buy pc pcx", &o);
     say(&ses, "go goods", &o); say(&ses, "carry pcx", &o);
-    say(&ses, "go f1.comms", &o); say(&ses, "drop", &o);
+    say(&ses, "go d1.comms", &o); say(&ses, "drop", &o);
     say(&ses, "go mdf", &o);
     const char *again = say(&ses, "cable core:9 pcx:0 cat5e", &o);
     ck("naming the grade you are already holding is not a trip to the store",
@@ -2090,7 +2090,7 @@ static void check_cable_batch(int *passed, int *total)
 static void check_deliver_played(int *passed, int *total)
 {
     P = passed; T = total;
-    printf("\nthree switches to one floor: walked, and typed\n");
+    printf("\nthree switches to one deck: walked, and typed\n");
 
     /* Six movement commands a box, exactly as the playtester typed them. */
     static const char *LONG[] = {
@@ -2106,7 +2106,7 @@ static void check_deliver_played(int *passed, int *total)
     int an = 0;
     for (int i = 0; LONG[i]; i++) { say(&a, LONG[i], &o); an++; }
     int comms = a.room;
-    ck("walked, three switches end up in the floor one comms cupboard",
+    ck("walked, three switches end up in the deck one comms cupboard",
        a.b.rooms[comms].kind == RM_COMMS && a.b.rooms[comms].floor == 1 &&
        site_dev_by_name(&a.s, "sw1") > 0 &&
        a.s.dev[site_dev_by_name(&a.s, "sw1")].room == (uint16_t)comms &&
@@ -2117,7 +2117,7 @@ static void check_deliver_played(int *passed, int *total)
     /* The same job, with the walking typed instead of held down. */
     static const char *SHORT[] = {
         "buy switch24 sw1", "buy switch24 sw2", "buy switch24 sw3",
-        "deliver sw1 sw2 sw3 f1.comms", NULL
+        "deliver sw1 sw2 sw3 d1.comms", NULL
     };
     Session b;
     if (!session_start(&b, GATE_SEED, 100000)) { ck("a session starts", false); return; }
@@ -2170,13 +2170,13 @@ static void check_deliver_refuses(int *passed, int *total)
 
     long walked = ses.walked, money = ses.s.money;
     ck("a box that does not exist is refused, and nobody walked anywhere",
-       has(say(&ses, "deliver nosuchbox f1.comms", &o), "no box called nosuchbox") &&
+       has(say(&ses, "deliver nosuchbox d1.comms", &o), "no box called nosuchbox") &&
        ses.walked == walked && ses.s.money == money);
     ck("a room that does not exist is refused the same way",
        has(say(&ses, "deliver core nosuchroom", &o), "no room or box called") &&
        ses.walked == walked);
     ck("and naming one box twice, because it only needs carrying once",
-       has(say(&ses, "deliver core core f1.comms", &o), "named twice") &&
+       has(say(&ses, "deliver core core d1.comms", &o), "named twice") &&
        ses.walked == walked);
 
     /* Hands full. */
@@ -2184,7 +2184,7 @@ static void check_deliver_refuses(int *passed, int *total)
     say(&ses, "carry spare", &o);
     walked = ses.walked;
     ck("a box already in your hands stops the line before it starts",
-       has(say(&ses, "deliver core f1.comms", &o), "both your hands are on it") &&
+       has(say(&ses, "deliver core d1.comms", &o), "both your hands are on it") &&
        ses.carrying == site_dev_by_name(&ses.s, "spare") && ses.walked == walked);
     say(&ses, "drop", &o);
 
@@ -2192,7 +2192,7 @@ static void check_deliver_refuses(int *passed, int *total)
     say(&ses, "spool cat6", &o);
     walked = ses.walked;
     ck("so does a drum of cable, and the drum is still in your hands after",
-       has(say(&ses, "deliver core f1.comms", &o), "drum of cable") &&
+       has(say(&ses, "deliver core d1.comms", &o), "drum of cable") &&
        ses.spool_kind >= 0 && ses.walked == walked);
     say(&ses, "spool back", &o);
 
@@ -2200,7 +2200,7 @@ static void check_deliver_refuses(int *passed, int *total)
      * walks you there first -- which is what `go mdf` then `carry uplink`
      * does too, for the same metres. */
     ck("the ISP handoff is on their wall and does not come with you",
-       has(say(&ses, "deliver uplink f1.comms", &o), "the handoff is the ISP's") &&
+       has(say(&ses, "deliver uplink d1.comms", &o), "the handoff is the ISP's") &&
        ses.carrying < 0);
 
     /* A BOX WITH COPPER IN IT, and where the refusal happens matters.
@@ -2210,7 +2210,7 @@ static void check_deliver_refuses(int *passed, int *total)
      * are the long form's. A shorthand that had checked from the doorway
      * would be cheaper than the hands in the one case the player got it
      * wrong, which is the one case it must not be. */
-    say(&ses, "deliver core sw1 f1.comms", &o);
+    say(&ses, "deliver core sw1 d1.comms", &o);
     int comms = ses.room;
     say(&ses, "cable core:0 sw1:0 cat5e", &o);
     say(&ses, "spool back", &o);
@@ -2249,7 +2249,7 @@ static void check_deliver_refuses(int *passed, int *total)
     say(&ses, "buy switch8 pair2", &o);
     say(&ses, "go goods", &o);
     say(&ses, "carry pair2", &o);
-    say(&ses, "go f1.comms", &o);
+    say(&ses, "go d1.comms", &o);
     say(&ses, "drop", &o);
     say(&ses, "cable pair2:0 sw1:1 cat5e", &o);
     say(&ses, "spool back", &o);
@@ -2357,7 +2357,7 @@ static void check_tag_hop(int *passed, int *total)
  *
  * A playtest that reached day 34 said the thing this feature has to answer:
  * *"Cable is a bill I paid with a rule, not a bill I sweated. I made the
- * riser decision on floor 1 and then repeated it on floors 2 and 3 without
+ * riser decision on deck 1 and then repeated it on decks 2 and 3 without
  * thinking."* A jack that is only a dearer cable does not fix that. What
  * follows is the same run bought both ways by a person over a pipe, and the
  * assertions are that BOTH answers are wrong somewhere:
@@ -2384,7 +2384,7 @@ static void check_jack_played(int *passed, int *total)
     };
     for (int i = 0; SETUP[i]; i++) say(&ses, SETUP[i], &o);
     open_next_floor(&ses, &o);
-    say(&ses, "go f1.comms", &o);
+    say(&ses, "go d1.comms", &o);
     int cupboard = ses.room;
     int metres = site_metres(&ses.s, cupboard, ses.s.dev[0].room);
 
@@ -2411,7 +2411,7 @@ static void check_jack_played(int *passed, int *total)
     /* THE FLOOR THAT NEEDED IT THIS AFTERNOON. This is the wrong answer, and
      * the player finds out by trying. */
     static const char *KIT[] = {
-        "buy switch8 fsw", "go goods", "carry fsw", "go f1.comms", "drop", NULL
+        "buy switch8 fsw", "go goods", "carry fsw", "go d1.comms", "drop", NULL
     };
     for (int i = 0; KIT[i]; i++) say(&ses, KIT[i], &o);
     const char *early = say(&ses, "patch fsw:0", &o);
@@ -2437,7 +2437,7 @@ static void check_jack_played(int *passed, int *total)
        has(o.p, "The jack is still in the wall") && ses.s.njack == 1);
     say(&ses, "carry fsw", &o);
     say(&ses, "go mdf", &o);
-    say(&ses, "go f1.comms", &o);
+    say(&ses, "go d1.comms", &o);
     say(&ses, "drop", &o);
     before = ses.s.money;
     say(&ses, "patch fsw:0", &o);
@@ -2513,7 +2513,7 @@ static void check_quote_played(int *passed, int *total)
     int where = ses.room;
     const char *q = say(&ses, line, &o);
     ck("`quote <room>` answers from the room you are standing in",
-       has(q, "a run from f0 MDF") && has(q, "through the tray"));
+       has(q, "a run from d0 Engineering") && has(q, "through the tray"));
     ck("and asking costs no money, no metres of your legs, and does not move "
        "you",
        ses.s.money == money && ses.walked == walked && ses.room == where &&
@@ -2524,7 +2524,7 @@ static void check_quote_played(int *passed, int *total)
      * only way to find out was to pay. */
     char want[64];
     snprintf(want, sizeof want, "%d m through the tray", dfar);
-    ck("the far office on that floor is past what copper has margin for",
+    ck("the far office on that deck is past what copper has margin for",
        has(q, want) && dfar >= SITE_COPPER_MARGIN_M &&
        has(q, "copper has margin for"));
     snprintf(line, sizeof line, "quote #%d", near);
@@ -2550,7 +2550,7 @@ static void check_quote_played(int *passed, int *total)
     snprintf(line, sizeof line, "quote core #%d", far);
     q = say(&ses, line, &o);
     ck("`quote <a> <b>` quotes two named ends from wherever you happen to be",
-       has(q, "a run from core:0 in f0 MDF") && metres_of(q) == dfar &&
+       has(q, "a run from core:0 in d0 Engineering") && metres_of(q) == dfar &&
        ses.b.rooms[ses.room].kind == RM_GOODS);
     ck("a name that is neither a box nor a room is refused in words",
        has(say(&ses, "quote nowhere", &o), "there is no room or box called"));
@@ -2617,7 +2617,7 @@ static void check_quote_played(int *passed, int *total)
 static void check_vlan_server_reboot(int *passed, int *total)
 {
     P = passed; T = total;
-    printf("\na floor server on vlan subinterfaces, across a power cut\n");
+    printf("\na deck server on vlan subinterfaces, across a power cut\n");
     Session ses;
     if (!session_start(&ses, GATE_SEED, 100000)) { ck("a session starts", false); return; }
     Buf o = {0};
@@ -3062,7 +3062,7 @@ static void check_sit(int *passed, int *total)
         char line[32];
         snprintf(line, sizeof line, "sit %s", first);
         const char *r = say(&ses, line, &o);
-        ck("sitting at a desk on another floor is refused and names the room",
+        ck("sitting at a desk on another deck is refused and names the room",
            has(r, "and you are not") && has(r, "their office") &&
            on_your_feet(&ses));
     }
@@ -3291,7 +3291,7 @@ static void check_dead_console(int *passed, int *total)
     int comms = -1;
     for (int i = 0; i < ses.b.nrooms; i++)
         if (ses.b.rooms[i].kind == RM_COMMS && ses.b.rooms[i].floor == 1) comms = i;
-    if (comms < 0) { ck("the tower has a comms cupboard on floor 1", false); goto done; }
+    if (comms < 0) { ck("the tower has a comms cupboard on deck 1", false); goto done; }
     char room[24];
     snprintf(room, sizeof room, "#%d", comms);
     say(&ses, "buy server srv1", &o);
@@ -3303,7 +3303,7 @@ static void check_dead_console(int *passed, int *total)
 
     ck("a box carried into a room with no conduit to it is not plugged in",
        !ses.s.dev[d].mains && !ses.s.dev[d].powered);
-    ck("and `look` in that room says so about the box on the floor",
+    ck("and `look` in that room says so about the box on the deck",
        has(say(&ses, "look", &o), "NOT PLUGGED IN"));
     (void)dropped;
 

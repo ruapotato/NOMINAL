@@ -2090,7 +2090,7 @@ int site_dev_by_name(const Site *s, const char *name)
     return -1;
 }
 
-/* "#41" is room 41. "f3.comms" is the comms cupboard on floor three, and the
+/* "#41" is room 41. "d3.comms" is the comms cupboard on deck three, and the
  * same spelling works for mdf, riser, goods, lobby, plant and the lettable
  * kinds -- which is enough to build a whole tower without ever printing a
  * floor plan, though --floorplan is there when a person wants one. */
@@ -2112,12 +2112,19 @@ int site_room_by_name(const Site *s, const char *spec)
         int n = atoi(spec + 1);
         return (n >= 0 && n < s->b->nrooms) ? n : -1;
     }
-    if (spec[0] != 'f') return -1;
+    /* BOTH LETTERS. A deck is spelled `d3.comms` now and `f3.comms` still
+     * works: a player who learned the old prefix, or a script written against
+     * it, should not be told there is no such room. */
+    if (spec[0] != 'd' && spec[0] != 'f') return -1;
     const char *dot = strchr(spec, '.');
     if (!dot) return -1;
     int floor = atoi(spec + 1);
     static const struct { const char *n; int k; } K[] = {
-        { "comms", RM_COMMS }, { "mdf", RM_MDF }, { "riser", RM_RISER },
+        /* BOTH SPELLINGS OF THE ROOM THE GAME STARTS IN. It is called
+         * Engineering now; `mdf` still works, because a player who learned
+         * the old word should not be told there is no such room. */
+        { "comms", RM_COMMS }, { "mdf", RM_MDF }, { "eng", RM_MDF },
+        { "engineering", RM_MDF }, { "riser", RM_RISER },
         { "goods", RM_GOODS }, { "lobby", RM_LOBBY }, { "plant", RM_PLANT },
         { "server", RM_SERVER }, { "office", RM_OFFICE },
         { "residence", RM_RESIDENCE }, { "retail", RM_RETAIL },
@@ -2180,7 +2187,7 @@ void site_room_ambiguity(const Site *s, const char *spec, int picked, Buf *out)
 {
     int n = site_room_name_matches(s, spec, NULL);
     if (n < 2 || picked < 0) return;
-    buf_printf(out, "  NOTE: `%s` matches %d rooms on floor %d and the game "
+    buf_printf(out, "  NOTE: `%s` matches %d rooms on deck %d and the game "
                     "picked one: #%d,\n  the lowest-numbered", spec, n,
                s->b->rooms[picked].floor, picked);
     if (s->b->rooms[picked].tenant)
@@ -2197,7 +2204,7 @@ void site_room_ambiguity(const Site *s, const char *spec, int picked, Buf *out)
         shown++;
     }
     if (n - 1 > shown) buf_printf(out, " and %d more", n - 1 - shown);
-    buf_printf(out, ".\n  `rooms %d` lists the floor; `#<n>` names one for "
+    buf_printf(out, ".\n  `rooms %d` lists the deck; `#<n>` names one for "
                     "certain.\n", s->b->rooms[picked].floor);
 }
 
@@ -2240,7 +2247,7 @@ void site_dump_demand(const Site *s, Buf *out)
      * three times an office for the same floor and will fill an uplink
      * nobody sized for it; that is only a decision if the player can see
      * both halves of it here, on the row, before the day arrives. */
-    buf_puts(out, "  day  floor  tenant  trade      drops  wants"
+    buf_puts(out, "  day  deck  tenant  trade      drops  wants"
                   "                                          rent/mo\n");
     for (int i = 0; i < s->ntenant; i++) {
         const SiteTenant *t = &s->tenant[i];
@@ -2281,7 +2288,7 @@ void site_dump_demand(const Site *s, Buf *out)
                     "ones, and %d a month of rent to pay for them\n",
                (drops + 21) / 22, (drops + 6) / 7, rent);
     buf_printf(out, "  a switch24 seats %d desks, not 24: ports 22 and 23 are "
-                    "its SFP+ pair,\n  which is where the riser and the floor's "
+                    "its SFP+ pair,\n  which is where the riser and the deck's "
                     "server want to be. A switch8\n  seats %d, keeping one for "
                     "the run back. `serve` fills from port 0 up,\n  so it will "
                     "spend the pair on desks if you let it.\n",
@@ -2348,12 +2355,12 @@ void site_dump_demand(const Site *s, Buf *out)
         "  and on the network and running nothing answers nothing, and the\n"
         "  files column says `<box> (no httpd)` when that is what happened.\n"
         "  Nearest is: their own machine if they have one, otherwise one on\n"
-        "  their floor, otherwise anything at all in the building, however\n"
-        "  many floors of riser that is through. So one server in a floor's\n"
+        "  their deck, otherwise anything at all in the building, however\n"
+        "  many decks of riser that is through. So one server in a deck's\n"
         "  comms cupboard, with a leg on each tenancy's vlan, serves that\n"
-        "  whole floor and every tenancy on it counts as having one --\n"
+        "  whole deck and every tenancy on it counts as having one --\n"
         "  `service`'s files column names the box each of them really used,\n"
-        "  and marks with <- the ones being served from another floor.\n"
+        "  and marks with <- the ones being served from another deck.\n"
         "  A WEB HOST IS THE EXCEPTION, for the reason above: their site is\n"
         "  their software, so their origin must stand in their own room and\n"
         "  no server of yours will answer for it.\n");
@@ -2378,7 +2385,7 @@ static void where(const Site *s, const SiteDev *d, char *out, size_t cap)
         return;
     }
     const Room *r = &s->b->rooms[d->room];
-    snprintf(out, cap, "f%d %s #%d", r->floor, bld_kind_name(r->kind), d->room);
+    snprintf(out, cap, "d%d %s #%d", r->floor, bld_kind_name(r->kind), d->room);
 }
 
 void site_dump(const Site *s, Buf *out)
@@ -2458,7 +2465,7 @@ void site_dump_jacks(const Site *s, int room, Buf *out)
         char w[48], h[40];
         if (s->b && j->room < s->b->nrooms) {
             const Room *r = &s->b->rooms[j->room];
-            snprintf(w, sizeof w, "f%d %s #%d", r->floor, bld_kind_name(r->kind),
+            snprintf(w, sizeof w, "d%d %s #%d", r->floor, bld_kind_name(r->kind),
                      j->room);
         } else snprintf(w, sizeof w, "?");
         snprintf(h, sizeof h, "%s:%d", s->dev[j->home].name, j->hport);
@@ -2588,7 +2595,7 @@ static void quote_end(const Site *s, int room, int dev, int port,
     char w[64];
     if (room >= 0 && s->b && room < s->b->nrooms) {
         const Room *r = &s->b->rooms[room];
-        snprintf(w, sizeof w, "f%d %s #%d", r->floor, bld_kind_name(r->kind), room);
+        snprintf(w, sizeof w, "d%d %s #%d", r->floor, bld_kind_name(r->kind), room);
     } else {
         snprintf(w, sizeof w, "outside");
     }
@@ -2666,7 +2673,7 @@ void site_dump_quote(const Site *s, int room_a, int room_b,
     /* THE MARGIN. Not a warning about a rule: a statement about this run. */
     if (m >= SITE_COPPER_MARGIN_M)
         buf_printf(out, "  %d m is past the %d m copper has margin for: under a "
-                        "floor's load this run\n  takes CRC errors, says so in "
+                        "deck's load this run\n  takes CRC errors, says so in "
                         "`events`, and retrains itself down. Fibre does not.\n",
                    m, SITE_COPPER_MARGIN_M);
     /* AND WHAT THE QUOTE CANNOT KNOW. */
@@ -2684,7 +2691,7 @@ void site_dump_quote(const Site *s, int room_a, int room_b,
 
 void site_dump_rooms(const Site *s, int floor, Buf *out)
 {
-    buf_printf(out, "floor %d\n", floor);
+    buf_printf(out, "deck %d\n", floor);
     for (int i = 0; i < s->b->nrooms; i++) {
         const Room *r = &s->b->rooms[i];
         if (r->floor != floor) continue;
@@ -2883,7 +2890,7 @@ static void dump_dev(Site *s, int dev, Buf *out, bool empties)
         char w[48];
         if (s->b && s->jack[j].room < s->b->nrooms) {
             const Room *r = &s->b->rooms[s->jack[j].room];
-            snprintf(w, sizeof w, "f%d %s #%d", r->floor, bld_kind_name(r->kind),
+            snprintf(w, sizeof w, "d%d %s #%d", r->floor, bld_kind_name(r->kind),
                      s->jack[j].room);
         } else snprintf(w, sizeof w, "?");
         buf_printf(out, "port %-2d is punched down to jack j%d, %d m of %s to "
@@ -3018,7 +3025,7 @@ static bool port_arg(const Site *s, char *a, int *dev, int *port)
 
 /* ONE END OF A QUOTE, in either of the two ways a player thinks about a run.
  * A box (`core`, `core:2`) is where a run really terminates, and the port is
- * what decides the speed. A room (`#41`, `f3.comms`) is the question asked
+ * what decides the speed. A room (`#41`, `d3.comms`) is the question asked
  * before the box is bought -- which is most of the questions worth asking,
  * because the whole point is to find out what a room costs to reach BEFORE
  * putting anything in it. Returns false only when it is neither. */
@@ -3069,7 +3076,7 @@ static const struct { const char *verb; int need; const char *usage; } VERB[] = 
     { "help",     1, "help" },
     { "show",     1, "show [<box>]" },
     { "links",    1, "links" },
-    { "rooms",    1, "rooms [<floor>]" },
+    { "rooms",    1, "rooms [<deck>]" },
     { "demand",   1, "demand" },
     { "day",      1, "day [<n>]" },
     { "status",   1, "status" },
@@ -3106,7 +3113,7 @@ static const struct { const char *verb; int need; const char *usage; } VERB[] = 
                      "                      from. Nothing is bought." },
     { "buy",      2, "buy <kind> [name]     switch4 switch8 switch24 router pc\n"
                      "                      minitower server rackserver" },
-    { "move",     3, "move <box> <room>     rooms: #41, f3.comms, f0.mdf" },
+    { "move",     3, "move <box> <room>     rooms: #41, d3.comms, d0.eng" },
     { "cable",    3, "cable <box>:<port> <box>:<port> [cat5e|cat6|fibre|cat5]" },
     { "uncable",  2, "uncable <n>           `links` numbers them" },
     { "quote",    3, "quote <a> <b>         what that run would cost, before it\n"
@@ -3115,7 +3122,7 @@ static const struct { const char *verb; int need; const char *usage; } VERB[] = 
                      "                      at over that distance, and the same\n"
                      "                      run as a jack. Each end is a box\n"
                      "                      (`core`, `core:2`) or a room (`#41`,\n"
-                     "                      `f3.comms`). Nothing is bought" },
+                     "                      `d3.comms`). Nothing is bought" },
     { "jack",     3, "jack <room> <box>:<port> [cat5e|cat6|fibre|cat5]\n"
                      "                      have a permanent socket put in that\n"
                      "                      room, with the run behind it punched\n"
@@ -3247,9 +3254,9 @@ bool site_cmd(Site *s, const char *line, Buf *out)
             "                               better box, carry it up and move the service\n"
             "                               onto it -- there is no `upgrade` verb\n"
             "                               it is delivered to goods in, on the\n"
-            "                               ground floor. Not to where you are.\n"
+            "                               ground deck. Not to where you are.\n"
             "move <dev> <room>              carry it there. Refused while it has a\n"
-            "                               cable in it. rooms: #41, f3.comms,\n"
+            "                               cable in it. rooms: #41, d3.comms,\n"
             "                               f0.mdf, f2.office\n"
             "cable <dev>:<port> <dev>:<port> [cat5|cat5e|cat6|fibre]\n"
             "uncable <n>                    pull one out\n"
@@ -3474,22 +3481,22 @@ bool site_cmd(Site *s, const char *line, Buf *out)
         int floor = 0;
         if (n > 1) {
             const char *a = t[1];
-            if (*a == 'f' || *a == 'F') a++;
-            if (!*a) { buf_printf(out, "which floor? `rooms 2` or `rooms f2`. "
+            if (*a == 'd' || *a == 'D' || *a == 'f' || *a == 'F') a++;
+            if (!*a) { buf_printf(out, "which deck? `rooms 2` or `rooms f2`. "
                                        "The building has %d.\n", s->b->floors);
                        return true; }
             for (const char *q = a; *q; q++)
                 if (*q < '0' || *q > '9') {
-                    buf_printf(out, "`%s` is not a floor. `rooms <n>` or "
+                    buf_printf(out, "`%s` is not a deck. `rooms <n>` or "
                                     "`rooms f<n>`, 0 to %d. A room's own name "
                                     "--\n  `f1.comms` -- is what `move`, `go` "
                                     "and `quote` take; `rooms` takes the "
-                                    "floor.\n", t[1], s->b->floors - 1);
+                                    "deck.\n", t[1], s->b->floors - 1);
                     return true;
                 }
             floor = atoi(a);
             if (floor < 0 || floor >= s->b->floors) {
-                buf_printf(out, "there is no floor %d. This building has %d, "
+                buf_printf(out, "there is no deck %d. This building has %d, "
                                 "numbered 0 to %d.\n",
                            floor, s->b->floors, s->b->floors - 1);
                 return true;
@@ -3733,7 +3740,7 @@ bool site_cmd(Site *s, const char *line, Buf *out)
                           "out\n  without a `ups`");
         buf_printf(out, ". %d paid, %ld left.\n",
                    site_kind_price(kind), s->money);
-        buf_printf(out, "it is in %s #%d, on the ground floor. Somebody has to "
+        buf_printf(out, "it is in %s #%d, on the ground deck. Somebody has to "
                         "carry it: `move %s <room>`\n",
                    bld_kind_name(s->b->rooms[goods].kind), goods, s->dev[d].name);
         return true;

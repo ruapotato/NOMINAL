@@ -2297,7 +2297,7 @@ void site_dump_day(const Site *s, Buf *out)
 
 void site_dump_service(const Site *s, Buf *out)
 {
-    buf_puts(out, "  floor tenant  trade      desks   up  addr   done  worst"
+    buf_puts(out, "  deck tenant  trade      desks   up  addr   done  worst"
                   "   strikes  rent/day  files\n");
     bool offfloor = false;
     for (int i = 0; i < s->ntenant; i++) {
@@ -2360,7 +2360,7 @@ void site_dump_service(const Site *s, Buf *out)
                         "explains every column.\n", bear, in);
     }
     if (offfloor)
-        buf_puts(out, "  <- is a tenancy served from another floor: their traffic "
+        buf_puts(out, "  <- is a tenancy served from another deck: their traffic "
                       "crosses a riser\n  to get there. `load` says which port "
                       "carries it.\n");
 }
@@ -2435,16 +2435,16 @@ void site_dump_service_legend(const Site *s, Buf *out)
         int bear = site_complaints_allowed(s);
         buf_printf(out, "\n  %d filed complaints ends the run. That is a third of the %d\n"
                         "  tenancies in the building, rounded up, and never fewer than\n"
-                        "  three -- so it grows as you let the floors.\n", bear, in);
+                        "  three -- so it grows as you let the decks.\n", bear, in);
     }
     buf_puts(out,
                   "\n  files is the server their people actually pulled off yesterday.\n"
                   "  Their own machine if they have one and it is on; otherwise one on\n"
-                  "  their floor; otherwise anything powered in the building. A server\n"
+                  "  their deck; otherwise anything powered in the building. A server\n"
                   "  qualifies on ANY address it holds -- a socket or a tagged vlan\n"
                   "  subinterface, it makes no difference -- and the leg that answers is\n"
                   "  the one on the asking desk's own segment when it has one.\n");
-    buf_puts(out, "  <- is a tenancy being served from another floor. Nothing refused\n"
+    buf_puts(out, "  <- is a tenancy being served from another deck. Nothing refused\n"
                   "  it -- their traffic is just crossing a riser to get there, and\n"
                   "  `load` will show you which port is carrying it.\n");
 }
@@ -2565,7 +2565,7 @@ void site_dump_load_legend(const Site *s, Buf *out)
          * between a tool that points at the problem and one that alibis it. */
         "\n  busy is the SHARE OF THE BUSY PERIOD this port spent clocking bits,\n"
         "  averaged over four seconds. Drops do not wait for it to be high: a\n"
-        "  48 KB buffer is 394us of wire at a gigabit, so a floor of desks\n"
+        "  48 KB buffer is 394us of wire at a gigabit, so a deck of desks\n"
         "  fetching at once can overrun it in bursts while the average sits in\n"
         "  single figures. READ THE DROPS AND THE PEAK QUEUE, not the average.\n"
         "  `show <box>` says how many were lost and which of the four reasons\n"

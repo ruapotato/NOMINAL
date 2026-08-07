@@ -484,8 +484,8 @@ func _standing_text() -> String:
 	for f in serviced():
 		s += ("" if s == "" else " ") + str(f)
 	if s == "":
-		return "no floor is in service"
-	return "[E] call   or press a floor:  " + s
+		return "no deck is in service"
+	return "[E] call   or press a deck:  " + s
 
 
 func _say(m: String) -> void:
@@ -496,7 +496,7 @@ func _say(m: String) -> void:
 		if is_instance_valid(l):
 			l.text = t
 	if _car_sign and is_instance_valid(_car_sign):
-		_car_sign.text = m if m != "" else ("press a floor:  " + _standing_text().split(":  ")[-1])
+		_car_sign.text = m if m != "" else ("press a deck:  " + _standing_text().split(":  ")[-1])
 
 
 func _build_readout() -> void:
@@ -547,20 +547,20 @@ func serviced() -> Array:
 # of a floor not being in service.
 func go_to(f: int) -> String:
 	if not floors.has(f):
-		return _said("this lift does not pass floor %d." % f)
+		return _said("this lift does not pass deck %d." % f)
 	if not tower.in_service(f):
-		return _said("floor %d is not in service. The button is not lit." % f)
+		return _said("deck %d is not in service. The button is not lit." % f)
 	target = f
 	_want = -1
-	return _said("floor %d." % f)
+	return _said("deck %d." % f)
 
 
 func call_to(f: int) -> String:
 	var s := go_to(f)
 	if target == f and at != f:
-		return _said("the lift is coming to floor %d." % f)
+		return _said("the lift is coming to deck %d." % f)
 	if target == f:
-		return _said("the lift is here. Step in and press a floor.")
+		return _said("the lift is here. Step in and press a deck.")
 	return s
 
 
@@ -611,21 +611,21 @@ func landing_press(f: int) -> String:
 	if from < 0:
 		return ""
 	if not floors.has(f):
-		return _said("this lift does not pass floor %d." % f)
+		return _said("this lift does not pass deck %d." % f)
 	if not tower.in_service(f):
-		return _said("floor %d is not in service. The button is not lit." % f)
+		return _said("deck %d is not in service. The button is not lit." % f)
 	target = from
 	if f == from:
 		_want = -1
 		_want_from = -1
 		if at == from:
-			return _said("floor %d: you are on it. The doors are open." % f)
-		return _said("the lift is coming to floor %d." % f)
+			return _said("deck %d: you are on it. The doors are open." % f)
+		return _said("the lift is coming to deck %d." % f)
 	_want = f
 	_want_from = from
 	if at == from:
-		return _said("floor %d: step in." % f)
-	return _said("floor %d: the lift is coming to floor %d first." % [f, from])
+		return _said("deck %d: step in." % f)
+	return _said("deck %d: the lift is coming to deck %d first." % [f, from])
 
 
 # A DIGIT IS A BUTTON, and this is the one place a landing button exists. It is
@@ -670,7 +670,7 @@ func _dispatch() -> void:
 		_want = -1
 		_want_from = -1
 		target = f
-		_say("floor %d." % f)
+		_say("deck %d." % f)
 		return
 	# Walked off without getting in: the button un-presses. A destination held
 	# for ever is a car that sets off on its own the next time anybody rides.

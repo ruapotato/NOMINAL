@@ -86,8 +86,16 @@ double bld_room_area(const Room *r)
 const char *bld_kind_name(int k)
 {
     static const char *N[RM_KIND_COUNT] = {
+        /* THE STATION'S OWN WORDS. The internals still say RM_MDF and
+         * `floor` -- renaming an enum buys nothing and costs a day -- but
+         * every word a PLAYER reads is the station's, which is the rule this
+         * project has always used about prose against internals.
+         *
+         * "The IT room should be Engineering, the top deck should be
+         * Bridge." Engineering is where the handoff, the power core and the
+         * machine you sit at are: the room the game starts in. */
         "corridor", "lobby", "lift lobby", "lift shaft", "stairwell",
-        "riser", "comms cupboard", "MDF", "toilets", "plant", "goods in",
+        "riser", "comms cupboard", "Engineering", "heads", "plant", "goods in",
         "office", "residence", "server room", "retail"
     };
     return (k >= 0 && k < RM_KIND_COUNT) ? N[k] : "?";
@@ -111,16 +119,16 @@ const char *bld_floor_kind_name(int k)
 const char *bld_check_name(int c)
 {
     static const char *N[BC_COUNT] = {
-        "floors stack, no floating plates",
+        "decks stack, no floating plates",
         "every square metre is in exactly one room",
         "rooms are a usable size",
-        "risers, lifts and stairs align on every floor",
+        "risers, lifts and stairs align on every deck",
         "every door has a room on both sides",
         "every room has a way in",
         "the corridor is one loop with no dead ends",
         "every room is reachable on foot",
         "nobody crosses another tenant's space",
-        "the floor's mix makes sense",
+        "the deck's mix makes sense",
         "distances are a metric",
         "walking and cabling are different numbers"
     };
@@ -806,7 +814,7 @@ int bld_check(const Building *b, Buf *out, int *fails)
     for (int f = 0; f + 1 < b->floors; f++)
         if (b->fx0[f + 1] < b->fx0[f] || b->fy0[f + 1] < b->fy0[f] ||
             b->fx1[f + 1] > b->fx1[f] || b->fy1[f + 1] > b->fy1[f])
-            fail(out, fails, BC_STACK, "floor %d is not inside floor %d", f + 1, f);
+            fail(out, fails, BC_STACK, "deck %d is not inside deck %d", f + 1, f);
 
     /* 2. tessellation: every metre of every plate is in exactly one room, and
      *    no room hangs over the edge of its plate. */
@@ -819,7 +827,7 @@ int bld_check(const Building *b, Buf *out, int *fails)
             if (r->x0 < b->fx0[f] || r->y0 < b->fy0[f] ||
                 r->x1 > b->fx1[f] || r->y1 > b->fy1[f]) {
                 fail(out, fails, BC_TESSELLATE,
-                     "room %d (%s) hangs over the edge of floor %d",
+                     "room %d (%s) hangs over the edge of deck %d",
                      i, bld_kind_name(r->kind), f);
                 continue;
             }
@@ -827,7 +835,7 @@ int bld_check(const Building *b, Buf *out, int *fails)
                 for (int x = r->x0; x < r->x1; x++) {
                     size_t ci = CIDX(b, f, x, y);
                     if (cover[ci]) fail(out, fails, BC_TESSELLATE,
-                                        "floor %d (%d,%d) is in two rooms", f, x, y);
+                                        "deck %d (%d,%d) is in two rooms", f, x, y);
                     cover[ci] = 1;
                 }
         }
@@ -836,7 +844,7 @@ int bld_check(const Building *b, Buf *out, int *fails)
                 for (int x = b->fx0[f]; x < b->fx1[f]; x++)
                     if (!cover[CIDX(b, f, x, y)])
                         fail(out, fails, BC_TESSELLATE,
-                             "floor %d (%d,%d) is in no room at all", f, x, y);
+                             "deck %d (%d,%d) is in no room at all", f, x, y);
         nom_free(cover);
     }
 
@@ -866,7 +874,7 @@ int bld_check(const Building *b, Buf *out, int *fails)
                 if (b->rooms[i].floor == f + 1 && nb2 < 4) B[nb2++] = &b->rooms[i];
             }
             if (na != nb2) {
-                fail(out, fails, BC_ALIGN, "%s: %d on floor %d, %d on floor %d",
+                fail(out, fails, BC_ALIGN, "%s: %d on deck %d, %d on deck %d",
                      bld_kind_name(kind), na, f, nb2, f + 1);
                 continue;
             }
@@ -874,14 +882,14 @@ int bld_check(const Building *b, Buf *out, int *fails)
                 if (A[i]->x0 != B[i]->x0 || A[i]->y0 != B[i]->y0 ||
                     A[i]->x1 != B[i]->x1 || A[i]->y1 != B[i]->y1)
                     fail(out, fails, BC_ALIGN,
-                         "%s moves from (%d,%d) on floor %d to (%d,%d) on floor %d",
+                         "%s moves from (%d,%d) on deck %d to (%d,%d) on deck %d",
                          bld_kind_name(kind), A[i]->x0, A[i]->y0, f,
                          B[i]->x0, B[i]->y0, f + 1);
         }
         if (kind == RM_RISER)
             for (int f = 0; f < b->floors; f++)
                 if (bld_find(b, f, RM_RISER) < 0)
-                    fail(out, fails, BC_ALIGN, "floor %d has no riser", f);
+                    fail(out, fails, BC_ALIGN, "deck %d has no riser", f);
     }
 
     /* 5. every door has a room on both sides, they are different rooms, and
@@ -891,7 +899,7 @@ int bld_check(const Building *b, Buf *out, int *fails)
         int nx = d->x + (d->dir == 0), ny = d->y + (d->dir == 1);
         uint16_t a = cell_at(b, d->floor, d->x, d->y), c = cell_at(b, d->floor, nx, ny);
         if (a == BLD_NOROOM || c == BLD_NOROOM) {
-            fail(out, fails, BC_DOORS, "door %d on floor %d opens into open air", i, d->floor);
+            fail(out, fails, BC_DOORS, "door %d on deck %d opens into open air", i, d->floor);
             continue;
         }
         if (a == c) { fail(out, fails, BC_DOORS, "door %d joins a room to itself", i); continue; }
@@ -914,7 +922,7 @@ int bld_check(const Building *b, Buf *out, int *fails)
         bool has = false;
         for (int j = 0; j < b->ndoors && !has; j++)
             if (b->doors[j].a == i || b->doors[j].b == i) has = true;
-        if (!has) fail(out, fails, BC_ROOMDOOR, "room %d (%s) on floor %d has no door",
+        if (!has) fail(out, fails, BC_ROOMDOOR, "room %d (%s) on deck %d has no door",
                        i, bld_kind_name(b->rooms[i].kind), b->rooms[i].floor);
     }
 
@@ -934,10 +942,10 @@ int bld_check(const Building *b, Buf *out, int *fails)
                 if (cell_kind(b, f, x, y + 1) == RM_CORRIDOR) nbr++;
                 if (cell_kind(b, f, x, y - 1) == RM_CORRIDOR) nbr++;
                 if (nbr < 2)
-                    fail(out, fails, BC_CORRIDOR, "floor %d (%d,%d) is a corridor dead end",
+                    fail(out, fails, BC_CORRIDOR, "deck %d (%d,%d) is a corridor dead end",
                          f, x, y);
             }
-        if (first < 0) { fail(out, fails, BC_CORRIDOR, "floor %d has no corridor", f); continue; }
+        if (first < 0) { fail(out, fails, BC_CORRIDOR, "deck %d has no corridor", f); continue; }
         uint8_t *seen = nom_alloc(ncells);
         int fy = (first % (b->w * b->h)) / b->w, fx = (first % (b->w * b->h)) % b->w;
         flood(b, f, fx, fy, seen, -1, -1, false);
@@ -946,7 +954,7 @@ int bld_check(const Building *b, Buf *out, int *fails)
             for (int x = 0; x < b->w; x++)
                 if (cell_kind(b, f, x, y) == RM_CORRIDOR && seen[CIDX(b, f, x, y)]) reached++;
         if (reached != total)
-            fail(out, fails, BC_CORRIDOR, "floor %d: corridor is in more than one piece (%d/%d)",
+            fail(out, fails, BC_CORRIDOR, "deck %d: corridor is in more than one piece (%d/%d)",
                  f, reached, total);
         nom_free(seen);
     }
@@ -956,7 +964,7 @@ int bld_check(const Building *b, Buf *out, int *fails)
      *    deliberately not walkable; it is reached by cable only. */
     {
         int mdf = bld_find(b, 0, RM_MDF);
-        if (mdf < 0) fail(out, fails, BC_PROGRAM, "there is no MDF");
+        if (mdf < 0) fail(out, fails, BC_PROGRAM, "there is no Engineering");
         else {
             uint8_t *seen = nom_alloc(ncells);
             int sx, sy; room_centre(b, mdf, &sx, &sy);
@@ -965,7 +973,7 @@ int bld_check(const Building *b, Buf *out, int *fails)
                 if (b->rooms[i].kind == RM_RISER) continue;
                 int x, y; room_centre(b, i, &x, &y);
                 if (!seen[CIDX(b, b->rooms[i].floor, x, y)])
-                    fail(out, fails, BC_REACH, "room %d (%s) on floor %d cannot be walked to",
+                    fail(out, fails, BC_REACH, "room %d (%s) on deck %d cannot be walked to",
                          i, bld_kind_name(b->rooms[i].kind), b->rooms[i].floor);
             }
             nom_free(seen);
@@ -989,7 +997,7 @@ int bld_check(const Building *b, Buf *out, int *fails)
             if (!b->rooms[i].tenant) continue;
             int f = b->rooms[i].floor;
             int lob = bld_find(b, f, RM_LIFTLOBBY);
-            if (lob < 0) { fail(out, fails, BC_PROGRAM, "floor %d has no lift lobby", f); break; }
+            if (lob < 0) { fail(out, fails, BC_PROGRAM, "deck %d has no lift lobby", f); break; }
             int sx, sy; room_centre(b, lob, &sx, &sy);
             flood(b, f, sx, sy, seen, 1, i, false);
             int x, y; room_centre(b, i, &x, &y);
@@ -1007,7 +1015,7 @@ int bld_check(const Building *b, Buf *out, int *fails)
         static const int NEED[] = { RM_COMMS, RM_STAIR, RM_LIFTLOBBY, RM_TOILET, RM_CORRIDOR };
         for (size_t k = 0; k < sizeof NEED / sizeof *NEED; k++)
             if (bld_find(b, f, NEED[k]) < 0)
-                fail(out, fails, BC_PROGRAM, "floor %d has no %s", f, bld_kind_name(NEED[k]));
+                fail(out, fails, BC_PROGRAM, "deck %d has no %s", f, bld_kind_name(NEED[k]));
         int nsame = 0, prev = -1, worst = 0;
         for (int i = 0; i < b->nrooms; i++) {
             if (b->rooms[i].floor != f) continue;
@@ -1016,7 +1024,7 @@ int bld_check(const Building *b, Buf *out, int *fails)
             else { prev = k; nsame = 0; }
             if (nsame > worst) worst = nsame;
         }
-        if (worst > 2) fail(out, fails, BC_PROGRAM, "floor %d is %d toilets in a row", f, worst);
+        if (worst > 2) fail(out, fails, BC_PROGRAM, "deck %d is %d toilets in a row", f, worst);
     }
     if (bld_find(b, 0, RM_GOODS) < 0) fail(out, fails, BC_PROGRAM, "there is nowhere to take a delivery");
 
@@ -1079,7 +1087,7 @@ int bld_check(const Building *b, Buf *out, int *fails)
          * was never tested, and a gate that reports a pass on an empty
          * comparison is the failure mode this project keeps rediscovering. */
         if (!ncross) fail(out, fails, BC_DIFFER,
-                          "the sample never straddled two floors, so nothing was compared");
+                          "the sample never straddled two decks, so nothing was compared");
 
         /* The cable has to be able to get from the MDF to every comms
          * cupboard in the building, or the tower has no uplink. */
@@ -1090,7 +1098,7 @@ int bld_check(const Building *b, Buf *out, int *fails)
             for (int f = 0; f < b->floors; f++) {
                 int cc = bld_find(b, f, RM_COMMS);
                 if (cc >= 0 && cm[cc] >= BLD_INF)
-                    fail(out, fails, BC_METRIC, "no cable route from the MDF to floor %d", f);
+                    fail(out, fails, BC_METRIC, "no cable route from Engineering to deck %d", f);
             }
             nom_free(cm);
         }
@@ -1105,7 +1113,7 @@ int bld_check(const Building *b, Buf *out, int *fails)
 
 void bld_floorplan(const Building *b, int floor, Buf *out)
 {
-    if (floor < 0 || floor >= b->floors) { buf_printf(out, "no such floor\n"); return; }
+    if (floor < 0 || floor >= b->floors) { buf_printf(out, "no such deck\n"); return; }
     int W = 2 * b->w + 1, H = 2 * b->h + 1;
     char *g = nom_alloc((size_t)W * (size_t)H);
     memset(g, ' ', (size_t)W * (size_t)H);
@@ -1152,7 +1160,7 @@ void bld_floorplan(const Building *b, int floor, Buf *out)
             AT(gx, gy) = any ? '+' : ' ';
         }
 
-    buf_printf(out, "seed %llu  floor %d of %d  (%s)  %.1f m above the ground\n",
+    buf_printf(out, "seed %llu  deck %d of %d  (%s)  %.1f m above the ground\n",
                (unsigned long long)b->seed, floor, b->floors - 1,
                bld_floor_kind_name(b->fkind[floor]),
                b->floor_height * floor);

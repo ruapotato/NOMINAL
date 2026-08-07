@@ -351,12 +351,12 @@ static void check_blackout(void)
         "buy switch24 sw1", "buy switch24 sw2", "buy switch24 sw3",
         "buy server srv1", "buy server srv2", "buy server srv3",
         "buy server spare", "buy server idle",
-        "spool back", "go goods", "carry sw1",  "go f1.comms", "drop",
-        "spool back", "go goods", "carry srv1", "go f1.comms", "drop",
-        "spool back", "go goods", "carry sw2",  "go f2.comms", "drop",
-        "spool back", "go goods", "carry srv2", "go f2.comms", "drop",
-        "spool back", "go goods", "carry sw3",  "go f3.comms", "drop",
-        "spool back", "go goods", "carry srv3", "go f3.comms", "drop",
+        "spool back", "go goods", "carry sw1",  "go d1.comms", "drop",
+        "spool back", "go goods", "carry srv1", "go d1.comms", "drop",
+        "spool back", "go goods", "carry sw2",  "go d2.comms", "drop",
+        "spool back", "go goods", "carry srv2", "go d2.comms", "drop",
+        "spool back", "go goods", "carry sw3",  "go d3.comms", "drop",
+        "spool back", "go goods", "carry srv3", "go d3.comms", "drop",
         "spool back", "go goods", "carry spare", "go mdf", "drop",
         "spool back", "go goods", "carry idle",  "go mdf", "drop",
         "go mdf",
@@ -368,13 +368,13 @@ static void check_blackout(void)
         "spool back",
         "addr edge 198.51.100.2/30", "addr edge:1 10.0.1.1/24",
         "gw edge 198.51.100.1", "router edge on",
-        "go f1.comms", "cable sw1:22 srv1:0 cat5e", "spool back",
+        "go d1.comms", "cable sw1:22 srv1:0 cat5e", "spool back",
         "power srv1 on", "addr srv1 10.0.1.10/24", "gw srv1 10.0.1.1",
         "dhcpd srv1 10.0.1.50 200 24 10.0.1.1 10.0.1.10", "httpd srv1",
-        "go f2.comms", "cable sw2:22 srv2:0 cat5e", "spool back",
+        "go d2.comms", "cable sw2:22 srv2:0 cat5e", "spool back",
         "power srv2 on", "addr srv2 10.0.1.11/24", "gw srv2 10.0.1.1",
         "httpd srv2",
-        "go f3.comms", "cable sw3:22 srv3:0 cat5e", "spool back",
+        "go d3.comms", "cable sw3:22 srv3:0 cat5e", "spool back",
         "power srv3 on", "addr srv3 10.0.1.12/24", "gw srv3 10.0.1.1",
         "httpd srv3",
         /* The two controls, powered and cabled and given no work to do. */
@@ -382,7 +382,7 @@ static void check_blackout(void)
         "spool back", "power spare on", "power idle on",
         NULL
     };
-    ck("a switch and a file server in each of three floors' cupboards",
+    ck("a switch and a file server in each of three decks' cupboards",
        script(&ses, BUILD, &o));
 
     /* THE BATTERY IS A PURCHASE, AND IT COSTS. */
@@ -397,15 +397,15 @@ static void check_blackout(void)
      * its own floor's switch, so each floor's server holds that floor's
      * files -- which is what `service` prints in its `files` column. */
     days(&ses, TENANT_IN, &o);
-    say(&ses, "go f1.comms", &o);
+    say(&ses, "go d1.comms", &o);
     say(&ses, "serve 1 sw1 cat5e", &o);
     days(&ses, 5, &o);
-    say(&ses, "go f2.comms", &o);
+    say(&ses, "go d2.comms", &o);
     say(&ses, "serve 2 sw2 cat5e", &o);
     days(&ses, 14, &o);
-    say(&ses, "go f3.comms", &o);
+    say(&ses, "go d3.comms", &o);
     say(&ses, "serve 5 sw3 cat5e", &o);
-    ck("three tenancies, one on each floor, with copper to their own switch",
+    ck("three tenancies, one on each deck, with copper to their own switch",
        site_tenant_connected(&ses.s, 0) > 10 &&
        site_tenant_connected(&ses.s, 1) > 10 &&
        site_tenant_connected(&ses.s, 4) > 10);
@@ -432,7 +432,7 @@ static void check_blackout(void)
      * casualties are dealt off. Asserted rather than assumed, because a gate
      * whose three boxes were all idle would pass the variety check below by
      * dealing nothing to any of them. */
-    ck("and each of the three floors pulled its files off its own floor's box",
+    ck("and each of the three decks pulled its files off its own deck's box",
        ses.s.tenant[0].files_dev == bx[0].dev &&
        ses.s.tenant[1].files_dev == bx[1].dev &&
        ses.s.tenant[4].files_dev == bx[2].dev);
@@ -926,7 +926,7 @@ static void check_disk(void)
  */
 static void check_copper(void)
 {
-    printf("\nninety-five metres of copper under a floor of desks\n");
+    printf("\nninety-five metres of copper under a deck of desks\n");
     Session ses;
     if (!session_start(&ses, EV_SEED, 200000)) { ck("a session starts", false); return; }
     Buf o = {0};
@@ -957,7 +957,7 @@ static void check_copper(void)
         "spool back",
         NULL
     };
-    ck("a floor's switch in the office, home-run to the core in copper",
+    ck("a deck's switch in the office, home-run to the core in copper",
        script(&ses, BUILD, &o));
 
     int cd = site_dev_by_name(&ses.s, "core");
@@ -977,7 +977,7 @@ static void check_copper(void)
     say(&ses, "go f3.office", &o);
     say(&ses, "serve 5 far cat5e", &o);
     days(&ses, 1, &o);
-    ck("a floor of desks behind it, and their day's work finishes",
+    ck("a deck of desks behind it, and their day's work finishes",
        ses.s.tenant[4].tried > 0 &&
        ses.s.tenant[4].finished * 5 >= ses.s.tenant[4].tried * 4);
 
@@ -1023,7 +1023,7 @@ static void check_copper(void)
      * AFTER the busy period, so the day it retrained was still a gigabit day
      * and the first slow day is the one after it. */
     days(&ses, 1, &o);
-    ck("the floor behind it stops getting its work done",
+    ck("the deck behind it stops getting its work done",
        ses.s.tenant[4].finished * 5 < ses.s.tenant[4].tried * 4);
 
     /* AND IT IS FIXABLE WITH WHAT EXISTS. Pull it and run it in fibre, which
@@ -1058,18 +1058,18 @@ static void check_heat(void)
     static const char *const BUILD[] = {
         "credit 60000",
         "buy switch24 cup", "buy server h1", "buy server h2", "buy server h3",
-        "go goods", "carry cup", "go f1.comms", "drop",
-        "go goods", "carry h1",  "go f1.comms", "drop",
-        "go goods", "carry h2",  "go f1.comms", "drop",
-        "go goods", "carry h3",  "go f1.comms", "drop",
+        "go goods", "carry cup", "go d1.comms", "drop",
+        "go goods", "carry h1",  "go d1.comms", "drop",
+        "go goods", "carry h2",  "go d1.comms", "drop",
+        "go goods", "carry h3",  "go d1.comms", "drop",
         /* AND ONE OF THE SAME KIND OF BOX SOMEWHERE WITH AIR IN IT, which is
          * the control for the wear check below. Same server, same day, same
          * amount of work -- none -- and a different room. */
         "buy server cool",
         "go goods", "carry cool", "go mdf", "drop",
-        "go f1.comms",
+        "go d1.comms",
         "power h1 on", "power h2 on", "power h3 on",
-        "go mdf", "power cool on", "go f1.comms",
+        "go mdf", "power cool on", "go d1.comms",
         NULL
     };
     ck("three servers and a switch, in one cupboard", script(&ses, BUILD, &o));
@@ -1123,7 +1123,7 @@ static void check_heat(void)
     /* AVOIDABLE. Carry one of them somewhere with air in it and the room is
      * back under what it can lose -- which is a decision the player makes
      * with their legs, in the building, for the price of the walk. */
-    say(&ses, "go f1.comms", &o);
+    say(&ses, "go d1.comms", &o);
     say(&ses, "carry h3", &o);
     say(&ses, "go f1.server", &o);
     say(&ses, "drop", &o);
@@ -1149,7 +1149,7 @@ static void check_determinism(void)
             "buy switch8 sw", "buy server one", "buy server two",
             "go goods", "carry sw",  "go mdf", "drop",
             "go goods", "carry one", "go mdf", "drop",
-            "go goods", "carry two", "go f1.comms", "drop",
+            "go goods", "carry two", "go d1.comms", "drop",
             "spool cat6", "plug uplink:0", "plug sw:0",
             "plug sw:1", "plug one:0",
             "power one on", "power two on",
