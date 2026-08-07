@@ -2960,6 +2960,16 @@ func _add_device(dname: String, which: int, hdmi: bool, serial: bool,
 		# uses to tell an RJ45 from a square hole
 		_face_box(g, pf.c - pf.n * 0.004 + Vector3(0, pf.h * 0.34, 0), face,
 			pf.w * 0.34, pf.h * 0.30, 0.008, Color("#090b0e"))
+	# AND THE CONSOLE SOCKET, on the boxes that have one. Drawn wider and
+	# shallower than an RJ45 and in a different colour, because the whole
+	# point of it is that your eye can tell the two apart at a glance.
+	var sf := {}
+	if serial:
+		sf = _serial_frame(mn, size, face, fw)
+		_face_box(g, sf.c + Vector3(sf.n) * 0.002, face,
+			float(sf.w) + 0.005, float(sf.h) + 0.005, 0.005, Color("#4a4038"))
+		_face_box(g, sf.c - Vector3(sf.n) * 0.005, face,
+			float(sf.w), float(sf.h), 0.010, Color("#12100e"))
 	var n := g.node(dname.replace(" ", "_") + "_%d" % devices.size())
 	add_child(n)
 	# LABELLED, because every rack anybody has ever had to work on is labelled,
@@ -2987,7 +2997,8 @@ func _add_device(dname: String, which: int, hdmi: bool, serial: bool,
 	devices.append({"name": dname, "which": which, "hdmi": hdmi,
 		"serial": serial, "node": n, "pos": mn + size * 0.5, "site": site_i,
 		"face": face, "mn": mn, "size": size, "nports": nports, "fw": fw,
-		"ports": frames, "is_desk": false, "use_from": mn + size * 0.5})
+		"ports": frames, "is_desk": false, "use_from": mn + size * 0.5,
+		"serial_at": sf})
 
 
 # ------------------------------------------------------------------ the ports
@@ -3002,6 +3013,54 @@ func _add_device(dname: String, which: int, hdmi: bool, serial: bool,
 # Two rows past eight of them, because that is what a 24-port 1U switch does:
 # forty millimetres of pitch on one row would need a metre and a half of
 # faceplate, and the frame is 600 mm wide.
+# THE CONSOLE SOCKET, WHICH IS NOT AN ETHERNET PORT.
+#
+# "The debugger attaches to the same port as the computer on the network
+# uplink. Seems like the debugger should connect to a serial-shaped port and be
+# the only thing that port does."
+#
+# He is describing the thing that makes a service processor a service
+# processor. A console is out of band: it is a different socket, a different
+# shape, wired to a different chip, and it answers when the machine will not
+# boot -- which is the entire reason this game has one. Attaching the handset
+# to the RJ45 the tenant's frames go through said the opposite: that the
+# console is just another thing on the network, and that a dead machine's
+# network port would still talk to you.
+#
+# So it is a socket of its own, in its own place, drawn as the wide trapezoid
+# a DE-9 shell actually is. Same rule as the RJ45s above: this function is the
+# ONLY thing that says where it is, so the geometry, the crosshair and the lead
+# cannot disagree about it.
+const SERIAL_W := 0.030
+const SERIAL_H := 0.013
+
+func _serial_frame(mn: Vector3, size: Vector3, face: Vector3, fw: float) -> Dictionary:
+	var across: bool = absf(face.z) > 0.5
+	var along: float = size.x if across else size.z
+	var nrm := Vector3(0, 0, 0)
+	var plane := 0.0
+	if face.z > 0:
+		nrm = Vector3(0, 0, 1); plane = mn.z + size.z + fw
+	elif face.z < 0:
+		nrm = Vector3(0, 0, -1); plane = mn.z - fw
+	elif face.x > 0:
+		nrm = Vector3(1, 0, 0); plane = mn.x + size.x + fw
+	else:
+		nrm = Vector3(-1, 0, 0); plane = mn.x - fw
+	# hard against the end of the face the ports do not start from, low down,
+	# which is where a console port lives on nearly everything that has one
+	var t: float = along - min(0.05, along * 0.10) * 0.5 - SERIAL_W * 0.6
+	var c := mn + size * 0.5
+	c.y = mn.y + min(size.y * 0.28, 0.055)
+	if across:
+		c.x = mn.x + t
+		c.z = plane
+	else:
+		c.z = mn.z + t
+		c.x = plane
+	return {"c": c, "n": nrm, "w": min(SERIAL_W, along * 0.35), "h": SERIAL_H}
+
+
 func _port_frames(mn: Vector3, size: Vector3, face: Vector3, nports: int,
 		fw: float) -> Array:
 	var out: Array = []
@@ -3255,6 +3314,16 @@ func aim() -> Dictionary:
 				bt = t
 				best = {"kind": "port", "dev": i, "port": int(pf.i),
 					"point": o + dir * t}
+		# THE CONSOLE SOCKET, ahead of the box for the same reason the RJ45s
+		# are: a player aiming at a hole means the hole.
+		var sfa: Dictionary = d.get("serial_at", {})
+		if not sfa.is_empty():
+			var sc: Vector3 = sfa.c
+			var sh := Vector3(0.022, 0.022, 0.022)
+			var ts: float = _ray_box(o, dir, sc - sh, sc + sh)
+			if ts >= 0.0 and ts < bt:
+				bt = ts
+				best = {"kind": "console", "dev": i, "port": -1, "point": o + dir * ts}
 		# then the box itself
 		var mn: Vector3 = d.mn
 		var mx: Vector3 = mn + d.size
@@ -3346,6 +3415,18 @@ func aim_text(a: Dictionary) -> Array:
 		return ["lift button, floor %d" % bf, "[E] go to floor %d" % bf]
 	var d: Dictionary = devices[int(a.dev)]
 	var s: int = int(d.get("site", -1))
+	# THE CONSOLE SOCKET SAYS WHAT IT IS FOR, AND WHAT IT IS NOT FOR. A player
+	# who reads "console" over a socket that is not an RJ45 has been told the
+	# thing the shape was drawn to tell them.
+	if a.kind == "console":
+		var dk: Dictionary = devices[int(a.dev)]
+		var skey: String = hand_key("serial")
+		var what2 := "%s console port" % dk.name
+		if phone != null and int(phone.plugged) == int(a.dev):
+			return [what2, "the debugger is in it  [U] out"]
+		if skey == "":
+			return [what2, "serial only. The debugger lead goes in here  [F]"]
+		return [what2, "serial only  %s the debugger in  [F]" % skey]
 	if a.kind == "port":
 		var p: int = int(a.port)
 		var st := port_state(s, p)
@@ -5764,8 +5845,15 @@ func _unhandled_input(event: InputEvent) -> void:
 		# name to type, so that one is still the prop's own answer.
 		KEY_F:
 			said2 = _lead_in(dev, false)
-		KEY_H:
-			said2 = _lead_in(dev, true)
+		# [H] WAS THE DISPLAY LEAD AND IS GONE. "Debugger: display has no
+		# point, if something has a display you just use the display.
+		# Debugger: serial is the only thing it should be for." He is right,
+		# and it is the same argument as the console socket above: a machine
+		# with a monitor is used through its monitor -- sit at it -- and a
+		# machine without one is used through the serial lead, which is what a
+		# service processor is for. `plug hdmi` still exists in the session
+		# and still drives the desk screens; what is gone is the pretence
+		# that a picture is a debugging tool.
 		KEY_U:
 			# and out again through core's `unplug`, which is what detach()
 			# does: the prop cannot put a lead down the session still holds.
@@ -5804,6 +5892,19 @@ func _unhandled_input(event: InputEvent) -> void:
 func _lead_in(dev: int, hdmi: bool) -> String:
 	if dev < 0 or phone == null:
 		return ""
+	# THE LEAD GOES IN THE CONSOLE SOCKET AND NOWHERE ELSE. Until now it went
+	# into the box -- which in practice meant it went into whatever the
+	# crosshair was on, including the RJ45 the tenant's frames cross. That is
+	# the opposite of what a service processor is: a console is out of band, on
+	# its own socket, wired to its own chip, and it answers when the machine
+	# will not boot. Refusing here, in words, at the ethernet port, is how the
+	# shape on the box gets taught.
+	if not hdmi and phone.plugged != dev:
+		var dk: Dictionary = devices[dev]
+		if not dk.get("serial_at", {}).is_empty():
+			var aim_now: Dictionary = target()
+			if str(aim_now.get("kind", "")) == "port":
+				return "%s: that is an ethernet port. The debugger goes in the console socket -- the wide one, low on the same face." % dk.name
 	var s: int = int(devices[dev].get("site", -1))
 	if s < 0:
 		return str(phone.plug(dev, "hdmi" if hdmi else "serial"))

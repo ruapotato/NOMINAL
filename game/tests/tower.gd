@@ -367,6 +367,71 @@ func _init() -> void:
 	# not fallen through, not perched on a tread half a metre up.
 	# What a standing body reads as its own y when it is on a floor, measured
 	# rather than assumed: the capsule's origin is not at the slab.
+	# ---- THE CONSOLE IS A SOCKET OF ITS OWN, AND THE RJ45 REFUSES THE LEAD.
+	#
+	# "The debugger attaches to the same port as the computer on the network
+	# uplink. Seems like the debugger should connect to a serial-shaped port
+	# and be the only thing that port does." That is what makes a service
+	# processor one: out of band, its own socket, its own chip, and it answers
+	# when the machine will not boot. Plugging it into the tenant's ethernet
+	# port said the opposite.
+	var condev := -1
+	for i in range(t.devices.size()):
+		var dc: Dictionary = t.devices[i]
+		if int(dc.get("site", -1)) >= 0 and not dc.get("serial_at", {}).is_empty() \
+				and not dc.get("ports", []).is_empty():
+			condev = i
+			break
+	if condev < 0:
+		fail("no box in the building has a console socket drawn on it")
+	else:
+		var dcon: Dictionary = t.devices[condev]
+		var scf: Dictionary = dcon.serial_at
+		var clash := false
+		for pf2 in dcon.ports:
+			if Vector3(pf2.c).distance_to(Vector3(scf.c)) < 0.02:
+				clash = true
+		if clash:
+			fail("%s draws its console socket on top of an ethernet port" % str(dcon.name))
+		else:
+			ok("%s has a console socket of its own, %d mm from the nearest RJ45"
+				% [str(dcon.name),
+					int(Vector3(dcon.ports[0].c).distance_to(Vector3(scf.c)) * 1000.0)])
+		var cstand: Vector3 = Vector3(scf.c) + Vector3(scf.n) * 0.6 - Vector3(0, 0.24, 0)
+		t.teleport(cstand + Vector3(0, 0.3, 0))
+		for j in range(12):
+			await process_frame
+		t.aim_at(Vector3(scf.c))
+		for j in range(4):
+			await process_frame
+		var ca: Dictionary = t.aim()
+		if str(ca.get("kind", "")) != "console" or int(ca.get("dev", -1)) != condev:
+			fail("standing at the console socket of %s, the crosshair finds %s"
+				% [str(dcon.name), "nothing" if ca.is_empty() else str(ca.get("kind", ""))])
+		else:
+			var ct: Array = t.aim_text(ca)
+			if str(ct[1]).find("serial") < 0:
+				fail("the crosshair on a console socket says: %s" % str(ct[1]))
+			else:
+				ok("the crosshair on it reads: %s -- %s" % [ct[0], ct[1]])
+		# AND THE ETHERNET PORT SAYS NO, in words, rather than quietly working
+		t.aim_at(Vector3(dcon.ports[0].c))
+		for j in range(4):
+			await process_frame
+		var pa: Dictionary = t.aim()
+		if str(pa.get("kind", "")) == "port":
+			var refused: String = t._lead_in(condev, false)
+			if refused.find("console socket") < 0:
+				fail("the debugger went into an ethernet port: %s" % refused)
+			else:
+				ok("the ethernet port refuses the debugger: %s" % refused.split(".")[0])
+	# ---- THE DISPLAY DEBUGGER IS GONE. "If something has a display you just
+	# use the display."
+	if t.bag and t.bag.KIT.has("display"):
+		fail("the display debugger is still in the kit")
+	elif t.bag:
+		ok("the kit is %s -- no display debugger" % str(t.bag.KIT.keys()))
+
 	# ---- EVERY SOCKET IS ONE YOU CAN GET AT.
 	#
 	# "The default setup has the player's computer too close to a wall to get

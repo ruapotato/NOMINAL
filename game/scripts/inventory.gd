@@ -57,21 +57,18 @@ const KIT := {
 		"hint": ["a box into a socket", "on the room's wall"]},
 	"serial": {"label": "debugger: serial",
 		"hint": ["a console, even on a box", "that never booted"]},
-	"display": {"label": "debugger: display",
-		"hint": ["a picture, only from a", "box that has an output"]},
 }
 
 const COL := {
 	"spool": Color("#2f6fd0"),
 	"power": Color("#8a5a3e"),
 	"serial": Color("#1e6f3a"),
-	"display": Color("#20304f"),
 	"box": Color("#7c828c"),
 }
 
 var tower: Node3D = null
 
-# What is in each hand: "" , "spool", "serial", "display". A box in your arms
+# What is in each hand: "", "spool", "power", "serial". A box in your arms
 # is not stored here -- it is read off tower.carrying, because that is where it
 # really is.
 # WHAT IS IN YOUR HANDS WHEN THE DAY STARTS, and it used to be the two
@@ -161,13 +158,18 @@ func use(side: int, dev: int, port := -1) -> String:
 			if dev < 0:
 				return "nothing under the crosshair to plug into the wall."
 			return tower.mains_at(dev)
-		"serial", "display":
+		"serial":
 			if dev < 0:
 				if tower.phone and tower.phone.plugged >= 0:
 					tower.phone.unplug()
 					return "lead out."
 				return "nothing in reach to plug into."
-			return str(tower.phone.plug(dev, "serial" if h == "serial" else "hdmi"))
+			# THROUGH THE TOWER, NOT STRAIGHT AT THE HANDSET. _lead_in() is
+			# what knows that a console is out of band and that the RJ45 is
+			# not it, and it is also what puts the lead in through the
+			# session so a socket client and the window agree about what is
+			# plugged in where.
+			return str(tower._lead_in(dev, false))
 	return "nothing in that hand."
 
 
