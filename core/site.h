@@ -59,13 +59,64 @@
 /* ---------------------------------------------------------- the catalogue */
 /* What the player can order. The port counts are the limit that bites first
  * and the prices are what the tenants have to cover. */
+/* AND THE GRADES, WHICH ARE THE DECISION THE FIRST TWENTY DAYS DID NOT HAVE.
+ *
+ * A blind playtester who reached day 70: *"Days 1-20 are too easy and
+ * slightly boring... money accumulates... there is no pressure at all in the
+ * first three tenancies; the build is mechanical and there is no decision in
+ * it."* There was one switch worth buying, one server worth buying, and the
+ * money to buy either without thinking.
+ *
+ * There are three grades of each now, and the rule they obey is the rule
+ * this whole project is built on: THE DIFFERENCE IS A SPEC, NOT A QUALITY
+ * NUMBER. Nothing anywhere multiplies anything by a grade. A `switch4` is
+ * four sockets that clock a hundred megabits, and everything that follows
+ * from that -- a queue that fills ten times sooner on the same burst, drops
+ * that `load` counts and `show <box>` gives the reason for in words, a floor
+ * that outgrows four holes -- follows because netstack is doing arithmetic
+ * with the number on the box.
+ *
+ * The axes, and every one of them is already measured somewhere:
+ *
+ *   PORT SPEED   site_kind_port_mb(), read off the wire by netstack, printed
+ *                by `load` and `show`. This is the durability axis: the
+ *                egress buffer is the same 48 KB on every port in the game,
+ *                so a 100 Mb port drains it ten times slower and drops on a
+ *                burst a gigabit port rides out.
+ *   PORT COUNT   the limit that bites first, and the reason a floor that
+ *                fills up costs a second box and a second riser.
+ *   DISK LIFE    site_kind_disk_days(), the days of average use before the
+ *                platter starts losing sectors. A cheap disk in a busy
+ *                server is the first thing in this game to come back for you.
+ *   A BATTERY    whether it rides a mains dip at all. The dear server has
+ *                one in it; on anything else `ups <box>` buys one later.
+ *
+ * AND THE UPGRADE PATH IS THE GAME'S EXISTING PHYSICAL ONE. There is no
+ * `upgrade` verb and there is not going to be one: you order the better box,
+ * it lands in goods in, you carry it up, you cable it, you address it and
+ * you move the service onto it -- and the copper you already paid for is
+ * charged again, because it is. */
 typedef enum {
     SDEV_UPLINK = 0,    /* the ISP handoff. Given, not bought.              */
+    /* THE CHEAP END. Four sockets at a hundred megabits: enough to get one
+     * office off the ground and not enough to keep it there. It is a real
+     * unmanaged desktop switch and it is priced like one. */
+    SDEV_SWITCH4,
     SDEV_SWITCH8,
     SDEV_SWITCH24,
     SDEV_ROUTER,
     SDEV_PC,
+    /* A SMALL-OFFICE SERVER: one hundred-megabit card, and a disk rated for
+     * half the life of the one in the proper box. It will serve a floor's
+     * files on day three and it is what the floor outgrows first. */
+    SDEV_MINITOWER,
     SDEV_SERVER,
+    /* AND THE ONE THE LATE GAME NEEDS: two ten-gigabit cards, a disk rated
+     * for twice the life, and a battery in it. The README names the floor
+     * server's own gigabit card as the binding port in a planned tower, and
+     * this is the box that unbinds it -- for two and a half times the money
+     * and the whole physical job of moving the service across. */
+    SDEV_RACKSERVER,
     /* A DESK. The tenant's own computer, on the tenant's own desk, which
      * they carried in themselves the day they got the keys. It is not for
      * sale and it is not the player's: what the player sells is the port it
@@ -93,6 +144,18 @@ int   site_kind_by_name(const char *name);
 int   site_kind_ports(int kind);      /* sockets on the back of it          */
 int   site_kind_price(int kind);      /* pounds                             */
 bool  site_kind_is_switch(int kind);
+/* Is it one of the three grades of server? A file server is any of them: what
+ * differs is the card, the disk and the battery, not what it does. */
+bool  site_kind_is_server(int kind);
+/* HOW LONG THE DISK IN IT IS RATED FOR, in days of average use -- the same
+ * unit `events` prints the wear percentage against. A box at full load wears
+ * about five times as fast as an idle one, so this is a rating and not a
+ * countdown, and `disk <box>` puts a new one in for a fraction of the price
+ * of the box. 0 for anything with no disk in it. */
+int   site_kind_disk_days(int kind);
+/* Does one arrive with a battery under it? The dear server does; on anything
+ * else `ups <box>` buys one afterwards for the same result and more money.  */
+bool  site_kind_has_ups(int kind);
 /* IS IT IN THE SHOP? Three kinds of device in this catalogue are not the
  * landlord's to buy -- the ISP's handoff, a tenant's own desk, and the
  * player's own workstation -- and until D41 the supplier's catalogue page

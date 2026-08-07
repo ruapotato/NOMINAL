@@ -45,29 +45,57 @@
  * ISP, a desk belongs to the tenant, and the workstation was already in the
  * MDF when he got the keys. `sale` is that fact written down, so the
  * catalogue page and site_install()'s refusal ask the same question. */
+/* AND THE TWO COLUMNS THE GRADES ADDED. `disk` is the days of average use the
+ * platter is rated for, 0 for a box with no disk in it, and it is read by
+ * core/siteday.c's wear loop rather than by a constant that was the same for
+ * every box in the building. `ups` is whether one arrives with a battery
+ * under it. Neither is a multiplier and neither is consulted by anything that
+ * carries a frame: the grade difference the player will actually feel is
+ * `slow_mb` and `ports`, doing arithmetic in netstack. */
 static const struct {
     const char *name; int ports; int price; int slow_mb; int nfast; bool sale;
+    int disk; bool ups;
 } KIT[SDEV_KIND_COUNT] = {
     /* the ISP's socket. Not for sale, and site_isp() rate-limits it to the
      * circuit the landlord has actually bought. */
-    { "uplink",   1,    0, 10000, 0, false },
-    { "switch8",  8,  120,  1000, 0, true  },  /* a cheap access switch, all copper */
-    { "switch24", 24, 400,  1000, 2, true  },  /* ...and its SFP+ pair, 22 and 23   */
-    { "router",   4,  650, 10000, 0, true  },  /* four sockets; as many vlans as you like */
-    { "pc",       1,  480,  1000, 0, true  },
-    { "server",   2, 1350,  1000, 0, true  },  /* a gigabit NIC, and it is the one
-                                                * a flat tower falls over on        */
+    { "uplink",   1,    0, 10000, 0, false,   0, false },
+    /* THE CHEAP GRADE, AND IT IS CHEAP FOR A REASON YOU CAN MEASURE. Four
+     * holes at a hundred megabits. The buffer on the back of a port is the
+     * same 48 KB it is on everything else in this game, which at 100 Mb is
+     * 3.9 ms of wire to fill and ten times as long to drain -- so a floor of
+     * desks fetching at once overruns it where a gigabit port would not, and
+     * `load` prints the drops and `show` gives the reason in words. Nobody
+     * wrote "the cheap switch is worse" anywhere. */
+    { "switch4",  4,   45,   100, 0, true,    0, false },
+    { "switch8",  8,  120,  1000, 0, true,    0, false },  /* all copper, a gigabit each */
+    { "switch24", 24, 400,  1000, 2, true,    0, false },  /* ...and its SFP+ pair, 22 and 23   */
+    { "router",   4,  650, 10000, 0, true,    0, false },  /* four sockets; as many vlans as you like */
+    { "pc",       1,  480,  1000, 0, true,   60, false },
+    /* THE SMALL-OFFICE SERVER. One hundred-megabit card and a disk rated for
+     * half the life. It will hold a floor's files on day three for a third
+     * of the money, and it is the box a second tenancy on that floor
+     * outgrows -- which is the decision, because on day three there is no
+     * second tenancy on that floor. */
+    { "minitower",1,  460,   100, 0, true,   30, false },
+    { "server",   2, 1350,  1000, 0, true,   60, false },  /* a gigabit NIC, and it is the one
+                                                            * a flat tower falls over on        */
+    /* AND THE ONE THAT UNBINDS IT. Two ten-gigabit cards, a disk rated for
+     * twice the life, and a battery in it -- so a mains failure is a box
+     * that stayed up rather than a filesystem to check. Two and a half
+     * times the money, and the ten gigabit is only ten gigabit if the copper
+     * and the port at the other end are: cat6 under 55 m, or fibre. */
+    { "rackserver",2,3400, 10000, 2, true,  120, true  },
     /* A DESK IS NOT FOR SALE. It is the tenant's own computer and it costs
      * the landlord nothing; what the landlord sells is the port it is
      * plugged into and the network behind that port. It is here in the
      * catalogue anyway because it is a device in the site with a card in it
      * and a name, and everything else in this file has to be able to say so. */
-    { "desk",     1,    0,  1000, 0, false },
+    { "desk",     1,    0,  1000, 0, false,  60, false },
     /* AND NEITHER IS THE PLAYER'S OWN WORKSTATION, for the same kind of
      * reason and a different one: it is theirs already. One gigabit socket,
      * an operating system, and it is standing in the MDF on the morning of
      * day one with its lead in the handoff. Everything else about it is a pc.  */
-    { "workstation", 1, 0,  1000, 0, false },
+    { "workstation", 1, 0,  1000, 0, false, 60, false },
 };
 
 int site_kind_port_mb(int kind, int port)
@@ -91,7 +119,21 @@ int site_kind_price(int kind)
 }
 bool site_kind_is_switch(int kind)
 {
-    return kind == SDEV_SWITCH8 || kind == SDEV_SWITCH24;
+    return kind == SDEV_SWITCH4 || kind == SDEV_SWITCH8 ||
+           kind == SDEV_SWITCH24;
+}
+bool site_kind_is_server(int kind)
+{
+    return kind == SDEV_MINITOWER || kind == SDEV_SERVER ||
+           kind == SDEV_RACKSERVER;
+}
+int site_kind_disk_days(int kind)
+{
+    return (kind >= 0 && kind < SDEV_KIND_COUNT) ? KIT[kind].disk : 0;
+}
+bool site_kind_has_ups(int kind)
+{
+    return (kind >= 0 && kind < SDEV_KIND_COUNT) && KIT[kind].ups;
 }
 bool site_kind_for_sale(int kind)
 {
@@ -175,7 +217,9 @@ int site_tenant_rent_pct(int k)
 }
 bool site_kind_has_os(int kind)
 {
-    return kind == SDEV_PC || kind == SDEV_SERVER || kind == SDEV_WORKSTATION;
+    return kind == SDEV_PC || kind == SDEV_SERVER ||
+           kind == SDEV_MINITOWER || kind == SDEV_RACKSERVER ||
+           kind == SDEV_WORKSTATION;
 }
 int site_kind_by_name(const char *name)
 {
@@ -998,6 +1042,13 @@ static int install_dev(Site *s, int kind, int room, const char *name)
      * netstack takes the minimum, so this can only ever slow a link down. */
     for (int p = 0; p < d->nports; p++)
         net_port_rate(s->net, d->node, p, site_kind_port_mb(kind, p));
+    /* AND THE BATTERY, WHEN IT COMES WITH ONE. The dear server arrives with
+     * a UPS in the bottom of the rack; on anything else `ups <box>` fits one
+     * afterwards for 220. Same flag, same behaviour on a mains failure, and
+     * `events` prints the same `yes` -- the difference is that one of them
+     * is in the price on the catalogue page and the other is a decision you
+     * are still able to get wrong on the morning of day twenty-six. */
+    if (site_kind_has_ups(kind)) d->ups = 1;
     s->money -= site_kind_price(kind);
     s->spent += site_kind_price(kind);
     int made = s->ndev++;
@@ -2759,8 +2810,16 @@ static const struct { const char *verb; int need; const char *usage; } VERB[] = 
     { "credit",   2, "credit <amount>" },
     { "ups",      2, "ups <box>" },
     { "disk",     2, "disk <box>" },
-    { "order",    2, "order <kind> [name]   switch8 switch24 router pc server" },
-    { "buy",      2, "buy <kind> [name]     switch8 switch24 router pc server" },
+    { "order",    2, "order <kind> [name]   switch4 switch8 switch24 router pc\n"
+                     "                      minitower server rackserver\n"
+                     "Three grades of switch and three of server, and the difference\n"
+                     "is a SPEC: sockets, what each one clocks, what the disk is\n"
+                     "rated for, whether a battery is in it. Nothing multiplies\n"
+                     "anything by a grade. `links halbert.co.uk/catalogue` is the\n"
+                     "price list, generated off the same table the counter charges\n"
+                     "off." },
+    { "buy",      2, "buy <kind> [name]     switch4 switch8 switch24 router pc\n"
+                     "                      minitower server rackserver" },
     { "move",     3, "move <box> <room>     rooms: #41, f3.comms, f0.mdf" },
     { "cable",    3, "cable <box>:<port> <box>:<port> [cat5e|cat6|fibre|cat5]" },
     { "uncable",  2, "uncable <n>           `links` numbers them" },
@@ -2879,7 +2938,17 @@ bool site_cmd(Site *s, const char *line, Buf *out)
 
     if (strcmp(t[0], "help") == 0) {
         buf_puts(out,
-            "order <kind> [name]            kinds: switch8 switch24 router pc server\n"
+            "order <kind> [name]            kinds: switch4 switch8 switch24 router pc\n"
+            "                               minitower server rackserver -- THREE GRADES\n"
+            "                               of switch and three of server. The cheap end\n"
+            "                               is four sockets at 100 Mb and a disk rated\n"
+            "                               for 30 days; the dear end is ten gigabit, 120\n"
+            "                               days and a battery in it. Nothing multiplies\n"
+            "                               anything by a grade: a slow port queues and\n"
+            "                               drops sooner because it is a slow port, and\n"
+            "                               `load` counts it. The upgrade is to buy the\n"
+            "                               better box, carry it up and move the service\n"
+            "                               onto it -- there is no `upgrade` verb\n"
             "                               it is delivered to goods in, on the\n"
             "                               ground floor. Not to where you are.\n"
             "move <dev> <room>              carry it there. Refused while it has a\n"
@@ -3251,9 +3320,34 @@ bool site_cmd(Site *s, const char *line, Buf *out)
         int d = site_order(s, kind, n > 2 ? t[2] : NULL);
         if (d < 0) { buf_printf(out, "refused: %s\n", site_err_text(s->err)); return true; }
         int goods = site_goods_room(s);
-        buf_printf(out, "%s: a %s, %d port%s, %d paid, %ld left.\n",
-                   s->dev[d].name, site_kind_name(kind), s->dev[d].nports,
-                   s->dev[d].nports == 1 ? "" : "s", site_kind_price(kind), s->money);
+        /* WHAT GRADE IT IS, SAID AT THE MOMENT THE MONEY LEAVES, which is
+         * where D27 put the negotiated port speed and for the same reason:
+         * the spec is the whole of the decision and a player who has to go
+         * and look it up afterwards has already spent it. What each socket
+         * clocks, what the disk in it is rated for, and whether a battery
+         * came with it -- the three things that differ between the grades,
+         * every one of them read off the same KIT[] row the counter charged
+         * from. */
+        buf_printf(out, "%s: a %s, %d port%s at %d Mb", s->dev[d].name,
+                   site_kind_name(kind), s->dev[d].nports,
+                   s->dev[d].nports == 1 ? "" : "s",
+                   site_kind_port_mb(kind, 0));
+        {
+            int slow = site_kind_port_mb(kind, 0), fast = 0;
+            for (int p = 0; p < s->dev[d].nports; p++)
+                if (site_kind_port_mb(kind, p) != slow) fast++;
+            if (fast)
+                buf_printf(out, " and its top %d at %d Mb", fast,
+                           site_kind_port_mb(kind, s->dev[d].nports - 1));
+        }
+        if (site_kind_disk_days(kind))
+            buf_printf(out, ", a disk rated for %d days",
+                       site_kind_disk_days(kind));
+        if (site_kind_has_ups(kind))
+            buf_puts(out, " and a battery in it -- it rides a mains failure "
+                          "out\n  without a `ups`");
+        buf_printf(out, ". %d paid, %ld left.\n",
+                   site_kind_price(kind), s->money);
         buf_printf(out, "it is in %s #%d, on the ground floor. Somebody has to "
                         "carry it: `move %s <room>`\n",
                    bld_kind_name(s->b->rooms[goods].kind), goods, s->dev[d].name);

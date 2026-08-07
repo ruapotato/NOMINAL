@@ -3613,6 +3613,285 @@ static void check_ambiguity_and_the_diary(void)
     bld_free(&b);
 }
 
+/* ============================================ D43. THREE GRADES OF THE KIT
+ *
+ * The same playtest, on the shape of the game rather than on its reports:
+ * *"Days 1-20 are too easy and slightly boring... there is no pressure at all
+ * in the first three tenancies; the build is mechanical and there is no
+ * decision in it."* There was one switch worth buying and one server worth
+ * buying, and enough money to buy either without thinking about it.
+ *
+ * The thing these checks have to prove is not that three rows exist in a
+ * table. It is that THE CHEAP ONE FAILS FOR A REASON THE INSTRUMENTS PRINT:
+ * two towers, the same building, the same tenancy, the same desks, the same
+ * day's work offered, differing in one purchase, and the cheap one drops
+ * frames on a port whose buffer really overran. Nothing anywhere multiplies
+ * anything by a grade, and if this check ever passes because somebody added
+ * a difficulty constant it will be because they deleted the measurement.
+ */
+typedef struct { Site s; int rt, core, fsw, srv; } Grade;
+
+/* One floor, one riser, one file server on the core, and the floor switch is
+ * the parameter. Every line is a line a player types. */
+static void grade_up(Grade *g, const Building *b, uint64_t seed, int comms,
+                     int swkind)
+{
+    Site *s = &g->s;
+    site_new(s, b, seed, 100000);
+    site_credit(s, 900000);
+    int mdf = bld_find(b, 0, RM_MDF);
+    g->rt   = site_install(s, SDEV_ROUTER, mdf, "edge");
+    g->core = site_install(s, SDEV_SWITCH24, mdf, "core");
+    site_cable(s, g->rt, 0, s->uplink, 0, CAB_CAT6);
+    site_cable(s, g->rt, 1, g->core, 0, CAB_CAT6);
+    site_addr(s, g->rt, 0, s->wan_you, s->wan_mask);
+    site_addr(s, g->rt, 1, net_ip(10, 0, 0, 1), net_mask_bits(16));
+    site_gateway(s, g->rt, s->wan_isp);
+    site_forwarding(s, g->rt, true);
+    site_dhcpd(s, g->rt, net_ip(10, 0, 1, 1), 250, net_mask_bits(16),
+               net_ip(10, 0, 0, 1), s->wan_isp);
+    g->fsw = site_install(s, swkind, comms, "fsw");
+    site_cable(s, g->core, 1, g->fsw, 0, CAB_CAT6);
+    g->srv = site_install(s, SDEV_SERVER, comms, "files");
+    site_power(s, g->srv, true);
+    site_cable(s, g->core, 22, g->srv, 0, CAB_CAT6);
+    site_addr(s, g->srv, 0, net_ip(10, 0, 0, 9), net_mask_bits(16));
+    site_gateway(s, g->srv, net_ip(10, 0, 0, 1));
+    site_httpd(s, g->srv, 80);
+}
+
+static void grade_until(Site *s, int ti)
+{
+    for (int d = 0; d < 200 && !s->tenant[ti].moved; d++) {
+        s->over = 0; s->complaints = 0;
+        for (int i = 0; i < s->ntenant; i++) {
+            s->tenant[i].strikes = 0; s->tenant[i].complained = 0;
+        }
+        site_day(s, NULL);
+    }
+}
+
+static void check_grades(void)
+{
+    printf("\nD43: three grades of switch and three of server, "
+           "and the difference is measured\n");
+
+    /* --- THE CATALOGUE. Three of each, priced in order, and the SPEC is
+     * what differs -- sockets, what a socket clocks, what the disk is rated
+     * for, whether a battery is in it. */
+    ck("there are three grades of switch, cheapest first",
+       site_kind_price(SDEV_SWITCH4) < site_kind_price(SDEV_SWITCH8) &&
+       site_kind_price(SDEV_SWITCH8) < site_kind_price(SDEV_SWITCH24) &&
+       site_kind_is_switch(SDEV_SWITCH4) && site_kind_for_sale(SDEV_SWITCH4));
+    ck("and they differ in sockets and in what a socket clocks",
+       site_kind_ports(SDEV_SWITCH4) == 4 &&
+       site_kind_ports(SDEV_SWITCH8) == 8 &&
+       site_kind_ports(SDEV_SWITCH24) == 24 &&
+       site_kind_port_mb(SDEV_SWITCH4, 0) == 100 &&
+       site_kind_port_mb(SDEV_SWITCH8, 0) == 1000 &&
+       site_kind_port_mb(SDEV_SWITCH24, 23) == 10000);
+    ck("there are three grades of server, cheapest first",
+       site_kind_price(SDEV_MINITOWER) < site_kind_price(SDEV_SERVER) &&
+       site_kind_price(SDEV_SERVER) < site_kind_price(SDEV_RACKSERVER) &&
+       site_kind_is_server(SDEV_MINITOWER) &&
+       site_kind_is_server(SDEV_RACKSERVER));
+    ck("and they differ in card, in disk life and in whether a battery is in it",
+       site_kind_port_mb(SDEV_MINITOWER, 0) == 100 &&
+       site_kind_port_mb(SDEV_SERVER, 0) == 1000 &&
+       site_kind_port_mb(SDEV_RACKSERVER, 0) == 10000 &&
+       site_kind_disk_days(SDEV_MINITOWER) == 30 &&
+       site_kind_disk_days(SDEV_SERVER) == 60 &&
+       site_kind_disk_days(SDEV_RACKSERVER) == 120 &&
+       !site_kind_has_ups(SDEV_SERVER) && site_kind_has_ups(SDEV_RACKSERVER));
+    /* AND THE MONEY GOES THE RIGHT WAY. A grade that is dearer per socket
+     * AND slower per socket would be a trap rather than a decision. */
+    ck("the dear switch is dearer per socket and faster per socket, both",
+       site_kind_price(SDEV_SWITCH24) / site_kind_ports(SDEV_SWITCH24) >
+       0 && site_kind_price(SDEV_SWITCH4) / site_kind_ports(SDEV_SWITCH4) <
+       site_kind_price(SDEV_SWITCH8) / site_kind_ports(SDEV_SWITCH8));
+
+    /* AND THE SPEC IS SAID WHERE THE MONEY LEAVES. A grade a player has to
+     * go and look up after buying it is not a decision they made. */
+    {
+        Building gb;
+        if (bld_generate(&gb, GATE_SEED)) {
+            Site g; site_new(&g, &gb, GATE_SEED, 100000);
+            Buf o = {0};
+            site_cmd(&g, "order rackserver r", &o);
+            ck("`order` says the card, the disk rating and the battery, "
+               "as it charges",
+               has(o.p, "2 ports at 10000 Mb") &&
+               has(o.p, "disk rated for 120 days") &&
+               has(o.p, "battery in it") && has(o.p, "3400 paid"));
+            buf_clear(&o);
+            site_cmd(&g, "order switch4 s", &o);
+            ck("and for the cheap end it says the hundred megabits it is",
+               has(o.p, "4 ports at 100 Mb") && has(o.p, "45 paid"));
+            buf_clear(&o);
+            site_cmd(&g, "order switch24 c", &o);
+            ck("and it still names the SFP+ pair on the box that has one",
+               has(o.p, "top 2 at 10000 Mb"));
+            buf_free(&o); site_free(&g); bld_free(&gb);
+        }
+    }
+
+    /* --- THE MEASUREMENT. Two towers, one purchase apart. */
+    Building b;
+    if (!bld_generate(&b, 22ull)) { ck("seed 22 makes a building", false); return; }
+    int comms = bld_find(&b, 1, RM_COMMS);
+    if (comms < 0) comms = a_room(&b, 1);
+    Grade cheap, dear;
+    grade_up(&cheap, &b, 22ull, comms, SDEV_SWITCH4);
+    grade_up(&dear,  &b, 22ull, comms, SDEV_SWITCH8);
+    int ti = trade_on(&cheap.s, TEN_OFFICE, 1);
+    if (ti < 0) {
+        ck("seed 22 lets an office onto floor 1", false);
+        site_free(&cheap.s); site_free(&dear.s); bld_free(&b); return;
+    }
+    grade_until(&cheap.s, ti);
+    grade_until(&dear.s, ti);
+    /* THE FLOOR THAT FILLED UP, WHICH IS THE BUILD THE README SAYS A PLAYER
+     * REALLY MAKES: a second switch daisy-chained off the first when the
+     * floor outgrows it. Six desks hang off an eight-port switch, and every
+     * frame of theirs crosses the ONE riser port that is the difference
+     * between these two towers. Identical desks, identical work, identical
+     * everything except which box the riser lands in -- or this measures
+     * nothing. */
+    int ndesk = 7;
+    {
+        Grade *g[2]; g[0] = &cheap; g[1] = &dear;
+        for (int k = 0; k < 2; k++) {
+            Site *s = &g[k]->s;
+            int leaf = site_install(s, SDEV_SWITCH8, comms, "leaf");
+            site_cable(s, g[k]->fsw, 1, leaf, 0, CAB_CAT6);
+            for (int i = 0; i < ndesk; i++)
+                site_cable(s, leaf, 1 + i, s->tenant[ti].desk0 + i, 0, CAB_CAT6);
+        }
+    }
+    site_day(&cheap.s, NULL);
+    site_day(&dear.s, NULL);
+    int cmb = net_port_speed(cheap.s.net, cheap.s.dev[cheap.fsw].node, 0);
+    int dmb = net_port_speed(dear.s.net,  dear.s.dev[dear.fsw].node, 0);
+    /* THE DROPS ARE ON THE OTHER END OF THE RISER, and that is not a
+     * detail -- it is the model. A frame is thrown away by the port that
+     * cannot clock it out, and the frames coming DOWN to this floor are
+     * clocked out by the core's port into a link the cheap box negotiated
+     * down to a hundred megabits. `load` names it and `show core` gives the
+     * reason; the player who bought the cheap switch has to follow the
+     * cable, which is the same thing the README says about the whole game. */
+    uint64_t cdrop = net_port_drops(cheap.s.net, cheap.s.dev[cheap.core].node, 1)
+                   + net_port_drops(cheap.s.net, cheap.s.dev[cheap.fsw].node, 0);
+    uint64_t ddrop = net_port_drops(dear.s.net, dear.s.dev[dear.core].node, 1)
+                   + net_port_drops(dear.s.net, dear.s.dev[dear.fsw].node, 0);
+    const SiteTenant *ct = &cheap.s.tenant[ti], *dt = &dear.s.tenant[ti];
+    printf("    switch4 riser %d Mb: %d/%d done, %d ms worst, %llu frames lost\n",
+           cmb, ct->finished, ct->tried, ct->worst_ms,
+           (unsigned long long)cdrop);
+    printf("    switch8 riser %d Mb: %d/%d done, %d ms worst, %llu frames lost\n",
+           dmb, dt->finished, dt->tried, dt->worst_ms,
+           (unsigned long long)ddrop);
+    ck("the same desks offered the same work to both towers",
+       ct->tried == dt->tried && ct->tried > 0);
+    ck("the cheap switch's port really came up at a hundred megabits",
+       cmb == 100 && dmb == 1000);
+    ck("and the cheap tower did measurably less of the work",
+       ct->finished < dt->finished);
+    /* AND THE REASON IS PRINTED, IN WORDS, ON THE PORT. This is the whole
+     * claim: the cheap switch is not worse, it is slower, and a slower port
+     * drains the same 48 KB buffer ten times more slowly. */
+    {
+        Buf o = {0};
+        site_cmd(&cheap.s, "show core", &o);
+        ck("and `show` gives the reason on the port rather than a verdict",
+           cdrop > ddrop && has(o.p, "egress buffer full"));
+        buf_free(&o);
+        Buf l = {0};
+        site_cmd(&cheap.s, "load", &l);
+        ck("and `load` names that port as the busiest thing in the building",
+           has(l.p, "fsw:0"));
+        buf_free(&l);
+    }
+    /* --- PORT COUNT, the limit that bites first. A fresh switch4 with its
+     * riser in port 0 has three holes left, `serve` fills them and stops,
+     * and the refusal is the box rather than the budget. */
+    {
+        int tiny = site_install(&cheap.s, SDEV_SWITCH4, comms, "tiny");
+        site_cable(&cheap.s, cheap.core, 2, tiny, 0, CAB_CAT6);
+        int before = site_ports_spare(&cheap.s, tiny);
+        int got = site_serve(&cheap.s, ti, tiny, CAB_CAT5E);
+        printf("    a switch4 with a riser in it has %d holes left and "
+               "seats %d more of %d desks\n", before, got - ndesk,
+               cheap.s.tenant[ti].ndesk);
+        ck("a switch4 with its riser in it seats three more desks and stops",
+           before == 3 && got - ndesk == 3 && cheap.s.err == SITE_ENOPORT &&
+           got < cheap.s.tenant[ti].ndesk);
+        ck("and the fix is the bigger box, not a bigger cheque",
+           site_kind_ports(SDEV_SWITCH8) > site_kind_ports(SDEV_SWITCH4) &&
+           site_kind_price(SDEV_SWITCH8) > site_kind_price(SDEV_SWITCH4));
+    }
+    /* --- AND THERE IS NO `upgrade` VERB. The path is the physical one. */
+    {
+        Buf o = {0};
+        ck("there is no `upgrade` verb, and there is not going to be one",
+           !site_cmd(&cheap.s, "upgrade fsw switch8", &o));
+        buf_clear(&o);
+        int better = site_order(&cheap.s, SDEV_SWITCH8, "fsw2");
+        site_cmd(&cheap.s, "show fsw2", &o);
+        ck("the better box is ordered, lands in goods in, and has to be carried",
+           better >= 0 &&
+           cheap.s.dev[better].room == site_goods_room(&cheap.s) &&
+           has(o.p, "8 sockets, numbered 0 to 7"));
+        buf_free(&o);
+    }
+    site_free(&cheap.s);
+    site_free(&dear.s);
+
+    /* --- THE DISK, WHICH IS THE OTHER AXIS AND IS NOT ABOUT FRAMES. Two
+     * servers side by side in one building, doing the same work on the same
+     * days: the cheap one crosses its rating first, because its rating is
+     * half. `events` prints both numbers rather than one constant. */
+    {
+        Site s;
+        site_new(&s, &b, 22ull, 100000);
+        site_credit(&s, 900000);
+        int mdf = bld_find(&b, 0, RM_MDF);
+        int mini = site_install(&s, SDEV_MINITOWER, mdf, "mini");
+        int big  = site_install(&s, SDEV_RACKSERVER, mdf, "rack");
+        site_power(&s, mini, true);
+        site_power(&s, big, true);
+        ck("a rack server arrives with a battery in it and a minitower does not",
+           s.dev[big].ups == 1 && s.dev[mini].ups == 0);
+        Buf e = {0};
+        site_dump_events(&s, &e);
+        ck("and `events` prints what each box's own disk is rated for",
+           has(e.p, "rated") && has(e.p, " 120d") && has(e.p, "  30d"));
+        buf_free(&e);
+        /* Run them until one of them says something. Nothing is rolled: the
+         * wear is added from the day, and the two boxes get the same days. */
+        int minisaid = -1, bigsaid = -1;
+        for (int d = 1; d <= 200 && minisaid < 0; d++) {
+            s.over = 0; s.complaints = 0;
+            for (int i = 0; i < s.ntenant; i++) {
+                s.tenant[i].strikes = 0; s.tenant[i].complained = 0;
+            }
+            site_power(&s, mini, true); site_power(&s, big, true);
+            site_day(&s, NULL);
+            if (minisaid < 0 && s.dev[mini].warned) minisaid = s.day;
+            if (bigsaid < 0 && s.dev[big].warned) bigsaid = s.day;
+        }
+        printf("    the minitower's disk starts logging on day %d; "
+               "the rack server's has not by then\n", minisaid);
+        ck("the cheap disk is the one that starts logging sectors first",
+           minisaid > 0 && bigsaid < 0);
+        ck("and it is a rating, not a countdown: the same day wore both",
+           s.dev[mini].wear > s.dev[big].wear ||
+           site_kind_disk_days(SDEV_MINITOWER) <
+           site_kind_disk_days(SDEV_RACKSERVER));
+        site_free(&s);
+    }
+    bld_free(&b);
+}
+
 int site_selfcheck(void)
 {
     passed = total = 0;
@@ -3666,6 +3945,8 @@ int site_selfcheck(void)
      * the same session disproved. */
     check_one_fact_two_answers(&b);
     check_ambiguity_and_the_diary();
+    /* D43: and the decision the first twenty days did not have. */
+    check_grades();
     /* AND THAT A PERSON CAN PLAY ALL OF IT OVER A SOCKET, which is the
      * claim that had quietly stopped being true. See core/sessioncheck.c. */
     session_selfcheck(&passed, &total);

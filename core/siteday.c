@@ -494,7 +494,7 @@ static int file_server_for(const Site *s, int tenant)
     int any = -1, floor = -1;
     for (int i = 0; i < s->ndev; i++) {
         const SiteDev *d = &s->dev[i];
-        if (d->kind != SDEV_SERVER || !d->powered) continue;
+        if (!site_kind_is_server(d->kind) || !d->powered) continue;
         if (!any_addr(s, d->node)) continue;
         if (d->tenant && d->tenant == s->tenant[tenant].tenant) return i;
         if (floor < 0 && d->floor == s->tenant[tenant].floor) floor = i;
@@ -534,7 +534,7 @@ static int web_origin_for(const Site *s, int tenant)
     bool theirs = false;
     for (int i = 0; i < s->ndev; i++) {
         const SiteDev *d = &s->dev[i];
-        if (d->kind != SDEV_SERVER) continue;
+        if (!site_kind_is_server(d->kind)) continue;
         if (d->room >= s->b->nrooms || s->b->rooms[d->room].tenant != who) continue;
         theirs = true;
         if (d->powered && any_addr(s, d->node)) return i;
@@ -755,11 +755,18 @@ static int watts_of(int kind)
 {
     switch (kind) {
     case SDEV_UPLINK:   return 15;
+    /* A four-port desktop switch is a wall wart with four holes in it. */
+    case SDEV_SWITCH4:  return 12;
     case SDEV_SWITCH8:  return 25;
     case SDEV_SWITCH24: return 60;
     case SDEV_ROUTER:   return 45;
     case SDEV_PC:       return 130;
+    /* A minitower is a desktop box with one disk in it; a rack server is
+     * two power supplies, a shelf of spindles and the fans to go with them,
+     * and a comms cupboard with four outlets and no window will notice. */
+    case SDEV_MINITOWER: return 110;
     case SDEV_SERVER:   return 320;
+    case SDEV_RACKSERVER: return 520;
     default:            return 0;
     }
 }
@@ -827,8 +834,23 @@ int site_room_heat(const Site *s, int room)
 #define HEAT_WARN   100    /* per cent of what the room can shed            */
 #define HEAT_TRIP   140    /* and hot enough to shut something down         */
 #define HEAT_DAYS     3    /* consecutive days over, before anything trips  */
-#define WEAR_WARN    45    /* days of average use before a disk complains   */
-#define WEAR_FAIL    60    /* and before it loses a sector                  */
+/* THE DISK IN IT IS A PROPERTY OF THE BOX, NOT OF THE GAME. These were two
+ * constants and every disk in the building was rated the same, so "buy the
+ * cheap server" cost nothing that any instrument in the game could show.
+ * They are read off site_kind_disk_days() now -- 30 days for a minitower, 60
+ * for a server, 120 for a rack server -- and the warning still comes at
+ * three quarters of the life, which is where it was and is what the fifteen
+ * days of SMART logging before the first loss are measured from.
+ *
+ * It is a RATING, not a countdown: wear is added from how hard the box's own
+ * port worked that day, so a busy server ages five times as fast as an idle
+ * one and the same disk lasts a different number of days in two buildings.  */
+static int wear_fail(const Site *s, int dev)
+{
+    int d = site_kind_disk_days(s->dev[dev].kind);
+    return d > 0 ? d : 60;
+}
+static int wear_warn(const Site *s, int dev) { return wear_fail(s, dev) * 3 / 4; }
 
 /* ------------------------------------------------------- what today did
  * WEAR IS MEASURED, NOT COUNTED. The busy period has just finished and the
@@ -1071,7 +1093,7 @@ static void the_disks(Site *s, Rng *rng)
         SiteDev *d = &s->dev[i];
         if (!site_kind_has_os(d->kind) || !d->powered) continue;
         Machine *m = box_of_dev(s, i);
-        if (d->wear >= WEAR_FAIL) {
+        if (d->wear >= wear_fail(s, i)) {
             char note[200] = "";
             /* THE SECOND SECTOR IS ALLOWED WHAT THE FIRST WAS NOT.
              *
@@ -1121,12 +1143,12 @@ static void the_disks(Site *s, Rng *rng)
                  * running -- and keeps being a disk that has run out of
                  * spares, which is why the wear does not reset until
                  * somebody puts a new one in. */
-                d->wear = WEAR_WARN;
+                d->wear = wear_warn(s, i);
             }
             continue;
         }
-        if (d->wear >= WEAR_WARN) {
-            int bad = 3 + (d->wear - WEAR_WARN) * 4;
+        if (d->wear >= wear_warn(s, i)) {
+            int bad = 3 + (d->wear - wear_warn(s, i)) * 4;
             char line[160];
             snprintf(line, sizeof line,
                      "kernel: sd 0:0:0:0: [sda] SMART attribute 5 (reallocated "
@@ -1343,15 +1365,20 @@ void site_dump_events(const Site *s, Buf *out)
         for (int i = 0; i < s->nev; i++)
             buf_printf(out, "  day %-4d %s\n", s->ev[i].day, s->ev[i].what);
     }
-    buf_puts(out, "\n  box            days  disk   ups   room heat\n");
+    /* AND WHAT THE DISK IN THAT PARTICULAR BOX IS RATED FOR. The percentage
+     * used to be against one constant for the whole building, so a minitower
+     * and a rack server at 50% were fifteen days apart and the page said the
+     * same thing about both. `rated` is the box's own number. */
+    buf_puts(out, "\n  box            days  disk  rated   ups   room heat\n");
     int shown = 0;
     for (int i = 0; i < s->ndev; i++) {
         const SiteDev *d = &s->dev[i];
         if (!site_kind_has_os(d->kind)) continue;
-        int pct = d->wear * 100 / WEAR_FAIL;
-        buf_printf(out, "  %-14s %4d  %3d%%  %-4s  %7d%%\n", d->name, d->run_days,
-                   pct > 100 ? 100 : pct, d->ups ? "yes" : "no",
-                   site_room_heat(s, d->room));
+        int rated = wear_fail(s, i);
+        int pct = d->wear * 100 / rated;
+        buf_printf(out, "  %-14s %4d  %3d%%  %4dd  %-4s  %7d%%\n", d->name,
+                   d->run_days, pct > 100 ? 100 : pct, rated,
+                   d->ups ? "yes" : "no", site_room_heat(s, d->room));
         shown++;
     }
     if (!shown) buf_puts(out, "  no box in this building has an operating "
@@ -1373,7 +1400,10 @@ void site_dump_events(const Site *s, Buf *out)
         "  ageing in the cupboard. It also ages faster in a room that is over\n"
         "  what it can shed, which is the heat column below. Past about three\n"
         "  quarters it starts saying so in its own /var/log/messages, and a\n"
-        "  new one is `disk <box>`. `ups <box>` fits a battery: a box on one\n"
+        "  new one is `disk <box>`. rated is what THAT box's disk is rated for,\n"
+        "  in days of average use, and it is a fact about the box you bought:\n"
+        "  30 for a minitower, 60 for a server, 120 for a rack server.\n"
+        "  `ups <box>` fits a battery: a box on one\n"
         "  rides a mains failure out instead of coming back with a filesystem\n"
         "  to check.\n"
         "  A DISK THAT LOSES A SECTOR AND IS NOT REPLACED LOSES ANOTHER. The\n"
