@@ -489,6 +489,34 @@ static uint32_t server_addr_for(const Site *s, int dev, int desk)
     return first;
 }
 
+/* AND IT HAS TO BE SERVING, WHICH IS A THIRD THING.
+ *
+ * Powered and addressed were the two conditions, and `service ?` says so in
+ * capitals. They are not enough, and two blind playtesters in a row lost runs
+ * to the gap. A server that is on and on the network and running no httpd
+ * answers nothing, and the day's transfers simply did not happen -- while
+ * every indicator a player looks at read healthy: 20 of 20 desks up, 20 of 20
+ * addressed, worst 304 ms, zero drops, the port 3% busy, and 60 of 80
+ * transfers quietly missing.
+ *
+ * Worse, `service`'s files column NAMED that box, so the game pointed at a
+ * machine and said "their people pulled off this" about a machine that
+ * `show` described, in the same session, as "services: none. It is on the
+ * network and serves nothing from it." One fact with two answers, in the two
+ * places a player looks hardest.
+ *
+ * net_httpd_port() is the fact. It is 0 when a node serves nothing, and it is
+ * what the netstack really answers requests from, so this cannot drift. */
+static bool serving_files(const Site *s, int dev)
+{
+    return net_httpd_port(s->net, s->dev[dev].node) != 0;
+}
+
+/* The best server that would ANSWER, and separately the best that is merely
+ * standing there powered and addressed. The second one exists so the report
+ * can say "you own a box that would do this" rather than "none", which is
+ * the difference between a player buying another server they do not need and
+ * typing one word. */
 static int file_server_for(const Site *s, int tenant)
 {
     int any = -1, floor = -1;
@@ -496,6 +524,23 @@ static int file_server_for(const Site *s, int tenant)
         const SiteDev *d = &s->dev[i];
         if (!site_kind_is_server(d->kind) || !d->powered) continue;
         if (!any_addr(s, d->node)) continue;
+        if (!serving_files(s, i)) continue;
+        if (d->tenant && d->tenant == s->tenant[tenant].tenant) return i;
+        if (floor < 0 && d->floor == s->tenant[tenant].floor) floor = i;
+        if (any < 0) any = i;
+    }
+    return floor >= 0 ? floor : any;
+}
+
+/* Powered, addressed, and NOT serving: a box one `httpd` away from being the
+ * answer. -1 when there is no such box. */
+static int idle_server_for(const Site *s, int tenant)
+{
+    int any = -1, floor = -1;
+    for (int i = 0; i < s->ndev; i++) {
+        const SiteDev *d = &s->dev[i];
+        if (!site_kind_is_server(d->kind) || !d->powered) continue;
+        if (!any_addr(s, d->node) || serving_files(s, i)) continue;
         if (d->tenant && d->tenant == s->tenant[tenant].tenant) return i;
         if (floor < 0 && d->floor == s->tenant[tenant].floor) floor = i;
         if (any < 0) any = i;
@@ -2266,9 +2311,18 @@ void site_dump_service(const Site *s, Buf *out)
          * served from another floor is not an error and is not refused --
          * it is the naive build working, right up until the riser fills --
          * so it is reported rather than prevented. */
-        char files[NET_NAME_MAX + 8];
-        if (t->files_dev < 0) snprintf(files, sizeof files, "%s", "none");
-        else {
+        char files[NET_NAME_MAX + 24];
+        if (t->files_dev < 0) {
+            /* NAME THE BOX THAT WOULD DO IT. "none" is true and useless when
+             * the player owns a server standing in the right room with no
+             * httpd on it: it reads as "buy a server" and the answer is one
+             * word. */
+            int idle = idle_server_for(s, i);
+            if (idle >= 0)
+                snprintf(files, sizeof files, "%s (no httpd)", s->dev[idle].name);
+            else
+                snprintf(files, sizeof files, "%s", "none");
+        } else {
             const SiteDev *fd = &s->dev[t->files_dev];
             bool away = fd->floor != t->floor;
             snprintf(files, sizeof files, "%s%s", fd->name, away ? " <-" : "");

@@ -2025,8 +2025,12 @@ void site_dump_demand(const Site *s, Buf *out)
      * decision about what to buy is actually made. */
     buf_puts(out,
         "\n  WHAT DISCHARGES `+server`, and it is not one box per tenancy.\n"
-        "  Their people pull files off the nearest server that is POWERED and\n"
-        "  ADDRESSED: their own machine if they have one, otherwise one on\n"
+        "  Their people pull files off the nearest server that is POWERED,\n"
+        "  ADDRESSED and SERVING -- `httpd <box>`, which is the one of the\n"
+        "  three that leaves every other indicator green: a box that is on\n"
+        "  and on the network and running nothing answers nothing, and the\n"
+        "  files column says `<box> (no httpd)` when that is what happened.\n"
+        "  Nearest is: their own machine if they have one, otherwise one on\n"
         "  their floor, otherwise anything at all in the building, however\n"
         "  many floors of riser that is through. So one server in a floor's\n"
         "  comms cupboard, with a leg on each tenancy's vlan, serves that\n"

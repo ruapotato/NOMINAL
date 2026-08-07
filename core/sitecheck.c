@@ -974,6 +974,22 @@ static void check_agreement(const Building *b)
         site_day(&s, NULL);
         sv.len = 0; if (sv.p) sv.p[0] = 0;
         site_dump_service(&s, &sv);
+        /* POWERED AND ADDRESSED IS NOT SERVING, and this gate used to stop
+         * one step short of finding that out. It installed a server, powered
+         * it, addressed it, and asserted the files column named it -- which
+         * it did, and the box was answering nothing, because nobody had run
+         * `httpd` on it. Two blind playtesters in a row lost runs to exactly
+         * this: every indicator green and 60 of 80 transfers quietly missing,
+         * with `service` naming a box that `show` called "services: none" in
+         * the same session. So the step is here now, in both states. */
+        ck("a server with no httpd is named as the box that would do it, not "
+           "as the one that did",
+           s.tenant[0].files_dev < 0 && sv.p &&
+           strstr(sv.p, "fs (no httpd)") != NULL);
+        site_httpd(&s, srv, 80);
+        site_day(&s, NULL);
+        sv.len = 0; if (sv.p) sv.p[0] = 0;
+        site_dump_service(&s, &sv);
         ck("`service` names the server a tenancy's people actually pulled off",
            s.tenant[0].files_dev == srv && sv.p && strstr(sv.p, "fs") != NULL);
         ck("and marks it when that server is not on their floor",
