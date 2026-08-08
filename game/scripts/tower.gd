@@ -126,6 +126,11 @@ var site_up := false
 var _cable_node: MeshInstance3D = null
 var _power_node: MeshInstance3D = null
 var _cable_from := -1          # the device whose port the spool is on
+# AND THE SAME TWO MOVES FOR POWER. A conduit run has an end you choose and
+# an end you walk to, exactly as copper does; this is the outlet the run has
+# come off while the other end is still in your hands. -1 is empty-handed.
+var _conduit_from := -1        # the power source a run is being pulled off
+var _conduit_port := -1
 
 var _v := PackedVector3Array()
 var _c := PackedColorArray()
@@ -655,9 +660,15 @@ func _walls(f: int) -> void:
 						_box(lin, ls, col)
 					_hatch(mn, size, dir, base)
 					continue
-				_box(mn, size, col)
-				if outer:
+				# A WINDOW IS A HOLE IN THE HULL, so the hull is not drawn
+				# across it: the wall goes up in four pieces round the
+				# opening -- sill, head and a jamb each side -- and what you
+				# see through the gap is whatever is really out there.
+				if outer and _port_here(mn, size, dir, base, f, a, b):
+					_hull_with_port(mn, size, dir, base, col)
 					_port(mn, size, dir, base, f, a, b)
+				else:
+					_box(mn, size, col)
 				_box(skirt_mn, skirt_sz, SKIRT_COL, false)
 				# the lower plate and the line along the top of it
 				var dm := skirt_mn
@@ -770,71 +781,106 @@ const PORT_GLASS := Color("#05070c")
 const PORT_FRAME := Color("#39424a")
 const STAR_COL := Color(1.55, 1.55, 1.62)   # through _shade()'s side face
 
-func _port(mn: Vector3, size: Vector3, dir: int, base: float,
-		f: int, ra: int, rb: int) -> void:
-	# not on a hull frame, and not in a room with no business having a window
+# Does this cell of hull carry a window? Asked twice -- once to decide how to
+# build the wall and once to draw the frame -- so it is one function and not
+# two copies of the same four conditions.
+func _port_here(mn: Vector3, size: Vector3, dir: int, base: float,
+		f: int, ra: int, rb: int) -> bool:
 	var cell: int = int(round(mn.z if dir == 0 else mn.x))
 	if cell % PORT_PITCH != 0 or cell % RIB_PITCH == 0:
-		return
+		return false
 	var inside: int = ra if ra != NOROOM else rb
 	if inside == NOROOM:
-		return
+		return false
 	var k: int = int(rooms[inside].kind)
 	if k == K_RISER or k == K_LIFT or k == K_STAIR:
-		return
-	if base + PORT_HI > base + size.y:
-		return
-	var h: float = PORT_HI - PORT_LO
-	# the pane, set into the hull, and a frame standing proud round it
-	var pm := mn
-	var ps := size
-	pm.y = base + PORT_LO
-	ps.y = h
-	if dir == 0:
-		pm.z += 0.16
-		ps.z -= 0.32
-		pm.x -= 0.02
-		ps.x += 0.04
-	else:
-		pm.x += 0.16
-		ps.x -= 0.32
-		pm.z -= 0.02
-		ps.z += 0.04
-	_box(pm, ps, PORT_FRAME, false)
-	var gm := pm
-	var gs := ps
-	gm.y += 0.08
-	gs.y -= 0.16
-	if dir == 0:
-		gm.z += 0.08
-		gs.z -= 0.16
-		gm.x -= 0.02
-		gs.x += 0.04
-	else:
-		gm.x += 0.08
-		gs.x -= 0.16
-		gm.z -= 0.02
-		gs.z += 0.04
-	_box(gm, gs, PORT_GLASS, false)
-	# and the sky, from this cell's own number, so it never changes
-	var seed_i: int = (f * 7919 + cell * 104729) & 0xffff
-	var n: int = 3 + (seed_i % 4)
-	for i in range(n):
-		seed_i = (seed_i * 1103515245 + 12345) & 0x7fffffff
-		var u: float = float((seed_i >> 7) % 1000) / 1000.0
-		seed_i = (seed_i * 1103515245 + 12345) & 0x7fffffff
-		var v: float = float((seed_i >> 7) % 1000) / 1000.0
-		var sm := gm
-		var d := 0.02
-		sm.y += 0.06 + v * (gs.y - 0.12)
+		return false
+	if PORT_HI > size.y:
+		return false
+	return true
+
+
+# The hull of a cell that has a window in it: everything except the opening.
+func _hull_with_port(mn: Vector3, size: Vector3, dir: int, base: float,
+		col: Color) -> void:
+	var lo: float = PORT_LO
+	var hi: float = PORT_HI
+	var w := 0.18                      # the jamb each side of the glassless gap
+	# under the sill and over the head
+	var b1 := mn
+	var s1 := size
+	s1.y = lo
+	_box(b1, s1, col)
+	var b2 := mn
+	var s2 := size
+	b2.y = base + hi
+	s2.y = size.y - hi
+	if s2.y > 0.01:
+		_box(b2, s2, col)
+	# and a jamb at each end of the opening
+	for k in [0.0, 1.0 - w]:
+		var jm := mn
+		var js := size
+		jm.y = base + lo
+		js.y = hi - lo
 		if dir == 0:
-			sm.z += 0.06 + u * (gs.z - 0.12)
-			sm.x -= 0.01
-			_box(sm, Vector3(gs.x + 0.02, d, d), STAR_COL, false)
+			jm.z += k
+			js.z = w
 		else:
-			sm.x += 0.06 + u * (gs.x - 0.12)
-			sm.z -= 0.01
-			_box(sm, Vector3(d, d, gs.z + 0.02), STAR_COL, false)
+			jm.x += k
+			js.x = w
+		_box(jm, js, col)
+
+
+func _port(mn: Vector3, size: Vector3, dir: int, base: float,
+		f: int, ra: int, rb: int) -> void:
+	# AND WHAT IS THROUGH IT IS REALLY OUT THERE.
+	#
+	# David, twice: "the windows don't actually open up into a larger area
+	# with virtual stars and the space that spaceships can fly around so you
+	# can actually look through the windows. They're just black squares with
+	# white dots."
+	#
+	# He is right and it was the thing this project keeps deleting: a picture
+	# of space painted on a pane, which does not parallax as you walk past it,
+	# cannot show you anything the model puts outside, and is a lie the moment
+	# there is an enemy ship. There is no pane now. The hull is built round
+	# the opening (see _hull_with_port) and the gap is a gap; what fills it is
+	# the starfield drawn a long way outside the station in _starfield(), so
+	# it moves as a distant thing moves, and anything else out there will be
+	# visible through it for the same reason -- because it is there.
+	#
+	# All that is left here is the frame the opening is set in.
+	var h: float = PORT_HI - PORT_LO
+	var w := 0.18
+	for k in [0.0, 1.0 - w]:
+		var jm := mn
+		var js := size
+		jm.y = base + PORT_LO
+		js.y = h
+		if dir == 0:
+			jm.x -= 0.03
+			js.x += 0.06
+			jm.z += k
+			js.z = w
+		else:
+			jm.z -= 0.03
+			js.z += 0.06
+			jm.x += k
+			js.x = w
+		_box(jm, js, PORT_FRAME, false)
+	for yk in [PORT_LO - 0.10, PORT_HI]:
+		var hm := mn
+		var hs := size
+		hm.y = base + yk
+		hs.y = 0.10
+		if dir == 0:
+			hm.x -= 0.03
+			hs.x += 0.06
+		else:
+			hm.z -= 0.03
+			hs.z += 0.06
+		_box(hm, hs, PORT_FRAME, false)
 
 
 # THE BULKHEAD IS NOT ONE FLAT COLOUR. A ship's wall is a dark lower plate, a
@@ -1950,7 +1996,14 @@ func lift_for(f: int) -> Object:
 
 var _signs: Node3D = null
 
-const SIGNED := {K_MDF: "ENGINEERING", K_COMMS: "COMMS", K_GOODS: "GOODS IN",
+# THE BRIDGE WAS NOT ON THIS LIST, and that is why it could not be found.
+# David: "I explored the top deck pretty much entirely and wasn't able to find
+# the bridge at all." He did find it -- he walked through eight rooms of kind
+# `bridge` -- and not one of them had a sign on the door, because K_BRIDGE was
+# missing here. A room whose whole purpose is to be the point of the station
+# should not be the one room nothing names.
+const SIGNED := {K_BRIDGE: "BRIDGE",
+	K_MDF: "ENGINEERING", K_COMMS: "COMMS", K_GOODS: "GOODS IN",
 	K_PLANT: "PLANT", K_STAIR: "STAIRS", K_SERVER: "SERVER ROOM",
 	K_TOILET: "WC", K_RISER: "RISER"}
 
@@ -2029,7 +2082,11 @@ func _signage() -> void:
 # hung with the sign is the one into the neighbour that is nearer. It is the
 # building's own metric, so a sign cannot point at a route that is not there.
 const WAY_KINDS := [K_CORRIDOR, K_LIFTLOBBY, K_LOBBY]
-const WAY_TO := [[K_STAIR, "STAIRS"], [K_GOODS, "GOODS IN"], [K_MDF, "ENGINEERING"]]
+# AND NOTHING POINTED AT IT EITHER. The corridors carry arrows to the stairs,
+# to goods in and to Engineering; the bridge was not among them, on any deck,
+# so a player who rode the lift to the top had nothing to follow.
+const WAY_TO := [[K_STAIR, "STAIRS"], [K_GOODS, "GOODS IN"],
+	[K_MDF, "ENGINEERING"], [K_BRIDGE, "BRIDGE"]]
 
 
 func _wayfinding() -> void:
@@ -2410,6 +2467,38 @@ func site_links() -> Array:
 			"room_b": int(f[6]), "metres": int(f[7]), "cost": int(f[8]),
 			"kind": int(f[9]), "state": int(f[10])})
 	return out
+
+
+# WHICH LINK IS IN THIS HOLE, or -1. The link table is the model's; this is
+# only a lookup in it, and it is the one place that does the search so the
+# crosshair and the key that pulls the lead cannot disagree about which lead
+# they mean.
+func link_at(dev: int, port: int) -> int:
+	if dev < 0 or port < 0:
+		return -1
+	for l in site_links():
+		if int(l.a) == dev and int(l.aport) == port:
+			return int(l.i)
+		if int(l.b) == dev and int(l.bport) == port:
+			return int(l.i)
+	return -1
+
+
+# PULLING A LEAD OUT, which until now could not be done from inside the game
+# at all.
+#
+# `uncable` has been a session verb since the spool was built and every gate
+# drives it over the socket, so the MODEL was never the problem: there was no
+# key. David found the hole by trying to use it -- "there doesn't seem to be a
+# way for me to decable and recable it" -- and it matters more than it sounds,
+# because the first real decision in this game is pulling the workstation's
+# lead out of the handoff so your first switch can have that port. A player
+# who cannot unplug cannot make it.
+func uncable_at(dev: int, port: int) -> String:
+	var l := link_at(dev, port)
+	if l < 0:
+		return "there is no lead in that hole to pull out."
+	return site("uncable %d" % l)
 
 
 # The cables that are really there, drawn from the site's own link list, up
@@ -2946,10 +3035,67 @@ func _dev_face(site_i: int) -> Vector3:
 	return Vector3(0, 0, 1)
 
 
+# SPACE, AT THE DISTANCE SPACE IS.
+#
+# A star painted on a window pane is stuck to the wall: walk past it and it
+# slides with the wall, which is exactly what tells your eye it is a sticker.
+# These are quads eight hundred metres out on a sphere round the station, so
+# walking a corridor moves them by nothing at all -- which is what makes them
+# read as far away -- and they are visible through the window holes because
+# they are really there, in the same world, in the same mesh.
+#
+# NOT A SKYBOX, for the reason nothing in this file is a texture: a headless
+# test renders the same geometry the window does, and a skybox would be a
+# thing only one of them could see. It is also why an enemy ship will need no
+# window work at all when it arrives -- put it outside and it is through the
+# glassless opening already.
+const STAR_R := 800.0
+const STARS := 900
+const STAR_SIZE := 1.9
+
+func _starfield() -> void:
+	var g = preload("res://scripts/vgeo.gd").new()
+	# A fixed sequence, so a station's sky is the same every time it is built
+	# and two runs of a seed can be compared frame for frame.
+	var h: int = 0x9e3779b9
+	var mid := Vector3(float(bw) * 0.5, float(nfloors) * fheight * 0.5, float(bh) * 0.5)
+	for i in range(STARS):
+		h = (h * 1103515245 + 12345) & 0x7fffffff
+		var u: float = float((h >> 6) % 10000) / 10000.0
+		h = (h * 1103515245 + 12345) & 0x7fffffff
+		var v: float = float((h >> 6) % 10000) / 10000.0
+		h = (h * 1103515245 + 12345) & 0x7fffffff
+		var mag: float = 0.35 + float((h >> 6) % 1000) / 1000.0
+		# even over the sphere: z uniform, angle uniform
+		var z: float = 1.0 - 2.0 * u
+		var rr: float = sqrt(max(0.0, 1.0 - z * z))
+		var a: float = TAU * v
+		var dir := Vector3(rr * cos(a), z, rr * sin(a))
+		var p: Vector3 = mid + dir * STAR_R
+		# a quad facing the station, sized so it is a point of light at 800 m
+		var right: Vector3 = dir.cross(Vector3.UP)
+		if right.length() < 0.01:
+			right = Vector3(1, 0, 0)
+		right = right.normalized() * STAR_SIZE * mag
+		var up: Vector3 = dir.cross(right).normalized() * STAR_SIZE * mag
+		var col := Color(1.6 * mag, 1.6 * mag, 1.65 * mag)
+		g.quad(p - right - up, p + right - up, p + right + up, p - right + up,
+			col, false)
+	var n := MeshInstance3D.new()
+	n.name = "Space"
+	n.mesh = g.mesh()
+	# it must not be culled when the station's own box leaves the frustum
+	n.custom_aabb = AABB(mid - Vector3.ONE * (STAR_R * 1.2), Vector3.ONE * (STAR_R * 2.4))
+	add_child(n)
+
+
 func _light() -> void:
+	_starfield()
 	var env := Environment.new()
 	env.background_mode = Environment.BG_COLOR
-	env.background_color = Color("#101418")
+	# BLACK, because it is space. It used to be a dark blue-grey that read as
+	# "unlit room" and made the window holes look like painted panels.
+	env.background_color = Color("#02040a")
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 	env.ambient_light_color = Color(1, 1, 1)
 	env.ambient_light_energy = 1.0
@@ -4257,6 +4403,13 @@ func aim_text(a: Dictionary) -> Array:
 		return [what2, "serial only  %s the debugger in  [F]" % skey]
 	if a.kind == "port":
 		var p: int = int(a.port)
+		# what KIND of box this hole is in, which decides what a hole means
+		var sd_kind := ""
+		if s >= 0:
+			for sv in site_devs():
+				if int(sv.i) == s:
+					sd_kind = str(sv.kindname)
+					break
 		var st := port_state(s, p)
 		var what := "%s port %d" % [d.name, p]
 		# A PANEL THE SITE MODEL HAS NEVER HEARD OF. The patch panels and the
@@ -4272,7 +4425,21 @@ func aim_text(a: Dictionary) -> Array:
 		# had a link up in it, and the click was refused by core in words the
 		# crosshair had just contradicted.
 		if st == 3:
-			return [what, "link up"]
+			return [what, "link up  [X] pull the lead out"]
+		# A POWER OUTLET IS NOT AN ETHERNET PORT, and it used to claim to be.
+		#
+		# The catalogue gives a power core sixteen "ports" -- which are power
+		# OUTPUTS, the things conduit comes off -- and site_new() gives its
+		# node zero network cards. The view drew sixteen RJ45 sockets from the
+		# same number, the crosshair read the port as empty and offered "[RMB]
+		# run cat6 from here", and the spool was ACCEPTED into a power outlet
+		# because a node with no cards reports every port NOCABLE. Three
+		# layers agreeing on a number that meant two different things.
+		if _is_power_source(sd_kind):
+			if _conduit_from >= 0:
+				return [what, "[C] run the conduit to a box  [Esc] drop it"]
+			return [what, "power outlet %d -- [C] pull a run of conduit off it"
+				% p]
 		if st == 2:
 			return [what, "too long: no link"]
 		# THE KEY THAT RUNS THE CABLE, SAID WHERE THE CABLE WOULD GO IN.
@@ -4297,7 +4464,11 @@ func aim_text(a: Dictionary) -> Array:
 		return [what, "empty  %s run %s from here  [R] grade"
 			% [key, drum_grade()]]
 	if bool(d.get("is_desk", false)):
-		return [str(d.name), "[E] sit down"]
+		# AND WHAT YOU SIT DOWN FOR. "[E] sit down" is true and tells a player
+		# nothing about why they would: the browser on that machine is where
+		# hardware is ordered, and a player who does not know that has no way
+		# into the game at all.
+		return [str(d.name), "[E] sit down -- the browser here is where you buy kit"]
 	# SOMEBODY ELSE'S DESK SAYS WHOSE IT IS. `desks <tenant>` names the person
 	# at every desk and the view has already read it for the crowd, so the
 	# crosshair says "t1d3 -- Ola Jelinek" rather than a device number: the
@@ -5441,6 +5612,56 @@ func mains_at(dev: int) -> String:
 	if bool(sd.get("mains", false)):
 		return site("mains %s off" % str(sd.name)).strip_edges()
 	return site("feed %s" % str(sd.name)).strip_edges()
+
+
+# A BOX WHOSE HOLES ARE POWER OUTPUTS AND NOT NETWORK SOCKETS. The catalogue
+# gives both of them a `ports` count and they mean different things; this is
+# the one place that says which, so the faceplate, the crosshair and the key
+# cannot drift apart about it.
+func _is_power_source(kindname: String) -> bool:
+	return kindname == "powercore" or kindname == "strip"
+
+
+# PULLING A RUN OF CONDUIT, in the two moves a person makes: take it off an
+# outlet you chose, walk to the box, put it in. `feed` already existed and
+# picks the source AND the outlet for you, which is the right thing when you
+# do not care and the wrong thing when you do -- and it was the only power
+# verb the 3D had, so David clicked the core with conduit and nothing
+# happened: "If I click on it with a power conduit, it doesn't start dragging
+# out conduit."
+#
+# The metres and the price are site_conduit()'s, off the same tray graph
+# copper is priced on. Nothing here works out a length.
+func conduit_at(dev: int, port: int) -> String:
+	if dev < 0 or not site_up:
+		return ""
+	var s: int = int(devices[dev].get("site", -1))
+	if s < 0:
+		return "there is no run to be had off that."
+	var kindname := ""
+	for sv in site_devs():
+		if int(sv.i) == s:
+			kindname = str(sv.kindname)
+			break
+	if _conduit_from < 0:
+		if not _is_power_source(kindname):
+			return "conduit comes off a power core or a strip, not off %s." \
+				% devices[dev].name
+		_conduit_from = s
+		_conduit_port = port if port >= 0 else 0
+		return "you take a run off %s output %d. Now walk to what it feeds and [C]." \
+			% [_cable_name(s), _conduit_port]
+	# the far end
+	var from := _conduit_from
+	var fport := _conduit_port
+	_conduit_from = -1
+	_conduit_port = -1
+	if s == from:
+		return "that is the end you started at."
+	var room := player_room()
+	if room != NOROOM:
+		_be_here(room)
+	return site("conduit %s:%d %s" % [_cable_name(from), fport, devices[dev].name])
 
 
 func cable_at(dev: int, port: int) -> String:
@@ -6909,11 +7130,31 @@ func _unhandled_input(event: InputEvent) -> void:
 			# does: the prop cannot put a lead down the session still holds.
 			if phone: said2 = str(phone.detach())
 		KEY_C:
-			said2 = cable_at(dev, int(t.get("port", -1)))
+			# ONE KEY, TWO CABLES, AND THE TARGET DECIDES WHICH. A hole in a
+			# power core is an outlet and a hole in a switch is a socket, and
+			# a player should not have to know which item is in which hand to
+			# start the right run. Once a run of conduit is in your hands the
+			# far end is whatever you press [C] on next, which is the same
+			# two-move shape copper already has.
+			var ck := ""
+			var cs: int = int(devices[dev].get("site", -1)) if dev >= 0 else -1
+			if cs >= 0:
+				for cv in site_devs():
+					if int(cv.i) == cs:
+						ck = str(cv.kindname)
+						break
+			if _conduit_from >= 0 or _is_power_source(ck):
+				said2 = conduit_at(dev, int(t.get("port", -1)))
+			else:
+				said2 = cable_at(dev, int(t.get("port", -1)))
 		KEY_R:
 			said2 = drum_next()
 		KEY_G:
 			said2 = carry_here(dev)
+		KEY_X:
+			# THE OTHER HALF OF [C]. A game that can plug a lead in and never
+			# pull one out is a game whose first decision cannot be made.
+			said2 = uncable_at(dev, int(t.get("port", -1)))
 		KEY_O:
 			said2 = open_next_floor()
 		KEY_N:

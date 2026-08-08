@@ -149,6 +149,10 @@ func _fill(kind: int, mine: bool) -> Color:
 	if kind == tower.K_LIFT:     return Color(0.30, 0.24, 0.12, 0.9)
 	if kind == tower.K_STAIR:    return Color(0.16, 0.28, 0.20, 0.9)
 	if kind == tower.K_RISER:    return Color(0.26, 0.18, 0.26, 0.9)
+	# THE BRIDGE READS AS THE BRIDGE. It was falling through to the same grey
+	# as an unlet office, on the one deck where the whole point is a single
+	# room -- which is half of why the owner could not find it.
+	if kind == tower.K_BRIDGE:    return Color(0.16, 0.30, 0.42, 0.95)
 	if kind == tower.K_COMMS or kind == tower.K_MDF:
 		return Color(0.18, 0.22, 0.30, 0.9)
 	return Color(0.18, 0.19, 0.21, 0.9)

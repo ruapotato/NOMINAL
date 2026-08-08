@@ -96,7 +96,24 @@ const FIELD     := Color("#ffffff")
 const DIM       := Color("#6b6b6b")
 
 # Addresses only. No page bodies -- those come from the machine.
+#
+# THE SHOP GOES FIRST AND IT SAYS WHAT IT IS FOR.
+#
+# David: "It's not obvious how you're supposed to order hardware with the
+# computer. Not even sure I can. Web browser is full of things but not an
+# ordering interface." Every part of ordering was already built and gated --
+# the catalogue page is generated from the same KIT[] the counter charges
+# from, the link is `order:<kind>`, the confirm page is real and `order` is a
+# session verb -- and it was the TENTH bookmark in a list of nineteen, pointed
+# at the front page rather than the catalogue, described as "hardware -- the
+# trade counter". Seven clicks from the chair, behind a word that does not
+# say "buy".
+#
+# Nothing about the mechanism changed here. It is first, it is named for what
+# a player wants to do, and it goes straight to the list with the prices on
+# it.
 const BOOKMARKS := [
+	["halbert.co.uk/catalogue", "BUY HARDWARE -- switches, routers, servers"],
 	["wiki.nomnix.org",       "NomnixOS documentation"],
 	["intranet.internal",     "staff intranet"],
 	["helpdesk.internal",     "the ticket queue"],

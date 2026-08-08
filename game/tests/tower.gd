@@ -639,6 +639,59 @@ func _init() -> void:
 				   "" if near_end == 0 else
 				   "  (%d samples in the last metre into a box, which is where the box stands)" % near_end])
 
+		# ---- AND A PLAYER CAN PULL A RUN OFF AN OUTLET THEY CHOSE, and can
+		# pull a lead back out again. Both of these were verbs core had and
+		# the 3D had no key for, which is most of what "there's nothing to do"
+		# meant: `feed` picks the outlet for you and `uncable` had no route
+		# into the game at all.
+		var core_i := -1
+		var strip_i := -1
+		for sv in t.site_devs():
+			if str(sv.kindname) == "powercore":
+				core_i = int(sv.i)
+		# a power outlet says it is one, and does not offer cat6
+		var core_dev := -1
+		for di in range(t.devices.size()):
+			if int(t.devices[di].get("site", -1)) == core_i:
+				core_dev = di
+		if core_dev < 0:
+			fail("the power core is not drawn as a device")
+		else:
+			var pt: Array = t.aim_text({"kind": "port", "dev": core_dev,
+				"port": 3, "site": core_i})
+			if str(pt[1]).find("cat") >= 0:
+				fail("the crosshair offers to run ethernet into a power outlet: %s"
+					% str(pt[1]))
+			elif str(pt[1]).find("conduit") < 0:
+				fail("a power outlet does not offer conduit: %s" % str(pt[1]))
+			else:
+				ok("a power outlet reads as one: %s" % str(pt[1]))
+
+		# and pulling a lead out really removes the link the model holds
+		# COUNTING LIVE LEADS, not rows. site_uncable() leaves the entry in
+		# the link table with `cable < 0` -- the run is a thing that happened
+		# and the table is its history -- so the number that moves is how
+		# many are still IN something, which the state column says.
+		var live := func() -> int:
+			var n := 0
+			for l in t.site_links():
+				if int(l.state) >= 0:
+					n += 1
+			return n
+		var links_before: int = live.call()
+		var pulled := ""
+		for l in t.site_links():
+			if int(l.state) < 0:
+				continue
+			pulled = t.uncable_at(int(l.a), int(l.aport))
+			break
+		if links_before > 0 and live.call() != links_before - 1:
+			fail("[X] on a lead did not pull it out: %d live leads before, %d after -- %s"
+				% [links_before, live.call(), pulled.strip_edges()])
+		elif links_before > 0:
+			ok("[X] pulls a lead out: %d live leads, then %d"
+				% [links_before, live.call()])
+
 		# AND THE CROSSHAIR READS THE NUMBER OFF IT
 		var mid: Vector3 = route[route.size() / 2]
 		var seen := {}
