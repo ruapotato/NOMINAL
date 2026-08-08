@@ -42,6 +42,7 @@ import math
 import sys
 import os
 import json
+import time
 from mathutils import Vector
 
 # --------------------------------------------------------------------- args
@@ -606,6 +607,64 @@ def apply_all(obj):
         bpy.ops.object.modifier_apply(modifier=m.name)
 
 
+# WINDOWS, CUT INTO THE DECKS THAT HAVE THEM.
+#
+# David: "cut windows into the deck layers, so you can look outside of the
+# ship." They go in here rather than in Godot for the same reason the hull
+# does: a window is a HOLE IN THE HULL, and the hull is one welded manifold.
+#
+# THE ORDERING IS THE WHOLE TRICK. They are subtracted after the union and
+# BEFORE the solidify, so cutting a hole leaves a boundary edge and the
+# solidify then wraps a rim round it -- which means every window is a reveal
+# with the hull's own plate thickness visible in it, rather than a zero-width
+# slot cut through two shells. One modifier's worth of ordering, and it is the
+# difference between a porthole and a decal.
+#
+# WHERE THEY GO IS ASKED, NOT CHOSEN. For each deck the topology reports, walk
+# the keel and put a pair at the port and starboard extremes of whatever beam
+# the hull actually has at eye height above that deck's floor. A station where
+# the hull is too narrow to stand in gets none, which is why the neck has
+# almost none and the disc rim is glazed all the way round.
+WIN_EVERY = 14.0        # metres along the keel between windows
+WIN_W = 5.0             # how wide, along the keel
+WIN_H = 1.7             # how tall
+WIN_EYE = 1.5           # above the deck's floor
+
+
+def window_cutters():
+    made = []
+    zmin = min(f[3] - f[2] for f in FRAMES) * LOA
+    zmax = max(f[3] + f[2] for f in FRAMES) * LOA
+    z = math.floor(zmin / DECK_H) * DECK_H
+    while z < zmax:
+        eye = z + WIN_EYE
+        y = WIN_EVERY
+        while y < LOA - WIN_EVERY * 0.5:
+            t = y / LOA
+            hb = section(t)[0] * LOA
+            # how far out the hull still has this height
+            edge = 0.0
+            x = 0.0
+            while x <= hb + 2.0:
+                if inside(t, x, eye):
+                    edge = x
+                x += 0.5
+            if edge > 4.0:
+                for side in (-1, 1):
+                    bpy.ops.mesh.primitive_cube_add(size=1, location=(
+                        side * edge, y, eye))
+                    c = bpy.context.object
+                    c.name = "Win%d_%d_%s" % (int(z), int(y),
+                                              "P" if side < 0 else "S")
+                    # deliberately deeper than the plate so it cuts clean
+                    # through, and no deeper, so it does not reach the far side
+                    c.scale = (4.0, WIN_W, WIN_H)
+                    made.append(c)
+            y += WIN_EVERY
+        z += DECK_H
+    return made
+
+
 def weld(hull, parts):
     """ONE MESH, NOT SEVERAL OVERLAPPING ONES.
 
@@ -635,6 +694,34 @@ def weld(hull, parts):
     apply_all(hull)
     for p in parts:
         bpy.data.objects.remove(p)
+
+    # AND NOW THE WINDOWS, subtracted while the hull is still a single surface
+    # with no thickness, so the solidify below turns every hole into a reveal.
+    #
+    # ONE BOOLEAN, NOT ONE PER WINDOW. The first version added a modifier per
+    # cutter and applied them one at a time -- a few hundred full-mesh rebuilds
+    # by an exact solver, which is not slow, it is a hang. David watched it:
+    # "that seems to have hung Blender or made the generation much heavier."
+    # Every cutter is joined into a single mesh first and subtracted once, and
+    # the whole pass is timed below so the cost is a number rather than a
+    # guess.
+    t0 = time.time()
+    cutters = window_cutters()
+    if cutters:
+        bpy.ops.object.select_all(action="DESELECT")
+        for c in cutters:
+            c.select_set(True)
+        bpy.context.view_layer.objects.active = cutters[0]
+        bpy.ops.object.join()
+        glass = bpy.context.object
+        b = hull.modifiers.new("Windows", "BOOLEAN")
+        b.operation = "DIFFERENCE"
+        b.object = glass
+        b.solver = "EXACT"
+        apply_all(hull)
+        bpy.data.objects.remove(glass)
+    print("windows: %d cut in one boolean, %.1fs"
+          % (len(cutters), time.time() - t0))
 
     # HOW MANY PIECES THE UNION CAME OUT IN, counted BEFORE thickness -- and
     # the ordering is the whole subtlety. Solidifying a closed manifold gives
