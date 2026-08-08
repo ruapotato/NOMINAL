@@ -808,6 +808,149 @@ done:
  * that forwarding alone repairs it -- with forwarding on and no default route
  * the same station serves 32 of 32 -- so the gateway is not a cause and does
  * not get a sentence saying it is. */
+/* ===== A TENANCY IN A VLAN THE ROUTER HAS NO LEG IN, AND A REPORT THAT ======
+ * ===== QUIETLY GAVE IT ONE                                            ======
+ *
+ * Found by playing a run. `serve` urges a player to put a tenancy that asked
+ * for its own broadcast domain into a vlan -- "`serve 1 sw1 31` puts them in a
+ * vlan as it patches them" -- so the playthrough did that for two tenancies,
+ * and both sat at zero addresses until one filed a complaint. The pool was up
+ * and correct. It was on the untagged default and the desks were in vlan 31.
+ * The game had advised the move and then said nothing about what the move
+ * needed, falling through to a sentence about there being no pool -- true, and
+ * useless to a player who had just made one.
+ *
+ * AND THE FIRST FIX WAS WORSE THAN THE BUG. Asking "does a router have a leg
+ * in vlan 31" looked like a lookup, and net_if_subif() is documented as
+ * returning "the interface index, existing or new": it ADDS one when there is
+ * none. So the diagnosis, called from `service`, was configuring the router it
+ * was reporting on -- a read-only page with a side effect on the network.
+ * net_if_subif_find() is the same question without the answer changing it, and
+ * the second claim below is what keeps it that way. */
+static void check_vlan_has_no_leg(const Building *b)
+{
+    (void)b;
+    printf("\na tenancy in a vlan nothing routes, and a report that stays a report\n");
+    Session ses;
+    if (!session_start(&ses, GATE_SEED, 200000)) { ck("a session starts", false); return; }
+    Buf o = {0};
+
+    for (int d = 0; d < 60; d++) {
+        bool anyin = false;
+        for (int i = 0; i < ses.s.ntenant; i++)
+            if (ses.s.tenant[i].moved) anyin = true;
+        if (anyin) break;
+        buf_clear(&o); session_line(&ses, "day 1", &o);
+    }
+    int who = -1, deck = -1, idx = -1;
+    for (int i = 0; i < ses.s.ntenant && who < 0; i++)
+        if (ses.s.tenant[i].moved) {
+            who = ses.s.tenant[i].tenant; idx = i;
+            deck = ses.s.b->rooms[ses.s.tenant[i].room].floor;
+        }
+    ck("a tenancy has the keys", who >= 0);
+    if (who < 0) goto done;
+
+    static const char *const BUILD[] = {
+        "order router edge", "deliver edge d0.mdf", "feed edge",
+        "cable uplink:0 edge:0 cat6", "spool back",
+        "addr edge:0 198.51.100.2/30", "addr edge:1 10.0.0.1/16",
+        "gw edge 198.51.100.1", "router edge on",
+        "dhcpd edge 10.0.1.1 200 16 10.0.0.1 198.51.100.1",
+        "order switch24 tsw", NULL
+    };
+    for (int i = 0; BUILD[i]; i++) session_line(&ses, BUILD[i], &o);
+    char line[160];
+    snprintf(line, sizeof line, "deliver tsw d%d.comms", deck);
+    session_line(&ses, line, &o);
+    session_line(&ses, "feed tsw", &o);
+    session_line(&ses, "cable edge:1 tsw:0 cat6", &o);
+    session_line(&ses, "spool back", &o);
+    session_line(&ses, "go tsw", &o);
+    /* THE VLAN IS THE ONE `serve` ITSELF SUGGESTS, taken from its own reply
+     * rather than chosen here -- a number typed into a gate is a number that
+     * goes stale the day the suggestion changes. */
+    snprintf(line, sizeof line, "serve %d tsw", who);
+    buf_clear(&o); session_line(&ses, line, &o);
+    int vlan = 0;
+    {
+        const char *p2 = o.p ? strstr(o.p, "tsw ") : NULL;
+        if (p2) vlan = atoi(p2 + 4);
+    }
+    ck("`serve` suggested a vlan of its own for a tenancy that asked for one",
+       vlan > 1);
+    printf("    it suggested vlan %d\n", vlan);
+    snprintf(line, sizeof line, "serve %d tsw %d", who, vlan);
+    session_line(&ses, line, &o);
+    buf_clear(&o); session_line(&ses, "day 1", &o);
+
+    ck("their desks have link and no address, having done as it said",
+       site_tenant_connected(&ses.s, idx) > 0 &&
+       site_tenant_addressed(&ses.s, idx) == 0);
+
+    /* COUNTED BEFORE ANYTHING READS `service`, which is the whole point and
+     * which the first version of this gate got wrong. It counted the router's
+     * interfaces AFTER the claims above had already called `service` twice --
+     * so with the creating variant of the lookup put back, the subinterfaces
+     * had been conjured before the baseline was taken and the count matched
+     * itself: "13 before and 13 after", passing while the fault was live. A
+     * baseline measured after the thing it is a baseline for is not one. */
+    int before = 0, after = 0;
+    {
+        Buf f = {0};
+        session_line(&ses, "go edge", &o);
+        session_line(&ses, "show edge", &f);
+        for (const char *q = f.p ? f.p : ""; (q = strstr(q, "eth")); q += 3) before++;
+        buf_free(&f);
+    }
+
+    /* --- 1. AND THE ROW SAYS WHICH VLAN, AND THAT NOTHING ROUTES IT. */
+    buf_clear(&o); session_line(&ses, "service", &o);
+    char want[64];
+    snprintf(want, sizeof want, "they are in vlan %d", vlan);
+    ck("the row names the vlan the desks are in", has(o.p, want));
+    ck("and says no router has a leg there, with the verb that makes one",
+       has(o.p, "no router in this station has a leg there") &&
+       has(o.p, "`subif"));
+
+    /* --- 2. AND ASKING DID NOT CHANGE THE ANSWER.
+     *
+     * The whole of why net_if_subif_find() exists. `service` is a report; a
+     * report that adds an interface to a router every time it is read is a
+     * worse fault than the one it was added to describe. Counted off the
+     * router's own interface list, before and after ten readings. */
+    for (int i = 0; i < 10; i++) { buf_clear(&o); session_line(&ses, "service", &o); }
+    {
+        Buf f = {0};
+        session_line(&ses, "show edge", &f);
+        for (const char *q = f.p ? f.p : ""; (q = strstr(q, "eth")); q += 3) after++;
+        buf_free(&f);
+    }
+    ck("reading `service` ten times leaves the router exactly as it was",
+       before > 0 && before == after);
+    printf("    the router had %d interfaces before and %d after\n", before, after);
+
+    /* --- 3. AND DOING WHAT IT SAYS WORKS. */
+    snprintf(line, sizeof line, "subif edge 1 %d 10.%d.0.1/24", vlan, vlan % 250);
+    session_line(&ses, line, &o);
+    snprintf(line, sizeof line, "dhcpd edge 10.%d.0.10 200 24 10.%d.0.1 198.51.100.1",
+             vlan % 250, vlan % 250);
+    session_line(&ses, line, &o);
+    session_line(&ses, "go tsw", &o);
+    snprintf(line, sizeof line, "trunk tsw 0 %d", vlan);
+    session_line(&ses, line, &o);
+    buf_clear(&o); session_line(&ses, "day 1", &o);
+    ck("a subinterface, a pool on it and a trunk, and they get their addresses",
+       site_tenant_addressed(&ses.s, idx) > 0);
+    printf("    %d of %d desks addressed after taking its advice\n",
+           site_tenant_addressed(&ses.s, idx), ses.s.tenant[idx].ndesk);
+
+done:
+    buf_free(&o);
+    session_end(&ses);
+}
+
+
 static void check_row_says_why(const Building *b)
 {
     (void)b;
@@ -6113,6 +6256,7 @@ int site_selfcheck(void)
     check_port_speed(&b);
     check_boxes(&b);
     check_plug_pulled(&b);
+    check_vlan_has_no_leg(&b);
     check_row_says_why(&b);
     check_trip(&b);
     check_tenants(&b);

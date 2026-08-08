@@ -1360,6 +1360,25 @@ void net_if_vlan(Net *n, int node, int ifx, int vlan)
  *
  * Asking twice for the same vlan on the same card gives the same interface
  * back, because it is the same interface. */
+/* THE SAME QUESTION WITHOUT THE ANSWER CHANGING IT. net_if_subif() below
+ * returns "the interface index, existing or new" -- it ADDS one when there is
+ * none, which is right for the verb that configures a router and catastrophic
+ * for anything that only wants to know. A diagnosis in core/siteday.c asked it
+ * whether a router had a leg in a tenancy's vlan, and by asking, gave it one:
+ * a `service` row, which is a report, was quietly reconfiguring the network it
+ * was reporting on. */
+int net_if_subif_find(const Net *n, int node, int nic, int vlan)
+{
+    const Host *h = host_of((Net *)n, node);
+    if (!h || vlan < 1 || vlan > 4094) return -1;
+    int p = pid_of((Net *)n, node, nic);
+    if (p < 0) return -1;
+    for (int i = 0; i < NET_IF_MAX; i++)
+        if (h->ifc[i].used && h->ifc[i].port == p && h->ifc[i].vlan == vlan)
+            return i;
+    return -1;
+}
+
 int net_if_subif(Net *n, int node, int nic, int vlan)
 {
     Host *h = host_of(n, node);
@@ -1427,6 +1446,15 @@ void net_port_vlan(Net *n, int node, int port, int vlan)
 {
     int p = pid_of(n, node, port);
     if (p >= 0) n->port[p].vlan = vlan <= 0 ? VLAN_DEFAULT : vlan;
+}
+/* AND WHICH VLAN A PORT IS IN, asked rather than set. There was a setter and
+ * no getter, so nothing outside this file could find out which broadcast
+ * domain a desk had been patched into -- which is the fact a tenancy that has
+ * been given a segment of its own and cannot get an address needs stated. */
+int net_port_vlan_of(const Net *n, int node, int port)
+{
+    int p = pid_of((Net *)n, node, port);
+    return p >= 0 ? n->port[p].vlan : -1;
 }
 void net_port_mode(Net *n, int node, int port, PortMode m)
 {

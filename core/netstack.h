@@ -337,6 +337,8 @@ void  net_get_mac(const Net *n, int node, int ifx, uint8_t out[6]);
 void  net_if_port(Net *n, int node, int ifx, int port);
 void  net_if_up(Net *n, int node, int ifx, bool up);
 void  net_port_vlan(Net *n, int node, int port, int vlan);
+/* Which vlan that access port is in, or -1 for no such port. */
+int   net_port_vlan_of(const Net *n, int node, int port);
 void  net_port_mode(Net *n, int node, int port, PortMode m);
 /* Let a vlan across a trunk. A trunk carries nothing until told to. Returns
  * false for a vlan outside 1..4094 or a port that is not there, so a caller
@@ -364,6 +366,9 @@ void  net_if_vlan(Net *n, int node, int ifx, int vlan);
  * the difference between a router with a WAN side and a LAN side and a router
  * with one address. Subinterfaces are numbered above the sockets. */
 int   net_if_subif(Net *n, int node, int nic, int vlan);
+/* Ask WITHOUT adding one: -1 when there is no such subinterface. Anything that
+ * is only reporting must use this -- see the note in netstack.c. */
+int   net_if_subif_find(const Net *n, int node, int nic, int vlan);
 /* Remove one. A socket cannot be removed -- it is a hole in a box. */
 bool  net_if_del(Net *n, int node, int ifx);
 /* Which socket an interface hangs off (-1 if none), what tag it wears, and

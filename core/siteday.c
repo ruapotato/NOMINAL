@@ -1702,12 +1702,62 @@ void site_tenant_why(const Site *s, int ti, char *out, int cap)
                                        "YET: their machines ask for a lease "
                                        "when the day runs. `day`.",
                      site_tenant_connected(s, ti));
-        else if (site_tenant_addressed(s, ti) == 0)
-            snprintf(out, (size_t)cap, "%d desks with link asked for a lease "
-                                       "and got nothing: no dhcp pool answered "
-                                       "on their segment. `dhcpd <box>` says "
-                                       "what a box serves.",
-                     site_tenant_connected(s, ti));
+        else if (site_tenant_addressed(s, ti) == 0) {
+            /* AND WHICH SEGMENT THAT IS, WHEN IT IS NOT THE DEFAULT ONE.
+             *
+             * `serve` tells a player with all its heart to put a tenancy that
+             * asked for its own broadcast domain into a vlan -- "`serve 1 sw1
+             * 31` puts them in a vlan as it patches them" -- and a blind
+             * playthrough did exactly that, for two tenancies, and watched
+             * both sit at zero addresses until one of them filed a complaint.
+             * The pool was up and correct; it was on the untagged default,
+             * and the desks were in vlan 31. The game had advised the move
+             * and then said nothing about what the move now needed.
+             *
+             * The fact is in the model: the switch port a desk is patched to
+             * carries a vlan, and a router either has a subinterface on that
+             * vlan or it has not. Nothing else in the diagnosis ladder was
+             * looking, so it fell through to the general sentence about a
+             * pool -- true, and useless, because the player had a pool. */
+            int vl = 0;
+            for (int i = 0; i < t->ndesk && vl <= 0; i++) {
+                int d = t->desk0 + i;
+                for (int l = 0; l < s->nlink; l++) {
+                    const SiteLink *k = &s->link[l];
+                    if (k->cable < 0) continue;
+                    int sw = -1, sp = -1;
+                    if (k->a == d) { sw = k->b; sp = k->bport; }
+                    else if (k->b == d) { sw = k->a; sp = k->aport; }
+                    if (sw < 0 || !site_kind_is_switch(s->dev[sw].kind)) continue;
+                    vl = net_port_vlan_of(s->net, s->dev[sw].node, sp);
+                    break;
+                }
+            }
+            bool routed = false;
+            if (vl > 1) {
+                for (int d = 0; d < s->ndev && !routed; d++) {
+                    if (s->dev[d].kind != SDEV_ROUTER) continue;
+                    for (int nic = 0; nic < s->dev[d].nports; nic++)
+                        if (net_if_subif_find(s->net, s->dev[d].node, nic, vl) >= 0)
+                            { routed = true; break; }
+                }
+            }
+            if (vl > 1 && !routed)
+                snprintf(out, (size_t)cap,
+                         "%d desks with link asked for a lease and got "
+                         "nothing: they are in vlan %d and no router in this "
+                         "station has a leg there, so the pool on the untagged "
+                         "default cannot reach them. `subif <router> <nic> %d "
+                         "<address>`, and a trunk to carry it.",
+                         site_tenant_connected(s, ti), vl, vl);
+            else
+                snprintf(out, (size_t)cap, "%d desks with link asked for a "
+                                           "lease and got nothing: no dhcp "
+                                           "pool answered on their segment. "
+                                           "`dhcpd <box>` says what a box "
+                                           "serves.",
+                         site_tenant_connected(s, ti));
+        }
         return;
     }
     if (site_tenant_served(s, ti)) return;
