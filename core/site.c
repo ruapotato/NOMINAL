@@ -4074,9 +4074,24 @@ bool site_cmd(Site *s, const char *line, Buf *out)
         buf_printf(out, "tenancy %d: %d of %d desks have a port (%d new). %ld left.\n",
                    s->tenant[ti].tenant, got, s->tenant[ti].ndesk, got - before,
                    s->money);
-        if (got < s->tenant[ti].ndesk)
-            buf_printf(out, "  %d of them have nowhere to go: %s\n",
-                       s->tenant[ti].ndesk - got, site_err_text(s->err));
+        if (got < s->tenant[ti].ndesk) {
+            /* AND SAY WHAT IS ACTUALLY IN THE WAY. This printed the raw error
+             * text, which for a switch with no holes left is "that box has not
+             * got that port" -- a sentence about a port NUMBER, printed at a
+             * player whose problem is a box that is FULL. A run to day 45 left
+             * seventeen desks of one tenancy dark behind exactly that line and
+             * neither of us noticed for forty days. */
+            if (s->err == SITE_ENOPORT)
+                buf_printf(out, "  %d of them have nowhere to go: %s is full, "
+                                "all %d of its sockets used.\n"
+                                "  Another switch on that deck, cabled back to "
+                                "the same core, is what they need.\n",
+                           s->tenant[ti].ndesk - got, s->dev[d].name,
+                           site_kind_ports(s->dev[d].kind));
+            else
+                buf_printf(out, "  %d of them have nowhere to go: %s\n",
+                           s->tenant[ti].ndesk - got, site_err_text(s->err));
+        }
         /* WHERE THE PORTS ENDED UP, said rather than left to be discovered.
          * `serve` used to patch twenty desks into the untagged default and
          * say nothing about it, and a tenancy the generator marked as wanting

@@ -1760,6 +1760,45 @@ void site_tenant_why(const Site *s, int ti, char *out, int cap)
         }
         return;
     }
+    /* DESKS THAT ARE NOT THERE AT ALL, BEFORE ANYTHING ABOUT THE ONES THAT ARE.
+     *
+     * Found by finally getting a run to day 45. Tenancy 4 had twenty desks,
+     * three of them patched, and read like this:
+     *
+     *     deck tenant trade  desks up addr   done worst  strikes rent/day
+     *        3      4 office    20  3    3  11/12 2964ms       0      483
+     *
+     * Eleven of twelve done, no strikes, full rent -- and seventeen people
+     * unable to work. `serve` had run out of ports on that deck's switch and
+     * said so at the time, and every page since had quietly agreed the
+     * tenancy was fine, because site_tenant_served() is finished-over-tried
+     * and `tried` only exists for desks that are ON the network. Three desks
+     * doing three desks' work is a hundred per cent of the work the model
+     * knows to ask for.
+     *
+     * That is the same shape as the row that said "the slowest took 0 ms"
+     * while nothing finished: a page that reads healthy because it is
+     * measuring the wrong denominator. The tenancy pays for days their PEOPLE
+     * can work, and the number of people is t->ndesk.
+     *
+     * WHAT THIS DOES NOT DO is change what they pay. Whether a landlord who
+     * has patched three desks in twenty should collect the full 483 a day is
+     * a balance question -- it plainly should not, and it is the reason this
+     * run had no money pressure in it at all -- but it moves rent, strikes and
+     * every --loadcheck number with it, and it wants its own measurement
+     * rather than being smuggled in behind a sentence. See the commit. */
+    {
+        int have = site_tenant_connected(s, ti);
+        if (have < t->ndesk) {
+            snprintf(out, (size_t)cap,
+                     "%d of their %d desks have no port at all -- those people "
+                     "cannot work whatever the rest of the row says. The "
+                     "switch on that deck is full: another one, cabled to the "
+                     "same core, is what they are short of.",
+                     t->ndesk - have, t->ndesk);
+            return;
+        }
+    }
     if (site_tenant_served(s, ti)) return;
 
     /* NOTHING AT ALL FINISHED? THEN LOOK FOR A CAUSE THAT EXPLAINS ALL OF IT,

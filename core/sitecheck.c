@@ -827,6 +827,113 @@ done:
  * was reporting on -- a read-only page with a side effect on the network.
  * net_if_subif_find() is the same question without the answer changing it, and
  * the second claim below is what keeps it that way. */
+/* ==== A TENANCY MOSTLY IN THE DARK, READING AS A TENANCY THAT IS FINE ====
+ *
+ * Found by getting a run to day 45 for the first time. One tenancy had twenty
+ * desks, three of them patched, and its row said:
+ *
+ *     deck tenant trade  desks up addr   done worst  strikes rent/day
+ *        3      4 office    20  3    3  11/12 2964ms       0      483
+ *
+ * Eleven of twelve done, no strikes, full rent, and seventeen people who
+ * cannot work. `serve` had run out of ports on that deck's switch and said so
+ * at the time -- in the raw error text, "that box has not got that port",
+ * which is a sentence about a port NUMBER printed at a player whose box is
+ * FULL -- and every page afterwards agreed the tenancy was healthy, because
+ * site_tenant_served() is finished-over-tried and `tried` only exists for
+ * desks that are on the network. Three desks doing three desks' work is a
+ * hundred per cent of the work the model knows to ask for.
+ *
+ * Same shape as the row that said "the slowest took 0 ms" while nothing
+ * finished: a page reading healthy because it measures the wrong denominator.
+ * A tenancy pays for days their PEOPLE can work, and the people are ndesk. */
+static void check_dark_desks(const Building *b)
+{
+    (void)b;
+    printf("\na tenancy whose switch ran out, and the row that called it fine\n");
+    Session ses;
+    if (!session_start(&ses, GATE_SEED, 300000)) { ck("a session starts", false); return; }
+    Buf o = {0};
+
+    for (int d = 0; d < 60; d++) {
+        bool anyin = false;
+        for (int i = 0; i < ses.s.ntenant; i++)
+            if (ses.s.tenant[i].moved) anyin = true;
+        if (anyin) break;
+        buf_clear(&o); session_line(&ses, "day 1", &o);
+    }
+    int who = -1, deck = -1, idx = -1;
+    for (int i = 0; i < ses.s.ntenant && who < 0; i++)
+        if (ses.s.tenant[i].moved) {
+            who = ses.s.tenant[i].tenant; idx = i;
+            deck = ses.s.b->rooms[ses.s.tenant[i].room].floor;
+        }
+    ck("a tenancy has the keys", who >= 0);
+    if (who < 0) goto done;
+
+    static const char *const BUILD[] = {
+        "order router edge", "deliver edge d0.mdf", "feed edge",
+        "cable uplink:0 edge:0 cat6", "spool back",
+        "addr edge:0 198.51.100.2/30", "addr edge:1 10.0.0.1/16",
+        "gw edge 198.51.100.1", "router edge on",
+        "dhcpd edge 10.0.1.1 200 16 10.0.0.1 198.51.100.1",
+        /* A SWITCH TOO SMALL FOR THEM ON PURPOSE. A switch4 seats three desks
+         * and keeps one socket for the run back, and every tenancy in this
+         * game is bigger than that -- so this is the smallest way to make the
+         * shortfall happen without naming a desk count the seed might change. */
+        "order switch4 small", NULL
+    };
+    for (int i = 0; BUILD[i]; i++) session_line(&ses, BUILD[i], &o);
+    char line[160];
+    snprintf(line, sizeof line, "deliver small d%d.comms", deck);
+    session_line(&ses, line, &o);
+    session_line(&ses, "feed small", &o);
+    session_line(&ses, "cable edge:1 small:0 cat6", &o);
+    session_line(&ses, "spool back", &o);
+    session_line(&ses, "go small", &o);
+    snprintf(line, sizeof line, "serve %d small", who);
+    buf_clear(&o); session_line(&ses, line, &o);
+
+    int have = site_tenant_connected(&ses.s, idx);
+    int want = ses.s.tenant[idx].ndesk;
+    ck("the switch fills up and most of the tenancy has nowhere to go",
+       have > 0 && have < want);
+    printf("    %d of %d desks got a port\n", have, want);
+
+    /* --- 1. `serve` SAYS THE BOX IS FULL, not that a port number is missing. */
+    ck("`serve` says which box is full and how many sockets that is",
+       has(o.p, "is full, all") && has(o.p, "sockets used"));
+    ck("and names the remedy, which is another switch on that deck",
+       has(o.p, "Another switch on that deck"));
+
+    /* --- 2. AND THE ROW DOES NOT CALL THEM FINE.
+     *
+     * The desks that ARE patched will do their work, so every number on the
+     * row is healthy and the tenancy is "served". The claim is that the page
+     * says the other ones exist anyway. */
+    buf_clear(&o); session_line(&ses, "day 1", &o);
+    ck("the desks that are patched get their work done",
+       ses.s.tenant[idx].finished > 0);
+    buf_clear(&o); session_line(&ses, "service", &o);
+    char want_s[80];
+    snprintf(want_s, sizeof want_s, "%d of their %d desks have no port at all",
+             want - have, want);
+    ck("and the row says how many of their people have no port at all",
+       has(o.p, want_s));
+    printf("    the row reads: %d of their %d desks have no port at all\n",
+           want - have, want);
+
+    /* --- 3. AND `next` PUTS IT IN FRONT OF THE PLAYER, since it reads why(). */
+    buf_clear(&o); session_line(&ses, "next", &o);
+    ck("`next` names it too, with a room to walk to",
+       has(o.p, "have no port at all") && has(o.p, "where: d"));
+
+done:
+    buf_free(&o);
+    session_end(&ses);
+}
+
+
 static void check_vlan_has_no_leg(const Building *b)
 {
     (void)b;
@@ -6303,6 +6410,7 @@ int site_selfcheck(void)
     check_port_speed(&b);
     check_boxes(&b);
     check_plug_pulled(&b);
+    check_dark_desks(&b);
     check_vlan_has_no_leg(&b);
     check_row_says_why(&b);
     check_trip(&b);
