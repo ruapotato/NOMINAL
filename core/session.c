@@ -1283,6 +1283,8 @@ static void do_help(const Session *ses, Buf *out)
         "  look               what is in this room, and the ways out of it\n"
         "  map                an ASCII plan of this deck\n"
         "  crew               the bridge stations and what each is short of\n"
+        "  next               the next thing that is actually wrong, and the\n"
+        "                     line to type to put it right. Start here.\n"
         "  go <room>          walk. `go comms` `go f3.office` `go #41` `go core`\n"
         "                     -- a box's name walks you to the room it is in\n"
         "  lift <deck>       take the lift. Only decks in service have a button\n"
@@ -2870,7 +2872,7 @@ static const char *TOWERVERB[] = {
     "resolver", "dnsd", "dns", "ups", "disk", "show", "links",
     /* the tower's own view of itself */
     "day", "service", "status", "load", "isp", "events", "demand", "money",
-    "frames", "rooms", "crew", NULL
+    "frames", "rooms", "crew", "next", NULL
 };
 
 static bool is_towerverb(const char *v)
@@ -4014,7 +4016,7 @@ bool session_line(Session *ses, const char *line, Buf *out)
         strcmp(t[0], "credit") == 0 || strcmp(t[0], "status") == 0 ||
         strcmp(t[0], "service") == 0 || strcmp(t[0], "load") == 0 ||
         strcmp(t[0], "events") == 0 || strcmp(t[0], "jacks") == 0 ||
-        strcmp(t[0], "crew") == 0 ||
+        strcmp(t[0], "crew") == 0 || strcmp(t[0], "next") == 0 ||
         (strcmp(t[0], "show") == 0)) {
         site_cmd(&ses->s, raw, out);
         return true;

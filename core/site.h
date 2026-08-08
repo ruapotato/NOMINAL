@@ -976,6 +976,10 @@ const char *site_crew_why(const Site *s, int i);
 bool        site_crew_up(const Site *s, int i);
 int         site_crew_working(const Site *s);
 void        site_dump_crew(const Site *s, Buf *out);
+/* THE NEXT THING THAT IS ACTUALLY WRONG, and the verb that changes it. This
+ * is the onboarding, derived from the model rather than scripted, so it
+ * cannot go stale and is as true on day forty as on day one. See D44. */
+void        site_dump_next(const Site *s, Buf *out);
 void site_dump_conduits(const Site *s, Buf *out);
 
 /* Which box is in the nth used socket of a room, or -1. This is the surface

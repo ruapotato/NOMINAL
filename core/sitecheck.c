@@ -4003,6 +4003,131 @@ static void check_catalogue(const Building *b)
  * on and the dark one does not. If that ever stops being true the bridge has
  * gone back to being a checklist over a stub.
  */
+/* THE ONBOARDING, AND WHY IT IS A GATE RATHER THAN A SCRIPT.
+ *
+ * D44: the first hour has to teach the verbs by having you use them, and what
+ * it asks for next has to be THE NEXT THING THAT IS ACTUALLY WRONG. A blind
+ * playtester could not tell from inside the game what they were supposed to
+ * do -- `crew` said a station had "no machine at it" without saying that
+ * meant buy a pc, carry it up and cable it.
+ *
+ * `next` is that missing sentence, derived from the model. So the gate is not
+ * "does it print something": it FOLLOWS ITS OWN ADVICE, typing the line it
+ * gives back at the site, and asserts the station is closer afterwards. A
+ * sequence that cannot be walked is a sequence that lies, and this is the
+ * only way to know it still can.
+ */
+static void check_next(const Building *b)
+{
+    printf("\n`next` names the next thing wrong, and its own advice works\n");
+    Site s;
+    site_new(&s, b, GATE_SEED, 200000);
+    Buf o = {0};
+
+    ck("on the first morning it points at the bridge, which is the first job",
+       out_has(&s, "next", "bridge") && out_has(&s, "next", "no machine at it"));
+    ck("and it gives a line to type, not a hint",
+       out_has(&s, "next", "-> `order pc"));
+
+    /* --- AND NOW WALK IT. Take the command out of the answer and run it,
+     * four rungs deep, asserting the reason changes each time. Nothing here
+     * knows what the answer will be: it reads it. */
+    const char *want[] = { "no machine at it", "nothing feeding it",
+                           "switched off", "no cable in it" };
+    int rung = 0;
+    for (; rung < 4; rung++) {
+        Buf n = {0};
+        site_cmd(&s, "next", &n);
+        if (!has(n.p, want[rung])) { buf_free(&n); break; }
+        /* the line to type is between the backticks after the arrow */
+        const char *arrow = strstr(n.p, "-> `");
+        if (!arrow) { buf_free(&n); break; }
+        const char *q0 = arrow + 4;
+        const char *q1 = strchr(q0, '`');
+        if (!q1) { buf_free(&n); break; }
+        char cmd[128];
+        int len = (int)(q1 - q0);
+        if (len > (int)sizeof cmd - 1) len = (int)sizeof cmd - 1;
+        memcpy(cmd, q0, (size_t)len);
+        cmd[len] = 0;
+        buf_free(&n);
+        Buf r = {0};
+        site_cmd(&s, cmd, &r);
+        bool refused = has(r.p, "refused") || has(r.p, "no such");
+        if (refused)
+            printf("    rung %d: `%s` was REFUSED -- %.60s\n", rung, cmd,
+                   r.p ? r.p : "");
+        buf_free(&r);
+        if (refused) break;
+        printf("    rung %d: %-22s -> `%s`\n", rung, want[rung], cmd);
+        /* the second half of the first rung is a `move`, which `next` gives
+         * on the same line; take it too rather than stalling */
+        if (rung == 0) {
+            char mv[64];
+            snprintf(mv, sizeof mv, "move %s d%d.bridge", s.crew[0].name,
+                     b->floors - 1);
+            Buf m = {0};
+            site_cmd(&s, mv, &m);
+            buf_free(&m);
+        }
+    }
+    ck("every line it gave was a line the site took, four rungs deep",
+       rung == 4);
+    ck("and following them really lit the station it was talking about",
+       site_crew_working(&s) == 0 && s.crew[0].dev >= 0 &&
+       s.dev[s.crew[0].dev].powered);
+
+    /* --- AND IT KNOWS WHEN NOTHING IS WRONG, which is a real answer. */
+    Site quiet;
+    site_new(&quiet, b, GATE_SEED, 200000);
+    for (int i = 0; i < quiet.ncrew; i++) {
+        char nm[16];
+        snprintf(nm, sizeof nm, "q%d", i);
+        int pc = site_install(&quiet, SDEV_PC, quiet.crew[i].room, nm);
+        if (pc < 0) continue;
+        site_feed(&quiet, pc);
+        site_power(&quiet, pc, true);
+        int sw = site_dev_by_name(&quiet, "qsw");
+        if (sw < 0) {
+            sw = site_install(&quiet, SDEV_SWITCH24,
+                              bld_find(b, b->floors - 1, RM_COMMS) >= 0
+                                  ? bld_find(b, b->floors - 1, RM_COMMS)
+                                  : quiet.crew[i].room, "qsw");
+            if (sw >= 0) { site_feed(&quiet, sw); site_power(&quiet, sw, true); }
+        }
+        if (sw >= 0) site_cable(&quiet, sw, i, pc, 0, CAB_CAT5E);
+    }
+    site_crew_sync(&quiet);
+    ck("a station with nothing wrong is told so, and told what it is waiting for",
+       site_crew_working(&quiet) == quiet.ncrew &&
+       out_has(&quiet, "next", "nothing is broken") &&
+       (out_has(&quiet, "next", "has the keys on day") ||
+        out_has(&quiet, "next", "puts the next deck into service")));
+
+    /* AND RENT COMES FIRST. A tenancy that has moved in and cannot work is
+     * losing money today; the bridge is not. If that order ever inverts, a
+     * player following `next` is being walked past the thing that ends
+     * their run. */
+    Site urgent;
+    site_new(&urgent, b, GATE_SEED, 200000);
+    for (int d = 0; d < 40; d++) {
+        bool anyin = false;
+        for (int i = 0; i < urgent.ntenant; i++)
+            if (urgent.tenant[i].moved) anyin = true;
+        if (anyin) break;
+        unserved_day(&urgent, NULL);
+    }
+    ck("once somebody has the keys and no cable, that comes before the bridge",
+       out_has(&urgent, "next", "moved in on deck") &&
+       out_has(&urgent, "next", "`serve"));
+
+    buf_free(&o);
+    site_free(&s);
+    site_free(&quiet);
+    site_free(&urgent);
+}
+
+
 static void check_watch(const Building *b)
 {
     printf("\nthe night watch: what a manned bridge does while you sleep\n");
@@ -5304,6 +5429,7 @@ int site_selfcheck(void)
     check_conduits(&b);
     check_crew(&b);
     check_watch(&b);
+    check_next(&b);
     check_one_fact_two_answers(&b);
     check_ambiguity_and_the_diary();
     /* D43: and the decision the first twenty days did not have. */

@@ -1341,6 +1341,137 @@ int site_crew_working(const Site *s)
 /* WHAT THE CREW CAN SEE FROM WHERE THEY SIT. One line a station, and the
  * last column is the SENTENCE, not a tick: a player looking at a dark bridge
  * wants to be told it is the cable and not the power. */
+/* ------------------------------------------------------ what to do next */
+/*
+ * ONBOARDING THAT CANNOT GO STALE.
+ *
+ * D44 committed to this shape and it is worth restating: the first hour has
+ * to teach the verbs by having you use them, and what it asks for next has to
+ * be THE NEXT THING THAT IS ACTUALLY WRONG. A scripted sequence -- step one,
+ * buy a switch; step two, carry it -- goes stale the first time the world
+ * changes and lies to the player for ever after. A sequence derived from the
+ * model cannot: it is the same question `crew`, `service` and `conduits`
+ * already answer, asked in priority order, with the command to type.
+ *
+ * A blind playtester found the game's real onboarding problem exactly: they
+ * could not tell, from inside, what they were supposed to do. `crew` told
+ * them a station had "no machine at it" without saying that meant buy a pc,
+ * carry it up and cable it. This is that missing sentence, for every state
+ * the station can be in.
+ *
+ * THE ORDER IS THE ORDER A PERSON WOULD WORK IN, and each rung is a thing
+ * that costs money or a day if it is left: a tenancy that has moved in and
+ * cannot work is losing rent TODAY; a run over its rating will trip and take
+ * everything behind it; a crew station is the difference between a night that
+ * costs you nothing and one that costs you a day. Nothing here is advice
+ * about strategy -- every line names a fact the model is holding and the verb
+ * that changes it.
+ */
+void site_dump_next(const Site *s, Buf *out)
+{
+    /* 1. SOMEBODY HAS THE KEYS AND CANNOT WORK. This is rent going out of
+     *    the door every day it is true, and it is the only thing here that
+     *    ends the run if it is ignored. */
+    for (int i = 0; i < s->ntenant; i++) {
+        const SiteTenant *t = &s->tenant[i];
+        if (!t->moved) continue;
+        if (site_tenant_connected(s, i) > 0) continue;
+        buf_printf(out, "tenancy %d moved in on deck %d and not one of their "
+                        "%d desks has a\n  cable in it. They pay for days "
+                        "their people can work, and three days\n  they cannot "
+                        "is a complaint.\n"
+                        "  -> put a switch on that deck and `serve %d <switch>` "
+                        "to cable their desks\n",
+                   t->tenant, s->b->rooms[t->room].floor, t->drops, t->tenant);
+        return;
+    }
+    /* 2. A RUN THAT IS ABOUT TO TRIP takes everything behind it down with it,
+     *    which is a fault the player caused and will have to find. */
+    for (int r = 0; r < s->ncond; r++) {
+        if (!s->cond[r].live) continue;
+        int pct = site_conduit_pct(s, r);
+        if (pct <= 90) continue;
+        buf_printf(out, "conduit run %d is at %d%% of what it carries. Over a "
+                        "hundred it trips and\n  everything behind it goes "
+                        "dark.\n"
+                        "  -> `conduits` to see them all, and `feed` a fresh "
+                        "run to take some off it\n", r, pct);
+        return;
+    }
+    /* 3. A BOX THAT IS SWITCHED OFF is doing nothing for anybody. */
+    for (int i = 0; i < s->ndev; i++) {
+        const SiteDev *d = &s->dev[i];
+        if (!site_kind_has_os(d->kind) || d->powered || !d->mains) continue;
+        buf_printf(out, "%s has power to it and is switched off.\n"
+                        "  -> `power %s on`\n", d->name, d->name);
+        return;
+    }
+    /* 4. THE BRIDGE. Not urgent in the way rent is, which is why it is here
+     *    and not at the top -- but it is the difference between a night that
+     *    costs nothing and one that costs a day, and it is the first job the
+     *    station gives you. */
+    for (int i = 0; i < s->ncrew; i++) {
+        const char *why = site_crew_why(s, i);
+        if (!why) continue;
+        int deck = s->b->rooms[s->crew[i].room].floor;
+        buf_printf(out, "the %s station on the bridge is dark: %s.\n",
+                   s->crew[i].name, why);
+        if (strcmp(why, "no machine at it") == 0)
+            buf_printf(out, "  -> `order pc %s`, then `move %s d%d.bridge`\n",
+                       s->crew[i].name, s->crew[i].name, deck);
+        else if (strcmp(why, "nothing feeding it") == 0)
+            buf_printf(out, "  -> `feed %s` runs conduit to it from the "
+                            "nearest source with a hole left\n",
+                       s->dev[s->crew[i].dev].name);
+        else if (strcmp(why, "switched off") == 0)
+            buf_printf(out, "  -> `power %s on`\n", s->dev[s->crew[i].dev].name);
+        else {
+            /* A LINE THEY CAN TYPE, not a placeholder. This said "put a
+             * switch in d5.comms and `cable <switch>:0 helm:0 cat5e`", which
+             * is the one rung of the ladder a player cannot follow -- and
+             * the gate that walks `next`'s own advice stopped dead on it.
+             * Which switch is a thing the model knows: if there is one on
+             * that deck with a hole in it, name it; if there is not, the
+             * next line is buying one. */
+            int sw = -1, port = -1;
+            for (int d2 = 0; d2 < s->ndev && sw < 0; d2++) {
+                if (s->dev[d2].floor != deck) continue;
+                if (!site_kind_is_switch(s->dev[d2].kind)) continue;
+                int fp = site_free_port(s, d2);
+                if (fp >= 0) { sw = d2; port = fp; }
+            }
+            if (sw >= 0)
+                buf_printf(out, "  -> `cable %s:%d %s:0 cat5e`\n",
+                           s->dev[sw].name, port, s->dev[s->crew[i].dev].name);
+            else
+                buf_printf(out, "  -> `order switch8 bsw`, then "
+                                "`move bsw d%d.comms`\n", deck);
+        }
+        return;
+    }
+    /* 5. NOTHING IS WRONG, which is a real answer and should say what the
+     *    station is waiting for rather than pretending there is a job. */
+    int next_in = -1, next_day = 1 << 30;
+    for (int i = 0; i < s->ntenant; i++)
+        if (!s->tenant[i].moved && s->tenant[i].day < next_day) {
+            next_day = s->tenant[i].day; next_in = i;
+        }
+    buf_puts(out, "nothing is broken and nobody is waiting on you.\n");
+    if (next_in >= 0)
+        buf_printf(out, "  tenancy %d has the keys on day %d, %d day%s from "
+                        "now, and wants %d drop%s.\n"
+                        "  -> `demand` says what they will ask for; build "
+                        "for it before they arrive\n",
+                   s->tenant[next_in].tenant, next_day, next_day - s->day,
+                   next_day - s->day == 1 ? "" : "s",
+                   s->tenant[next_in].drops,
+                   s->tenant[next_in].drops == 1 ? "" : "s");
+    else
+        buf_puts(out, "  -> `open` puts the next deck into service, and the "
+                      "letting queue follows it\n");
+}
+
+
 void site_dump_crew(const Site *s, Buf *out)
 {
     if (s->ncrew == 0) {
@@ -3270,6 +3401,8 @@ static const struct { const char *verb; int need; const char *usage; } VERB[] = 
                      "                      is carrying" },
     { "crew",     1, "crew                  the bridge stations, what is at each\n"
                      "                      one and what it is still short of" },
+    { "next",     1, "next                  the next thing that is actually wrong,\n"
+                     "                      and the line to type to put it right" },
     { "catalogue", 1, "catalogue             every kind, its price and its spec,\n"
                      "                      off the same table the counter charges\n"
                      "                      from. Nothing is bought." },
@@ -3401,6 +3534,10 @@ bool site_cmd(Site *s, const char *line, Buf *out)
             "                               carrying against what it can\n"
             "crew                           the bridge stations, what machine is at\n"
             "                               each one, and what it is still short of\n"
+            "next                           the next thing that is actually wrong,\n"
+            "                               and the line to type to put it right.\n"
+            "                               Rent first, then anything about to trip,\n"
+            "                               then the bridge. Start here\n"
             "catalogue                      every kind the shop sells, its price\n"
             "                               and its spec: sockets, what each one\n"
             "                               clocks, what the disk is rated for,\n"
@@ -3543,6 +3680,7 @@ bool site_cmd(Site *s, const char *line, Buf *out)
     if (strcmp(t[0], "links") == 0) { site_dump_links(s, out); return true; }
     if (strcmp(t[0], "conduits") == 0) { site_dump_conduits(s, out); return true; }
     if (strcmp(t[0], "crew") == 0) { site_dump_crew(s, out); return true; }
+    if (strcmp(t[0], "next") == 0) { site_dump_next(s, out); return true; }
     if (strcmp(t[0], "conduit") == 0 && n >= 3) {
         int from = -1, fport = -1;
         char spec[64];
