@@ -1017,6 +1017,48 @@ static void m_ses_start(Station *st, const GDExtensionConstTypePtr *args, void *
 /* ses_cmd(String) -> String — one line, one thing, and the answer the socket
  * would have got. An unrecognised line says so rather than silently doing
  * nothing, because a silence is indistinguishable from a bug. */
+/* ses_tick(ms) -> String — LIVE TIME. See D44.
+ *
+ * Runs `ms` milliseconds of the station's busy period, starting a day if none
+ * is in progress and finishing one that has run out of ticks. The window
+ * calls this from _process; nothing else does, because a gate wants a whole
+ * day at once and `day 1` is still what gives it one.
+ *
+ * Returns "" while a day is still running, and the day's report when one has
+ * just ended -- so the caller can show the report without polling for it.
+ */
+static void m_ses_tick(Station *st, const GDExtensionConstTypePtr *args, void *ret)
+{
+    if (!st->ses_ok) { c_to_gdstring(ret, ""); return; }
+    int64_t ms = *(const int64_t *)args[0];
+    if (ms < 0) ms = 0;
+    Site *s = &st->ses.s;
+    if (s->over) { c_to_gdstring(ret, ""); return; }
+    if (site_day_progress(s) < 0 && !site_day_begin(s)) {
+        c_to_gdstring(ret, "");
+        return;
+    }
+    if (site_day_tick(s, (int)ms) > 0) { c_to_gdstring(ret, ""); return; }
+    Buf o; buf_init(&o);
+    site_day_end(s, NULL);
+    site_dump_day(s, &o);
+    c_to_gdstring(ret, o.p ? o.p : "");
+    buf_free(&o);
+}
+
+/* ses_clock() -> String — "progress <0..4000 or -1>\nbusy <4000>\nday <n>" */
+static void m_ses_clock(Station *st, const GDExtensionConstTypePtr *args, void *ret)
+{
+    (void)args;
+    if (!st->ses_ok) { c_to_gdstring(ret, ""); return; }
+    const Site *s = &st->ses.s;
+    Buf o; buf_init(&o);
+    buf_printf(&o, "progress %d\nbusy %d\nday %d\n",
+               site_day_progress(s), SITE_BUSY_MS, s->day);
+    c_to_gdstring(ret, o.p ? o.p : "");
+    buf_free(&o);
+}
+
 static void m_ses_cmd(Station *st, const GDExtensionConstTypePtr *args, void *ret)
 {
     char line[512];
@@ -1173,6 +1215,8 @@ static const MethodDef METHODS[] = {
     { "site_room_of",  m_site_room_of,  1, { GDEXTENSION_VARIANT_TYPE_INT }, GDEXTENSION_VARIANT_TYPE_INT },
     { "ses_start",     m_ses_start,     2, { GDEXTENSION_VARIANT_TYPE_INT, GDEXTENSION_VARIANT_TYPE_INT }, GDEXTENSION_VARIANT_TYPE_STRING },
     { "ses_cmd",       m_ses_cmd,       1, { GDEXTENSION_VARIANT_TYPE_STRING }, GDEXTENSION_VARIANT_TYPE_STRING },
+    { "ses_tick",      m_ses_tick,      1, { GDEXTENSION_VARIANT_TYPE_INT },    GDEXTENSION_VARIANT_TYPE_STRING },
+    { "ses_clock",     m_ses_clock,     0, { 0 },                              GDEXTENSION_VARIANT_TYPE_STRING },
     { "ses_state",     m_ses_state,     0, { 0 },                            GDEXTENSION_VARIANT_TYPE_STRING },
     { "site_crew",     m_site_crew,     0, { 0 },                            GDEXTENSION_VARIANT_TYPE_STRING },
     { "ses_here",      m_ses_here,      1, { GDEXTENSION_VARIANT_TYPE_INT }, GDEXTENSION_VARIANT_TYPE_STRING },

@@ -765,6 +765,16 @@ typedef struct {
     uint8_t  over;             /* the run ended                             */
     char     over_why[128];
     SiteDay  last;             /* how the last day went                     */
+    /* A DAY IN PROGRESS, or NULL between days.
+     *
+     * D44: a day is not a day, it is a four-second busy period ticked one
+     * millisecond at a time -- so live time is a split rather than a rewrite.
+     * site_day_begin() puts the day's work here, site_day_tick() runs some of
+     * the milliseconds and site_day_end() scores it and frees this.
+     *
+     * Opaque on purpose: nothing outside core/siteday.c has any business
+     * reading a busy period that is half over. */
+    struct SiteDayRun *run;
     /* ------------------------------------------------------- the weather */
     SiteEvent ev[SITE_MAX_EVENT];
     int       nev;             /* the log wraps; `events` prints the tail   */
@@ -1268,6 +1278,28 @@ void site_day_work(const Site *s, int *done, int *tried, const char **unit);
 bool site_day(Site *s, SiteDay *rep);
 /* Several, stopping early if the run ends. */
 bool site_advance(Site *s, int days, Buf *out);
+
+/* ------------------------------------------------------------ the clock */
+/* THE SAME DAY, IN SLICES. See D44 and the note on Site.run.
+ *
+ * A day is not a day: it is a four-second busy period ticked one millisecond
+ * at a time, which means live time is a split rather than a rewrite.
+ * site_day() is begin + all the ticks + end, so every gate in this project
+ * keeps calling exactly what it called before and `day 1` still means what it
+ * meant. The window calls the three separately, so the station keeps running
+ * while a player walks across it -- which is the whole of what makes a
+ * decision cost anything.
+ *
+ * site_day_begin() returns false if the run is already over or a day is
+ * already in progress. site_day_tick() returns the milliseconds STILL TO RUN,
+ * so 0 means the busy period is done and site_day_end() is what comes next.
+ * Tick and end do nothing when no day is running. */
+bool site_day_begin(Site *s);
+int  site_day_tick(Site *s, int ms);
+bool site_day_end(Site *s, SiteDay *rep);
+/* How far through the busy period a day in progress is, 0..SITE_BUSY_MS, or
+ * -1 when no day is running. The HUD reads it; nothing decides on it. */
+int  site_day_progress(const Site *s);
 
 /* What a circuit costs: the ISP's price for `mb` megabits a month -- and it
  * is really taken, on the thirtieth day, out of the same account the rent

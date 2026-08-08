@@ -1592,11 +1592,70 @@ void site_tenant_why(const Site *s, int ti, char *out, int cap)
 }
 
 /* ================================================================== a day */
+/* ONE DAY, WHICH IS THE THREE BELOW IN A ROW.
+ *
+ * This is what every gate in this project calls and what `day 1` means, and
+ * it must stay exactly that: --loadcheck, --eventcheck and --sitecheck drive
+ * thousands of days between them and measure what each one did. Splitting the
+ * day for live time (D44) is only allowed if this keeps producing the same
+ * numbers, so the split is BELOW this line and this line is the proof that it
+ * composes back.
+ *
+ * The tick loop is asked for the whole busy period in one call, so a day run
+ * this way does exactly what it did before the split: same order, same rng,
+ * same ticks. */
 bool site_day(Site *s, SiteDay *rep)
 {
+    if (!site_day_begin(s)) {
+        if (rep) *rep = s->last;
+        return !s->over;
+    }
+    while (site_day_tick(s, SITE_BUSY_MS) > 0) { }
+    return site_day_end(s, rep);
+}
+
+
+/* ------------------------------------------------------------ the clock */
+/*
+ * A DAY IN PROGRESS. See D44.
+ *
+ * Everything in here used to be a local of site_day(), which is why site_day()
+ * could not be interrupted: the day's work lived on the stack and vanished if
+ * you stopped in the middle of it. It is the same state, in the same order,
+ * moved somewhere it can survive a frame boundary.
+ *
+ * WHY AN OPAQUE STRUCT AND NOT FIELDS ON Site: nothing outside this file has
+ * any business reading a busy period that is half over. `Site` carries one
+ * pointer and this is the only translation unit that knows what is behind it.
+ */
+struct SiteDayRun {
+    SiteDay  r;
+    Xfer    *xs;   int nx;
+    Call    *cs;   int ncall;
+    Strm    *ss;   int nstrm;
+    Ingest  *ing;  int ning;   int strmcap;
+    int      ingest;
+    Rng      rng;
+    int      upnode;
+    uint32_t web;
+    uint64_t frames0, drops0, t0;
+    int      tick;             /* how far through SITE_BUSY_MS we are */
+};
+
+int site_day_progress(const Site *s)
+{
+    return s->run ? s->run->tick : -1;
+}
+
+bool site_day_begin(Site *s)
+{
+    if (s->over || s->run) return false;
+    struct SiteDayRun *R = (struct SiteDayRun *)nom_alloc(sizeof *R);
+    memset(R, 0, sizeof *R);
+    R->ingest = -1;
+    s->run = R;
     SiteDay r;
     memset(&r, 0, sizeof r);
-    if (s->over) { if (rep) *rep = s->last; return false; }
     s->day++;
     r.day = s->day;
 
@@ -1846,8 +1905,46 @@ bool site_day(Site *s, SiteDay *rep)
             drops0  += net_port_drops(s->net, s->dev[i].node, p);
         }
 
-    /* --------------------------------------------------- the busy period */
-    for (int tick = 0; tick < SITE_BUSY_MS; tick++) {
+    /* THE SETUP IS DONE. Everything the busy period needs goes into the run,
+     * in the order it was declared, and the ticks come next. */
+    R->r = r;
+    R->xs = xs;   R->nx = nx;
+    R->cs = cs;   R->ncall = ncall;
+    R->ss = ss;   R->nstrm = nstrm;
+    R->ing = ing; R->ning = ning; R->strmcap = strmcap;
+    R->ingest = ingest;
+    R->rng = rng;
+    R->upnode = upnode;
+    R->web = web;
+    R->frames0 = frames0;
+    R->drops0 = drops0;
+    R->t0 = t0;
+    R->tick = 0;
+    return true;
+}
+
+
+/* SOME OF THE MILLISECONDS. The body is the loop that was here before, one
+ * tick at a time, with the day's work read out of the run instead of off the
+ * stack. Returns how many milliseconds are still to come. */
+int site_day_tick(Site *s, int ms)
+{
+    struct SiteDayRun *R = s->run;
+    if (!R) return 0;
+    SiteDay r = R->r;
+    Xfer *xs = R->xs;   int nx = R->nx;
+    Call *cs = R->cs;   int ncall = R->ncall;
+    Strm *ss = R->ss;   int nstrm = R->nstrm;
+    Ingest *ing = R->ing; int ning = R->ning;
+    int strmcap = R->strmcap;
+    int ingest = R->ingest;
+    Rng rng = R->rng;
+    int upnode = R->upnode;
+    uint32_t web = R->web;
+    (void)cs; (void)ncall; (void)ingest; (void)upnode;
+    int last = R->tick + ms;
+    if (last > SITE_BUSY_MS) last = SITE_BUSY_MS;
+    for (int tick = R->tick; tick < last; tick++) {
         for (int i = 0; i < nx; i++) {
             Xfer *x = &xs[i];
             if (x->state == X_WAIT) {
@@ -1921,6 +2018,32 @@ bool site_day(Site *s, SiteDay *rep)
         }
         net_step(s->net, 1);
     }
+    /* What the ticks changed goes back into the run. The arrays are pointers
+     * and were mutated in place; the counters and the rng are values. */
+    R->tick = last;
+    R->r = r;
+    R->rng = rng;
+    R->nstrm = nstrm;
+    R->ning = ning;
+    R->web = web;
+    return SITE_BUSY_MS - last;
+}
+
+
+/* AND WHAT IT ALL CAME TO. Scoring, the rent, the weather and the end of the
+ * run -- everything that used to follow the loop, unchanged, reading the
+ * day's work out of the run one last time before it is freed. */
+bool site_day_end(Site *s, SiteDay *rep)
+{
+    struct SiteDayRun *R = s->run;
+    if (!R) { if (rep) *rep = s->last; return !s->over; }
+    SiteDay r = R->r;
+    Xfer *xs = R->xs;   int nx = R->nx;
+    Call *cs = R->cs;   int ncall = R->ncall;
+    Strm *ss = R->ss;   int nstrm = R->nstrm;
+    Ingest *ing = R->ing; int ning = R->ning;
+    int ingest = R->ingest;
+    uint64_t frames0 = R->frames0, drops0 = R->drops0, t0 = R->t0;
 
     /* ------------------------------------------------------- what happened */
     for (int i = 0; i < nx; i++) {
@@ -2017,6 +2140,8 @@ bool site_day(Site *s, SiteDay *rep)
     nom_free(cs);
     nom_free(ss);
     nom_free(ing);
+    nom_free(s->run);
+    s->run = NULL;
 
     for (int i = 0; i < s->ndev; i++)
         for (int p = 0; p < s->dev[i].nports; p++) {

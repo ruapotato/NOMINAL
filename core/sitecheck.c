@@ -3657,6 +3657,164 @@ static void check_crew(const Building *b)
 }
 
 
+/* THE CLOCK, AND THE ONLY THING THAT MAKES IT SAFE.
+ *
+ * D44 splits the day into begin / tick / end so the station can keep running
+ * while a player walks across it. The whole argument for that being cheap is
+ * that a busy period was ALREADY four thousand one-millisecond ticks -- so
+ * running it in forty slices of a hundred has to give the same answer as
+ * running it in one slice of four thousand, or the split has changed the
+ * simulation rather than repackaged it.
+ *
+ * That is not an argument, it is a measurement, and this is the measurement:
+ * two identical stations, day for day, one driven whole and one driven in
+ * pieces, compared on every number the day reports AND on the money, the
+ * complaints and each tenancy's own score. If a tick boundary ever starts
+ * mattering -- a counter that resets per call, a rate computed over the wrong
+ * window, an rng reseeded twice -- this is what says so.
+ */
+static void check_clock(const Building *b)
+{
+    printf("\na day in one piece and a day in forty, and no way to tell\n");
+    Site whole, sliced;
+    site_new(&whole, b, GATE_SEED, 100000);
+    site_new(&sliced, b, GATE_SEED, 100000);
+
+    /* A tower with something in it to measure: kit, cable, addresses, and a
+     * tenancy doing a day's work. Built identically on both by the same
+     * lines, because a difference in the setup would prove nothing. */
+    static const char *const BUILD[] = {
+        "credit 200000",
+        "buy router edge", "buy switch24 core", "buy server files",
+        "move edge d0.eng", "move core d0.eng", "move files d0.eng",
+        "feed edge", "feed core", "feed files",
+        "cable uplink:0 edge:0 cat6", "cable edge:1 core:0 cat6",
+        "cable core:1 files:0 cat6",
+        "addr edge 198.51.100.2/30", "addr edge:1 10.0.0.1/16",
+        "gw edge 198.51.100.1", "router edge on",
+        "dhcpd edge 10.0.1.1 250 16 10.0.0.1 198.51.100.1",
+        "power files on", "addr files 10.0.0.9/16", "gw files 10.0.0.1",
+        "httpd files",
+        NULL
+    };
+    for (int i = 0; BUILD[i]; i++) {
+        Buf o = {0};
+        site_cmd(&whole, BUILD[i], &o);
+        buf_clear(&o);
+        site_cmd(&sliced, BUILD[i], &o);
+        buf_free(&o);
+    }
+    ck("two identical stations, built by the same lines",
+       whole.ndev == sliced.ndev && whole.nlink == sliced.nlink &&
+       whole.money == sliced.money && whole.ndev > 3);
+
+    /* AND NOW THE SAME DAYS, DRIVEN TWO WAYS. Enough of them that a tenancy
+     * moves in and does real work, because a day with nothing in it would
+     * agree trivially. */
+    /* AND EVERY TRADE HAS TO BE IN IT.
+     *
+     * The first version of this served nobody and compared twelve days of
+     * offices, and it passed with the write-back of `ning` deliberately
+     * deleted -- because an office generates no streams, so nothing crossed a
+     * tick boundary and there was nothing for the boundary to lose. A gate
+     * that cannot fail is not a gate.
+     *
+     * A studio's ingest connections are ACCEPTED during the busy period, and
+     * a voice call's stats are read at the end of one: those are the states
+     * that live across ticks, so those are the ones the comparison needs. */
+    const int DAYS = 60, SLICE = 100;
+    bool same = true, ticked_in_pieces = false;
+    int served = 0;
+    char why[200] = "";
+    for (int d = 0; d < DAYS && same; d++) {
+        for (int t = 0; t < whole.ntenant; t++) {
+            if (!whole.tenant[t].moved) continue;
+            if (site_tenant_connected(&whole, t) > 0) continue;
+            int cw = site_dev_by_name(&whole, "core");
+            int cs2 = site_dev_by_name(&sliced, "core");
+            if (site_serve(&whole, t, cw, CAB_CAT6) >= 0) served++;
+            site_serve(&sliced, t, cs2, CAB_CAT6);
+        }
+        SiteDay a, c;
+        site_day(&whole, &a);
+        /* the same day, a hundred milliseconds at a time */
+        if (!site_day_begin(&sliced)) { site_day_end(&sliced, &c); }
+        else {
+            int slices = 0;
+            while (site_day_tick(&sliced, SLICE) > 0) slices++;
+            if (slices >= SITE_BUSY_MS / SLICE - 1) ticked_in_pieces = true;
+            site_day_end(&sliced, &c);
+        }
+        if (a.day != c.day || a.sessions != c.sessions ||
+            a.finished != c.finished || a.bytes != c.bytes ||
+            a.rent != c.rent || a.bill != c.bill ||
+            a.frames != c.frames || a.drops != c.drops ||
+            a.worst_ms != c.worst_ms || a.desks != c.desks ||
+            a.connected != c.connected || a.complaints_today != c.complaints_today) {
+            same = false;
+            snprintf(why, sizeof why,
+                     "day %d: whole %d/%d sessions %ld B %llu frames %llu drops "
+                     "%d ms | sliced %d/%d %ld B %llu %llu %d ms",
+                     a.day, a.finished, a.sessions, a.bytes,
+                     (unsigned long long)a.frames, (unsigned long long)a.drops,
+                     a.worst_ms, c.finished, c.sessions, c.bytes,
+                     (unsigned long long)c.frames, (unsigned long long)c.drops,
+                     c.worst_ms);
+        }
+    }
+    if (!same) printf("    %s\n", why);
+    ck("it really was driven in pieces, and not in one go by accident",
+       ticked_in_pieces);
+    ck("twelve days, whole against sliced, agree on every number the day reports",
+       same);
+    ck("and the two stations end with the same money, complaints and day",
+       whole.money == sliced.money && whole.complaints == sliced.complaints &&
+       whole.day == sliced.day && whole.over == sliced.over);
+    bool tenants_same = whole.ntenant == sliced.ntenant;
+    for (int i = 0; i < whole.ntenant && tenants_same; i++)
+        tenants_same = whole.tenant[i].tried == sliced.tenant[i].tried &&
+                       whole.tenant[i].finished == sliced.tenant[i].finished &&
+                       whole.tenant[i].strikes == sliced.tenant[i].strikes &&
+                       whole.tenant[i].moved == sliced.tenant[i].moved;
+    ck("and every tenancy scored the same both ways",
+       tenants_same && whole.ntenant > 0);
+    int trades[TEN_KIND_COUNT] = {0};
+    for (int t = 0; t < whole.ntenant; t++)
+        if (whole.tenant[t].moved) trades[whole.tenant[t].kind]++;
+    printf("    %d days, %d ms a slice, %d tenancies served (%d office, %d voice, "
+           "%d web, %d studio): %ld money either way\n",
+           whole.day, SLICE, served, trades[TEN_OFFICE], trades[TEN_VOICE],
+           trades[TEN_WEBHOST], trades[TEN_STUDIO], whole.money);
+    ck("and the days being compared had every trade in them, so a stream "
+       "really did cross a slice",
+       trades[TEN_OFFICE] > 0 && trades[TEN_STUDIO] > 0);
+
+    /* AND A DAY IN PROGRESS SAYS SO, which is what the HUD reads.
+     *
+     * ON A STATION OF ITS OWN, because thirty days of being served by nobody
+     * can end a run -- and site_day_begin() quite rightly refuses to start a
+     * day on a station whose run is over, so this asserted -1 == 250 and
+     * failed for a reason that had nothing to do with the clock. */
+    {
+        Site fresh;
+        site_new(&fresh, b, GATE_SEED, 100000);
+        ck("a day nobody has started is not in progress",
+           site_day_progress(&fresh) == -1);
+        ck("a day half run knows how far through it is",
+           site_day_begin(&fresh) && (site_day_tick(&fresh, 250), 1) &&
+           site_day_progress(&fresh) == 250);
+        site_day_tick(&fresh, SITE_BUSY_MS);
+        site_day_end(&fresh, NULL);
+        ck("and once it is over there is no day in progress again",
+           site_day_progress(&fresh) == -1 && fresh.day == 1);
+        site_free(&fresh);
+    }
+
+    site_free(&whole);
+    site_free(&sliced);
+}
+
+
 static void check_conduits(const Building *b)
 {
     printf("\nconduit: a tree from the core, and what it carries\n");
@@ -4489,6 +4647,7 @@ int site_selfcheck(void)
     /* D43: ten things the game said about itself that another command in
      * the same session disproved. */
     check_catalogue(&b);
+    check_clock(&b);
     check_conduits(&b);
     check_crew(&b);
     check_one_fact_two_answers(&b);

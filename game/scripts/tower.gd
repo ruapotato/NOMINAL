@@ -7212,11 +7212,86 @@ func _hand_name(side: int) -> String:
 	return str(bag.KIT[h].label)
 
 
+# ------------------------------------------------------------- the clock
+#
+# D44: "Hitting n to go to the next day is not gonna be a game playing
+# candidate. The game is gonna be played live time."
+#
+# A day is a four-second busy period ticked one millisecond at a time, so this
+# is not a rewrite -- core/siteday.c was split into begin/tick/end and this
+# calls the middle one. The gate in --sitecheck proves a day run in forty
+# slices produces the same numbers as a day run in one, so nothing about the
+# simulation changes; what changes is that the station keeps running while you
+# walk across it, which is the whole of what makes a decision cost anything.
+#
+# HOW FAST. A day is four seconds of simulated busy period, and a station day
+# should be a few real minutes -- long enough to walk a deck and fix something,
+# short enough that the tenancies' days keep arriving. DAY_SECONDS is that
+# number and it is the one knob.
+#
+# [N] STAYS. A gate and a socket client both need "run a day now", and a
+# player who wants to skip ahead is asking a reasonable thing.
+const DAY_SECONDS := 150.0
+# AND IT DOES NOT RUN WHEN NOBODY IS PLAYING.
+#
+# A headless run has no player: it is a test, or a socket client driving the
+# station deliberately, and in both cases time passing on its own is time
+# passing under somebody's feet. The first version defaulted this on and
+# game/tests/tower.gd started failing at "nothing can reach port 0 of t1d0" --
+# which was the clock doing exactly its job, moving tenancies in while the
+# test walked to a desk that had not existed when it looked.
+#
+# So the rule is the honest one rather than a flag somebody remembers to set:
+# the clock belongs to the window a person is looking at. A test that wants
+# live time sets this itself, and says so.
+var clock_running := not DisplayServer.get_name() == "headless"
+var _tick_owed := 0.0
+
+func _run_clock(dt: float) -> void:
+	if not site_up or not clock_running or run_over:
+		return
+	# how many simulated milliseconds this frame is worth
+	_tick_owed += dt * (float(_busy_ms()) / DAY_SECONDS)
+	if _tick_owed < 1.0:
+		return
+	var ms := int(_tick_owed)
+	_tick_owed -= float(ms)
+	var report := str(machine.ses_tick(ms))
+	if report.strip_edges() != "":
+		# a day ended while you were standing there
+		_reconcile()
+		_snap_dirty = true
+		_show_report(report)
+
+
+func _busy_ms() -> int:
+	for line in str(machine.ses_clock()).split("\n", false):
+		var f: PackedStringArray = line.split(" ", false)
+		if f.size() >= 2 and str(f[0]) == "busy":
+			return int(f[1])
+	return 4000
+
+
+# How far through the day the station is, 0.0 to 1.0, for the HUD. -1 when no
+# day is in progress, which between days is most of no time at all.
+func day_progress() -> float:
+	var prog := -1
+	var busy := 4000
+	for line in str(machine.ses_clock()).split("\n", false):
+		var f: PackedStringArray = line.split(" ", false)
+		if f.size() < 2:
+			continue
+		if str(f[0]) == "progress": prog = int(f[1])
+		elif str(f[0]) == "busy":   busy = max(1, int(f[1]))
+	return -1.0 if prog < 0 else float(prog) / float(busy)
+
+
 func _process(_dt: float) -> void:
 	if player == null:
 		return
 	if desk_open() or seat_open():
 		return                 # the world waits while you are sitting at it
+	_run_clock(_dt)
 	if minimap != null and is_instance_valid(minimap):
 		minimap.show_floor(player_floor(), map_rows(),
 			Vector2(player.global_position.x, player.global_position.z),
