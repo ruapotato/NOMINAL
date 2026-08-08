@@ -1028,15 +1028,40 @@ bool site_unclean_stop(Site *s, int dev)
     SiteDev *d = &s->dev[dev];
     if (!site_kind_has_os(d->kind) || !d->powered) return false;
     Machine *m = box_of_dev(s, dev);
+
+    /* WHY THE POWER WENT, ASKED OF THE MODEL RATHER THAN ASSUMED.
+     *
+     * This function is reached two ways: somebody pulls a box's lead, and a
+     * run somewhere upstream trips under load and takes everything behind it
+     * down. It used to say "was unplugged while it was running" for both, and
+     * that is a lie in the second case -- nobody unplugged anything; a
+     * breaker did its job. The one claim this project makes about itself is
+     * that it never says anything untrue, and a player looking for the hand
+     * that pulled the lead would never find one.
+     *
+     * The distinction is derived rather than passed down the call chain,
+     * because the model already knows it: site_dev_fed() returns the run that
+     * tripped. At this moment the conduit tree is already up to date -- the
+     * load that tipped it has been added -- so a box going down because of a
+     * trip can say WHICH run, and a box going down because its run was pulled
+     * has no run to name. */
+    int tripped = -1;
+    (void)site_dev_fed(s, dev, &tripped);
+
     if (d->ups) {
         if (m) {
             breaker_syslog(m, "nomups: utility power lost -- load transferred to battery");
             breaker_syslog(m, "nomups: on battery, 19 min runtime remaining");
             breaker_syslog(m, "nomups: no utility power -- commanding an orderly shutdown");
         }
-        ev_add(s, SEV_UPS_HELD, dev,
-               "%s had its plug pulled and the battery shut it down cleanly.",
-               d->name);
+        if (tripped >= 0)
+            ev_add(s, SEV_UPS_HELD, dev,
+                   "%s was behind run %d when it tripped, and the battery shut "
+                   "it down cleanly.", d->name, tripped);
+        else
+            ev_add(s, SEV_UPS_HELD, dev,
+                   "%s had its plug pulled and the battery shut it down cleanly.",
+                   d->name);
         site_power(s, dev, false);
         return false;
     }
@@ -1080,20 +1105,57 @@ bool site_unclean_stop(Site *s, int dev)
      * hammering rounds to nothing. The machine either has a filesystem it
      * could be part-way through writing or it does not. */
     bool live = m && m->boot.running;
-    bool unlucky = live && rng_range(&rng, 0, 99) < SITE_UNPLUG_RISK_PCT;
+    /* AND A TRIP IS NOT A PULLED LEAD, which is why the roll differs.
+     *
+     * Every word of the note above argues for one in twenty on the grounds
+     * that this is "one lead, pulled on purpose, by somebody standing there"
+     * -- a person who, on the whole, picks a quiet moment. Not one of those
+     * grounds survives a breaker going: nobody chose the instant, nobody was
+     * standing there, and everything behind that run goes down together while
+     * it is doing whatever it was doing. That is the blackout's character in
+     * one cupboard, so it is dealt the blackout's outcome.
+     *
+     * It is also the fairest hard thing in the game, and that is the argument
+     * for making it hurt rather than roll. `conduits` prints the percentage
+     * of every run on demand, the number climbs as the player adds load and
+     * nothing else moves it, `feed` names a source with a hole left in it,
+     * and a strip is 45 pounds. A run at 93% has been telling them so since
+     * the day they built it. Nobody is ambushed by this one -- which is
+     * exactly the shape D23 asked for, a fault that is a consequence of
+     * something you did rather than something a designer hid. */
+    bool unlucky = live && (tripped >= 0 ||
+                            rng_range(&rng, 0, 99) < SITE_UNPLUG_RISK_PCT);
     int seq = -1;
     int kind = unlucky ? pf_deal(s, &rng, &seq) : PF_CLEAN;
     char note[200] = "";
     if (m) breaker_powerfail_as(m, &rng, kind, note, sizeof note);
     site_power(s, dev, false);
-    if (kind == PF_CLEAN)
+    if (tripped >= 0) {
+        /* NAME THE RUN AND THE ARITHMETIC. The player's next move is to take
+         * something off that run or pull another from the core, and both of
+         * those need to know which run and by how much. */
+        int load = site_conduit_load(s, tripped);
+        int cap = s->cond[tripped].watts > 0 ? s->cond[tripped].watts
+                                             : SITE_CONDUIT_W;
+        if (kind == PF_CLEAN)
+            ev_add(s, SEV_TRIPPED, dev,
+                   "run %d tripped with %d W on it against the %d W it "
+                   "carries, and %s went down with it. Its filesystem came "
+                   "through it.", tripped, load, cap, d->name);
+        else
+            ev_add(s, SEV_TRIPPED, dev,
+                   "run %d tripped with %d W on it against the %d W it "
+                   "carries, and %s went down unclean with it.",
+                   tripped, load, cap, d->name);
+    } else if (kind == PF_CLEAN) {
         ev_add(s, SEV_DOWN_DIRTY, dev,
                "%s was unplugged while it was running. Its filesystem came "
                "through it.", d->name);
-    else
+    } else {
         ev_add(s, SEV_DOWN_DIRTY, dev,
                "%s was unplugged while it was running and went down unclean.",
                d->name);
+    }
     (void)note;
     return true;
 }

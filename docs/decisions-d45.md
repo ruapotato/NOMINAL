@@ -100,6 +100,59 @@ While doing it, `--eventcheck` was found keeping its own hand-written copy of
 exported now; the gate asks the real one and proves the consequence separately
 by watching the box fail to reach target.
 
+### 3. A tripped run blamed a hand that was never there
+
+Following the record's own advice about causal chains, the first one measured
+end to end was the conduit trip. It works: overload a run, the breaker goes,
+`site_mains_sync()` deals every machine behind it a dirty stop, their
+filesystems come up needing fsck, and `show <box>` diagnoses it exactly --
+*"the run feeding it has tripped: conduit 1 carries 1500 W and 1750 W is on
+it."*
+
+But `events` said:
+
+    a was unplugged while it was running and went down unclean.
+
+Nobody unplugged anything. A player reading that goes looking for a hand that
+pulled a lead. `site_unclean_stop()` now asks the model which of the two things
+happened -- `site_dev_fed()` already hands back the run that tripped -- and
+names the run and the arithmetic, because "take something off run 1" is the
+next move and it needs a number. A battery gets the same treatment: *"c was
+behind run 1 when it tripped, and the battery shut it down cleanly."*
+
+And the roll changed with it. The one-in-twenty that governs a pulled lead is
+argued in the source on the grounds that it is *"one lead, pulled on purpose,
+by somebody standing there"* -- a person who picks a quiet moment. Not one of
+those grounds survives a breaker going, so a trip is dealt the blackout's
+outcome instead. That is the fairest hard thing in the game: `conduits` prints
+the percentage on demand, nothing but the player moves it, `feed` names a
+source with a hole in it, and a strip is 45 pounds.
+
+`check_trip()` gates it in core/sitecheck.c, not core/eventcheck.c -- it was
+written there first and could not work, because that file's `autopower()`
+re-feeds anything unfed after every line and buys strips to do it, so a
+cupboard cannot stay dark there for one command. Its own note says power is
+measured in `check_conduits()` and nowhere else.
+
+Finding a measurement that separates a trip from a pulled lead took three
+attempts, and the two that failed are worth recording. "It went down unclean"
+does not separate them: pf_deal's clean outcome marks the filesystem dirty too,
+so that claim passes with the old roll still in place. Nor does "`pkg verify`
+names something afterwards": it names the `filesystem` package either way. What
+does is whether the box COMES UP once fsck has finished -- a pulled lead loses
+nothing and the journal replay is the whole repair, while a breaker takes a
+casualty with it and the box is still short of a file.
+
+That last point is also the nicest thing the section found by failing. The
+first version ran fsck, called the box repaired, and watched it stop at
+
+    svcinit: started udev -- device manager
+    /u: not found
+
+a service file truncated mid-path: exactly what `pkg verify` is for and exactly
+what fsck cannot see. The repair is the pair of them, which is the pair the
+break-fix half of this game has always used.
+
 ## What this record does NOT claim to have fixed
 
 **The world still cannot call `machine_break()`.** Grepping every call site, it

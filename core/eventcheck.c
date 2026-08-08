@@ -769,6 +769,27 @@ static void check_rename(void)
  *   3. the first loss and the second draw from DISJOINT sets, which is what
  *      makes "you can always get a shell the first time" true rather than
  *      likely. */
+/* ============ D45. A RUN YOU OVERLOADED, AND THE CUPBOARD BEHIND IT =========
+ *
+ * Every other thing in this file is weather: the mains fails, a disk wears
+ * out, copper takes errors. This one is not. Nothing in the world moves the
+ * number on a conduit except the player putting another box on it, so a
+ * tripped run is the first world event whose cause is entirely their own
+ * build -- which is D23's whole argument for the pivot, arriving as a fault
+ * with a history the player lived through.
+ *
+ * WHAT WAS WRONG BEFORE THIS SECTION EXISTED. The chain worked -- the trip
+ * dropped the load, site_mains_sync() dealt the machines behind it a dirty
+ * stop, and the filesystems came up needing fsck -- but `events` said
+ *
+ *     a was unplugged while it was running and went down unclean.
+ *
+ * Nobody unplugged anything. A breaker did its job, and a player reading that
+ * line would go looking for a hand that pulled a lead. This project's one
+ * claim about itself is that it never says anything untrue, so the events had
+ * to learn which of the two things happened, and say which run and by how
+ * much -- because "take something off run 1" is the next move and it needs a
+ * number. */
 static void check_sector_reach(void)
 {
     printf("\nhow much of a machine a lost sector can reach\n");

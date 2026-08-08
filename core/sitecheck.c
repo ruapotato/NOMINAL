@@ -753,6 +753,279 @@ done:
     session_end(&ses);
 }
 
+/* ============ D45. A RUN YOU OVERLOADED, AND THE CUPBOARD BEHIND IT ========
+ *
+ * The sibling of check_plug_pulled() above, and the difference between them is
+ * the whole point. That one is a hand on a lead. This one is a breaker doing
+ * its job -- and nothing in the world moves the number on a conduit except the
+ * player putting another box on it, so a tripped run is the one world event
+ * whose cause is entirely their own build. D23's argument for the pivot was
+ * that a fault you caused three decks ago beats a fault a designer hid; this
+ * is that, arriving.
+ *
+ * WHAT WAS WRONG BEFORE THIS EXISTED. The chain already worked: the trip drops
+ * the load, site_mains_sync() deals the machines behind it a dirty stop, and
+ * their filesystems come up needing fsck. But `events` said
+ *
+ *     a was unplugged while it was running and went down unclean.
+ *
+ * Nobody unplugged anything, and a player reading that would go looking for a
+ * hand that pulled a lead. So site_unclean_stop() now asks the model which of
+ * the two things happened -- site_dev_fed() hands back the run that tripped --
+ * and names the run and the arithmetic, because "take something off run 1" is
+ * the next move and it needs a number.
+ *
+ * AND WHY THIS IS IN THIS FILE. It was written in core/eventcheck.c first,
+ * where it could not work: that file's autopower() re-feeds anything unfed
+ * after every line and buys strips to do it, so a cupboard cannot stay dark
+ * there for one command. Its own note says the price of power is measured in
+ * check_conduits() and nowhere else. This belongs beside it. */
+static void check_trip(const Building *b)
+{
+    (void)b;
+    printf("\na run with more on it than it carries, and the cupboard behind it\n");
+    Session ses;
+    if (!session_start(&ses, GATE_SEED, 200000)) { ck("a session starts", false); return; }
+    Buf o = {0};
+
+    /* Five servers behind one strip. Four is inside what a run carries and the
+     * fifth is what tips it -- and no wattage is named here, so a nameplate
+     * that changes moves this gate's arithmetic with it instead of falsifying
+     * it. `feed` finds the nearest source with a hole left in it, which is the
+     * strip once the strip is there, so no output number is named either. */
+    static const char *BUILD[] = {
+        "buy strip st", "go goods", "carry st", "go mdf", "drop", "feed st",
+        "buy server a", "go goods", "carry a", "go mdf", "drop", "feed a",
+        /* AND ONE OF THEM ON A BATTERY FROM THE START, so that one trip shows
+         * both outcomes side by side rather than needing a second one. Fitting
+         * it afterwards measured nothing: c had already been damaged by the
+         * first trip, and fs_dirty does not un-set itself because a battery
+         * arrived later. */
+        "buy server c", "go goods", "carry c", "go mdf", "drop", "feed c",
+        "ups c",
+        "buy server d", "go goods", "carry d", "go mdf", "drop", "feed d",
+        "buy server e", "go goods", "carry e", "go mdf", "drop", "feed e",
+        "power a on", "power c on", "power d on", "power e on",
+        NULL
+    };
+    for (int i = 0; BUILD[i]; i++) session_line(&ses, BUILD[i], &o);
+
+    int st = site_dev_by_name(&ses.s, "st");
+    int a  = site_dev_by_name(&ses.s, "a");
+    if (st < 0 || a < 0 || !ses.mach[a]) {
+        ck("a strip with four servers behind it", false);
+        goto done;
+    }
+    int feed = -1;
+    for (int i = 0; i < site_conduit_count(&ses.s); i++)
+        if (ses.s.cond[i].live && ses.s.cond[i].to == st) feed = i;
+    ck("a strip off the core, with four servers fed from it and running",
+       feed >= 0 && ses.mach[a]->boot.running && !ses.mach[a]->fs_dirty &&
+       site_dev_fed(&ses.s, a, NULL));
+    if (feed < 0) { ck("the run feeding the strip exists", false); goto done; }
+
+    int cap = ses.s.cond[feed].watts > 0 ? ses.s.cond[feed].watts
+                                         : SITE_CONDUIT_W;
+    /* --- 1. IT SAYS WHERE IT IS BEFORE ANYTHING GOES WRONG, which is the
+     * entire argument for letting this one hurt. */
+    ck("and the run is inside what it carries",
+       site_conduit_load(&ses.s, feed) <= cap);
+    buf_clear(&o);
+    session_line(&ses, "conduits", &o);
+    ck("with `conduits` printing how close it is, on demand, for nothing",
+       has(o.p, "load"));
+    printf("    %d W on the feed against the %d W it carries: %d%%\n",
+           site_conduit_load(&ses.s, feed), cap,
+           site_conduit_pct(&ses.s, feed));
+
+    /* --- 2. ONE MORE BOX AND THE WHOLE CUPBOARD GOES DARK. */
+    static const char *MORE[] = {
+        "buy server f", "go goods", "carry f", "go mdf", "drop", NULL };
+    for (int i = 0; MORE[i]; i++) session_line(&ses, MORE[i], &o);
+    /* ON THE STRIP, NOT WHEREVER `feed` FANCIES. `feed` picks the nearest
+     * source with a hole left in it, and with the core still half empty it
+     * put the fifth server there -- a perfectly sensible move for a player
+     * and useless to a gate that is trying to overload one particular run.
+     * So the free output is found in the model and named, and printed. */
+    int freeout = -1;
+    /* FROM ONE, BECAUSE OUTPUT ZERO IS THE WAY IN. A strip is one conduit in
+     * and five out, and site.c refuses `conduit st:0 <box>` with SITE_EIFACE
+     * for exactly that reason. Searching from zero found "free" and named the
+     * input, which is a refusal rather than a run. */
+    for (int out = 1; out < site_kind_ports(SDEV_STRIP) && freeout < 0; out++) {
+        bool used = false;
+        for (int i = 0; i < site_conduit_count(&ses.s); i++)
+            if (ses.s.cond[i].live && ses.s.cond[i].from == st &&
+                ses.s.cond[i].fport == out) used = true;
+        if (!used) freeout = out;
+    }
+    ck("the strip still has a way out left in it", freeout > 0);
+    {
+        char line[64];
+        snprintf(line, sizeof line, "conduit st:%d f", freeout);
+        printf("    the fifth goes on st:%d\n", freeout);
+        buf_clear(&o);
+        session_line(&ses, line, &o);
+    }
+    ck("a fifth server takes that run past what it carries",
+       site_conduit_load(&ses.s, feed) > cap);
+    printf("    the fifth one: %d W against %d W\n",
+           site_conduit_load(&ses.s, feed), cap);
+    int trip = -1;
+    ck("and everything behind it is dark, naming the run that went",
+       !site_dev_fed(&ses.s, a, &trip) && trip == feed);
+    ck("including the boxes nowhere near the one that tipped it",
+       !site_dev_fed(&ses.s, site_dev_by_name(&ses.s, "d"), NULL));
+
+    /* --- 3. AND `events` SAYS WHAT REALLY HAPPENED. Not that something was
+     * logged: that what was logged is TRUE. */
+    buf_clear(&o);
+    session_line(&ses, "events", &o);
+    ck("`events` names the run that tripped",
+       has(o.p, "tripped") && has(o.p, "run"));
+    ck("and blames nobody for unplugging anything, because nobody did",
+       !has(o.p, "unplugged"));
+    {
+        char want[96];
+        snprintf(want, sizeof want, "against the %d W it carries", cap);
+        ck("and prints the load against the capacity, which is the next move",
+           has(o.p, want));
+    }
+
+    /* --- 4. THE MACHINES BEHIND IT TOOK REAL DAMAGE, of the kind the
+     * break-fix half of this game already repairs. A trip is not a lead
+     * pulled by hand: nobody picked the moment, so the one-in-twenty that
+     * governs a deliberate unplug does not apply and a running box behind it
+     * comes back with a filesystem to check. */
+    int c = site_dev_by_name(&ses.s, "c");
+    ck("and a box that was running behind it went down unclean",
+       ses.mach[a]->fs_dirty);
+    /* AND THE TWO HUNDRED AND TWENTY POUNDS DOES SOMETHING HERE TOO. A
+     * battery is bought against the mains failing; this is the half the
+     * player CHOSE, on the same trip, in the same cupboard. */
+    ck("while the one on a battery was shut down in an orderly way",
+       c >= 0 && ses.mach[c] && !ses.mach[c]->fs_dirty);
+    buf_clear(&o);
+    session_line(&ses, "events", &o);
+    ck("which `events` credits to the battery, and still to the run",
+       has(o.p, "battery shut it down cleanly") && has(o.p, "when it tripped"));
+
+    /* --- 5. AND THE TOOLS THAT ALREADY EXIST PUT IT BACK. Nothing was added
+     * for this: the rescue medium and fsck, in the words a player types. */
+    /* TAKE THE FIFTH BACK OFF, by the run rather than by the box: `mains f
+     * off` pulls the lead from a box that is already dark, which is a
+     * different move and leaves the run where it was. */
+    {
+        int rf = -1;
+        for (int i = 0; i < site_conduit_count(&ses.s); i++)
+            if (ses.s.cond[i].live &&
+                ses.s.cond[i].to == site_dev_by_name(&ses.s, "f")) rf = i;
+        char line[64];
+        snprintf(line, sizeof line, "unconduit %d", rf);
+        buf_clear(&o);
+        session_line(&ses, line, &o);
+    }
+    ck("pulling the fifth off puts the run back inside its rating",
+       site_conduit_load(&ses.s, feed) <= cap);
+    buf_clear(&o);
+    session_line(&ses, "power a on", &o);
+    ck("but the box that went down does not simply boot again",
+       !has(o.p, "[UP at target]"));
+    ck("the initrd stops at the filesystem and names the repair",
+       has(o.p, "fsck"));
+    session_line(&ses, "rescue a", &o);
+    session_line(&ses, "plug a", &o);
+    buf_clear(&o);
+    session_line(&ses, "fsck /dev/sda1", &o);
+    ck("`fsck /dev/sda1` off the rescue medium recovers it", !ses.mach[a]->fs_dirty);
+    /* AND FSCK IS NOT ALWAYS THE WHOLE REPAIR, which is the honest thing this
+     * section learned by failing. A trip deals one of pf_deal's casualties,
+     * and only one of them is "the journal did not replay": the others leave a
+     * config file cut in half. The first version of this gate ran fsck, called
+     * the box repaired, and watched it stop at
+     *
+     *     svcinit: started udev -- device manager
+     *     /u: not found
+     *
+     * which is a service file truncated mid-path -- exactly what `pkg verify`
+     * is for and exactly what fsck cannot see. So the repair is the pair of
+     * them, which is the pair the break-fix half of this game has always
+     * used, and the gate asks the MACHINE whether it came up rather than
+     * asserting which casualty it happened to be dealt.
+     *
+     * The order is the player's: the stick comes out first, because `pkg
+     * verify` is asked of the box's own disk and not of the rescue image. */
+    session_line(&ses, "unplug", &o);
+    session_line(&ses, "eject a", &o);
+    /* THE MEASUREMENT THAT SEPARATES A TRIP FROM A PULLED LEAD, and it took
+     * three attempts to find one that does.
+     *
+     * "It went down unclean" does not: pf_deal's clean outcome marks the
+     * filesystem dirty too -- "dirty, and nothing lost" is still dirty -- so
+     * that claim passes with the one-in-twenty roll still in place. Nor does
+     * "`pkg verify` names something afterwards": it names the `filesystem`
+     * package either way. What does is whether the box COMES UP once fsck has
+     * finished. A lead pulled by hand loses nothing and the journal replay is
+     * the whole repair; a breaker nobody picked the moment of takes a
+     * casualty with it, and the box is still short of a file. */
+    ck("and fsck alone is not the whole repair, because it was not a clean stop",
+       !ses.mach[a]->boot.running);
+    session_line(&ses, "plug a", &o);
+    buf_clear(&o);
+    session_line(&ses, "pkg verify", &o);
+    int np = 0;
+    {
+        /* EVERY PACKAGE IT NAMES, not the first one. A trip can leave more
+         * than one file half-written, and a player reads the whole list. */
+        char pkgs[8][64];
+        const char *ln = o.p ? o.p : "";
+        while (*ln && np < 8) {
+            const char *nl = strchr(ln, '\n');
+            size_t len = nl ? (size_t)(nl - ln) : strlen(ln);
+            if (len > 3 && ln[0] != ' ' && memchr(ln, '/', len)) {
+                char nm[64]; size_t k = 0;
+                while (k < len && k < sizeof nm - 1 && ln[k] != ' ') { nm[k] = ln[k]; k++; }
+                nm[k] = 0;
+                bool seen = false;
+                for (int i = 0; i < np; i++) if (strcmp(pkgs[i], nm) == 0) seen = true;
+                if (!seen) snprintf(pkgs[np++], 64, "%s", nm);
+            }
+            if (!nl) break;
+            ln = nl + 1;
+        }
+        printf("    after fsck, `pkg verify` still names %d package%s:", np,
+               np == 1 ? "" : "s");
+        for (int i = 0; i < np; i++) printf(" %s", pkgs[i]);
+        printf("\n");
+        for (int i = 0; i < np; i++) {
+            char line[128];
+            snprintf(line, sizeof line, "pkg reinstall --force %s", pkgs[i]);
+            session_line(&ses, line, &o);
+        }
+    }
+    /* AND THIS IS WHAT MAKES A TRIP DIFFERENT FROM A PULLED LEAD, measured.
+     *
+     * Both leave the filesystem dirty -- even pf_deal's clean outcome does,
+     * because "dirty and nothing lost" is still dirty -- so "it went down
+     * unclean" cannot tell the two apart and an earlier version of this gate
+     * that stopped there passed happily with the one-in-twenty roll still in
+     * place. What separates them is whether fsck was the WHOLE repair. A lead
+     * pulled by hand usually loses nothing and fsck finishes the job; a
+     * breaker nobody chose the moment of takes a casualty with it, and `pkg
+     * verify` still has something to say afterwards. */
+    ck("and `pkg verify` has something left to say about it", np > 0);
+    session_line(&ses, "unplug", &o);
+    buf_clear(&o);
+    session_line(&ses, "power a off", &o);
+    session_line(&ses, "power a on", &o);
+    ck("and with fsck and a forced reinstall it boots to target again",
+       ses.mach[a]->boot.running && !ses.mach[a]->fs_dirty);
+
+done:
+    buf_free(&o);
+    session_end(&ses);
+}
+
 /* --------------------------------------------------------- the tenants */
 static void check_tenants(const Building *b)
 {
@@ -5520,6 +5793,7 @@ int site_selfcheck(void)
     check_port_speed(&b);
     check_boxes(&b);
     check_plug_pulled(&b);
+    check_trip(&b);
     check_tenants(&b);
     check_bills(&b);
     check_agreement(&b);

@@ -715,6 +715,12 @@ typedef enum {
      * they put right overnight is the whole reason to build one. */
     SEV_CREW_WATCH,
     SEV_CREW_DARK,   /* ...and what nobody was there to put right            */
+    /* D45. A RUN THAT TRIPPED, which is its own event and not a pulled lead.
+     * Everything behind an overloaded run goes down together, and the box
+     * cannot tell the player which run or by how much unless the world says
+     * so. This is the first world event whose cause is entirely the player's
+     * own build rather than the weather. */
+    SEV_TRIPPED,
     SEV_KIND_COUNT
 } SiteEventKind;
 
