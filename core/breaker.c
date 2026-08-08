@@ -433,7 +433,11 @@ static void fault_unclean_shutdown(Machine *m, Rng *r, char *d, size_t ds)
         "/etc/services.d/syslog.svc", "/etc/fstab", "/etc/passwd",
         "/var/lib/pkg/sysinit/files", "/etc/rc.conf", "/etc/ld.so.conf",
     };
-    const char *path = INFLIGHT[rng_next(r) % 6];
+    /* OFF THE ARRAY'S OWN LENGTH. This was a literal 6 beside a six-element
+     * array: add a seventh in-flight file and it would never once be drawn,
+     * silently, which is the same one-fact-two-places shape this project keeps
+     * finding. */
+    const char *path = INFLIGHT[rng_next(r) % (sizeof INFLIGHT / sizeof INFLIGHT[0])];
     VNode *n = vfs_lookup(&m->disk, path);
     if (n && n->kind == VN_FILE && n->data.len > 4) {
         size_t keep = (size_t)(rng_next(r) % (n->data.len / 2));
@@ -2874,20 +2878,80 @@ void breaker_powerfail_as(Machine *m, Rng *r, int kind, char *d, size_t ds)
  * blackout leaves, and telling those two apart is the whole point of having
  * both tools.
  *
- * WHICH FILE, AND THE JUDGEMENT IN IT. Package-owned configuration under
- * /etc, because that is what `pkg reinstall` can put back and what the player
- * can see the consequence of. The files the boot chain itself reads are
- * excluded, so the box comes up and can be worked on from its own shell. That
- * is a fairness decision rather than a physical one -- a real bad sector does
- * not care -- and it is written down here and in the fault catalogue rather
- * than hidden, because the blackout above already covers the machine that
- * will not boot at all. */
-static bool boot_critical(const char *p)
+ * WHICH FILE, AND THE JUDGEMENT IN IT. The files the boot chain itself reads
+ * are excluded, so the box comes up and can be worked on from its own shell.
+ * That is a fairness decision rather than a physical one -- a real bad sector
+ * does not care -- and it is written down here and in the fault catalogue
+ * rather than hidden, because the blackout above already covers the machine
+ * that will not boot at all.
+ *
+ * D45: AND IT USED TO BE /etc AND NOTHING ELSE, which was measured and is why
+ * it is not any more.
+ *
+ * A platter does not know what a directory is, so "/etc only" was never a
+ * physical rule; it was a stand-in for "somewhere the damage will show". The
+ * cost of it was the world's whole reach: twelve files on a pristine machine.
+ * That is most of why the station's own weather could produce so few of the
+ * shapes the break-fix half of this game knows how to diagnose.
+ *
+ * The obvious repair -- allow any package-owned file -- was measured too, and
+ * it is WRONG. It takes the candidate set from 12 to 133, and 88 of the 121 it
+ * adds are documentation, manual pages and the previous administrator's home
+ * directory. Corrupting those would be worse than not widening at all:
+ *
+ *   - A bad sector in a man page makes this project's own documentation lie.
+ *     Every technical claim in this game is supposed to be true of this
+ *     machine, --mancheck runs the examples in those pages to prove it, and a
+ *     fault that quietly falsifies one is a fault against the product.
+ *   - A bad sector in /usr/share/doc is a `pkg verify` line with no symptom
+ *     behind it. A player who chases two of those learns that verify output is
+ *     noise, and that is the opposite of what the tool is for.
+ *   - /home/nomowner is the previous administrator's diary, postmortem and
+ *     notes. That is the story, not the machine, and shredding it at random
+ *     destroys something the player is meant to read.
+ *
+ * So the rule is neither a path prefix nor "anything": it is WHETHER SOMETHING
+ * ON THE BOX READS THE FILE AT RUNTIME. Measured on a pristine machine that is
+ * 45 files rather than 12, and the ones it adds have consequences you can see
+ * without a package tool -- the initrd, the kernel modules, the desktop's
+ * launchers, and /srv/www/index.html, which is the page a web-host tenancy is
+ * paid for serving. */
+
+/* Documentation, manuals and the story. Never a casualty; see the note above. */
+static bool prose_only(const char *p)
+{
+    static const char *NO[] = {
+        "/usr/share/doc/", "/usr/share/man/", "/home/", "/root/", NULL };
+    for (int i = 0; NO[i]; i++)
+        if (strncmp(p, NO[i], strlen(NO[i])) == 0) return true;
+    /* and the same files by name wherever a package chose to put them */
+    static const char *TAIL[] = { "README", "CHANGELOG", "TODO",
+                                  "known-issues", NULL };
+    for (int i = 0; TAIL[i]; i++) {
+        size_t lp = strlen(p), lt = strlen(TAIL[i]);
+        if (lp >= lt && strcmp(p + lp - lt, TAIL[i]) == 0) return true;
+    }
+    return false;
+}
+bool breaker_boot_critical(const char *p)
 {
     static const char *NO[] = {
         "/etc/fstab", "/etc/passwd", "/etc/shadow", "/etc/group",
         "/etc/inittab", "/etc/ld.so.conf", "/etc/shells", "/etc/rc.",
-        "/etc/services.d/", "/etc/zbl", "/etc/net/interfaces", NULL
+        "/etc/services.d/", "/etc/zbl", "/etc/net/interfaces",
+        /* D45. Widening the draw past /etc brought these into reach, and every
+         * one of them is between the player and a shell. The initrd is what
+         * the loader hands control to; /lib/modules holds virtio_blk, which is
+         * the driver that finds the disk the rest of the machine is on, and a
+         * machine that cannot read its own root cannot be worked on from it;
+         * /usr/lib/sysinit/init is what /sbin/init is a link TO, so it is the
+         * first process by another name.
+         *
+         * They are not out of reach -- they are held back for the SECOND loss,
+         * the disk nobody replaced, where a boot that stops at the stage that
+         * is actually wrong is the whole point. */
+        "/boot/initrd", "/lib/modules/", "/usr/lib/sysinit/",
+        NULL
     };
     for (int i = 0; NO[i]; i++)
         if (strncmp(p, NO[i], strlen(NO[i])) == 0) return true;
@@ -2912,22 +2976,38 @@ bool breaker_bad_sector(Machine *m, Rng *r, char *d, size_t ds)
  *
  * This is the escalation D23 asked for in as many words: *a disk nobody
  * replaced -> the truncated file the boot log names.* */
-bool breaker_bad_sector_any(Machine *m, Rng *r, bool boot_too, char *d, size_t ds)
+/* EVERY FILE A SECTOR COULD LAND ON, which is one function because it used to
+ * be one function and a gate that reimplemented it. Returns how many there
+ * are, filling `out` up to `max` -- so --eventcheck can ask what the reachable
+ * set IS and make claims about it, rather than describing it a second time and
+ * drifting. */
+int breaker_sector_targets(const Machine *m, bool boot_too,
+                           const char **out, int max)
 {
-    const char *cand[128];
     int nc = 0;
-    for (int i = 0; i < m->npkg && nc < 128; i++) {
+    for (int i = 0; i < m->npkg; i++) {
         const Package *p = m->pkg[i];
         if (!p) continue;
-        for (int j = 0; j < p->nfiles && nc < 128; j++) {
+        for (int j = 0; j < p->nfiles; j++) {
             const PkgFile *f = &p->file[j];
             if (f->isdir || f->link || !f->content) continue;
-            if (strncmp(f->path, "/etc/", 5) != 0) continue;
-            if (boot_critical(f->path) != boot_too) continue;
+            if (prose_only(f->path)) continue;
+            if (breaker_boot_critical(f->path) != boot_too) continue;
+            /* A SECTOR IS 512 BYTES and a file shorter than that cannot lose
+             * one without being something other than a bad sector. */
             if (strlen(f->content) < 48) continue;
-            cand[nc++] = f->path;
+            if (out && nc < max) out[nc] = f->path;
+            nc++;
         }
     }
+    return nc;
+}
+
+bool breaker_bad_sector_any(Machine *m, Rng *r, bool boot_too, char *d, size_t ds)
+{
+    const char *cand[256];
+    int nc = breaker_sector_targets(m, boot_too, cand, 256);
+    if (nc > 256) nc = 256;
     /* A machine with no boot-critical file long enough to hold a sector is
      * dealt an ordinary one rather than nothing: the disk really did lose a
      * block and has to lose it somewhere. */

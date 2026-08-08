@@ -746,6 +746,104 @@ static void check_rename(void)
  * switched on and its port is doing work, it complains in its own log for
  * fifteen days before it loses anything, and a player who reads the log has
  * every chance to put a new disk in first. */
+/* ================= D45. HOW MUCH OF A MACHINE THE WORLD CAN ACTUALLY REACH
+ *
+ * A blind measurement of the late game found that the station's own weather
+ * could produce very few of the fault shapes the break-fix half of this game
+ * knows how to diagnose, and the largest single reason was this: a lost sector
+ * could only land under /etc. Twelve files on a pristine machine.
+ *
+ * "/etc only" was never a physical rule -- a platter does not know what a
+ * directory is -- so it went. What replaced it is not "anything", because
+ * anything was measured too and is worse: it takes the set from 12 to 133, and
+ * 88 of what it adds are manual pages, package documentation and the previous
+ * administrator's home directory. This gate is what holds the line between
+ * those two, and it holds it by MEASURING the set rather than by trusting the
+ * rule that built it.
+ *
+ * The three claims, in the order they matter:
+ *   1. the reach is materially wider than /etc, and the number is printed;
+ *   2. nothing the player is meant to READ is in it -- no manual, no README,
+ *      no diary. A fault that falsifies this project's own documentation is a
+ *      fault against the thing the documentation is for;
+ *   3. the first loss and the second draw from DISJOINT sets, which is what
+ *      makes "you can always get a shell the first time" true rather than
+ *      likely. */
+static void check_sector_reach(void)
+{
+    printf("\nhow much of a machine a lost sector can reach\n");
+    static Machine m;
+    machine_install(&m, 1);
+
+    const char *first[256], *second[256];
+    int nf = breaker_sector_targets(&m, false, first, 256);
+    int ns = breaker_sector_targets(&m, true, second, 256);
+
+    ck("a pristine machine has files a first lost sector could land on", nf > 0);
+    ck("and others, held back for the disk nobody replaced", ns > 0);
+    printf("    %d files reachable by the first sector, %d by the second, "
+           "across %d packages\n", nf, ns, m.npkg);
+
+    /* --- 1. WIDER THAN /etc, and by how much. Printed, not asserted at a
+     * number, because the answer moves whenever a package is added -- what
+     * must not move is that the machine is more than its config directory. */
+    int etc = 0;
+    for (int i = 0; i < nf && i < 256; i++)
+        if (strncmp(first[i], "/etc/", 5) == 0) etc++;
+    ck("the world can damage more of a machine than its /etc", nf > etc);
+    printf("    %d of them under /etc, %d elsewhere on the disk\n", etc, nf - etc);
+
+    /* --- 2. AND NOT ONE WORD OF WHAT THE PLAYER IS MEANT TO READ.
+     *
+     * This is the claim with teeth. Every technical statement in this project
+     * is supposed to be true of this machine and --mancheck proves it by
+     * running the examples; a bad sector that quietly rewrites a man page
+     * would make the game lie to the player through its own documentation.
+     * /home/nomowner is the story rather than the machine, for the same
+     * reason. */
+    int prose = 0;
+    const char *worst = NULL;
+    for (int pass = 0; pass < 2; pass++) {
+        const char **set = pass ? second : first;
+        int n = pass ? ns : nf;
+        for (int i = 0; i < n && i < 256; i++) {
+            const char *p = set[i];
+            bool bad = strncmp(p, "/usr/share/man/", 15) == 0 ||
+                       strncmp(p, "/usr/share/doc/", 15) == 0 ||
+                       strncmp(p, "/home/", 6) == 0 ||
+                       strncmp(p, "/root/", 6) == 0;
+            size_t lp = strlen(p);
+            if (lp >= 6 && strcmp(p + lp - 6, "README") == 0) bad = true;
+            if (bad) { prose++; if (!worst) worst = p; }
+        }
+    }
+    ck("no manual page, no README and no page of the diary is ever a casualty",
+       prose == 0);
+    if (prose) printf("    %d of them are prose, the first being %s\n",
+                      prose, worst);
+
+    /* --- 3. THE TWO DRAWS DO NOT OVERLAP. If they did, a first lost sector
+     * could take the boot chain and the player would have no shell to
+     * diagnose from -- the courtesy that makes the first loss fair would hold
+     * only most of the time, which is not what a rule is. */
+    int overlap = 0;
+    for (int i = 0; i < nf && i < 256; i++)
+        for (int j = 0; j < ns && j < 256; j++)
+            if (strcmp(first[i], second[j]) == 0) overlap++;
+    ck("the first sector and the second draw from sets that do not overlap",
+       overlap == 0);
+    /* and the fair one really is off the boot chain, asked of the predicate
+     * the damage is dealt by rather than of a list written out again here */
+    int leaked = 0;
+    for (int i = 0; i < nf && i < 256; i++)
+        if (breaker_boot_critical(first[i])) leaked++;
+    ck("and nothing the boot chain reads is in reach of the first one",
+       leaked == 0);
+
+    machine_free(&m);
+}
+
+
 static void check_disk(void)
 {
     printf("\na disk that has been running long enough to lose a sector\n");
@@ -878,21 +976,34 @@ static void check_disk(void)
     for (int i = 0; i < nnow2 && !found2; i++)
         if (!in_set(pre2, npre2, now2[i].path)) { hit2 = now2[i]; found2 = true; }
     say(&ses, "unplug", &o);
-    /* The list is breaker.c's own boot_critical() set, named here so that the
-     * claim in the event text -- "something the boot reads" -- is checked
-     * against the path rather than believed. */
-    static const char *const BOOTFILES[] = {
-        "/etc/fstab", "/etc/passwd", "/etc/shadow", "/etc/group",
-        "/etc/inittab", "/etc/ld.so.conf", "/etc/shells", "/etc/rc.",
-        "/etc/services.d/", "/etc/zbl", "/etc/net/interfaces", NULL
-    };
-    bool critical = false;
-    for (int i = 0; found2 && BOOTFILES[i]; i++)
-        if (strncmp(hit2.path, BOOTFILES[i], strlen(BOOTFILES[i])) == 0)
-            critical = true;
+    /* THE PREDICATE, NOT A COPY OF IT. This was a hand-written duplicate of
+     * breaker.c's boot_critical() list, and the comment beside it said so --
+     * "breaker.c's own set, named here". The moment D45 added the initrd and
+     * /lib/modules to the real one, the copy was a different rule wearing the
+     * same name, and the gate would have gone on passing while checking
+     * something that had stopped being true. It asks the real predicate now.
+     *
+     * That makes the CLASSIFICATION half circular, so the CONSEQUENCE half
+     * below is what carries the weight: the box has to actually fail to reach
+     * target, and then reach it again after the repair. A rule that misfiled a
+     * harmless file as boot-critical would pass the first check and fail the
+     * second, which is the way round it should be. */
+    bool critical = found2 && breaker_boot_critical(hit2.path);
     ck("and `pkg verify` names a file the boot chain itself reads", critical);
     if (found2) printf("    the second sector took %s, shipped by %s\n",
                        hit2.path, hit2.pkg);
+
+    /* AND IT REALLY DOES STOP THE BOOT. Without this the section proves only
+     * that a path matched a list. */
+    if (found2) {
+        say(&ses, "power arc off", &o);
+        const char *up = say(&ses, "power arc on", &o);
+        ck("and the box no longer reaches target, which is what made it a "
+           "boot file", !has(up, "[UP at target]"));
+    } else {
+        ck("and the box no longer reaches target, which is what made it a "
+           "boot file", false);
+    }
 
     /* AND IT IS STILL A REPAIR THE TOOLS CAN DO. Nothing new was added: the
      * same forced reinstall, on the package verify named. */
@@ -1320,6 +1431,7 @@ int event_selfcheck(void)
     check_schedule();
     check_blackout();
     check_rename();
+    check_sector_reach();
     check_disk();
     check_copper();
     check_heat();

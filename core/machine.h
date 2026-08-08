@@ -479,6 +479,22 @@ void breaker_powerfail_as(Machine *m, Rng *r, int kind, char *d, size_t ds);
  * says so. */
 bool breaker_bad_sector_any(Machine *m, Rng *r, bool boot_too, char *d, size_t ds);
 
+/* WHETHER THIS PATH IS BETWEEN THE PLAYER AND A SHELL. The first sector a disk
+ * loses is kept off these so the box comes up and can be worked on; the second
+ * one, on a disk nobody replaced, is aimed AT them.
+ *
+ * It is exported because --eventcheck kept its own copy of the list and the
+ * two drifted apart the moment breaker.c's grew. One fact, one place: the gate
+ * now asks the predicate the damage was dealt by, and proves the consequence
+ * separately by watching the box fail to reach target. */
+bool breaker_boot_critical(const char *path);
+
+/* Every file a lost sector could land on, for `boot_too` false (the first one,
+ * which leaves the box workable) or true (the second, aimed at the boot). Fills
+ * `out` up to `max` and returns the true count. */
+int breaker_sector_targets(const Machine *m, bool boot_too,
+                           const char **out, int max);
+
 const char *breaker_dealt(void);
 int         breaker_fault_count(void);
 const char *breaker_fault_name(int i);
