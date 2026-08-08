@@ -1276,7 +1276,7 @@ static void do_help(const Session *ses, Buf *out)
         "                     where the support tickets are\n"
         "\n"
         "BUYING, AND CARRYING IT IN. Kit is delivered to GOODS IN on the\n"
-        "ground deck -- not to your hands and not to the room you are\n"
+        "lowest deck -- not to your hands and not to the room you are\n"
         "standing in. Getting it where it goes is a walk, and the walk is\n"
         "metres of real building.\n"
         "  buy <kind> [name]  switch8 120   switch24 400   router 650\n"

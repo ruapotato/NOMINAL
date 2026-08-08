@@ -1,7 +1,8 @@
 # NOMINAL
 
-You are the IT department of a growing building. Order the gear, carry it in,
-run the cable, and configure the operating system on the other end of it.
+You are the IT department of a space station. Order the gear, carry it in, run
+the power conduit and the copper, and configure the operating system on the
+other end of it.
 
 The operating system is real. Not a prop, not a scripted console: an RV64IM CPU
 written from scratch, real compiled binaries, real syscalls, a dynamic linker
@@ -17,7 +18,7 @@ That is the whole idea. Everything else follows from it.
 
 ## The loop
 
-1. **Money comes from the floors, and not all of it is the same money.** Four
+1. **Money comes from the decks, and not all of it is the same money.** Four
    trades take leases, and each one asks the network for a different thing and
    pays a different rate for the same square metres:
 
@@ -37,20 +38,35 @@ That is the whole idea. Everything else follows from it.
    off a file server, so it is the one trade that wants a local server and a
    big circuit at once. `demand` says which is coming, what it will want and
    what it pays, before you sign.
-2. **Demand outgrows the infrastructure.** A floor of accountants wants a file
+2. **Demand outgrows the infrastructure.** A deck of accountants wants a file
    server. A trading office wants latency. Somebody wants their own subnet.
 3. **You buy hardware.** It arrives, and it arrives *somewhere* — goods in on
-   the ground floor, not your inventory. You carry it to where it needs to go,
+   the lowest deck, not your inventory. You carry it to where it needs to go,
    one box at a time because both hands are on it, and the walk is metres of
    real building. Put it down and that is where it lives: every metre of
    copper afterwards is measured from there, and a box with a cable in it
    will not be picked up again until you unplug it.
-4. **You make it physical.** Rack it, power it, run copper to the switch. You
+4. **You make it physical, and that starts with power.** Nothing in this
+   station is plugged into a wall, because there are no walls sockets: there
+   is one power core in the plant room on deck 0, with sixteen ways out of
+   it, and everything else is dark until you have run **conduit** to it. A
+   run is priced by the metre off the same tray graph copper is, carries
+   1500 W and no more, and trips when you put more than that on it — taking
+   everything behind it down with it. A **power strip** takes one run in and
+   gives six out, which is how a run forks and how one conduit feeds a
+   cupboard. `conduits` prints every run against what it is carrying, and
+   `feed <box>` finds the nearest source with a hole left in it.
+
+   Then rack it and run copper to the switch. You
    have a spool: you plug one end in, walk to the other end, and the metres come
    off the drum and out of the budget as you go. Walking distance and cable
    distance are different numbers -- you take the corridor and the stairs, the
-   copper goes up the riser -- so running one cable from the MDF to the floor
-   three comms cupboard is 91 m of your legs and 42 m of cat5e.
+   copper goes up the riser. On seed 7008, `quote` prices the run from
+   Engineering to the deck three comms cupboard at 42 m of cat5e through the
+   tray, and standing there to pull it is a longer walk than that: across a
+   run of generated stations `--building` measures the two numbers 22 m apart
+   on average, and it is the walk you pay in legs and the tray you pay in
+   copper.
    Or you pay for a **permanent jack** instead, priced on those same tray
    metres: a socket on that room's wall, with the run behind it punched down
    onto one port at the far end for good. It costs more than pulling the run
@@ -73,8 +89,28 @@ That is the whole idea. Everything else follows from it.
    building gets more slack as you let it rather than less. `service` prints
    the number you are counting against.
 7. **Then it breaks.** Not because a designer hid a fault — because of something
-   you did three floors ago and have forgotten.
-8. **And somebody is sitting at every desk.** They are in the rooms their
+   you did three decks ago and have forgotten.
+8. **The bridge crew were aboard before you were.** The top deck is the
+   bridge and it is in service on the first morning — nobody paid a fit-out
+   for it, the lift stops there before you have spent a penny, and every deck
+   between Engineering and it is dark. Six stations are up there, named for
+   the jobs — helm, ops, tactical, science, comms, damage — and every one of
+   them has a dead console in front of somebody who cannot work. A station is
+   working when three separate things are true: a machine standing at it,
+   power in that machine, and a cable out of it. `crew` names the first one
+   that is missing rather than answering yes or no:
+
+       station   deck  room            machine   state
+       helm      d10   bridge          -         no machine at it
+       ops       d10   bridge          -         no machine at it
+       0 of 6 bridge stations working. They were aboard before you were.
+
+   The power core is on deck 0 and the bridge is on deck 10, so the conduit
+   to the helm is the longest run in the station — 148 m of tray against the
+   57 m the station came with to the workstation standing beside the core.
+   That is the first real decision, on the first morning, before any money
+   has come in.
+9. **And somebody is sitting at every desk.** They are in the rooms their
    tenancy leases, one per desk the tenancy asked for, and the room shows how
    their week is going — hands up when nothing has an address, heads down when
    the tenancy is striking. You can walk over and `sit` at one of their
@@ -89,7 +125,7 @@ That is the whole idea. Everything else follows from it.
        whose egress buffer is full.
 
    That machine is healthy. The audio died three hops away, on a port on
-   another floor, and it was the *inbound* half — so a landlord who bought a
+   another deck, and it was the *inbound* half — so a landlord who bought a
    fatter uplink for the outbound side would have bought the wrong thing.
 
 Step 7 is the game. Step 5 is why it is interesting.
@@ -109,26 +145,24 @@ further behind than its buffer will hold drops them.
 one falls over. Both are *played*, not assembled: the same `Session` a person
 gets over a socket, with kit bought to goods in, carried up the stairs and
 switched on — which boots a real operating system whose httpd answers because
-netd read the address off its own disk. It grows the building a tenancy at a
-time, and a floor of this building holds two or three tenancies, so the table
-counts both.
+netd read the address off its own disk. It grows the station a tenancy at a
+time, and a deck holds two or three tenancies, so the table counts both.
 
 Built the way somebody builds it who has never had to unbuild one — one flat
-subnet, cheap copper, a switch per floor with a second daisy-chained off it
-when the floor fills up, and one file server in the basement holding
-everybody's files — it is comfortable on its first floor, visibly working
-hard by the third, and has fallen over well before the fifth. Built with a
-vlan per floor and a server in each floor's own cupboard holding that floor's
-files, it carries all nine tenancies it has been grown to — five floors and a
-hundred and seventy-six desks. The difference is not a number anybody tuned.
-It is where the frames go: in the first tower the busiest thing in the
-building is the one gigabit port on the one server everybody's files are
-behind, and `load` names it.
+subnet, cheap copper, a switch per deck with a second daisy-chained off it
+when the deck fills up, and one file server on deck 0 holding everybody's
+files — it is comfortable on its first deck, visibly working hard by three,
+and has fallen over by five. Built with a vlan per deck and a server in each
+deck's own cupboard holding that deck's files, it carries the decks the naive
+one could not, with the same desks doing the same work. The difference is not
+a number anybody tuned. It is where the frames go: in the first station the
+busiest thing aboard is the one gigabit port on the one server everybody's
+files are behind, and `load` names it.
 
-Note what is NOT doing the work there. Fibre up the risers is not: a floor
+Note what is NOT doing the work there. Fibre up the risers is not: a deck
 switch's access port clocks a gigabit whatever you land on it, so a 42 m
 riser costs 450 in fibre and 99 in cat5e and both of them carry a gigabit,
-and the binding port in a planned tower is the floor server's own gigabit card
+and the binding port in a planned station is the deck server's own gigabit card
 rather than the riser. Fibre is bought here for reach and for ten gigabit:
 copper of any grade stops carrying anything at all past 100 m, and cat6
 negotiates down from ten gigabit to one past 55 m, while fibre runs 2 km.
@@ -177,12 +211,21 @@ Here the terminal is the machine, and it follows that:
     ./build/bf --health     every pristine machine boots with every service up
     ./build/bf --solve 60   every generated fault is findable and repairable
     ./build/bf --askcheck   the person on the phone never says anything untrue
+    ./build/bf --eventcheck the world overnight: a blackout, an unclean stop,
+                            the disk damage that follows and the repair
+    ./build/bf --building N decks stack, risers line up, every room is
+                            reachable on foot, and walking is not cabling
     ./build/bf --mancheck   every command example in every manual, package
                             README and page of the in-game wiki, RUN on a
                             booted machine -- and every command they name
                             proved to exist on it
 
     ./Godot_v4.7.1-stable_linux.x86_64 --path game -- --seed=S
+
+    # photographs of a station, with no input synthesised: the camera is
+    # placed, the frame is rendered, the PNG is saved
+    ./Godot_v4.7.1-stable_linux.x86_64 --headless --path game \
+        -s tests/shots.gd -- /tmp/shots
 
 The window takes the same seed the harness does, so `--seed=7008` and
 `--towersh 7008` are the same tower and you can look at the one you played.
@@ -203,17 +246,15 @@ guessing into deciding:
     load                    the busiest ports, and which is dropping
     sit <desk>              their machine, their problem, their tools
     events                  what the world did to your kit overnight
-    outlets                 the power map: every room kit can live in, empty
-                            or not, plus anything already plugged in -- what
-                            each was wired with and what is free. A comms
-                            cupboard has four sockets and a let office has
-                            plenty, so the fifth box into a cupboard is a
-                            decision -- `outlet` buys another socket for that
-                            room, and a box with no lead to the wall cannot be
-                            switched on at all. Plug a serial lead into one and
-                            you get exactly what a serial lead into a dead
-                            machine gives you: nothing, and that nothing is the
-                            diagnosis
+    conduits                the power map: every run from the core, the
+                            metres it cost, and what it is carrying against
+                            the 1500 W it can. A run over that has tripped
+                            and everything behind it is dark
+    feed <box>              pull a run to it from the nearest source that
+                            still has a hole in it -- the core, or a strip
+                            you have already fed
+    crew                    the bridge stations, what machine is at each and
+                            what it is still short of
 
 ## The rule
 
@@ -234,6 +275,14 @@ What it could not do was stay interesting. A fault a designer hides in one file
 on one machine has a floor of one move, because the tools can name the file.
 Building the network yourself is what gives a fault a history, and a history is
 what makes it worth diagnosing.
+
+It was an office building until D63. The trades, the rent and the complaints
+survived the move to a station unchanged, because none of them were ever about
+offices: they are about somebody needing the network to do a specific thing by
+a specific time and telling you when it did not. What the station added is a
+resource that has to be ROUTED rather than assumed — conduit from one core,
+with capacity, priced by the same metres copper is — and a crew who are
+already aboard and cannot work yet.
 
 What it still could not do, until D25, was come back for you. A blind
 playtester of the tower put it exactly: *"They felt like MY decisions; they

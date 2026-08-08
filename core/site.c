@@ -3398,10 +3398,10 @@ bool site_cmd(Site *s, const char *line, Buf *out)
             "                               better box, carry it up and move the service\n"
             "                               onto it -- there is no `upgrade` verb\n"
             "                               it is delivered to goods in, on the\n"
-            "                               ground deck. Not to where you are.\n"
+            "                               lowest deck. Not to where you are.\n"
             "move <dev> <room>              carry it there. Refused while it has a\n"
             "                               cable in it. rooms: #41, d3.comms,\n"
-            "                               f0.mdf, f2.office\n"
+            "                               d0.eng, d2.office\n"
             "cable <dev>:<port> <dev>:<port> [cat5|cat5e|cat6|fibre]\n"
             "uncable <n>                    pull one out\n"
             "quote <a> <b>                  what that run would cost BEFORE it is\n"
@@ -3885,7 +3885,7 @@ bool site_cmd(Site *s, const char *line, Buf *out)
                           "out\n  without a `ups`");
         buf_printf(out, ". %d paid, %ld left.\n",
                    site_kind_price(kind), s->money);
-        buf_printf(out, "it is in %s #%d, on the ground deck. Somebody has to "
+        buf_printf(out, "it is in %s #%d, on the lowest deck. Somebody has to "
                         "carry it: `move %s <room>`\n",
                    bld_kind_name(s->b->rooms[goods].kind), goods, s->dev[d].name);
         return true;

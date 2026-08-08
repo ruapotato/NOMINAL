@@ -160,7 +160,7 @@ static void check_verbs(int *passed, int *total)
 
     /* AND WITH YOUR OWN MACHINE, in the same room, cabled to that handoff.
      * Two devices on the first morning and the player bought neither. */
-    ck("you start in the Engineering, on the ground deck, with the ISP handoff",
+    ck("you start in Engineering, on the lowest deck, with the ISP handoff",
        ses.b.rooms[ses.room].kind == RM_MDF && ses.b.rooms[ses.room].floor == 0 &&
        ses.s.ndev == 3 && ses.s.dev[ses.s.uplink].room == ses.room);
     ck("and the machine you sit at is standing in that room too",
@@ -532,7 +532,7 @@ static void check_reach(int *passed, int *total)
      * were two given devices and is the power core now that there are three:
      * a test that counts on the order of a list is a test that breaks the
      * next time anything is added to the front of it. */
-    ck("and carrying it to the Engineering is what puts it in the Engineering",
+    ck("and carrying it to Engineering is what puts it in Engineering",
        ses.room == mdf && ses.s.dev[bought].room == (uint16_t)mdf);
 
     /* Take a walk, and everything about that switch goes out of reach. */
@@ -590,7 +590,7 @@ static void check_goods(int *passed, int *total)
     Buf o = {0};
 
     int goods = site_goods_room(&ses.s);
-    ck("the tower has a goods in, on the ground deck, and it is not the Engineering",
+    ck("the tower has a goods in, on the lowest deck, and it is not Engineering",
        goods >= 0 && ses.b.rooms[goods].kind == RM_GOODS &&
        ses.b.rooms[goods].floor == 0 && goods != ses.room);
 
@@ -601,7 +601,7 @@ static void check_goods(int *passed, int *total)
     int up = ses.room;
     const char *bought = say(&ses, "buy switch24 core", &o);
     int d = site_dev_by_name(&ses.s, "core");
-    ck("a box ordered from deck two is delivered to the ground deck",
+    ck("a box ordered from deck two is delivered to the lowest deck",
        d > 0 && ses.s.dev[d].room == (uint16_t)goods && ses.room == up &&
        has(bought, "goods in"));
     ck("and the answer says how far away that is, in metres of building",
@@ -666,7 +666,7 @@ static void check_goods(int *passed, int *total)
     int mdf = bld_find(&ses.b, 0, RM_MDF);
     int from_goods = site_metres(&ses.s, goods, mdf);
     int from_comms = site_metres(&ses.s, up, mdf);
-    printf("    a run to the Engineering is %d m from goods in and %d m from the "
+    printf("    a run to Engineering is %d m from goods in and %d m from the "
            "cupboard it was carried to\n", from_goods, from_comms);
     ck("and where it ended up is what the copper is measured from",
        from_goods > 0 && from_comms > 0 && from_goods != from_comms);
@@ -1914,7 +1914,7 @@ done:
 /* ================= THE OPENING TEXT COUNTS, IT DOES NOT PROMISE ===========
  *
  * `help` opened with *"On day one it holds exactly one thing: the ISP's
- * socket on the wall of the Engineering."* True of a session started over the socket
+ * socket on the wall of Engineering."* True of a session started over the socket
  * and FALSE of the one the 3D window starts, which pre-orders a router, a
  * switch24 and a server into goods in and has spent 2400 doing it. A
  * playtester believed the sentence, re-bought two of the three, and lost
@@ -1986,7 +1986,7 @@ static void check_inventory(int *passed, int *total)
 
 /* ==================== `cable` PUTS YOU BACK WHERE YOU ASKED ===============
  *
- * *"I queued seven fibre runs from the Engineering; the first succeeded and walked me
+ * *"I queued seven fibre runs from Engineering; the first succeeded and walked me
  * to f1, and the other six all failed with 'you are in neither room'."*
  *
  * `cable` is a macro for four things a person does, and the fourth left them
@@ -2025,7 +2025,7 @@ static void check_cable_batch(int *passed, int *total)
         made++;
     }
     say(&ses, "go mdf", &o);
-    ck("three boxes carried into the cupboard upstairs, and you back in the Engineering",
+    ck("three boxes carried into the cupboard upstairs, and you back in Engineering",
        made == 3 && ses.room == mdf);
 
     long walked = ses.walked;
@@ -2039,11 +2039,11 @@ static void check_cable_batch(int *passed, int *total)
             all = false;
         }
         if (ses.room != mdf) {
-            printf("    run %d left you in room %d, not the Engineering\n", i, ses.room);
+            printf("    run %d left you in room %d, not Engineering\n", i, ses.room);
             home = false;
         }
     }
-    ck("three runs typed one after another from the Engineering, and all three come up",
+    ck("three runs typed one after another from Engineering, and all three come up",
        all && ses.s.nlink == 4);   /* + the lead the building came with */
     ck("because every one of them walks you back to the room you typed it in",
        home && ses.room == mdf);

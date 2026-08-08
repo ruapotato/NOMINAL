@@ -395,7 +395,7 @@ static void check_copper(const Building *b)
     if (far < 0) { ck("the tower has a room to cable", false); return; }
     int floor = b->rooms[far].floor;
     printf("    the farthest lettable room is on deck %d, %.1f m of tray "
-           "from the Engineering\n", floor, d);
+           "from Engineering\n", floor, d);
     ck("a tall tower puts a room past what copper carries", d + SITE_PATCH_M > 100);
 
     Site s;
@@ -446,7 +446,7 @@ static void check_port_speed(const Building *b)
     int srv  = gate_box(&s, SDEV_SERVER, mdf, "files");
     int sw8  = gate_box(&s, SDEV_SWITCH8, mdf, "little");
     if (core < 0 || edge < 0 || srv < 0 || sw8 < 0) {
-        ck("four boxes in the Engineering", false); site_free(&s); return;
+        ck("four boxes in Engineering", false); site_free(&s); return;
     }
     int last = site_kind_ports(SDEV_SWITCH24) - 1;   /* the SFP+ pair       */
 
@@ -643,7 +643,7 @@ static void check_plug_pulled(const Building *b)
     int a = site_dev_by_name(&ses.s, "one");
     int c = site_dev_by_name(&ses.s, "two");
     if (a < 0 || c < 0 || !ses.mach[a] || !ses.mach[c]) {
-        ck("two servers boot in the Engineering", false);
+        ck("two servers boot in Engineering", false);
         goto done;
     }
     ck("two servers are up, one of them on a battery",
@@ -2065,7 +2065,7 @@ static void check_quote(const Building *b)
        "you nothing",
        far >= 0 && near >= 0 && mfar >= SITE_COPPER_MARGIN_M &&
        mnear < SITE_COPPER_MARGIN_M);
-    printf("    deck 3 from the Engineering: #%d is %d m and #%d is %d m\n",
+    printf("    deck 3 from Engineering: #%d is %d m and #%d is %d m\n",
            near, mnear, far, mfar);
 
     /* ---- THE METRES ARE bld_cable_all()'s, THROUGH site_metres(). */
@@ -3707,7 +3707,7 @@ static void check_one_fact_two_answers(const Building *b)
     ck("and it is not deck 0 wearing deck 2's name", !has(o.p, "deck 0"));
     buf_clear(&o);
     site_cmd(&s, "rooms d99", &o);
-    ck("a deck that does not exist is refused, not rounded to the ground deck",
+    ck("a deck that does not exist is refused, not rounded to the lowest deck",
        has(o.p, "there is no deck 99") && !has(o.p, "deck 0\n"));
     buf_clear(&o);
     site_cmd(&s, "rooms d2.comms", &o);
