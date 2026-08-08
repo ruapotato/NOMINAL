@@ -4321,7 +4321,7 @@ static void check_next(const Building *b)
     const char *want[] = { "no machine at it", "nothing feeding it",
                            "switched off", "no cable in it" };
     int rung = 0, ran = 0;
-    bool unknown = false;
+    bool unknown = false, refused = false;
     char badcmd[128] = "";
     for (; rung < 4; rung++) {
         Buf n = {0};
@@ -4370,12 +4370,26 @@ static void check_next(const Building *b)
             p2 = q1 + 1;
             Buf r = {0};
             session_line(&sn, cmd, &r);
-            /* AN UNKNOWN VERB IS THE FAILURE THIS SECTION EXISTS FOR. A
-             * refusal is a different thing and can be legitimate -- the site
-             * saying no to something the state does not allow -- so it stops
-             * the walk without condemning the words. */
+            /* AN UNKNOWN VERB, AND A REFUSAL, ARE BOTH FAILURES HERE.
+             *
+             * The first version of this let a refusal stop the walk quietly,
+             * on the reasoning that the site saying no can be legitimate. It
+             * cannot be legitimate HERE. `next` is the one text whose job is
+             * to hand a player the line to type; if that line is refused in
+             * the state `next` itself walked them into, the onboarding is a
+             * dead end whatever the refusal says.
+             *
+             * That leniency hid a real one. The rung before the tenancy rung
+             * is `cable bsw:0 helm:0 cat5e`, which leaves a drum of cable in
+             * both hands, and the tenancy rung then says `deliver sw1
+             * d1.comms`, which needs both hands -- so a blind playthrough
+             * that did exactly what it was told got "refused: nothing was
+             * carried anywhere". */
             if (has(r.p, "no such command")) {
                 unknown = true;
+                snprintf(badcmd, sizeof badcmd, "%s", cmd);
+            } else if (has(r.p, "refused")) {
+                refused = true;
                 snprintf(badcmd, sizeof badcmd, "%s", cmd);
             }
             if (has(r.p, "refused") || has(r.p, "no such")) stop = true;
@@ -4386,9 +4400,69 @@ static void check_next(const Building *b)
         buf_free(&n);
         if (stop) break;
     }
+    /* AND KEEP GOING, past the rungs this section knows the names of.
+     *
+     * The four above are the crew stations, and they stop one instruction
+     * short of where the onboarding actually broke: the `cable` rung leaves a
+     * drum of cable in both hands, and the tenancy rung after it wants a box
+     * carried. So this follows whatever `next` says next, with no expectation
+     * of what that will be -- running a day whenever it has nothing to say,
+     * because tenancies arrive on their own day and the interesting rung is
+     * the one that only exists once somebody has the keys. */
+    for (int step = 0; step < 24; step++) {
+        Buf n = {0};
+        session_line(&sn, "next", &n);
+        const char *arrow = strstr(n.p ? n.p : "", "-> `");
+        if (!arrow) {
+            buf_free(&n);
+            Buf d = {0};
+            session_line(&sn, "day 1", &d);
+            buf_free(&d);
+            continue;
+        }
+        bool stop2 = false;
+        for (const char *p2 = arrow + 3; *p2 && !stop2; ) {
+            const char *q0 = strchr(p2, '`');
+            if (!q0) break;
+            const char *q1 = strchr(q0 + 1, '`');
+            if (!q1) break;
+            const char *nl = strchr(q0, '\n');
+            if (nl && nl < q1) break;
+            char cmd[128];
+            int len = (int)(q1 - q0 - 1);
+            if (len > (int)sizeof cmd - 1) len = (int)sizeof cmd - 1;
+            memcpy(cmd, q0 + 1, (size_t)len);
+            cmd[len] = 0;
+            p2 = q1 + 1;
+            Buf r = {0};
+            session_line(&sn, cmd, &r);
+            if (has(r.p, "no such command")) {
+                unknown = true; snprintf(badcmd, sizeof badcmd, "%s", cmd);
+            } else if (has(r.p, "refused")) {
+                refused = true; snprintf(badcmd, sizeof badcmd, "%s", cmd);
+            }
+            if (has(r.p, "refused") || has(r.p, "no such")) stop2 = true;
+            else { ran++; printf("    on:     %s\n", cmd); }
+            buf_free(&r);
+        }
+        buf_free(&n);
+        if (stop2) break;
+    }
+
     ck("every command `next` dictated is a command this game has", !unknown);
     if (unknown) printf("    it told the player to type `%s`\n", badcmd);
+    ck("and every one of them was taken in the state `next` had left behind",
+       !refused);
+    if (refused) printf("    `%s` was refused after `next` asked for it\n",
+                        badcmd);
     printf("    %d instructions followed, taken from the text it printed\n", ran);
+    /* AND WHAT DOING AS IT SAID ACTUALLY BUILT. Measured off the model at the
+     * end of the walk rather than asserted at a number, because how far 24
+     * steps gets depends on the seed's decks and what the tenancies want. */
+    printf("    which left %d of %d crew stations working and %ld spent\n",
+           site_crew_working(&sn.s), sn.s.ncrew, sn.s.spent);
+    ck("and doing as it said built something: the bridge is not still dark",
+       site_crew_working(&sn.s) > 0);
     ck("every line it gave was a line the site took, four rungs deep",
        rung == 4);
     ck("and following them really lit the station it was talking about",

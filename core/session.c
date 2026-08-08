@@ -4016,9 +4016,56 @@ bool session_line(Session *ses, const char *line, Buf *out)
         strcmp(t[0], "credit") == 0 || strcmp(t[0], "status") == 0 ||
         strcmp(t[0], "service") == 0 || strcmp(t[0], "load") == 0 ||
         strcmp(t[0], "events") == 0 || strcmp(t[0], "jacks") == 0 ||
-        strcmp(t[0], "crew") == 0 || strcmp(t[0], "next") == 0 ||
+        strcmp(t[0], "crew") == 0 ||
         (strcmp(t[0], "show") == 0)) {
         site_cmd(&ses->s, raw, out);
+        return true;
+    }
+
+    /* `next` IS THE SITE'S ANSWER PLUS WHAT YOUR HANDS ARE DOING.
+     *
+     * The site knows what is wrong with the station and what verb changes it.
+     * It does not know, and should not, that you are standing there with a
+     * drum of cable in both arms -- that is this layer's business, and it is
+     * the whole of why the onboarding had a second dead end in it:
+     *
+     *     -> `cable bsw:0 helm:0 cat5e`          (leaves the drum in your hands)
+     *     -> ... then `deliver sw1 d1.comms`     (needs both hands)
+     *     refused: nothing was carried anywhere -- you have a drum of cable
+     *       in your hands, and a box takes both of them.
+     *
+     * The refusal is good prose and names its own cure. What was wrong is
+     * that `next` walked the player into it, one rung after telling them to
+     * pick the drum up. A line you cannot type in the state the previous line
+     * left you in is the same defect as a line that names a command this game
+     * does not have, and the fix belongs here rather than in the site: the
+     * site says what to do, and this says what is in the way of doing it. */
+    if (strcmp(t[0], "next") == 0) {
+        Buf sb = {0};
+        site_cmd(&ses->s, raw, &sb);
+        bool needs_hands = sb.p &&
+            (strstr(sb.p, "`deliver ") || strstr(sb.p, "`carry "));
+        /* AND IT GOES FIRST, AS AN INSTRUCTION, not as a footnote.
+         *
+         * The first attempt at this appended a warning after the site's
+         * answer, which reads perfectly well and does not fix anything: a
+         * player working down the arrow line still types `deliver` and still
+         * gets refused. `next` promises the line to type. So emptying your
+         * hands becomes the line to type, and the work it was in the way of
+         * is the rung after. */
+        if (needs_hands && ses->carrying >= 0)
+            buf_printf(out, "your hands are full: you are carrying %s, and a "
+                            "box takes both\n  of them.\n"
+                            "  -> `drop` puts it down where you stand\n",
+                       ses->s.dev[ses->carrying].name);
+        else if (needs_hands && ses->spool_kind >= 0)
+            buf_puts(out, "your hands are full: there is a drum of cable in "
+                          "them, and a box takes\n  both hands -- which is why "
+                          "you cannot carry one and pull cable at the\n  same "
+                          "time.\n"
+                          "  -> `spool back` puts the drum on the shelf\n");
+        if (sb.p) buf_puts(out, sb.p);
+        buf_free(&sb);
         return true;
     }
 
