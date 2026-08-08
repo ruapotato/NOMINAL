@@ -451,7 +451,77 @@ func _shade(n: Vector3) -> float:
 	return 0.90
 
 
-func _quad(a: Vector3, b: Vector3, c: Vector3, d: Vector3, col: Color, collide: bool) -> void:
+# ------------------------------------------------------- the station bends
+#
+# David: "I wonder if we can make the generation made out of curved corridors
+# and more curved rooms like a true donut shaped for the central spoke out type
+# deep space nine setup. as it is everything is still made out of giant cubes,
+# making it feel kind of rigid and more like an office than a space station."
+#
+# He is right, and the cause is not the layout -- each deck kind has its own
+# shape now -- it is that a Room is `x0,y0,x1,y1` in whole metres and every
+# surface in the world is an axis-aligned box built from that.
+#
+# THE GRID IS A PARAMETER SPACE, NOT A WORLD SPACE, and that is the whole
+# trick. Nothing says the metre grid has to be drawn as a square metre. This
+# maps every vertex through one transform on its way into the mesh, so a
+# rectangular ring comes out as a circular one, the arms splay like spokes,
+# and the rooms along them take the curve with them -- walls, slabs, racks,
+# cables, collision, all of it, because _quad() is the single door every
+# triangle in this file goes through.
+#
+# HOW: the plan is a plus-shape whose ring is a level set of the CHEBYSHEV
+# distance from the hub -- max(|dx|, |dz|) -- which is a square. The Euclidean
+# distance is a circle. Scaling a point by (chebyshev / euclidean) turns one
+# into the other exactly, and BEND is how far to go: 0 is the station as it
+# was, 1 is a true donut.
+#
+# WHAT THIS SPIKE DOES NOT DO, and it is the reason it is a spike and not a
+# feature: the MODEL still thinks the ring is a rectangle.
+#
+# MEASURED, by turning it to 1.0 and running game/tests/tower.gd. Six things
+# break, and every one of them is the same divergence:
+#
+#   walked from the spawn towards the stairs and ended in corridor at (38.3, 16.9)
+#   could not walk from the MDF to the comms cupboard with a cable in hand
+#   cabled ws:0 over the socket and the crosshair is on nothing
+#   [C] at the far end ran no cable: files is in d0 comms cupboard #5
+#
+# The body walks the BENT geometry while `go`, `walk_to` and the room lookup
+# all work on the FLAT grid, so a person following a route arrives somewhere
+# the model does not think they are. A quarter turn round a circular ring is
+# also only (pi/4) of the way round a square one -- about 79% -- so every
+# metre this game charges for a walk would be a fifth out.
+#
+# That is not an argument against curving it. It is the price, and it is
+# bounded: bld_walk's edge weights and the grid-to-world mapping have to curve
+# together, which is a change to how a cell's neighbours are WEIGHTED rather
+# than to which cells are neighbours. See #81. Until that lands this stays at
+# zero, where it is exactly the station that is on main.
+const BEND := 0.0
+
+var _bend_c := Vector3.ZERO
+
+func _bend(p: Vector3) -> Vector3:
+	if BEND <= 0.0:
+		return p
+	var dx: float = p.x - _bend_c.x
+	var dz: float = p.z - _bend_c.z
+	var cheb: float = maxf(absf(dx), absf(dz))
+	if cheb < 0.001:
+		return p
+	var euc: float = sqrt(dx * dx + dz * dz)
+	if euc < 0.001:
+		return p
+	var k: float = lerpf(1.0, cheb / euc, BEND)
+	return Vector3(_bend_c.x + dx * k, p.y, _bend_c.z + dz * k)
+
+
+func _quad(a0: Vector3, b0: Vector3, c0: Vector3, d0: Vector3, col: Color, collide: bool) -> void:
+	var a := _bend(a0)
+	var b := _bend(b0)
+	var c := _bend(c0)
+	var d := _bend(d0)
 	var n := (b - a).cross(c - a).normalized()
 	var lit := col * _shade(n)
 	lit.a = 1.0
@@ -487,6 +557,8 @@ func _box(mn: Vector3, size: Vector3, col: Color, collide := true, top: Color = 
 
 
 func _build_mesh() -> void:
+	# the middle of the plate is the middle of the donut
+	_bend_c = Vector3(float(bw) * 0.5, 0.0, float(bh) * 0.5)
 	_v = PackedVector3Array()
 	_c = PackedColorArray()
 	_faces = PackedVector3Array()

@@ -74,8 +74,12 @@ func _init() -> void:
 			var fwd: Vector3 = plan.forward
 			eye = Vector3(plan.chair) - fwd * 4.4 + Vector3(0, 1.72, 0)
 			at = Vector3(plan.screen) + Vector3(0, 1.35, 0)
-		cam.global_position = eye
-		cam.look_at(at, Vector3.UP)
+		# THE CAMERA LIVES IN MODEL SPACE AND THE WORLD MAY BE BENT. Every
+		# vertex goes through tower._bend() on its way into the mesh, so an
+		# eye placed from a room's rectangle is somewhere the room no longer
+		# is -- the first curved shot was taken from inside a wall.
+		cam.global_position = t._bend(eye)
+		cam.look_at(t._bend(at), Vector3.UP)
 		for i in range(3):
 			await process_frame
 		vp.get_texture().get_image().save_png("%s/%s.png" % [_dir(), str(w[0])])
