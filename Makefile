@@ -82,6 +82,13 @@ build/bf: $(BF_OBJ) | build
 faults: build/faulthist
 	@./build/faulthist 400 1 1 | tail -70
 
+# THE HULL, IN THREE VIEWS. Profile, plan and bow, straight off ship.c with
+# nothing between the model and the picture that could flatter it -- which is
+# how you audit a hull before building a mesh pipeline for it.
+#   make build/hullshot && build/hullshot 1 > /tmp/hull.ppm
+build/hullshot: core/util.c core/ship.c tools/hullshot.c core/ship.h core/nom.h | build
+	$(CC) $(CFLAGS) -o $@ core/util.c core/ship.c tools/hullshot.c -lm
+
 build/faulthist: $(BF_SRC_LIB) tools/faulthist.c core/machine.h core/nom.h \
                  core/kernel.h core/guestbin.h | build
 	$(CC) $(CFLAGS) -o $@ $(BF_SRC_LIB) tools/faulthist.c
