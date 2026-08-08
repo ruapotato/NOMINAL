@@ -95,6 +95,9 @@ build/hullshot: core/util.c core/ship.c tools/hullshot.c core/ship.h core/nom.h 
 build/deckshot: core/util.c core/ship.c tools/deckshot.c core/ship.h core/nom.h | build
 	$(CC) $(CFLAGS) -o $@ core/util.c core/ship.c tools/deckshot.c -lm
 
+build/deckwalk: core/util.c core/ship.c tools/deckwalk.c core/ship.h core/nom.h | build
+	$(CC) $(CFLAGS) -o $@ core/util.c core/ship.c tools/deckwalk.c -lm
+
 build/faulthist: $(BF_SRC_LIB) tools/faulthist.c core/machine.h core/nom.h \
                  core/kernel.h core/guestbin.h | build
 	$(CC) $(CFLAGS) -o $@ $(BF_SRC_LIB) tools/faulthist.c

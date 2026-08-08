@@ -32,6 +32,7 @@
 #include "ship.h"
 #include <string.h>
 #include <math.h>
+#include <stdlib.h>
 
 const char *ship_hull_name(int kind)
 {
@@ -186,6 +187,7 @@ bool ship_generate(Ship *s, uint64_t seed)
     for (int i = 0; i < s->nframe; i++)
         if (s->frame[i].half_h * 2 > tallest) tallest = s->frame[i].half_h * 2;
     s->decks = tallest / s->deck_h;
+    ship_place_shafts(s);
     return s->nframe > 8;
 }
 
@@ -233,6 +235,143 @@ bool ship_deck_bounds(const Ship *s, int deck, double *x0, double *x1,
     if (z0) *z0 = az0;  if (z1) *z1 = az1;
     if (area) *area = a;
     return true;
+}
+
+/* --------------------------------------------------------------- shafts */
+
+/* Does a shaft centred here have floor on every deck from d0 to d1? A shaft is
+ * a hole through the ship and it has to land on something at both ends and
+ * everywhere between, or it opens into vacuum. */
+static bool shaft_fits(const Ship *s, double x, double z, int d0, int d1)
+{
+    for (int d = d0; d <= d1; d++) {
+        for (int dx = -SHIP_SHAFT_R; dx <= SHIP_SHAFT_R; dx++)
+            for (int dz = -SHIP_SHAFT_R; dz <= SHIP_SHAFT_R; dz++)
+                if (!ship_deck_at(s, d, x + dx, z + dz)) return false;
+    }
+    return true;
+}
+
+/* The longest run of decks a shaft at (x,z) could serve, and how many that is.
+ * Searched rather than chosen: where a shaft CAN go is a fact about the hull. */
+static int shaft_run(const Ship *s, double x, double z, int *best0, int *best1)
+{
+    int best = 0, b0 = -1, b1 = -1;
+    for (int d0 = 0; d0 < 24; d0++) {
+        if (!shaft_fits(s, x, z, d0, d0)) continue;
+        int d1 = d0;
+        while (d1 + 1 < 24 && shaft_fits(s, x, z, d0, d1 + 1)) d1++;
+        if (d1 - d0 + 1 > best) { best = d1 - d0 + 1; b0 = d0; b1 = d1; }
+        d0 = d1;
+    }
+    if (best0) *best0 = b0;
+    if (best1) *best1 = b1;
+    return best;
+}
+
+int ship_place_shafts(Ship *s)
+{
+    s->nshaft = 0;
+    /* GREEDY, AND SPREAD OUT. Take the spot that serves the most decks, then
+     * refuse anything within 24 m of one already placed -- otherwise every
+     * shaft lands in the same fat part of the hull and half the ship is a long
+     * walk from any of them. The spacing is the only number here that is a
+     * choice rather than a measurement, and it is roughly how far anybody will
+     * tolerate walking to a lift. */
+    for (int n = 0; n < SHIP_MAX_SHAFT; n++) {
+        double bx = -1, bz = 0;
+        int brun = 0, b0 = -1, b1 = -1;
+        for (int x = 4; x <= s->loa - 4; x += 2) {
+            double hw = 0, hh = 0, cy = 0;
+            if (!ship_section(s, x, &hw, &hh, &cy)) continue;
+            for (double z = -hw; z <= hw; z += 2.0) {
+                bool near = false;
+                for (int i = 0; i < s->nshaft && !near; i++) {
+                    double dx = x - s->shaft[i].x, dz = z - s->shaft[i].z;
+                    if (dx * dx + dz * dz < 24.0 * 24.0) near = true;
+                }
+                if (near) continue;
+                int d0, d1;
+                int run = shaft_run(s, x, z, &d0, &d1);
+                if (run > brun) { brun = run; bx = x; bz = z; b0 = d0; b1 = d1; }
+            }
+        }
+        if (brun < 2 || bx < 0) break;      /* a shaft serving one deck is a room */
+        Shaft *sh = &s->shaft[s->nshaft++];
+        /* A LIFT WHERE IT IS WORTH ONE, STAIRS WHERE IT IS NOT. Four decks or
+         * more gets a turbolift; a short hop gets a stairwell, which is what a
+         * ship really does and means a lift failure is not automatically a
+         * deck nobody can reach. */
+        sh->kind = (uint8_t)(brun >= 4 ? SHAFT_LIFT : SHAFT_STAIR);
+        sh->x = (int16_t)bx; sh->z = (int16_t)bz;
+        sh->deck0 = (int16_t)b0; sh->deck1 = (int16_t)b1;
+    }
+    return s->nshaft;
+}
+
+/* ------------------------------------------------------------ reachable */
+
+bool ship_reach(const Ship *s, int from_deck, double fx, double fz,
+                long *reached, long *total)
+{
+    int w = s->loa + 1;
+    int zr = s->beam / 2 + s->ring.radius + 4;
+    int h = 2 * zr + 1;
+    int nd = 24;
+    size_t n = (size_t)nd * w * h;
+    unsigned char *cell = nom_alloc(n);
+    int *q = nom_alloc(sizeof(int) * n);
+    if (!cell || !q) return false;
+    memset(cell, 0, n);
+
+    long have = 0;
+    for (int d = 0; d < nd; d++)
+        for (int x = 0; x < w; x++)
+            for (int z = -zr; z <= zr; z++)
+                if (ship_deck_at(s, d, x, z)) {
+                    cell[((size_t)d * w + x) * h + (z + zr)] = 1;
+                    have++;
+                }
+
+    size_t start = (((size_t)from_deck * w + (int)fx) * h + ((int)fz + zr));
+    if (from_deck < 0 || from_deck >= nd || cell[start] != 1) {
+        nom_free(cell); nom_free(q);
+        if (total) *total = have;
+        if (reached) *reached = 0;
+        return false;
+    }
+    int qn = 0;
+    q[qn++] = (int)start; cell[start] = 2;
+    long seen = 1;
+    static const int DX[4] = { 1, -1, 0, 0 }, DZ[4] = { 0, 0, 1, -1 };
+    for (int qi = 0; qi < qn; qi++) {
+        int u = q[qi];
+        int d = u / (w * h), rem = u % (w * h);
+        int x = rem / h, z = rem % h - zr;
+        for (int k = 0; k < 4; k++) {
+            int nx = x + DX[k], nz = z + DZ[k];
+            if (nx < 0 || nx >= w || nz < -zr || nz > zr) continue;
+            size_t v = (((size_t)d * w + nx) * h + (nz + zr));
+            if (cell[v] != 1) continue;
+            cell[v] = 2; seen++; q[qn++] = (int)v;
+        }
+        /* AND UP OR DOWN, where a shaft passes through this square metre. */
+        for (int i = 0; i < s->nshaft; i++) {
+            const Shaft *sh = &s->shaft[i];
+            if (abs(x - sh->x) > SHIP_SHAFT_R || abs(z - sh->z) > SHIP_SHAFT_R)
+                continue;
+            for (int nd2 = sh->deck0; nd2 <= sh->deck1; nd2++) {
+                if (nd2 == d) continue;
+                size_t v = (((size_t)nd2 * w + x) * h + (z + zr));
+                if (cell[v] != 1) continue;
+                cell[v] = 2; seen++; q[qn++] = (int)v;
+            }
+        }
+    }
+    nom_free(cell); nom_free(q);
+    if (reached) *reached = seen;
+    if (total) *total = have;
+    return seen == have;
 }
 
 /* ------------------------------------------------------------ questions */

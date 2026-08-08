@@ -64,6 +64,33 @@ typedef struct {
     int16_t pylon_w;    /* the pylons' thickness                 */
 } Ring;
 
+/* ------------------------------------------------------------------ shafts
+ *
+ * David: "make sure that you can get to everywhere on the ship. Either by
+ * turbo lifts in certain areas or stairwells. Potentially both. You might have
+ * to go down to a deck to cross the neck and then go up, for example."
+ *
+ * That last sentence is the design. A hull this shape does NOT give a walkable
+ * route between the bow and the stern on every deck -- measured on seed 1,
+ * deck 2 has 2287 m2 of floor and only 220 of it is reachable from the bow --
+ * and the answer is not to bend the hull until it does. The answer is vertical
+ * connection, and the detour is the game: a severed shaft is a part of the ship
+ * you now have to go round.
+ *
+ * A shaft is a small footprint punched through a run of decks. Where it can go
+ * is a fact about the hull -- it needs floor at that spot on every deck it
+ * serves -- so they are SEARCHED for rather than placed. */
+#define SHIP_MAX_SHAFT 10
+#define SHIP_SHAFT_R    2      /* half-width of the shaft, metres */
+
+typedef enum { SHAFT_LIFT = 0, SHAFT_STAIR } ShaftKind;
+
+typedef struct {
+    uint8_t kind;
+    int16_t x, z;             /* centre, metres */
+    int16_t deck0, deck1;     /* the run of decks it serves, inclusive */
+} Shaft;
+
 typedef struct {
     uint64_t seed;
     int      loa;              /* length overall, metres */
@@ -73,6 +100,8 @@ typedef struct {
     Hull     hull[SHIP_MAX_HULL];
     int      nhull;
     Ring     ring;
+    Shaft    shaft[SHIP_MAX_SHAFT];
+    int      nshaft;
     int      decks;            /* how many decks the envelope will take */
     int      deck_h;           /* floor to floor, metres                */
 } Ship;
@@ -116,6 +145,16 @@ bool ship_deck_at(const Ship *s, int deck, double x, double z);
  * false when the deck is empty. */
 bool ship_deck_bounds(const Ship *s, int deck, double *x0, double *x1,
                       double *z0, double *z1, double *area);
+
+/* Fill in s->shaft[]. Called by ship_generate(). */
+int  ship_place_shafts(Ship *s);
+
+/* How many square metres of deck there are, and how many of them can be walked
+ * to from `from_deck` at (fx,fz) using the decks and the shafts. Equal means
+ * the ship is entirely reachable on foot. */
+bool ship_reach(const Ship *s, int from_deck, double fx, double fz,
+                long *reached, long *total);
+
 
 const char *ship_hull_name(int kind);
 
