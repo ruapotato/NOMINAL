@@ -66,7 +66,18 @@ const SKIRT_COL := Color("#333b42")
 
 const SLAB_T := 0.16       # slab thickness, metres
 const WALL_T := 0.14
-const DOOR_H := 2.05       # head height of a doorway
+# HEAD HEIGHT OF A DOORWAY. David: "the doorways need to be about twice the
+# size that they are." The other half of that is the width, and the width is a
+# fact about the BUILDING rather than about this file -- core/building.c widens
+# a doorway to 2 m wherever the wall it stands in has the room, and sets the
+# passability bit on the second metre so that bld_walk routes through the same
+# hole a body walks through.
+#
+# This is the half that is honestly the view's: 2.05 m is a domestic door frame
+# and reads as one. 2.40 leaves a 0.44 m lintel under a 2.84 m ceiling, which
+# is a hatch you carry a rack server through without ducking -- and carrying a
+# box with both hands on it is what this game asks for all day.
+const DOOR_H := 2.40
 const EYE := 1.62
 
 # The furniture of the job. A room is not a coloured volume: it is a rack with
@@ -104,6 +115,7 @@ var floor_rect: Array = []
 var deck_kind: Array = []     # per floor [x0,y0,x1,y1]
 var cells: Array = []          # per floor PackedInt32Array, bw*bh
 var doorset := {}              # "f,x,y,dir" -> true
+var doorend := {}              # "f,x,y,dir" -> which jambs this cell owns
 var doors: Array = []
 var stairs: Array = []         # per stair run: {floor,lo,hi,axis,c0,c1,room}
 
@@ -218,12 +230,38 @@ func build(s: int) -> bool:
 
 	doors.clear()
 	doorset.clear()
+	doorend.clear()
 	for line in str(machine.bld_doors()).split("\n", false):
 		var f: PackedStringArray = line.split(" ", false)
 		var d := {"a": int(f[0]), "b": int(f[1]), "floor": int(f[2]),
-				"x": int(f[3]), "y": int(f[4]), "dir": int(f[5])}
+				"x": int(f[3]), "y": int(f[4]), "dir": int(f[5]),
+				"w": int(f[6]), "wx": int(f[7]), "wy": int(f[8])}
 		doors.append(d)
+		# BOTH METRES OF A WIDE DOORWAY GO IN THE SET. `doorset` is what the
+		# wall pass asks "is this cell an opening?", and core/building.c has
+		# already set the passability bit on the second cell -- so a view that
+		# registered only the first would build a wall a body walks through,
+		# which is precisely the divergence --building now refuses to allow.
 		doorset["%d,%d,%d,%d" % [d.floor, d.x, d.y, d.dir]] = true
+		doorset["%d,%d,%d,%d" % [d.floor, d.wx, d.wy, d.dir]] = true
+		# WHICH END OF THE OPENING EACH CELL IS, because a hatch's collar goes
+		# round the OPENING and not round each square metre of it. _hatch()
+		# draws a jamb at both edges of the cell it is given, which is right
+		# for a 1 m door and puts a post down the middle of a 2 m one. The
+		# mask says which jambs this cell owns: 1 is the low edge along the
+		# wall, 2 is the high edge, and a narrow door owns both.
+		var lo: int = 1
+		var hi: int = 2
+		if d.w == 2:
+			# the widened cell may be either side of the recorded one
+			var along_second: int = d.wy if d.dir == 0 else d.wx
+			var along_first: int = d.y if d.dir == 0 else d.x
+			doorend["%d,%d,%d,%d" % [d.floor, d.x, d.y, d.dir]] = \
+				lo if along_first < along_second else hi
+			doorend["%d,%d,%d,%d" % [d.floor, d.wx, d.wy, d.dir]] = \
+				hi if along_first < along_second else lo
+		else:
+			doorend["%d,%d,%d,%d" % [d.floor, d.x, d.y, d.dir]] = lo | hi
 
 	cells.clear()
 	for f in range(nfloors):
@@ -486,6 +524,129 @@ func _box(mn: Vector3, size: Vector3, col: Color, collide := true, top: Color = 
 	_quad(Vector3(mx.x, mn.y, mn.z), Vector3(mx.x, mx.y, mn.z), Vector3(mx.x, mx.y, mx.z), Vector3(mx.x, mn.y, mx.z), col, collide)
 
 
+# ============================================ DOORS THAT OPEN BY THEMSELVES
+#
+# David: "I'd like those automatic sliding doors."
+#
+# WHY THESE ARE NODES AND NOT PART OF THE MESH. Everything else in this file
+# goes through _quad() into one big static mesh, which is why the station draws
+# in a handful of calls. A door has to MOVE, so each one is a pair of panels
+# with their own transforms -- and they carry no collision at all, which is the
+# decision worth writing down.
+#
+# A DOOR YOU CAN WALK INTO IS A DOOR THAT CAN TRAP YOU. If these panels
+# collided, then every one of them would be a place the model says you may walk
+# and the view says you may not -- the exact divergence core/building.c's width
+# gate was added to forbid, reintroduced one storey down. Worse, an animation
+# that lagged a fast walk by two frames would wedge a body in a doorway with no
+# way out, and --building would still swear the room was reachable. So they are
+# scenery that gets out of your way: the opening is always open to physics, and
+# the panels are what make it read as a ship.
+const DOOR_SLIDE := 3.2      # m/s -- fast enough not to be waited for
+const DOOR_NEAR  := 3.0      # m from the middle of the opening before it opens
+const DOOR_PANEL := 0.06     # panel thickness
+const DOOR_COL   := Color("#4a555e")
+const DOOR_LIT   := Color("#8a6a34")   # the same ochre every hatch carries
+
+var _doors_node: Node3D = null
+var _panels: Array = []      # {node, shut (Vector3), open (Vector3), floor}
+
+func _hang_doors() -> void:
+	if _doors_node != null and is_instance_valid(_doors_node):
+		_doors_node.queue_free()
+	_panels.clear()
+	_doors_node = Node3D.new()
+	_doors_node.name = "Doors"
+	add_child(_doors_node)
+
+	var mat := StandardMaterial3D.new()
+	mat.vertex_color_use_as_albedo = true
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+
+	for d in doors:
+		var base: float = float(d.floor) * fheight
+		var h: float = min(DOOR_H, fheight - SLAB_T) - SILL_H
+		# THE OPENING, IN METRES, and it comes off the model's own width. The
+		# leaf is half of it, so a 2 m hatch is two 1 m leaves and a 1 m one
+		# is two half-metre leaves -- same geometry, no special case.
+		var w: float = float(d.w)
+		var lo: float = float(min(d.y, d.wy)) if d.dir == 0 else float(min(d.x, d.wx))
+		var leaf: float = w * 0.5
+		for side in [0, 1]:
+			var mi := MeshInstance3D.new()
+			var st := SurfaceTool.new()
+			st.begin(Mesh.PRIMITIVE_TRIANGLES)
+			# a leaf lying in the plane of the wall, drawn about its own origin
+			var half := leaf * 0.5
+			var pts := [
+				Vector3(-half, 0.0, -DOOR_PANEL * 0.5),
+				Vector3( half, 0.0, -DOOR_PANEL * 0.5),
+				Vector3( half, h,   -DOOR_PANEL * 0.5),
+				Vector3(-half, h,   -DOOR_PANEL * 0.5),
+			]
+			for face in [0, 1]:
+				var z: float = DOOR_PANEL * (0.5 if face == 1 else -0.5)
+				var idx := [0, 1, 2, 0, 2, 3] if face == 1 else [0, 2, 1, 0, 3, 2]
+				for i in idx:
+					var p: Vector3 = pts[i]
+					# the ochre band across the leaf at chest height, which is
+					# what makes a moving panel read as a door and not a slab
+					st.set_color(DOOR_LIT if absf(p.y - h * 0.55) < 0.09 else DOOR_COL)
+					st.add_vertex(Vector3(p.x, p.y, z))
+			st.index()
+			mi.mesh = st.commit()
+			mi.material_override = mat
+			_doors_node.add_child(mi)
+
+			# WHERE IT SITS SHUT AND WHERE IT GOES. Shut, the two leaves meet
+			# in the middle of the opening; open, each has slid a full leaf
+			# further out, which puts it inside the bulkhead beside the hatch
+			# -- where a real pocket door goes.
+			var mid: float = lo + w * 0.5
+			var off: float = (float(side) - 0.5) * leaf          # -leaf/2 or +leaf/2
+			var shut: Vector3
+			var opn: Vector3
+			if d.dir == 0:
+				var wall: float = float(d.x) + 1.0
+				shut = Vector3(wall, base + SILL_H, mid + off)
+				opn  = Vector3(wall, base + SILL_H, mid + off * 3.0)
+			else:
+				var wallz: float = float(d.y) + 1.0
+				shut = Vector3(mid + off, base + SILL_H, wallz)
+				opn  = Vector3(mid + off * 3.0, base + SILL_H, wallz)
+			# WHICH WAY THE LEAF FACES. dir 0 is the wall between (x,y) and
+			# (x+1,y) -- a plane at x = const, so the wall RUNS ALONG Z and the
+			# leaf, which is drawn with its width on local x, has to turn a
+			# quarter. dir 1 is the wall at z = const, running along x, which
+			# is the way the leaf is already built.
+			if d.dir == 0:
+				mi.rotation.y = PI * 0.5
+			mi.position = shut
+			_panels.append({"node": mi, "shut": shut, "open": opn,
+					"floor": int(d.floor), "dir": int(d.dir), "mid": Vector3(
+						shut.x - off if d.dir == 1 else shut.x,
+						shut.y,
+						shut.z - off if d.dir == 0 else shut.z)})
+
+
+# Slid each frame, and only for the deck the player is standing on: a station
+# is eight decks of a couple of hundred doors and the seven you are not on
+# cannot be seen through a slab.
+func _slide_doors(dt: float) -> void:
+	if player == null or _panels.is_empty():
+		return
+	var here: int = player_floor()
+	var p: Vector3 = player.global_position
+	for e in _panels:
+		if int(e.floor) != here:
+			continue
+		var want: Vector3 = e.open if p.distance_to(e.mid) < DOOR_NEAR else e.shut
+		var n: MeshInstance3D = e.node
+		if n.position.distance_squared_to(want) < 1e-6:
+			continue
+		n.position = n.position.move_toward(want, DOOR_SLIDE * dt)
+
+
 func _build_mesh() -> void:
 	_v = PackedVector3Array()
 	_c = PackedColorArray()
@@ -504,6 +665,7 @@ func _build_mesh() -> void:
 		_rack_geom(i)
 	_crew_consoles()
 	_roof()
+	_hang_doors()
 
 	var mesh := ArrayMesh.new()
 	var arr := []
@@ -669,7 +831,8 @@ func _walls(f: int) -> void:
 						var ls := size
 						ls.y = top - DOOR_H
 						_box(lin, ls, col)
-					_hatch(mn, size, dir, base)
+					_hatch(mn, size, dir, base,
+						int(doorend.get("%d,%d,%d,%d" % [f, x, y, dir], 3)))
 					continue
 				# A WINDOW IS A HOLE IN THE HULL, so the hull is not drawn
 				# across it: the wall goes up in four pieces round the
@@ -729,10 +892,15 @@ const HATCH_COL := Color("#39424a")
 const HATCH_TRIM := Color("#8a6a34")     # the ochre line every hatch carries
 const SILL_H := 0.04
 
-func _hatch(mn: Vector3, size: Vector3, dir: int, base: float) -> void:
+func _hatch(mn: Vector3, size: Vector3, dir: int, base: float, ends := 3) -> void:
 	var h: float = min(DOOR_H, size.y)
-	# the two jambs, one each side of the metre-wide opening
-	for k in [0.0, 1.0 - HATCH_W]:
+	# THE JAMBS THIS CELL OWNS. A collar goes round the OPENING, so on a 2 m
+	# doorway the low cell draws only its low post and the high cell only its
+	# high one -- otherwise there is a post standing in the middle of the gap.
+	var posts: Array = []
+	if ends & 1: posts.append(0.0)
+	if ends & 2: posts.append(1.0 - HATCH_W)
+	for k in posts:
 		var jm := mn
 		var js := size
 		js.y = h
@@ -7504,6 +7672,7 @@ func _process(_dt: float) -> void:
 	if desk_open() or seat_open():
 		return                 # the world waits while you are sitting at it
 	_run_clock(_dt)
+	_slide_doors(_dt)
 	if minimap != null and is_instance_valid(minimap):
 		minimap.show_floor(player_floor(), map_rows(),
 			Vector2(player.global_position.x, player.global_position.z),

@@ -171,6 +171,35 @@ static bool add_door(Building *b, int floor, int x, int y, int dir)
     d->a = a; d->b = c; d->x = (int16_t)x; d->y = (int16_t)y;
     d->floor = (uint8_t)floor; d->dir = (uint8_t)dir;
     b->edge[CIDX(b, floor, x, y)] |= (uint8_t)(dir == 0 ? 1 : 2);
+    /* AND NOW MAKE IT TWO METRES WIDE, if the wall will take it.
+     *
+     * A doorway runs ALONG the wall it is in, so the cell to widen into is
+     * the next one across the wall's own direction: for a dir-0 door (a wall
+     * running north-south) that is (x, y+1) or (x, y-1); for dir 1 it is
+     * (x+1, y) or (x-1, y).
+     *
+     * THE CONDITION IS THE SAME TWO ROOMS. Widening into a cell whose
+     * neighbours are a different pair would punch a hole between two rooms
+     * that the generator never gave a door -- which is not a wide door, it is
+     * a missing wall, and --building's privacy rule would rightly call it
+     * one. So the second cell has to see exactly `a` on this side and `c` on
+     * the other, and where it does not the door simply stays a metre wide.
+     * That is the corner room, the one-metre stub, and the cell already spoken
+     * for by another door: all three keep their narrow opening and the gate
+     * prints how many there were rather than pretending there are none. */
+    int ax = (dir == 0) ? 0 : 1, ay = (dir == 0) ? 1 : 0;   /* along the wall */
+    d->wx = (int16_t)x; d->wy = (int16_t)y; d->w = 1;
+    for (int s = 1; s >= -1; s -= 2) {
+        int wx = x + ax * s, wy = y + ay * s;
+        int wnx = wx + (dir == 0), wny = wy + (dir == 1);
+        if (cell_at(b, floor, wx, wy) != a) continue;
+        if (cell_at(b, floor, wnx, wny) != c) continue;
+        /* a cell that is already an opening is somebody else's door */
+        if (b->edge[CIDX(b, floor, wx, wy)] & (uint8_t)(dir == 0 ? 1 : 2)) continue;
+        b->edge[CIDX(b, floor, wx, wy)] |= (uint8_t)(dir == 0 ? 1 : 2);
+        d->wx = (int16_t)wx; d->wy = (int16_t)wy; d->w = 2;
+        break;
+    }
     return true;
 }
 
@@ -1310,6 +1339,32 @@ int bld_check(const Building *b, Buf *out, int *fails)
             if (b->doors[j].floor == d->floor && b->doors[j].x == d->x &&
                 b->doors[j].y == d->y && b->doors[j].dir == d->dir)
                 fail(out, fails, BC_DOORS, "door %d is a duplicate of door %d", i, j);
+        /* AND THE SECOND METRE OF A TWO-METRE OPENING IS THE SAME DOORWAY.
+         *
+         * This is the whole of what makes a wide door safe. The renderer will
+         * cut a hole wherever `w` says to, and a body will walk through the
+         * hole it cut, so the second cell must (a) stand between the same two
+         * rooms, and (b) actually be open in `edge` -- because bld_walk reads
+         * `edge` and nothing else. Miss (a) and the station has a hole between
+         * two rooms nobody gave a door to; miss (b) and the view lets you
+         * walk somewhere the model will not route you. */
+        if (d->w < 1 || d->w > 2)
+            fail(out, fails, BC_DOORS, "door %d is %u metres across", i, d->w);
+        if (d->w == 1 && (d->wx != d->x || d->wy != d->y))
+            fail(out, fails, BC_DOORS,
+                 "door %d is one metre wide but names a second cell", i);
+        if (d->w == 2) {
+            int wnx = d->wx + (d->dir == 0), wny = d->wy + (d->dir == 1);
+            if (cell_at(b, d->floor, d->wx, d->wy) != a ||
+                cell_at(b, d->floor, wnx, wny) != c)
+                fail(out, fails, BC_DOORS,
+                     "door %d is 2 m wide and its second metre is between "
+                     "different rooms", i);
+            else if (!(b->edge[CIDX(b, d->floor, d->wx, d->wy)] &
+                       (uint8_t)(d->dir == 0 ? 1 : 2)))
+                fail(out, fails, BC_DOORS,
+                     "door %d is 2 m wide in the view and 1 m wide to a walk", i);
+        }
     }
 
     /* 6. every room has a way in. Corridors are their own way in. */

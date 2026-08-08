@@ -78,10 +78,31 @@ typedef struct {
  * at (x+1,y), dir 1 means (x,y+1). Stated this way a door cannot open into a
  * wall, because there is no way to write one that does not have a room on
  * both sides -- and the gate checks that anyway. */
+/* AND HOW WIDE IT IS, WHICH IS A FACT ABOUT THE BUILDING AND NOT ABOUT THE
+ * VIEW. David: "The doorways themselves are kinda small. I'd like those
+ * automatic sliding doors, but the doorways need to be about twice the size
+ * that they are." A metre is a domestic door; two is a hatch a person walks
+ * through carrying a server with both hands on it, which is what this game
+ * asks them to do all day.
+ *
+ * `w` is in cells, so it is in metres, and it is 1 or 2. It is 2 wherever the
+ * next cell along the same wall has the SAME two rooms either side of it --
+ * which is most doors, and is not all of them: a room one metre from a corner
+ * has nowhere to widen into, and widening it anyway would open a hole into a
+ * third room or into vacuum.
+ *
+ * The reason this lives here rather than in tower.gd is the architectural
+ * rule. A doorway a body can walk through is a doorway bld_walk() must be
+ * able to route through, or the view and the model disagree about where you
+ * can stand -- so the widening sets the edge bit on the second cell too, and
+ * every walking distance in the game re-costs itself for free. `wx, wy` is
+ * that second cell, or the first cell again when w is 1. */
 typedef struct {
     uint16_t a, b;          /* room indices; a is the (x,y) side */
     int16_t  x, y;
+    int16_t  wx, wy;        /* the second cell of a 2 m opening, or (x,y) */
     uint8_t  floor, dir;
+    uint8_t  w;             /* metres across: 1 or 2 */
 } Door;
 
 typedef struct {

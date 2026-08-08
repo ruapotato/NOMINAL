@@ -280,8 +280,19 @@ static int bld_mutate(Building *b, int which)
             int ka = b->rooms[b->doors[i].a].kind, kb = b->rooms[b->doors[i].b].kind;
             if (ka != RM_OFFICE && ka != RM_RESIDENCE &&
                 kb != RM_OFFICE && kb != RM_RESIDENCE) continue;
+            /* BRICK THE WHOLE DOORWAY, BOTH METRES OF IT.
+             *
+             * This decoy used to clear one cell, because a doorway used to BE
+             * one cell. Since doors are 2 m wide it sealed half an opening and
+             * the room stayed reachable through the other half -- so a
+             * building broken on purpose passed, which is exactly the failure
+             * this harness exists to shout about, and it did. A wide door is
+             * two cells in `edge` and a decoy that means to close it has to
+             * clear both. */
             b->edge[(((size_t)b->doors[i].floor * (size_t)b->h + (size_t)b->doors[i].y)
                      * (size_t)b->w) + (size_t)b->doors[i].x] = 0;
+            b->edge[(((size_t)b->doors[i].floor * (size_t)b->h + (size_t)b->doors[i].wy)
+                     * (size_t)b->w) + (size_t)b->doors[i].wx] = 0;
             b->doors[i] = b->doors[--b->ndoors];
             return which;
         }
@@ -357,6 +368,7 @@ int main(int argc, char **argv)
         int fails[BC_COUNT] = {0}, hit[BC_COUNT] = {0};
         int nogen = 0, ndeterm = 0;
         long rooms = 0, doors = 0, floors = 0; double area = 0;
+        long wide = 0;   /* doorways the wall was long enough to widen */
         double diffsum = 0; long diffn = 0;
         for (int i = 0; i < n; i++) {
             uint64_t seed = 7000 + (uint64_t)i;
@@ -392,6 +404,7 @@ int main(int argc, char **argv)
             buf_free(&why);
 
             rooms += b.nrooms; doors += b.ndoors; floors += b.floors;
+            for (int i = 0; i < b.ndoors; i++) if (b.doors[i].w == 2) wide++;
             for (int f = 0; f < b.floors; f++)
                 area += (b.fx1[f] - b.fx0[f]) * (double)(b.fy1[f] - b.fy0[f]);
             /* How far apart ARE the two numbers? If a player is choosing
@@ -440,6 +453,12 @@ int main(int argc, char **argv)
         if (floors)
             printf("\naverage tower: %.1f floors, %.0f rooms, %.0f doors, %.0f m2 of plate\n",
                    (double)floors / n, (double)rooms / n, (double)doors / n, area / floors);
+        /* MEASURED, NOT ASSERTED. A door is 2 m wherever the wall it stands in
+         * has the room for it; the rest are corners and one-metre stubs, and
+         * the honest thing is to print how many rather than to claim none. */
+        if (doors)
+            printf("doorways: %ld of %ld are 2 m across (%.0f%%), the rest had no wall to widen into\n",
+                   wide, doors, 100.0 * (double)wide / (double)doors);
         if (diffn)
             printf("Engineering to a comms cupboard: walking and cabling differ by %.1f m on average\n",
                    diffsum / (double)diffn);

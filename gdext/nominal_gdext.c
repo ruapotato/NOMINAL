@@ -730,10 +730,15 @@ static void m_bld_rooms(Station *st, const GDExtensionConstTypePtr *args, void *
     buf_free(&o);
 }
 
-/* bld_doors() -> String — "a b floor x y dir" per line. A door is an EDGE:
- * dir 0 is the wall between (x,y) and (x+1,y), dir 1 between (x,y) and
+/* bld_doors() -> String — "a b floor x y dir w wx wy" per line. A door is an
+ * EDGE: dir 0 is the wall between (x,y) and (x+1,y), dir 1 between (x,y) and
  * (x,y+1). The renderer leaves a gap there instead of building a wall, which
- * is why a door cannot end up opening into brickwork. */
+ * is why a door cannot end up opening into brickwork.
+ *
+ * AND `w` IS HOW MANY METRES ACROSS IT IS, 1 or 2, with (wx,wy) the second
+ * cell of a wide one. The renderer must cut BOTH cells: the widening already
+ * set the passability bit on the second one, so a view that cut only the
+ * first would draw a wall a body can walk through. */
 static void m_bld_doors(Station *st, const GDExtensionConstTypePtr *args, void *ret)
 {
     (void)args;
@@ -742,7 +747,8 @@ static void m_bld_doors(Station *st, const GDExtensionConstTypePtr *args, void *
     Buf o; buf_init(&o);
     for (int i = 0; i < b->ndoors; i++) {
         const Door *d = &b->doors[i];
-        buf_printf(&o, "%d %d %d %d %d %d\n", d->a, d->b, d->floor, d->x, d->y, d->dir);
+        buf_printf(&o, "%d %d %d %d %d %d %d %d %d\n", d->a, d->b, d->floor,
+                   d->x, d->y, d->dir, d->w, d->wx, d->wy);
     }
     c_to_gdstring(ret, o.p ? o.p : "");
     buf_free(&o);

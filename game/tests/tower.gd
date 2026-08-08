@@ -2603,6 +2603,92 @@ func _init() -> void:
 		else:
 			ok("and the HUD stops offering a day that will not come")
 
+	# ---- DOORWAYS TWICE THE SIZE, WITH DOORS THAT OPEN BY THEMSELVES (#75)
+	#
+	# David: "The doorways themselves are kinda small. I'd like those automatic
+	# sliding doors, but the doorways need to be about twice the size that they
+	# are."
+	#
+	# The WIDTH half of that is a fact about the building and is gated in
+	# --building, which prints how many doorways it managed to widen. What is
+	# checkable only from in here is the three things the view could get wrong,
+	# and not one of them would show up in a screenshot:
+	#
+	#  1. a leaf lying across the plane the wall runs THROUGH rather than the
+	#     one it runs ALONG. From most camera angles that still looks like a
+	#     door, and it is a quarter turn away from being one.
+	#  2. a leaf that collides. That would make the panel a place the model says
+	#     you may walk and the view says you may not -- the exact divergence the
+	#     width gate in core/building.c exists to forbid -- and an animation
+	#     that lagged a fast walk could wedge a body in a doorway while
+	#     --building went on swearing the room was reachable.
+	#  3. a leaf that never gets out of the way, or never comes back.
+	var dr_askew := 0
+	var dr_solid := 0
+	for dr_e in t._panels:
+		var dr_n: MeshInstance3D = dr_e.node
+		var dr_box: AABB = dr_n.global_transform * dr_n.get_aabb()
+		# THIN ACROSS THE WALL, WIDE ALONG IT -- and which axis is which comes
+		# off the DOOR'S OWN dir, not off the box. Asking only "is it thin on
+		# one axis and wide on the other" cannot tell a leaf from the same leaf
+		# turned a quarter, because an AABB is symmetric in x and z: the test
+		# has to name the axis the wall's plane is normal to. dir 0 is the wall
+		# between (x,y) and (x+1,y), a plane at x = const, so a leaf in it is
+		# thin on X and wide on Z. dir 1 is the other way about.
+		var dr_across: float = dr_box.size.x if int(dr_e.dir) == 0 else dr_box.size.z
+		var dr_along: float = dr_box.size.z if int(dr_e.dir) == 0 else dr_box.size.x
+		if dr_across > t.DOOR_PANEL * 2.0 or dr_along < 0.3:
+			dr_askew += 1
+		if dr_n.get_child_count() > 0:
+			dr_solid += 1
+	var dr_wide := 0
+	for dr_d in t.doors:
+		if int(dr_d.w) == 2:
+			dr_wide += 1
+	if t._panels.size() != t.doors.size() * 2:
+		fail("%d doorways and %d leaves: a door is two panels"
+			% [t.doors.size(), t._panels.size()])
+	else:
+		ok("every doorway in the station has two leaves: %d of them"
+			% t._panels.size())
+	if dr_askew > 0:
+		fail("%d leaves lie across their own wall instead of along it" % dr_askew)
+	else:
+		ok("and every leaf lies in the plane of the wall it hangs in")
+	if dr_solid > 0:
+		fail("%d door leaves carry collision, which can wedge a body in a doorway"
+			% dr_solid)
+	else:
+		ok("no leaf collides: the opening physics sees is always open")
+	if dr_wide * 100 / max(1, t.doors.size()) < 80:
+		fail("only %d of %d doorways are 2 m across" % [dr_wide, t.doors.size()])
+	else:
+		ok("%d of %d doorways are 2 m across, the rest had no wall to widen into"
+			% [dr_wide, t.doors.size()])
+	# AND THEY OPEN. The body is put in the middle of one and the slide stepped
+	# by hand, because _process belongs to the window and this is not one.
+	if not t._panels.is_empty():
+		var dr_p: Dictionary = t._panels[0]
+		var dr_leaf: MeshInstance3D = dr_p.node
+		dr_leaf.position = dr_p.shut
+		var dr_from: Vector3 = dr_leaf.position
+		t.player.global_position = Vector3(dr_p.mid) + Vector3(0, 0.9, 0)
+		for dr_i in range(60):
+			t._slide_doors(1.0 / 60.0)
+		var dr_moved: float = dr_leaf.position.distance_to(dr_from)
+		if dr_moved < 0.2:
+			fail("a body stood in the doorway and the leaf moved %.2f m" % dr_moved)
+		else:
+			ok("stand in a doorway and the leaf slides %.2f m out of the way" % dr_moved)
+		t.player.global_position = Vector3(dr_p.mid) + Vector3(30, 0.9, 0)
+		for dr_i in range(120):
+			t._slide_doors(1.0 / 60.0)
+		var dr_gap: float = dr_leaf.position.distance_to(dr_p.shut)
+		if dr_gap > 0.05:
+			fail("walk away and the door stayed open, %.2f m from shut" % dr_gap)
+		else:
+			ok("and it shuts again behind you")
+
 	print("tower: %d failures" % bad)
 	quit(1 if bad else 0)
 
