@@ -3989,6 +3989,123 @@ static void check_catalogue(const Building *b)
  * between them is the longest in the station. That is a decision on the
  * first morning rather than a corridor to walk down.
  */
+/* THE NIGHT WATCH, WHICH IS WHAT A WORKING CREW STATION IS FOR.
+ *
+ * A blind playtester got all six stations working, read "6 of 6 bridge
+ * stations working", and nothing happened -- their verdict was that the
+ * bridge should either do something or not be advertised. This is the
+ * something, and this is the measurement that it is real.
+ *
+ * TWO IDENTICAL STATIONS, SAME SEED, SAME BLACKOUT. One with a manned
+ * bridge and one without, and nothing else different between them. The mains
+ * goes at 04:12 on a day site_mains_fails_on() picks, a box that was running
+ * goes down with it, and on the morning after: the manned station has it back
+ * on and the dark one does not. If that ever stops being true the bridge has
+ * gone back to being a checklist over a stub.
+ */
+static void check_watch(const Building *b)
+{
+    printf("\nthe night watch: what a manned bridge does while you sleep\n");
+
+    /* WHEN THE MAINS ACTUALLY GOES on this seed, asked rather than assumed --
+     * it is a property of the seed and the day and site.c owns it. */
+    int cut = -1;
+    for (int d = 1; d < 300 && cut < 0; d++)
+        if (site_mains_fails_on(GATE_SEED, d)) cut = d;
+    ck("the mains fails on a day this seed decides, not one this file picked",
+       cut > 1);
+    if (cut < 0) return;
+    printf("    seed %llu loses the mains on day %d\n",
+           (unsigned long long)GATE_SEED, cut);
+
+    Site manned, dark;
+    site_new(&manned, b, GATE_SEED, 400000);
+    site_new(&dark, b, GATE_SEED, 400000);
+
+    /* A BOX THAT IS RUNNING WHEN THE LIGHTS GO OUT, on both, built by the
+     * same lines so the only difference is the bridge. */
+    static const char *const BUILD[] = {
+        "credit 400000", "buy server files", "move files d0.eng",
+        "feed files", "power files on", NULL
+    };
+    for (int i = 0; BUILD[i]; i++) {
+        Buf o = {0};
+        site_cmd(&manned, BUILD[i], &o); buf_clear(&o);
+        site_cmd(&dark, BUILD[i], &o);   buf_free(&o);
+    }
+    int fm = site_dev_by_name(&manned, "files");
+    int fd = site_dev_by_name(&dark, "files");
+    ck("both stations have the same box running before the night",
+       fm >= 0 && fd >= 0 && manned.dev[fm].powered && dark.dev[fd].powered);
+
+    /* AND ONE OF THEM HAS A BRIDGE. Every station on it gets a machine, a
+     * run of conduit and a lead -- which is site_crew_why()'s three things,
+     * so this is the player's own job done in full. */
+    int cw = 0;
+    for (int i = 0; i < manned.ncrew; i++) {
+        char nm[16];
+        snprintf(nm, sizeof nm, "c%d", i);
+        int pc = site_install(&manned, SDEV_PC, manned.crew[i].room, nm);
+        if (pc < 0) continue;
+        site_feed(&manned, pc);
+        site_power(&manned, pc, true);
+        int sw = site_dev_by_name(&manned, "bsw");
+        if (sw < 0) {
+            int cup = bld_find(b, b->floors - 1, RM_COMMS);
+            if (cup < 0) cup = manned.crew[i].room;
+            sw = site_install(&manned, SDEV_SWITCH24, cup, "bsw");
+            if (sw >= 0) { site_feed(&manned, sw); site_power(&manned, sw, true); }
+        }
+        if (sw >= 0 && site_cable(&manned, sw, i, pc, 0, CAB_CAT5E) >= 0) cw++;
+    }
+    site_crew_sync(&manned);
+    printf("    the manned station has %d of %d stations working; the other "
+           "has %d\n", site_crew_working(&manned), manned.ncrew,
+           site_crew_working(&dark));
+    ck("one station has a bridge with somebody on it and the other has none",
+       site_crew_working(&manned) > 0 && site_crew_working(&dark) == 0 &&
+       cw > 0);
+
+    /* --- THE NIGHT. Both run to the morning after the cut. */
+    for (int d = 0; d < cut; d++) {
+        unserved_day(&manned, NULL);
+        unserved_day(&dark, NULL);
+    }
+    Buf mo = {0}, dobuf = {0};
+    site_dump_events(&manned, &mo);
+    site_dump_events(&dark, &dobuf);
+
+    ck("the same night took the same box down on both",
+       has(mo.p, "went down with the power") &&
+       has(dobuf.p, "went down with the power"));
+    printf("    after the cut: manned %s, dark %s\n",
+           manned.dev[fm].powered ? "running" : "off",
+           dark.dev[fd].powered ? "running" : "off");
+    ck("the manned station's crew switched it back on before the working day",
+       manned.dev[fm].powered);
+    ck("and the dark one is still off, which is what it costs to have no crew",
+       !dark.dev[fd].powered);
+    ck("`events` says who did it, and says it to the one that has a bridge",
+       has(mo.p, "switched back on by the watch") &&
+       !has(dobuf.p, "switched back on by the watch"));
+    ck("and tells the station with no bridge what that cost it",
+       has(dobuf.p, "Nobody is on the bridge"));
+
+    /* AND IT IS NOT A BLANKET UNDO. A box the player switched off on purpose
+     * stays off: the watch only touches what the night took down, or it
+     * would be taking a decision away rather than doing a job. */
+    site_power(&manned, fm, false);
+    unserved_day(&manned, NULL);
+    ck("a box the player switched off on purpose is still off in the morning",
+       !manned.dev[fm].powered);
+
+    buf_free(&mo);
+    buf_free(&dobuf);
+    site_free(&manned);
+    site_free(&dark);
+}
+
+
 static void check_crew(const Building *b)
 {
     printf("\nthe bridge: a crew at stations with nothing on them\n");
@@ -5186,6 +5303,7 @@ int site_selfcheck(void)
     check_clock(&b);
     check_conduits(&b);
     check_crew(&b);
+    check_watch(&b);
     check_one_fact_two_answers(&b);
     check_ambiguity_and_the_diary();
     /* D43: and the decision the first twenty days did not have. */

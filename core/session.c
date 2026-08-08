@@ -1252,10 +1252,27 @@ static void do_help(const Session *ses, Buf *out)
         return;
     }
     buf_puts(out,
-        "YOU ARE THE IT DEPARTMENT OF A BUILDING. Every switch, every metre of\n"
-        "copper and every address in it is yours to order, carry and configure.\n"
-        "Tenants move in on a schedule, they pay rent, and what they ask for is\n"
-        "what walks you into the limits.\n"
+        "YOU ARE THE IT DEPARTMENT OF A SPACE STATION. Every switch, every metre\n"
+        "of copper, every run of conduit and every address on it is yours to\n"
+        "order, carry and configure. Tenants take leases deck by deck, they pay\n"
+        "rent, and what they ask for is what walks you into the limits.\n"
+        "\n"
+        /* THE FICTION WAS SPLIT AND A PLAYTESTER SAID SO. `help` opened "YOU
+         * ARE THE IT DEPARTMENT OF A BUILDING" with tenants and a landlord,
+         * `open` said "every deck in this station", `crew` said "aboard", and
+         * a tenant lived in a residence on a starship with a goods-in roller
+         * door. Their words: *"I never knew whether I was in a tower or a
+         * ship, and it undercut both."* It is a station.
+         *
+         * AND THE BRIDGE IS NAMED HERE, because the same playtester walked
+         * the whole top deck without ever learning it existed: `crew` was
+         * documented in the middle of the POWER section between `unconduit`
+         * and `mains`, and nothing else in the game mentioned it. */
+        "THE FIRST JOB IS ON THE TOP DECK. The bridge crew were aboard before\n"
+        "you were and every one of their consoles is dark: no machine, no power,\n"
+        "no cable. `crew` lists them and names the first thing each one is\n"
+        "missing. A station with nobody on watch is one where a box that goes\n"
+        "down with the mains at four in the morning is still down at nine.\n"
         "\n");
     inventory(ses, out);
     buf_puts(out,
@@ -1265,6 +1282,7 @@ static void do_help(const Session *ses, Buf *out)
         "  where              deck, room, what is in reach, how far you walked\n"
         "  look               what is in this room, and the ways out of it\n"
         "  map                an ASCII plan of this deck\n"
+        "  crew               the bridge stations and what each is short of\n"
         "  go <room>          walk. `go comms` `go f3.office` `go #41` `go core`\n"
         "                     -- a box's name walks you to the room it is in\n"
         "  lift <deck>       take the lift. Only decks in service have a button\n"
@@ -3236,12 +3254,25 @@ void session_prompt(const Session *ses, char *out, size_t cap)
  * bottom of `demand` is the whole shape of the problem in two lines. */
 static void intro(Session *ses, Buf *out)
 {
-    buf_printf(out, "\n--- %llu, a tower of %d decks and %d rooms ---\n",
+    buf_printf(out, "\n--- %llu, a station of %d decks and %d rooms ---\n",
                (unsigned long long)ses->seed, ses->b.floors, ses->b.nrooms);
-    buf_printf(out, "you stand up from your desk and walk into Engineering. There is "
-                    "an ISP handoff\non the wall (%d/%d) and nothing is plugged "
-                    "into it. You have %ld to spend.\n",
-               ses->s.uplink >= 0 ? 1 : 0, 1, ses->s.money);
+    /* WHAT IS REALLY IN THE ROOM, and it used to contradict `look` in the
+     * same breath. This said "an ISP handoff on the wall and nothing is
+     * plugged into it" while `look`, one line later in the same room, said
+     * "uplink:0 has the lead the building came with in it, to ws ... all 1
+     * ports used". A blind playtester read both and reported it, and they
+     * were right: the handoff's only port has had the workstation's lead in
+     * it since site_new(), and taking that lead out to make room for your
+     * first switch is the first real decision in the game. Saying the socket
+     * is empty hides the decision. */
+    buf_printf(out, "you stand up from your desk and walk into Engineering. The "
+                    "ISP handoff is\non the wall and its one port already has "
+                    "the lead to your own machine in it --\nwhich is the port "
+                    "your first switch will want. You have %ld to spend.\n",
+               ses->s.money);
+    buf_printf(out, "The bridge is on deck %d and every console on it is dark: "
+                    "`crew` says what\neach one is short of.\n",
+               ses->b.floors - 1);
     Buf d = {0};
     site_dump_demand(&ses->s, &d);
     const char *p = d.p ? strstr(d.p, "\ndrops in all") : NULL;
@@ -3318,6 +3349,22 @@ bool session_line(Session *ses, const char *line, Buf *out)
      * here would change a game four playtests have already been run on. */
     if (ses->where == SES_DESK) {
         if (!n) return false;
+        /* EXCEPT `help`, WHICH IS WHAT A STUCK PLAYER TYPES. A blind
+         * playtester sat down at the desk, typed `help`, and got nothing --
+         * because the break-fix game owns every word here and in a session
+         * with no break-fix game behind it there is nobody to answer. One
+         * word is not somebody else's line: it is the word that says which
+         * game you are in. */
+        if (strcmp(t[0], "help") == 0) {
+            buf_puts(out,
+                "you are sitting at your own workstation, which is where the\n"
+                "support tickets come in -- that half of the game is the\n"
+                "break-fix one and it answers here.\n"
+                "  tower            stand up and go back into the station\n"
+                "Everything about the station -- ordering, carrying, conduit,\n"
+                "copper, the bridge crew -- is a verb out there, not in here.\n");
+            return true;
+        }
         if (strcmp(t[0], "tower") == 0 || strcmp(t[0], "building") == 0 ||
             strcmp(t[0], "site") == 0) {
             if (!ses->up) {

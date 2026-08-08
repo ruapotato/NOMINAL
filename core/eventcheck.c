@@ -1258,7 +1258,12 @@ static void check_heat(void)
 static void check_determinism(void)
 {
     printf("\nthe same seed, the same days, the same weather\n");
-    char first[4096] = "";
+    /* BIG ENOUGH FOR THE WHOLE LOG. This was four kilobytes and snprintf
+     * TRUNCATES: a log longer than that was compared to its own first four
+     * kilobytes and matched, so the gate passed on two runs that differed
+     * past the cut. It only came out when a new event kind made the log
+     * longer, which is the wrong way to find out. */
+    char first[65536] = "";
     bool ok = true;
     for (int pass = 0; pass < 2; pass++) {
         Session ses;
@@ -1281,7 +1286,22 @@ static void check_determinism(void)
         Buf ev = {0};
         site_dump_events(&ses.s, &ev);
         if (pass == 0) snprintf(first, sizeof first, "%s", ev.p ? ev.p : "");
-        else if (strcmp(first, ev.p ? ev.p : "") != 0) ok = false;
+        else if (strcmp(first, ev.p ? ev.p : "") != 0) {
+            /* AND IT SAYS WHERE THEY PARTED. "the log differs" sends you
+             * looking through fifty days of weather by eye; the first line
+             * that is not the same is the answer, and printing it is what
+             * turned this failure into a five-minute fix. */
+            ok = false;
+            const char *a2 = first, *b2 = ev.p ? ev.p : "";
+            while (*a2 && *a2 == *b2) { a2++; b2++; }
+            char la[120] = "", lb[120] = "";
+            snprintf(la, sizeof la, "%.100s", a2);
+            snprintf(lb, sizeof lb, "%.100s", b2);
+            for (char *q = la; *q; q++) if (*q == '\n') { *q = 0; break; }
+            for (char *q = lb; *q; q++) if (*q == '\n') { *q = 0; break; }
+            printf("    they part here --\n      pass 1: %s\n      pass 2: %s\n",
+                   la, lb);
+        }
         buf_free(&ev);
         buf_free(&o);
         session_end(&ses);

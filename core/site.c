@@ -1365,8 +1365,22 @@ void site_dump_crew(const Site *s, Buf *out)
                    bld_kind_name(s->b->rooms[c->room].kind), (int)c->room, box,
                    why ? why : "working");
     }
+    int up = site_crew_working(s);
     buf_printf(out, "%d of %d bridge stations working. They were aboard "
-                    "before you were.\n", site_crew_working(s), s->ncrew);
+                    "before you were.\n", up, s->ncrew);
+    /* AND WHAT THAT BUYS, because a checklist that does not say what it is
+     * for is a checklist nobody has a reason to finish. A blind playtester
+     * spent an entire opening budget getting six of six and then asked, quite
+     * reasonably, what it had been for. */
+    if (up > 0)
+        buf_printf(out, "  %d pair%s of hands on watch: when the mains goes in "
+                        "the small hours, that is\n  how many boxes are back "
+                        "on before anybody starts work. `events` names them.\n",
+                   up, up == 1 ? "" : "s");
+    else
+        buf_puts(out, "  Nobody is on watch. A box that goes down with the "
+                      "mains overnight stays\n  down until you walk to it -- "
+                      "and a tenancy whose server is off loses its day.\n");
 }
 
 void site_mains_sync(Site *s)

@@ -539,7 +539,19 @@ int main(int argc, char **argv)
             char p[64];
             session_prompt(&ses, p, sizeof p);
             printf("%s%s\n", p, line);
-            session_line(&ses, line, &o);
+            /* AND A LINE NOBODY TOOK IS NOT SILENCE.
+             *
+             * session_line() returns false for a word that belongs to the
+             * break-fix game -- which is right, because in the real product
+             * that game is behind this one and takes it. `--towersh` has
+             * nothing behind it, so a blind playtester who typed `desk` found
+             * a prompt where `help`, `ls` and everything else printed
+             * NOTHING AT ALL, with no error and no way back except a verb
+             * they had to already know. Every other shell in this game gives
+             * an answer good enough to learn from; this one gave none. */
+            if (!session_line(&ses, line, &o) && o.len == 0)
+                buf_printf(&o, "%s: not a word this shell takes. `tower` goes "
+                                "back into the station.\n", line);
             fwrite(o.p, 1, o.len, stdout);
             fflush(stdout);
         }

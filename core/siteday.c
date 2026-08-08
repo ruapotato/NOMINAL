@@ -1384,10 +1384,106 @@ static void the_copper(Site *s)
     }
 }
 
+/* ------------------------------------------------------------ the watch */
+/*
+ * WHAT A WORKING CREW STATION IS FOR.
+ *
+ * A blind playtester spent 5,482 of a 5,495 opening budget getting all six
+ * bridge stations working, read "6 of 6 bridge stations working", and nothing
+ * happened. Their verdict was the right one: *"either the crew starts doing
+ * something, or it should not be advertised."* A checklist that turns green
+ * over a stub is exactly the scenery this whole pivot exists to get away
+ * from.
+ *
+ * So a station that works is somebody ON WATCH, and what they do is the
+ * thing a person would otherwise have to walk across the station to do at
+ * four in the morning: when the mains drops and a box goes down with it, the
+ * crew put it back on. The same playtester lost a day to precisely that --
+ * `events` said "files went down with the power and has not been switched
+ * back on", and the office read every document across the handoff for the
+ * rest of the day because nobody was there to press a button.
+ *
+ * ONE PAIR OF HANDS PER WORKING STATION, and no more. Six stations up is a
+ * full watch and the night costs you nothing; three is a skeleton crew that
+ * gets to some of it; none and you find out when a tenancy's day fails,
+ * which is what happens today and will keep happening to anybody who does
+ * not build a bridge.
+ *
+ * IT IS DERIVED, LIKE EVERYTHING ELSE ABOUT THE CREW. site_crew_working()
+ * asks the model -- a machine at the station, power in it, a cable out of it
+ * -- so a bridge that stops working stops keeping watch on the same morning,
+ * with nothing to keep in step.
+ *
+ * WHAT IT DELIBERATELY DOES NOT DO: repair a disk, clear a fault, or touch
+ * anything the break-fix half of the game is about. The crew press a button
+ * a person could press. Every diagnosis in this game is still the player's,
+ * and a station that came up dirty still comes up dirty -- the crew got the
+ * power back on, not the filesystem back.
+ */
+static void the_watch(Site *s, int hands)
+{
+    if (hands <= 0) {
+        /* AND SAYING NOTHING WOULD BE THE WORSE FAILURE. A player whose
+         * bridge is dark should be told what it cost them, on the morning it
+         * cost them, or the bridge is a thing they never find a reason to
+         * build.
+         *
+         * ON THE MORNING IT COST THEM, AND NOT EVERY MORNING AFTER. The first
+         * version counted every box that was off and fed, which after one
+         * blackout is every day for the rest of the run -- a line a player
+         * would learn to skip, and fifty days of it overran the four-kilobyte
+         * buffer --eventcheck compares two runs in, so the determinism gate
+         * failed on a truncation. It speaks about TONIGHT: boxes this night
+         * took down, which is the only night it has anything to say. */
+        int dark = 0;
+        for (int e = s->nev - 1; e >= 0 && s->ev[e].day == s->day; e--)
+            if (s->ev[e].kind == SEV_DOWN_DIRTY) dark++;
+        if (dark > 0 && s->ncrew > 0)
+            ev_add(s, SEV_CREW_DARK, -1,
+                   "%d box%s went down in the night and %s still off. Nobody "
+                   "is on the bridge: %d of %d crew stations work.",
+                   dark, dark == 1 ? "" : "es", dark == 1 ? "it is" : "they are",
+                   site_crew_working(s), s->ncrew);
+        return;
+    }
+    int done = 0;
+    for (int i = 0; i < s->ndev && done < hands; i++) {
+        SiteDev *d = &s->dev[i];
+        /* Something with an operating system, with power available to it,
+         * that is switched off. That is a box the night took down and a
+         * person could switch back on -- and nothing else. A box the player
+         * deliberately switched off has no mains-fail behind it, so this
+         * would put it back on: it does not, because only a box that is FED
+         * and OFF is a candidate, and switching one off by hand is what
+         * `power off` does to a box that is still fed. See the note. */
+        if (!site_kind_has_os(d->kind) || !d->mains || d->powered) continue;
+        /* ONLY WHAT TONIGHT TOOK DOWN. `power <box> off` is a thing a player
+         * does on purpose, and a crew that undid it every morning would be
+         * taking a decision away rather than doing a job. So the candidate
+         * has to be named in today's events as having gone down with the
+         * power. */
+        bool tonight = false;
+        for (int e = s->nev - 1; e >= 0 && s->ev[e].day == s->day; e--)
+            if (s->ev[e].kind == SEV_DOWN_DIRTY && s->ev[e].dev == (int16_t)i)
+                tonight = true;
+        if (!tonight) continue;
+        if (!site_power(s, i, true)) continue;
+        done++;
+        ev_add(s, SEV_CREW_WATCH, i,
+               "%s was switched back on by the watch before the working day.",
+               d->name);
+    }
+    if (done > 0)
+        ev_add(s, SEV_CREW_WATCH, -1,
+               "%d of %d crew stations were manned overnight, and put %d box%s "
+               "back on.", hands, s->ncrew, done, done == 1 ? "" : "es");
+}
+
 /* Everything the world did today, in the order it would have happened: the
  * kit ages on the day's own traffic, the copper takes its errors while the
  * traffic is on it, the heat builds through the working day, the disks fail
- * when they fail, and the mains goes in the small hours. */
+ * when they fail, the mains goes in the small hours -- and then the bridge
+ * crew, if there is one, put right what they can before anybody starts work. */
 static void the_weather(Site *s)
 {
     Rng rng;
@@ -1396,7 +1492,21 @@ static void the_weather(Site *s)
     the_copper(s);
     the_heat(s, &rng);
     the_disks(s, &rng);
+    /* WHO WAS ON DUTY WHEN THE NIGHT BEGAN, counted BEFORE the mains goes.
+     *
+     * The first version asked site_crew_working() inside the watch, after the
+     * blackout -- and a blackout switches the crew's own consoles off with
+     * everything else, so the answer was always nought and the watch could
+     * never act on the one night it exists for. Measured: six of six stations
+     * working, the box down, and the crew did nothing.
+     *
+     * The crew are PEOPLE. Their screens going dark at 04:12 does not mean
+     * they went home; it means they are standing in the dark on the deck they
+     * were already on. So the watch is a property of the night as it STARTED,
+     * and their own consoles are among the things they put back on. */
+    int hands = site_crew_working(s);
     if (site_mains_fails_on(s->seed, s->day)) the_mains_fails(s, &rng);
+    the_watch(s, hands);
 }
 
 /* ------------------------------------------------------------ the report */
@@ -2551,7 +2661,13 @@ void site_dump_service_legend(const Site *s, Buf *out)
                   "  frames it threw away and which of the four reasons it was. `sit`\n"
                   "  and `voice` are verbs of the SESSION and not of this shell: they\n"
                   "  are how you read the same fault off the tenant's own machine,\n"
-                  "  and `tower` is the word that comes back here from there.\n");
+                  /* NOT `tower`. A blind playtester followed this sentence
+                   * out of a tenant's shell and got "tower: command not
+                   * found", bare, with none of the guidance every other
+                   * refusal in this game gives. `stand` is the word: `tower`
+                   * comes back from the DESK, which is a different chair. */
+                  "  and `stand` is the word that gets you out of their "
+                  "chair again.\n");
     buf_puts(out, "\n  The line under a row is that tenancy's own account of the day,\n"
                   "  in the units their business counts.\n");
     {

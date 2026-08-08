@@ -710,6 +710,11 @@ typedef enum {
     SEV_DISK_BOOT,   /* a disk nobody replaced took a file the boot reads   */
     SEV_LINK_WARN,   /* a marginal copper run is taking errors under load   */
     SEV_LINK_SLOW,   /* and has retrained down to a hundred megabits        */
+    /* THE BRIDGE DID SOMETHING WHILE YOU WERE ASLEEP. See the_watch() in
+     * core/siteday.c: a working crew station is somebody on watch, and what
+     * they put right overnight is the whole reason to build one. */
+    SEV_CREW_WATCH,
+    SEV_CREW_DARK,   /* ...and what nobody was there to put right            */
     SEV_KIND_COUNT
 } SiteEventKind;
 
