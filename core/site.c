@@ -1375,37 +1375,96 @@ void site_dump_next(const Site *s, Buf *out)
     for (int i = 0; i < s->ntenant; i++) {
         const SiteTenant *t = &s->tenant[i];
         if (!t->moved) continue;
-        if (site_tenant_connected(s, i) > 0) continue;
-        int deck = s->b->rooms[t->room].floor;
-        buf_printf(out, "tenancy %d moved in on deck %d and not one of their "
-                        "%d desks has a\n  cable in it. They pay for days "
-                        "their people can work, and three days\n  they cannot "
-                        "is a complaint.\n",
-                   t->tenant, deck, t->drops);
-        /* NAME THE SWITCH, OR NAME THE ORDER. This line used to read
+        /* WHY THEY CANNOT WORK, ASKED OF THE ONE PLACE THAT KNOWS.
          *
-         *     -> put a switch on that deck and `serve 2 <switch>`
+         * This used to test `site_tenant_connected(s, i) > 0` and move on --
+         * "has anything got a cable in it". A blind playthrough walked
+         * straight into what that misses: eight desks patched to a switch,
+         * every one with link, not one with an address, `service` saying in
+         * as many words "8 desks with link asked for a lease and got nothing",
+         * and `next` cheerfully pointing at the bridge. They were losing the
+         * day and the complaint clock was running.
          *
-         * and `<switch>` is not something anybody can type. `next` exists to
-         * hand the player the line to type; a form with a hole in it is the
-         * same defect as the `move` that was not a command, one degree
-         * milder. So the deck is searched for a switch with a port left in
-         * it, exactly as the crew branch below already does, and when there
-         * is not one the instruction is to order one. */
-        int sw = -1;
-        for (int d2 = 0; d2 < s->ndev && sw < 0; d2++) {
-            if (s->dev[d2].floor != deck) continue;
-            if (!site_kind_is_switch(s->dev[d2].kind)) continue;
-            if (site_free_port(s, d2) >= 0) sw = d2;
+         * A desk with a cable and no address cannot work either. The rule was
+         * always meant to be "somebody has the keys and cannot work", and the
+         * predicate for that is site_tenant_why(), which core/siteday.c
+         * already maintains for `service` and which knows the whole ladder --
+         * no cable, no lease asked for yet, asked and nothing answered, and
+         * every per-trade failure after that.
+         *
+         * So the sentence comes from there rather than being written a second
+         * time here. The old text duplicated why()'s "not one of their %d
+         * desks has a cable in it" word for word, which is this project's
+         * oldest defect wearing a hat. */
+        char why[256];
+        site_tenant_why(s, i, why, (int)sizeof why);
+        if (!why[0]) continue;
+        /* THE FACT, WITHOUT THE TRAILING HINT. why() ends several of its
+         * sentences with the tool to reach for -- "`dhcpd <box>` says what a
+         * box serves" -- which is right where `service` prints it and wrong
+         * here, for two reasons. `next` is about to give an instruction of
+         * its own, so a second one is noise; and `<box>` is a placeholder,
+         * which is the very thing that was taken out of this function's
+         * tenancy rung one commit ago. Cut at the sentence the first backtick
+         * sits in and keep the fact. */
+        char *tick = strchr(why, '`');
+        if (tick) {
+            while (tick > why && !(tick[-1] == ' ' && tick[-2] == '.')) tick--;
+            if (tick > why + 1) tick[-2] = 0;
         }
-        if (sw >= 0)
-            buf_printf(out, "  -> `serve %d %s` to cable their desks to the "
-                            "switch already on that deck\n",
-                       t->tenant, s->dev[sw].name);
-        else
-            buf_printf(out, "  -> `order switch24 sw%d`, then `deliver sw%d "
-                            "d%d.comms`, then `serve %d sw%d`\n",
-                       deck, deck, deck, t->tenant, deck);
+        int deck = s->b->rooms[t->room].floor;
+        buf_printf(out, "tenancy %d moved in on deck %d and cannot work:\n"
+                        "  %s\n"
+                        "  They pay for days their people can work, and three "
+                        "days they cannot\n  is a complaint.\n",
+                   t->tenant, deck, why);
+
+        /* AND THE LINE TO TYPE, WHICH DEPENDS ON WHICH RUNG THEY ARE ON. */
+        if (site_tenant_connected(s, i) == 0) {
+            int sw = -1;
+            for (int d2 = 0; d2 < s->ndev && sw < 0; d2++) {
+                if (s->dev[d2].floor != deck) continue;
+                if (!site_kind_is_switch(s->dev[d2].kind)) continue;
+                if (site_free_port(s, d2) >= 0) sw = d2;
+            }
+            if (sw >= 0)
+                buf_printf(out, "  -> `serve %d %s` to cable their desks to the "
+                                "switch already on that deck\n",
+                           t->tenant, s->dev[sw].name);
+            else
+                buf_printf(out, "  -> `order switch24 sw%d`, then `deliver sw%d "
+                                "d%d.comms`, then `serve %d sw%d`\n",
+                           deck, deck, deck, t->tenant, deck);
+        } else if (site_tenant_addressed(s, i) == 0 && t->leases_asked == 0) {
+            /* They have link and have not asked yet. The desks ask when the
+             * busy period runs, so the honest instruction is to run one. */
+            buf_puts(out, "  -> `day` -- their machines ask for a lease when "
+                          "the day runs, not before\n");
+        } else if (site_tenant_addressed(s, i) == 0) {
+            /* Asked, and nothing answered. A pool lives on a box that is
+             * already on their subnet, so the first question is whether this
+             * station has a router at all. */
+            int rt = -1;
+            for (int d2 = 0; d2 < s->ndev && rt < 0; d2++)
+                if (s->dev[d2].kind == SDEV_ROUTER) rt = d2;
+            if (rt < 0)
+                buf_printf(out, "  -> nothing in this station hands out "
+                                "addresses yet.\n"
+                                "     `order router edge`, then `deliver edge "
+                                "d%d.mdf`, then `feed edge`\n",
+                           s->b->rooms[s->dev[s->ws].room].floor);
+            else
+                buf_printf(out, "  -> `dhcpd %s` says what it is serving. They "
+                                "are waiting for a pool\n     on their own "
+                                "segment, and `show %s` says which of its legs "
+                                "are addressed\n", s->dev[rt].name,
+                           s->dev[rt].name);
+        } else {
+            /* Addressed and still not served: the trade's own failure, which
+             * why() has just described in its own units. */
+            buf_puts(out, "  -> `service` for the row this came off, and "
+                          "`load` for the port behind it\n");
+        }
         return;
     }
     /* 2. A RUN THAT IS ABOUT TO TRIP takes everything behind it down with it,

@@ -4513,6 +4513,82 @@ static void check_next(const Building *b)
        out_has(&urgent, "next", "moved in on deck") &&
        out_has(&urgent, "next", "`serve"));
 
+    /* AND A DESK WITH A CABLE AND NO ADDRESS CANNOT WORK EITHER.
+     *
+     * This is the rung a blind playthrough fell through. `next` tested
+     * "has anything got a cable in it" and stopped there, so the moment the
+     * desks were patched it declared the tenancy handled and went back to
+     * pointing at the bridge -- while `service` said, in the same session,
+     * "8 desks with link asked for a lease and got nothing". They were losing
+     * the day and the complaint clock was running.
+     *
+     * Driven here through a Session because getting to the state needs
+     * `serve`, and asserted on both halves: that `next` names the address and
+     * not the cable, and that it has NOT moved on to the bridge, which is the
+     * failure that was actually happening. */
+    {
+        Session up;
+        if (!session_start(&up, GATE_SEED, 200000)) {
+            ck("a session starts for the addressless-desk rung", false);
+        } else {
+            Buf u = {0};
+            for (int d = 0; d < 60; d++) {
+                bool anyin = false;
+                for (int i = 0; i < up.s.ntenant; i++)
+                    if (up.s.tenant[i].moved) anyin = true;
+                if (anyin) break;
+                buf_clear(&u); session_line(&up, "day 1", &u);
+            }
+            int who = -1, deck = -1;
+            for (int i = 0; i < up.s.ntenant && who < 0; i++)
+                if (up.s.tenant[i].moved) {
+                    who = up.s.tenant[i].tenant;
+                    deck = up.s.b->rooms[up.s.tenant[i].room].floor;
+                }
+            /* a switch on their deck, fed, and their desks patched to it */
+            char line[128];
+            snprintf(line, sizeof line, "order switch24 tsw");
+            session_line(&up, line, &u);
+            snprintf(line, sizeof line, "deliver tsw d%d.comms", deck);
+            session_line(&up, line, &u);
+            session_line(&up, "feed tsw", &u);
+            snprintf(line, sizeof line, "serve %d tsw", who);
+            session_line(&up, line, &u);
+            int linked = -1;
+            for (int i = 0; i < up.s.ntenant; i++)
+                if (up.s.tenant[i].tenant == who)
+                    linked = site_tenant_connected(&up.s, i);
+            ck("their desks now have link, and still no address", linked > 0);
+            /* and a day, so the desks actually ask and get nothing */
+            buf_clear(&u); session_line(&up, "day 1", &u);
+            buf_clear(&u); session_line(&up, "next", &u);
+            /* MATCHED AGAINST why()'s OWN SENTENCE, not against a phrase
+             * typed here. The first version of this asserted "no address"
+             * and failed against a line that says "asked for a lease and got
+             * nothing" -- a gate guessing at wording, which is how a gate
+             * ends up testing the guess instead of the game. Asking why()
+             * for the sentence and looking for it in `next` is also the
+             * stronger claim: it proves `next` is quoting the one place that
+             * knows rather than writing a second opinion. */
+            char why[256] = "";
+            for (int i = 0; i < up.s.ntenant; i++)
+                if (up.s.tenant[i].tenant == who)
+                    site_tenant_why(&up.s, i, why, (int)sizeof why);
+            /* why() ends some sentences with a tool hint that `next` trims,
+             * so compare on the fact in front of it */
+            char *tk = strchr(why, '`');
+            if (tk) { while (tk > why && !(tk[-1] == ' ' && tk[-2] == '.')) tk--;
+                      if (tk > why + 1) tk[-2] = 0; }
+            ck("`next` points at the desks, in the words `service` uses",
+               why[0] && has(u.p, "cannot work") && has(u.p, why));
+            ck("and not at the bridge, which is not what is costing rent",
+               !has(u.p, "station on the bridge"));
+            printf("    %.150s\n", u.p ? u.p : "");
+            buf_free(&u);
+            session_end(&up);
+        }
+    }
+
     buf_free(&o);
     session_end(&sn);
     site_free(&s);
