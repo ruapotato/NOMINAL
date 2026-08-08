@@ -780,6 +780,130 @@ done:
  * after every line and buys strips to do it, so a cupboard cannot stay dark
  * there for one command. Its own note says the price of power is measured in
  * check_conduits() and nowhere else. This belongs beside it. */
+/* ====== A ROW THAT SAYS THE SLOWEST TOOK 0 ms WHILE NOTHING FINISHED ======
+ *
+ * Found by playing a run over a pipe. A flat station built correctly -- router
+ * carried in, fed, cabled to the handoff and to the core, both legs addressed,
+ * a pool up, desks patched, every desk holding a lease -- served 0 of 32
+ * transfers, day after day, and `service` said:
+ *
+ *     deck tenant trade  desks up addr  done worst strikes rent/day
+ *        1      1 office     8  8    8  0/32   0ms       0      209
+ *        32 of 32 transfers did not finish inside the busy period;
+ *        the slowest took 0 ms.
+ *
+ * Both halves of that are wrong in the same way. worst_ms is only written for
+ * transfers that FINISH, so with none finished it is still the zero it was
+ * initialised to -- the slowest of an empty set, printed as a fact. It reads
+ * as a network that is instant and somehow serves nobody, which points a
+ * player away from the fault rather than at it.
+ *
+ * And the fault was nameable. The router was not forwarding, which is a fact
+ * the model holds and `show` already prints. A total failure with every desk
+ * addressed is almost never the trade's fault.
+ *
+ * MEASURED, NOT GUESSED, and this is where the gate earned its keep: the
+ * build that failed was missing TWO lines, `router edge on` and `gw edge`.
+ * The first version of the fix blamed both. Testing them one at a time showed
+ * that forwarding alone repairs it -- with forwarding on and no default route
+ * the same station serves 32 of 32 -- so the gateway is not a cause and does
+ * not get a sentence saying it is. */
+static void check_row_says_why(const Building *b)
+{
+    (void)b;
+    printf("\na row that finished nothing, and what it says about it\n");
+    Session ses;
+    if (!session_start(&ses, GATE_SEED, 200000)) { ck("a session starts", false); return; }
+    Buf o = {0};
+
+    /* Get a tenancy in and give it everything except a working router. */
+    for (int d = 0; d < 60; d++) {
+        bool anyin = false;
+        for (int i = 0; i < ses.s.ntenant; i++)
+            if (ses.s.tenant[i].moved) anyin = true;
+        if (anyin) break;
+        buf_clear(&o); session_line(&ses, "day 1", &o);
+    }
+    int who = -1, deck = -1, idx = -1;
+    for (int i = 0; i < ses.s.ntenant && who < 0; i++)
+        if (ses.s.tenant[i].moved) {
+            who = ses.s.tenant[i].tenant; idx = i;
+            deck = ses.s.b->rooms[ses.s.tenant[i].room].floor;
+        }
+    ck("a tenancy has the keys", who >= 0);
+    if (who < 0) goto done;
+
+    char line[160];
+    /* THE SMALLEST STATION THAT CAN SERVE THEM, and it names no box the seed
+     * gave us. The first draft cabled through `core`, the switch4 the building
+     * comes with -- and GATE_SEED's does not answer to that name, so the whole
+     * build fell over at "no such box: core" and the section measured an empty
+     * station instead of a broken one. A router has four ports; the deck's
+     * switch goes straight into one of them.
+     *
+     * No `uncable` either: the day-one lead is in uplink:0 and the room says
+     * in as many words that cabling anything else there takes it out. */
+    static const char *const BUILD[] = {
+        "order router edge", "deliver edge d0.mdf", "feed edge",
+        "cable uplink:0 edge:0 cat6", "spool back",
+        "addr edge:0 198.51.100.2/30", "addr edge:1 10.0.0.1/16",
+        "dhcpd edge 10.0.1.1 200 16 10.0.0.1 198.51.100.1",
+        "order switch24 tsw", NULL
+    };
+    for (int i = 0; BUILD[i]; i++) session_line(&ses, BUILD[i], &o);
+    snprintf(line, sizeof line, "deliver tsw d%d.comms", deck);
+    session_line(&ses, line, &o);
+    session_line(&ses, "feed tsw", &o);
+    session_line(&ses, "cable edge:1 tsw:0 cat6", &o);
+    session_line(&ses, "spool back", &o);
+    session_line(&ses, "go tsw", &o);
+    snprintf(line, sizeof line, "serve %d tsw", who);
+    session_line(&ses, line, &o);
+    buf_clear(&o); session_line(&ses, "day 1", &o);
+
+    ck("every desk holds a lease", site_tenant_addressed(&ses.s, idx) > 0);
+    ck("and not one transfer finished", ses.s.tenant[idx].finished == 0 &&
+       ses.s.tenant[idx].tried > 0);
+    printf("    %d desks addressed, %d of %d finished\n",
+           site_tenant_addressed(&ses.s, idx), ses.s.tenant[idx].finished,
+           ses.s.tenant[idx].tried);
+
+    /* --- 1. THE ROW DOES NOT REPORT THE SLOWEST OF AN EMPTY SET. */
+    buf_clear(&o); session_line(&ses, "service", &o);
+    ck("the `worst` column says there is no time to report, not 0ms",
+       !has(o.p, "0ms"));
+    /* WHAT IS NOT ASSERTED HERE, AND WHY. site_tenant_why() also stopped
+     * saying "the slowest took 0 ms" for a tenancy that finished nothing --
+     * but in THIS state the router branch above it answers first and returns,
+     * so that sentence is unreachable and a check on it would pass whatever
+     * the code said. It was written, it passed, and reverting the fix left it
+     * passing: a claim that cannot fail is not a claim, so it is gone rather
+     * than left in to pad the count. The column check above does bite, and
+     * reverting the fix fails it. */
+
+    /* --- 2. AND IT NAMES THE THING THAT IS ACTUALLY WRONG. */
+    ck("it says the router is not forwarding, and gives the line to fix it",
+       has(o.p, "not forwarding") && has(o.p, "`router edge on`"));
+
+    /* --- 3. AND THAT LINE IS THE WHOLE REPAIR, which is why it is the only
+     * cause named. `gw edge` is never typed here. */
+    session_line(&ses, "go edge", &o);
+    session_line(&ses, "router edge on", &o);
+    buf_clear(&o); session_line(&ses, "day 1", &o);
+    ck("typing it, and nothing else, gets their day done",
+       ses.s.tenant[idx].finished > 0);
+    printf("    after `router edge on` alone: %d of %d finished, no `gw` typed\n",
+           ses.s.tenant[idx].finished, ses.s.tenant[idx].tried);
+    buf_clear(&o); session_line(&ses, "service", &o);
+    ck("and now the row has a real slowest to print",
+       has(o.p, "ms") && !has(o.p, "not forwarding"));
+
+done:
+    buf_free(&o);
+    session_end(&ses);
+}
+
+
 static void check_trip(const Building *b)
 {
     (void)b;
@@ -5989,6 +6113,7 @@ int site_selfcheck(void)
     check_port_speed(&b);
     check_boxes(&b);
     check_plug_pulled(&b);
+    check_row_says_why(&b);
     check_trip(&b);
     check_tenants(&b);
     check_bills(&b);

@@ -1711,6 +1711,48 @@ void site_tenant_why(const Site *s, int ti, char *out, int cap)
         return;
     }
     if (site_tenant_served(s, ti)) return;
+
+    /* NOTHING AT ALL FINISHED? THEN LOOK FOR A CAUSE THAT EXPLAINS ALL OF IT,
+     * BEFORE REACHING FOR THE TRADE'S OWN UNITS.
+     *
+     * A blind playthrough built a flat station correctly -- router carried in,
+     * fed, cabled to the handoff and to the core, both legs addressed, a pool
+     * up, desks patched, every desk holding a lease -- and got 0 of 32
+     * transfers, day after day. The row said "the slowest took 0 ms" and the
+     * per-trade sentence said the transfers had not finished. Neither named
+     * the cause, and the cause was two lines the player had never typed:
+     * `gw edge 198.51.100.1` and `router edge on`. With those, the same
+     * station served 32 of 32 that evening.
+     *
+     * A total failure with every desk addressed is almost never the trade's
+     * fault, and the two things that produce it are both facts the model is
+     * holding and the tools can already print. Saying "the transfers were
+     * slow" over a router that is not forwarding is a true sentence that
+     * points the wrong way, which is worse than saying nothing. */
+    if (t->finished == 0 && site_tenant_addressed(s, ti) > 0) {
+        for (int d = 0; d < s->ndev; d++) {
+            if (s->dev[d].kind != SDEV_ROUTER) continue;
+            Buf rt = {0};
+            net_dump_routes(s->net, s->dev[d].node, &rt);
+            bool fwd = rt.p && strstr(rt.p, "ip_forward 1");
+            buf_free(&rt);
+            /* ONLY THE ONE THAT WAS MEASURED. The first draft of this also
+             * blamed a missing default route, because the build that failed
+             * was missing both `router edge on` and `gw edge`. Testing them
+             * one at a time said otherwise: with forwarding on and no default
+             * route the same station served 32 of 32. So the gateway is not a
+             * cause of a total failure here and does not get a sentence
+             * claiming it is -- which is the whole rule this project runs on,
+             * applied to a diagnosis I had already written down. */
+            if (!fwd) {
+                snprintf(out, (size_t)cap,
+                         "every desk has a lease and nothing finished: %s is "
+                         "not forwarding, so nothing crosses it. `router %s on`.",
+                         s->dev[d].name, s->dev[d].name);
+                return;
+            }
+        }
+    }
     switch (t->kind) {
     case TEN_VOICE:
         /* AND WHERE TO GO NEXT. This row is the landlord's view of a fault
@@ -1759,10 +1801,22 @@ void site_tenant_why(const Site *s, int ti, char *out, int cap)
                  t->tried - t->finished, t->tried, t->up_kb, t->up_want_kb);
         break;
     default:
-        snprintf(out, (size_t)cap,
-                 "%d of %d transfers did not finish inside the busy period; "
-                 "the slowest took %d ms.",
-                 t->tried - t->finished, t->tried, t->worst_ms);
+        /* AND THE SENTENCE MUST NOT REPORT THE SLOWEST OF AN EMPTY SET. With
+         * nothing finished, worst_ms is still the zero it was initialised to,
+         * and "the slowest took 0 ms" reads as an instant network that
+         * somehow served nobody. Two different failures wear that row -- some
+         * finished and were slow, or none finished at all -- and they want
+         * different first moves, so they get different sentences. */
+        if (t->finished == 0)
+            snprintf(out, (size_t)cap,
+                     "not one of %d transfers finished, so there is no time to "
+                     "report: they were still going when the day ended.",
+                     t->tried);
+        else
+            snprintf(out, (size_t)cap,
+                     "%d of %d transfers did not finish inside the busy "
+                     "period; the slowest that did took %d ms.",
+                     t->tried - t->finished, t->tried, t->worst_ms);
         break;
     }
 }
@@ -2629,9 +2683,19 @@ void site_dump_service(const Site *s, Buf *out)
             snprintf(files, sizeof files, "%s%s", fd->name, away ? " <-" : "");
             if (away) offfloor = true;
         }
-        buf_printf(out, "  %5d %6d  %-9s %5d %4d %5d  %5s %5dms  %7d%s  %8d  %s\n",
+        /* `worst` IS THE SLOWEST THAT FINISHED, so when nothing finished
+         * there is no slowest and the column says so rather than printing a
+         * zero. A blind playthrough of a station whose router had no default
+         * route read "0/32 done" beside "0ms" and took the 0 ms for evidence
+         * that the network was fine -- which is the opposite of what an empty
+         * set means, and pointed away from the fault. `done` has always used
+         * "-" for "no answer to give"; so does this now. */
+        char worst[12];
+        if (t->finished > 0) snprintf(worst, sizeof worst, "%dms", t->worst_ms);
+        else                 snprintf(worst, sizeof worst, "-");
+        buf_printf(out, "  %5d %6d  %-9s %5d %4d %5d  %5s %7s  %7d%s  %8d  %s\n",
                    t->floor, t->tenant, site_tenant_kind_name(t->kind),
-                   t->ndesk, up, ad, done, t->worst_ms,
+                   t->ndesk, up, ad, done, worst,
                    t->strikes, t->complained ? "*" : " ", t->rent / 30, files);
         /* AND WHY, WHEN THERE IS A WHY, IN THEIR OWN TERMS. `done` reads
          * 12/20 for everybody and means a different thing on every row: a
