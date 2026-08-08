@@ -4293,6 +4293,19 @@ static void check_catalogue(const Building *b)
 static void check_next(const Building *b)
 {
     printf("\n`next` names the next thing wrong, and its own advice works\n");
+    /* THROUGH A SESSION, BECAUSE THAT IS WHAT A PLAYER TYPES INTO.
+     *
+     * This walked a bare Site, and site_cmd() does not know `deliver` -- that
+     * is a Session verb, along with `go`, `carry` and `drop` that it stands
+     * for. So the moment the gate started reading its instructions out of the
+     * text instead of writing its own, it reported `deliver helm d10.bridge`
+     * as a command this game does not have, which is false: it is a command
+     * this LAYER does not have. `next` is addressed to a person, and the
+     * person is holding a session. */
+    Session sn;
+    if (!session_start(&sn, GATE_SEED, 200000)) {
+        ck("a session starts", false); return;
+    }
     Site s;
     site_new(&s, b, GATE_SEED, 200000);
     Buf o = {0};
@@ -4307,48 +4320,80 @@ static void check_next(const Building *b)
      * knows what the answer will be: it reads it. */
     const char *want[] = { "no machine at it", "nothing feeding it",
                            "switched off", "no cable in it" };
-    int rung = 0;
+    int rung = 0, ran = 0;
+    bool unknown = false;
+    char badcmd[128] = "";
     for (; rung < 4; rung++) {
         Buf n = {0};
-        site_cmd(&s, "next", &n);
+        session_line(&sn, "next", &n);
         if (!has(n.p, want[rung])) { buf_free(&n); break; }
-        /* the line to type is between the backticks after the arrow */
         const char *arrow = strstr(n.p, "-> `");
         if (!arrow) { buf_free(&n); break; }
-        const char *q0 = arrow + 4;
-        const char *q1 = strchr(q0, '`');
-        if (!q1) { buf_free(&n); break; }
-        char cmd[128];
-        int len = (int)(q1 - q0);
-        if (len > (int)sizeof cmd - 1) len = (int)sizeof cmd - 1;
-        memcpy(cmd, q0, (size_t)len);
-        cmd[len] = 0;
-        buf_free(&n);
-        Buf r = {0};
-        site_cmd(&s, cmd, &r);
-        bool refused = has(r.p, "refused") || has(r.p, "no such");
-        if (refused)
-            printf("    rung %d: `%s` was REFUSED -- %.60s\n", rung, cmd,
-                   r.p ? r.p : "");
-        buf_free(&r);
-        if (refused) break;
-        printf("    rung %d: %-22s -> `%s`\n", rung, want[rung], cmd);
-        /* the second half of the first rung is a `move`, which `next` gives
-         * on the same line; take it too rather than stalling */
-        if (rung == 0) {
-            char mv[64];
-            snprintf(mv, sizeof mv, "move %s d%d.bridge", s.crew[0].name,
-                     b->floors - 1);
-            Buf m = {0};
-            site_cmd(&s, mv, &m);
-            buf_free(&m);
+        /* EVERY COMMAND ON THE LINE, NOT THE FIRST ONE.
+         *
+         * This is the hole that let `next` dictate a command that does not
+         * exist for as long as `next` has existed. Its first rung reads
+         *
+         *     -> `order pc helm`, then `deliver helm d6.bridge`
+         *
+         * and the gate took the text between the FIRST pair of backticks and
+         * ran that. The second half it did not read -- it BUILT, with its own
+         * snprintf, and threw the reply away:
+         *
+         *     snprintf(mv, sizeof mv, "move %s d%d.bridge", ...);
+         *     site_cmd(&s, mv, &m);
+         *     buf_free(&m);
+         *
+         * So the gate wrote its own copy of the instruction under test, the
+         * copy was wrong in exactly the way the prose was wrong, and the two
+         * agreed. A blind playthrough that typed what it was told got "no
+         * such command: move" on its second instruction, and `next` then
+         * repeated the same dead line for ever.
+         *
+         * Now every backticked run on the arrow line is taken from the TEXT
+         * and executed, and an unknown verb anywhere in it fails this gate. */
+        bool stop = false;
+        for (const char *p2 = arrow + 3; *p2 && !stop; ) {
+            const char *q0 = strchr(p2, '`');
+            if (!q0) break;
+            const char *q1 = strchr(q0 + 1, '`');
+            if (!q1) break;
+            /* a backticked run that carries past the end of the line is prose,
+             * not an instruction */
+            const char *nl = strchr(q0, '\n');
+            if (nl && nl < q1) break;
+            char cmd[128];
+            int len = (int)(q1 - q0 - 1);
+            if (len > (int)sizeof cmd - 1) len = (int)sizeof cmd - 1;
+            memcpy(cmd, q0 + 1, (size_t)len);
+            cmd[len] = 0;
+            p2 = q1 + 1;
+            Buf r = {0};
+            session_line(&sn, cmd, &r);
+            /* AN UNKNOWN VERB IS THE FAILURE THIS SECTION EXISTS FOR. A
+             * refusal is a different thing and can be legitimate -- the site
+             * saying no to something the state does not allow -- so it stops
+             * the walk without condemning the words. */
+            if (has(r.p, "no such command")) {
+                unknown = true;
+                snprintf(badcmd, sizeof badcmd, "%s", cmd);
+            }
+            if (has(r.p, "refused") || has(r.p, "no such")) stop = true;
+            else { ran++; printf("    rung %d: %-20s -> `%s`\n", rung,
+                                 want[rung], cmd); }
+            buf_free(&r);
         }
+        buf_free(&n);
+        if (stop) break;
     }
+    ck("every command `next` dictated is a command this game has", !unknown);
+    if (unknown) printf("    it told the player to type `%s`\n", badcmd);
+    printf("    %d instructions followed, taken from the text it printed\n", ran);
     ck("every line it gave was a line the site took, four rungs deep",
        rung == 4);
     ck("and following them really lit the station it was talking about",
-       site_crew_working(&s) == 0 && s.crew[0].dev >= 0 &&
-       s.dev[s.crew[0].dev].powered);
+       sn.s.crew[0].dev >= 0 && sn.s.dev[sn.s.crew[0].dev].powered &&
+       sn.s.dev[sn.s.crew[0].dev].room == sn.s.crew[0].room);
 
     /* --- AND IT KNOWS WHEN NOTHING IS WRONG, which is a real answer. */
     Site quiet;
@@ -4395,6 +4440,7 @@ static void check_next(const Building *b)
        out_has(&urgent, "next", "`serve"));
 
     buf_free(&o);
+    session_end(&sn);
     site_free(&s);
     site_free(&quiet);
     site_free(&urgent);

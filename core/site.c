@@ -1376,13 +1376,36 @@ void site_dump_next(const Site *s, Buf *out)
         const SiteTenant *t = &s->tenant[i];
         if (!t->moved) continue;
         if (site_tenant_connected(s, i) > 0) continue;
+        int deck = s->b->rooms[t->room].floor;
         buf_printf(out, "tenancy %d moved in on deck %d and not one of their "
                         "%d desks has a\n  cable in it. They pay for days "
                         "their people can work, and three days\n  they cannot "
-                        "is a complaint.\n"
-                        "  -> put a switch on that deck and `serve %d <switch>` "
-                        "to cable their desks\n",
-                   t->tenant, s->b->rooms[t->room].floor, t->drops, t->tenant);
+                        "is a complaint.\n",
+                   t->tenant, deck, t->drops);
+        /* NAME THE SWITCH, OR NAME THE ORDER. This line used to read
+         *
+         *     -> put a switch on that deck and `serve 2 <switch>`
+         *
+         * and `<switch>` is not something anybody can type. `next` exists to
+         * hand the player the line to type; a form with a hole in it is the
+         * same defect as the `move` that was not a command, one degree
+         * milder. So the deck is searched for a switch with a port left in
+         * it, exactly as the crew branch below already does, and when there
+         * is not one the instruction is to order one. */
+        int sw = -1;
+        for (int d2 = 0; d2 < s->ndev && sw < 0; d2++) {
+            if (s->dev[d2].floor != deck) continue;
+            if (!site_kind_is_switch(s->dev[d2].kind)) continue;
+            if (site_free_port(s, d2) >= 0) sw = d2;
+        }
+        if (sw >= 0)
+            buf_printf(out, "  -> `serve %d %s` to cable their desks to the "
+                            "switch already on that deck\n",
+                       t->tenant, s->dev[sw].name);
+        else
+            buf_printf(out, "  -> `order switch24 sw%d`, then `deliver sw%d "
+                            "d%d.comms`, then `serve %d sw%d`\n",
+                       deck, deck, deck, t->tenant, deck);
         return;
     }
     /* 2. A RUN THAT IS ABOUT TO TRIP takes everything behind it down with it,
@@ -1417,7 +1440,15 @@ void site_dump_next(const Site *s, Buf *out)
         buf_printf(out, "the %s station on the bridge is dark: %s.\n",
                    s->crew[i].name, why);
         if (strcmp(why, "no machine at it") == 0)
-            buf_printf(out, "  -> `order pc %s`, then `move %s d%d.bridge`\n",
+            /* `deliver`, WHICH IS THE VERB THIS GAME HAS. This said `move`
+             * for as long as it has existed, and there is no `move`: a blind
+             * playthrough that did exactly what the onboarding dictated got
+             * "no such command: move" on its second instruction and `next`
+             * then repeated the same bad line for ever. Every technical claim
+             * in this game is supposed to be true of this machine, and the
+             * one place that has to hold above all others is the text whose
+             * whole job is telling a new player what to type. */
+            buf_printf(out, "  -> `order pc %s`, then `deliver %s d%d.bridge`\n",
                        s->crew[i].name, s->crew[i].name, deck);
         else if (strcmp(why, "nothing feeding it") == 0)
             buf_printf(out, "  -> `feed %s` runs conduit to it from the "
@@ -1445,7 +1476,7 @@ void site_dump_next(const Site *s, Buf *out)
                            s->dev[sw].name, port, s->dev[s->crew[i].dev].name);
             else
                 buf_printf(out, "  -> `order switch8 bsw`, then "
-                                "`move bsw d%d.comms`\n", deck);
+                                "`deliver bsw d%d.comms`\n", deck);
         }
         return;
     }
