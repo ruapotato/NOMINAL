@@ -953,8 +953,17 @@ func _init() -> void:
 					int(Vector3(dcon.ports[0].c).distance_to(Vector3(scf.c)) * 1000.0)])
 		var cstand: Vector3 = Vector3(scf.c) + Vector3(scf.n) * 0.6 - Vector3(0, 0.24, 0)
 		t.teleport(cstand + Vector3(0, 0.3, 0))
-		for j in range(12):
+		# SETTLE FIRST, for the same reason the port probe below does: a
+		# teleported capsule is still falling and being pushed after twelve
+		# frames, so the eye is somewhere different every run and this gave
+		# one failure in two on the same seed.
+		var clast := Vector3(1e9, 1e9, 1e9)
+		for j in range(240):
 			await process_frame
+			var cnow: Vector3 = t.player.global_position
+			if cnow.distance_to(clast) < 0.0005:
+				break
+			clast = cnow
 		t.aim_at(Vector3(scf.c))
 		for j in range(4):
 			await process_frame

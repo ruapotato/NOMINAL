@@ -406,17 +406,66 @@ static void check_copper(const Building *b)
     int mdf = bld_find(b, 0, RM_MDF);
     double *dm = nom_alloc(sizeof(double) * (size_t)b->nrooms);
     bld_cable_all(b, mdf, dm);
-    int far = -1;
+    int far_any = -1;
     for (int r = 0; r < b->nrooms; r++)
         if (leasable(b->rooms[r].kind) && dm[r] < BLD_INF &&
-            (far < 0 || dm[r] > dm[far])) far = r;
-    double d = far >= 0 ? dm[far] : 0;
-    nom_free(dm);
-    if (far < 0) { ck("the tower has a room to cable", false); return; }
-    int floor = b->rooms[far].floor;
+            (far_any < 0 || dm[r] > dm[far_any])) far_any = r;
+    if (far_any < 0) {
+        ck("the tower has a room to cable", false);
+        nom_free(dm); return;
+    }
+    double d = dm[far_any];
     printf("    the farthest lettable room is on deck %d, %.1f m of tray "
-           "from Engineering\n", floor, d);
+           "from Engineering\n", b->rooms[far_any].floor, d);
     ck("a tall tower puts a room past what copper carries", d + SITE_PATCH_M > 100);
+
+    /* AND THE DECK THE REMEDY CAN BE SHOWN ON IS NOT SIMPLY THE FARTHEST ONE.
+     *
+     * This cabled the tower's farthest lettable room and then put a switch in
+     * THAT room's cupboard, and on an office plate the two went together: the
+     * plates were stacked, so a deck whose rooms were out of reach still had
+     * its cupboard on the riser well within a hundred metres. A station's
+     * decks are strung out along arms, and on the gate seed the farthest room
+     * is on deck 9 -- whose cupboard is a hundred and two metres of run from
+     * Engineering all by itself. So the fix a real installer makes could not
+     * be made there either, and the gate asserted a link came up that no
+     * hundred-and-two-metre run in this game brings up.
+     *
+     * The claim has nothing to do with which deck is farthest. It is that a
+     * room copper cannot reach from Engineering CAN be reached from a box in
+     * its own deck's cupboard -- so it wants the farthest such room on a deck
+     * whose cupboard is itself still on the right side of the limit. That is
+     * a search, and if no deck in the tower is like that the gate is right to
+     * fail, because the remedy it teaches has stopped existing. */
+    double *dc = nom_alloc(sizeof(double) * (size_t)b->nrooms);
+    int far = -1, floor = -1, comms = -1, farm = 0, upm = 0, legm = 0;
+    for (int f = 1; f < b->floors; f++) {
+        int c = bld_find(b, f, RM_COMMS);
+        if (c < 0 || dm[c] >= BLD_INF) continue;
+        int cmet = SITE_PATCH_M + (int)(dm[c] + 0.5);
+        if (site_cable_speed(CAB_CAT6, cmet) <= 0) continue;   /* no riser    */
+        if (!bld_cable_all(b, c, dc)) continue;
+        for (int r = 0; r < b->nrooms; r++) {
+            if (b->rooms[r].floor != f || !leasable(b->rooms[r].kind)) continue;
+            if (dm[r] >= BLD_INF || dc[r] >= BLD_INF) continue;
+            int m  = SITE_PATCH_M + (int)(dm[r] + 0.5);
+            int lm = SITE_PATCH_M + (int)(dc[r] + 0.5);
+            if (site_cable_speed(CAB_CAT6, m) > 0) continue;  /* reaches: no  */
+            if (site_cable_speed(CAB_CAT6, lm) <= 0) continue;/* nor from the */
+            if (m <= farm) continue;                          /* cupboard     */
+            farm = m; far = r; floor = f; comms = c; upm = cmet; legm = lm;
+        }
+    }
+    nom_free(dc);
+    nom_free(dm);
+    if (far < 0) {
+        ck("some deck has a room past copper and a cupboard copper still reaches",
+           false);
+        return;
+    }
+    printf("    deck %d is where that can be shown: the room is %d m of run "
+           "from Engineering, %d m from its own cupboard, and the cupboard is "
+           "%d m from Engineering\n", floor, farm, legm, upm);
 
     Site s;
     site_new(&s, b, GATE_SEED, 100000);
@@ -431,7 +480,6 @@ static void check_copper(const Building *b)
            s.link[l].metres, s.link[l].cost);
 
     /* The fix a real installer makes: a switch on that floor instead. */
-    int comms = bld_find(b, floor, RM_COMMS);
     int fsw = gate_box(&s, SDEV_SWITCH8, comms, "swtop");
     site_uncable(&s, l);
     int l2 = site_cable(&s, pc, 0, fsw, 1, CAB_CAT6);
@@ -2594,6 +2642,31 @@ static void tower_until(Tower *w, int ti)
     }
 }
 
+/* AND THE FILE SERVER IS STILL RUNNING WHEN THE MEASUREMENT STARTS.
+ *
+ * tower_until() runs real days, and a real day in this game has weather in
+ * it: on the gate's own stations the building loses mains in the small hours
+ * and `events` says so -- "files went down with the power and has not been
+ * switched back on". A scenario that reaches its tenancies on day four never
+ * saw one. The deck redesign spread the letting queue out, so a gate that
+ * wants two named trades in the same cupboard now runs forty-odd days to get
+ * them, and the server it is measuring has been dark for twenty of those.
+ *
+ * That is not the model being wrong, it is the scenario not being set up: the
+ * sentence being asserted is "the files are on the deck", and a box that is
+ * off is not files on the deck. So this is the button a player presses after
+ * a blackout, and the addresses, the route and the listening socket that a
+ * machine coming back from an unclean stop has lost -- exactly what
+ * check_industry_uptime does when it brings the web host back up. */
+static void tower_files_back_up(Tower *w)
+{
+    Site *s = &w->s;
+    site_power(s, w->srv, true);
+    site_addr(s, w->srv, 0, net_ip(10, 0, 0, 9), net_mask_bits(16));
+    site_gateway(s, w->srv, net_ip(10, 0, 0, 1));
+    site_httpd(s, w->srv, 80);
+}
+
 /* What share of what they were promised really happened. */
 static int got_pct(const Site *s, int ti)
 {
@@ -2878,7 +2951,8 @@ static void check_industry_voice(void)
     shared = deck_with_both(s, TEN_OFFICE, TEN_VOICE);
     int off = trade_on(s, TEN_OFFICE, shared), voi = trade_on(s, TEN_VOICE, shared);
     if (off < 0 || voi < 0) {
-        ck("some deck of seed 22 lets an office and a call centre side by side", false);
+        ck("the deck the search chose still has an office and a call centre "
+           "on it", false);
         site_free(s); bld_free(&b); return;
     }
     /* UNTIL BOTH OF THEM ARE IN. This ran until the call centre had the
@@ -2888,6 +2962,14 @@ static void check_industry_voice(void)
      * at nought per cent and blamed the network. */
     tower_until(&w, voi);
     tower_until(&w, off);
+    /* AND THE FILES REALLY ARE ON THE DECK WHEN THE DAY IS MEASURED. Forty-five
+     * days of letting queue took a mains failure with it and left `files` dark,
+     * so the office read every document off the far side of the handoff, the
+     * calls shared the circuit with twenty desks' worth of documents, and this
+     * gate read the PLANNED build at nought per cent on the calls and sixty-four
+     * thousand ppm of concealment -- worse than the mistake it is contrasted
+     * with. See tower_files_back_up(). */
+    tower_files_back_up(&w);
     site_serve(s, off, w.sw[0], CAB_CAT5E);
     site_serve(s, voi, w.sw[2], CAB_CAT5E);
     site_day(s, NULL);
@@ -2904,7 +2986,13 @@ static void check_industry_voice(void)
     /* THE ORDINARY MISTAKE: the file server in the basement, so a floor's
      * whole day comes down the riser, and the cheapest drum in the catalogue
      * up it. The office survives it. The calls do not. */
-    tower_up(&w, &b, 22ull, comms, CAB_CAT5, false, 3);
+    /* THE SAME STATION AS THE PLANNED ONE, and it has to be: this said 22ull
+     * while the tower above had moved to whatever seed really had the two
+     * trades on one deck, so the second tower was seed 22's tenancies in seed
+     * 24's rooms and `off` and `voi` -- found on the first tower -- pointed at
+     * two other businesses entirely. The two numbers being compared were not
+     * about the same building. */
+    tower_up(&w, &b, useseed, comms, CAB_CAT5, false, 3);
     s = &w.s;
     /* UNTIL BOTH OF THEM ARE IN. This ran until the call centre had the
      * keys and then served both -- and `serve` on a tenancy the letting
@@ -2913,6 +3001,7 @@ static void check_industry_voice(void)
      * at nought per cent and blamed the network. */
     tower_until(&w, voi);
     tower_until(&w, off);
+    tower_files_back_up(&w);   /* the same blackout, on the same day 20 */
     site_serve(s, off, w.sw[0], CAB_CAT5E);
     site_serve(s, voi, w.sw[2], CAB_CAT5E);
     site_day(s, NULL);
@@ -4056,12 +4145,44 @@ static void check_clock(const Building *b)
      *
      * A studio's ingest connections are ACCEPTED during the busy period, and
      * a voice call's stats are read at the end of one: those are the states
-     * that live across ticks, so those are the ones the comparison needs. */
+     * that live across ticks, so those are the ones the comparison needs.
+     *
+     * AND THE RUN HAS TO LAST LONG ENOUGH TO HAVE ONE. This ran sixty days
+     * and got nineteen, because a station whose tenancies are served by a
+     * core switch in Engineering and nothing else collects complaints, and
+     * four of them end the run -- after which site_day() does nothing and the
+     * loop spins out the remaining forty-one days on a dead station. On the
+     * gate seed the first office signs on day two and the first STUDIO on day
+     * twenty-four, so the trade whose ingest is the whole point of this
+     * comparison had not moved in yet: three offices, one call centre, no
+     * studio, and nothing that crosses a tick boundary for the boundary to
+     * lose.
+     *
+     * THE FIX IS DAYS, NOT A DIFFERENT SEED. The eviction is lifted each
+     * morning -- the same forgiveness tower_until() and --loadcheck's
+     * keep_measuring make, and for the same reason: this gate is not about
+     * whether a landlord who cabled nobody keeps the lease, it is about
+     * whether a day driven in pieces is the same day. It is lifted
+     * IDENTICALLY on both stations, before either runs, so the two are still
+     * the same world -- and the run now reaches the studio on day twenty-four
+     * and the web host on day twenty-eight. The assertion below is all four
+     * trades, not two, because that is what the sentence has always said. */
     const int DAYS = 60, SLICE = 100;
     bool same = true, ticked_in_pieces = false;
     int served = 0;
     char why[200] = "";
     for (int d = 0; d < DAYS && same; d++) {
+        /* AND ONLY THE EVICTION IS FORGIVEN. tower_until() also zeroes the
+         * strikes and the complaints, because it is trying to reach a day and
+         * does not care what the run looks like when it gets there. This one
+         * does care: the assertion below is that the two stations end with
+         * the same complaints, and a gate that had zeroed them on both would
+         * be asserting nought against nought. So the strikes mature and the
+         * complaints are filed exactly as they would be; what is lifted is
+         * `over`, the landlord losing the lease, which is the one thing that
+         * would stop the days. Lifted on BOTH, before either runs, so the two
+         * stations are still the same world. */
+        whole.over = sliced.over = 0;
         for (int t = 0; t < whole.ntenant; t++) {
             if (!whole.tenant[t].moved) continue;
             if (site_tenant_connected(&whole, t) > 0) continue;
@@ -4104,7 +4225,8 @@ static void check_clock(const Building *b)
        same);
     ck("and the two stations end with the same money, complaints and day",
        whole.money == sliced.money && whole.complaints == sliced.complaints &&
-       whole.day == sliced.day && whole.over == sliced.over);
+       whole.complaints > 0 && whole.day == sliced.day &&
+       whole.over == sliced.over);
     bool tenants_same = whole.ntenant == sliced.ntenant;
     for (int i = 0; i < whole.ntenant && tenants_same; i++)
         tenants_same = whole.tenant[i].tried == sliced.tenant[i].tried &&
@@ -4122,7 +4244,8 @@ static void check_clock(const Building *b)
            trades[TEN_WEBHOST], trades[TEN_STUDIO], whole.money);
     ck("and the days being compared had every trade in them, so a stream "
        "really did cross a slice",
-       trades[TEN_OFFICE] > 0 && trades[TEN_STUDIO] > 0);
+       trades[TEN_OFFICE] > 0 && trades[TEN_STUDIO] > 0 &&
+       trades[TEN_VOICE] > 0 && trades[TEN_WEBHOST] > 0);
 
     /* AND A DAY IN PROGRESS SAYS SO, which is what the HUD reads.
      *
@@ -4695,6 +4818,54 @@ static void grade_up(Grade *g, const Building *b, uint64_t seed, int comms,
     site_httpd(s, g->srv, 80);
 }
 
+/* A STATION WITH A TENANCY THAT CAN OUTGROW A SWITCH.
+ *
+ * The port-count half of check_grades needs desks to run out of holes on: a
+ * switch4 with its riser in port 0 has three holes, and a tenancy has to want
+ * more than the seven already on the leaf plus those three for the refusal to
+ * be the BOX rather than the tenancy being small. Deck 1 of seed 22 used to
+ * hold a band of offices twenty desks wide; the deck redesign gives a deck one
+ * to three tenancies, and the office it now finds there wants five -- so a
+ * switch4 seated every one of them with a hole to spare and the gate read
+ * "seats -2 more desks and stops".
+ *
+ * So the deck is searched for rather than written down: a deck with an office
+ * of at least `min_drops` desks, and -- because everything in that scenario
+ * hangs off a switch in that deck's cupboard and a riser down to Engineering
+ * -- a cupboard the copper can still reach. Decks of the first seed first,
+ * then further seeds, which is the order every other search in this file
+ * uses. Fills `out`, prints what it chose, returns the seed or 0. */
+static uint64_t station_with_big_office(Building *out, uint64_t first,
+                                        int min_drops, int *deck)
+{
+    for (uint64_t k = 0; k < 60; k++) {
+        if (!bld_generate(out, first + k)) continue;
+        Site probe;
+        site_new(&probe, out, first + k, 1000);
+        int mdf = bld_find(out, 0, RM_MDF), found = -1, drops = 0;
+        for (int i = 0; i < probe.ntenant && found < 0; i++) {
+            const SiteTenant *t = &probe.tenant[i];
+            if (t->kind != TEN_OFFICE || t->drops < min_drops) continue;
+            int c = bld_find(out, t->floor, RM_COMMS);
+            if (c < 0) continue;
+            int m = site_run_metres(&probe, mdf, c);
+            if (m <= 0 || site_cable_speed(CAB_CAT6, m) <= 0) continue;
+            found = t->floor;
+            drops = t->drops;
+        }
+        site_free(&probe);
+        if (found >= 1) {
+            if (deck) *deck = found;
+            printf("    seed %llu deck %d has an office wanting %d desks, and a "
+                   "cupboard the copper reaches\n",
+                   (unsigned long long)(first + k), found, drops);
+            return first + k;
+        }
+        bld_free(out);
+    }
+    return 0;
+}
+
 static void grade_until(Site *s, int ti)
 {
     for (int d = 0; d < 200 && !s->tenant[ti].moved; d++) {
@@ -4772,15 +4943,27 @@ static void check_grades(void)
 
     /* --- THE MEASUREMENT. Two towers, one purchase apart. */
     Building b;
-    if (!bld_generate(&b, 22ull)) { ck("seed 22 makes a building", false); return; }
-    int comms = bld_find(&b, 1, RM_COMMS);
-    if (comms < 0) comms = a_room(&b, 1);
+    /* SEVEN DESKS ON THE LEAF AND THREE HOLES IN THE SWITCH4, so the tenancy
+     * has to want at least eleven for the eleventh to be refused by the box. */
+    int deck = -1;
+    int ndesk = 7;
+    uint64_t gseed = station_with_big_office(&b, 22ull, ndesk + 4, &deck);
+    if (!gseed) {
+        ck("some station has an office big enough to outgrow a switch", false);
+        return;
+    }
+    int comms = bld_find(&b, deck, RM_COMMS);
+    if (comms < 0) comms = a_room(&b, deck);
     Grade cheap, dear;
-    grade_up(&cheap, &b, 22ull, comms, SDEV_SWITCH4);
-    grade_up(&dear,  &b, 22ull, comms, SDEV_SWITCH8);
-    int ti = trade_on(&cheap.s, TEN_OFFICE, 1);
+    grade_up(&cheap, &b, gseed, comms, SDEV_SWITCH4);
+    grade_up(&dear,  &b, gseed, comms, SDEV_SWITCH8);
+    int ti = -1;
+    for (int i = 0; i < cheap.s.ntenant; i++)
+        if (cheap.s.tenant[i].kind == TEN_OFFICE &&
+            cheap.s.tenant[i].floor == deck &&
+            cheap.s.tenant[i].drops >= ndesk + 4) { ti = i; break; }
     if (ti < 0) {
-        ck("seed 22 lets an office onto deck 1", false);
+        ck("the deck the search chose still has that office on it", false);
         site_free(&cheap.s); site_free(&dear.s); bld_free(&b); return;
     }
     grade_until(&cheap.s, ti);
@@ -4792,7 +4975,6 @@ static void check_grades(void)
      * between these two towers. Identical desks, identical work, identical
      * everything except which box the riser lands in -- or this measures
      * nothing. */
-    int ndesk = 7;
     {
         Grade *g[2]; g[0] = &cheap; g[1] = &dear;
         for (int k = 0; k < 2; k++) {
@@ -4912,7 +5094,7 @@ static void check_grades(void)
      * half. `events` prints both numbers rather than one constant. */
     {
         Site s;
-        site_new(&s, &b, 22ull, 100000);
+        site_new(&s, &b, gseed, 100000);
         site_credit(&s, 900000);
         int mdf = bld_find(&b, 0, RM_MDF);
         int mini = gate_box(&s, SDEV_MINITOWER, mdf, "mini");

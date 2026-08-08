@@ -20,14 +20,24 @@ func _init() -> void:
 	cam.fov = 78.0
 	vp.add_child(cam)
 	cam.make_current()
+	# ONE SHOT PER DECK KIND, because that is what the redesign is about:
+	# a dock, a reactor, cabins, a promenade, offices and the bridge, each a
+	# different shape rather than the same plate with the labels changed.
 	var want := [
 		["bridge", t.bridge_deck(), t.K_BRIDGE],
 		["engineering", 0, t.K_MDF],
-		["corridor", 0, t.K_CORRIDOR],
-		["goods", 0, t.K_GOODS],
-		["liftlobby", 0, t.K_LIFTLOBBY],
-		["outer_ring", 0, t.K_RETAIL],
+		["dock_corridor", 0, t.K_CORRIDOR],
 	]
+	for f in range(t.nfloors):
+		var kn: String = t.deck_name(f)
+		if kn == "reactor":
+			want.append(["reactor", f, t.K_PLANT])
+		elif kn == "cabins":
+			want.append(["cabins", f, t.K_RESIDENCE])
+		elif kn == "promenade":
+			want.append(["promenade", f, t.K_RETAIL])
+		elif kn == "office":
+			want.append(["office_deck", f, t.K_OFFICE])
 	for w in want:
 		var ri: int = t.find_room(int(w[1]), int(w[2]))
 		if ri < 0:

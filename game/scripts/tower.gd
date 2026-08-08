@@ -3379,6 +3379,13 @@ func _place_devices() -> void:
 						"floor": int(d.floor), "dev": str(d.name)})
 			if slot.is_empty():
 				slot = _floor_slot(room, k, nu)
+		# THE POWER CORE IS NOT A BOX. David: "Powercore needs to look... well
+		# more like a warp core. Haha. it looks like a server atm." It is the
+		# one thing on the station everything else traces back to, and it was
+		# a 19-inch cabinet with sixteen sockets on it.
+		if str(d.kindname) == "powercore":
+			_warp_core(slot, int(d.nports), int(d.i), str(d.name))
+			continue
 		# A managed box has a management line and no picture on the back of it.
 		_add_device(d.name, -2, false, true, slot.mn, slot.size,
 			DEV_COL.get(d.kindname, Color("#2f343a")), slot.face, d.nports, d.i)
@@ -3923,6 +3930,59 @@ func _workstation(room: int, ws := {}) -> void:
 	# the place a person stands to use this is the far side of it, not the seat.
 	d.use_from = fr.org + fr.along * mid + fr.out * 1.55 + Vector3(0, 0.1, 0)
 	devices[devices.size() - 1] = d
+
+
+# A COLUMN OF LIGHT THROUGH THE DECK, which is what the station runs on.
+#
+# The core is a device like any other as far as the model is concerned -- a
+# room, sixteen outputs, a conduit tree hanging off it -- so what it LOOKS
+# like is entirely this file's business, and it looked like a server. It is
+# now a shaft: a plinth, a stack of segmented rings with a lit column up the
+# middle of them, and a cap into the deckhead. The outputs stay where the
+# model says they are, on a collar at waist height, because a conduit run
+# starts at a real point and _dev_anchor() has to keep landing on it.
+#
+# The light is geometry brighter than white, the same trick the deckhead
+# channels use: _shade() multiplies a side face by a constant and a colour
+# given more than 1.0 comes back saturated. No lights are added -- a headless
+# test renders exactly what the window does, which is the rule.
+const CORE_LIGHT := Color(0.55, 1.75, 2.10)
+const CORE_RING := Color("#39424a")
+const CORE_BASE := Color("#242a30")
+
+func _warp_core(slot: Dictionary, nports: int, site_i: int, dname: String) -> void:
+	var mn: Vector3 = slot.mn
+	var face: Vector3 = slot.face
+	var cx: float = mn.x + 0.31
+	var cz: float = mn.z + 0.31
+	var y0: float = mn.y
+	var top: float = fheight - SLAB_T - 0.1
+	# the plinth it stands on
+	_box(Vector3(cx - 0.62, y0, cz - 0.62), Vector3(1.24, 0.22, 1.24), CORE_BASE)
+	# the shaft: rings up the whole height of the deck, with the column inside
+	var rings := int((top - 0.30) / 0.42)
+	for i in range(max(1, rings)):
+		var ry: float = y0 + 0.30 + float(i) * 0.42
+		_box(Vector3(cx - 0.44, ry, cz - 0.44), Vector3(0.88, 0.10, 0.88),
+			CORE_RING, false)
+	_box(Vector3(cx - 0.20, y0 + 0.22, cz - 0.20),
+		Vector3(0.40, top - 0.22, 0.40), CORE_LIGHT, false)
+	# and the cap where it goes up through the deckhead
+	_box(Vector3(cx - 0.56, y0 + top - 0.18, cz - 0.56),
+		Vector3(1.12, 0.18, 1.12), CORE_BASE)
+	# THE OUTPUTS, on a collar a person can reach, facing into the room. This
+	# is the part the model cares about: _add_device gives it its ports, its
+	# site index and its name, so `feed`, `conduit` and the crosshair all
+	# still find it exactly where they did.
+	var om := Vector3(cx - 0.45, y0 + 0.72, cz - 0.45)
+	if absf(face.x) > 0.5:
+		om.x = cx + (0.30 if face.x > 0.0 else -0.66)
+		_add_device(dname, -2, false, false, om, Vector3(0.36, 0.52, 0.90),
+			CORE_BASE, face, nports, site_i)
+	else:
+		om.z = cz + (0.30 if face.z > 0.0 else -0.66)
+		_add_device(dname, -2, false, false, om, Vector3(0.90, 0.52, 0.36),
+			CORE_BASE, face, nports, site_i)
 
 
 func _add_device(dname: String, which: int, hdmi: bool, serial: bool,

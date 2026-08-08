@@ -1400,7 +1400,11 @@ static void do_help(const Session *ses, Buf *out)
         "  crew               the bridge stations, what machine is at each one\n"
         "                     and what it is still short of. They were aboard\n"
         "                     before you were and their consoles are dark\n"
-        "  mains <box> off    the plug itself: pull the run out of a box. A SWITCH\n"
+        "  mains <box> off    PULLS THE RUN OUT, and the run is gone: this is\n"
+        "                     not a plug you can push back in, it is the\n"
+        "                     conduit destroyed, and putting the box back on\n"
+        "                     the supply means `feed` and paying the metres\n"
+        "                     again. There is no `mains on`. A SWITCH\n"
         "                     AND A ROUTER HAVE NO\n"
         "                     BUTTON, so this is theirs. PULLING THE PLUG ON A\n"
         "                     RUNNING MACHINE is a blackout with one machine in it,\n"
@@ -1576,9 +1580,8 @@ static void do_help(const Session *ses, Buf *out)
         "                     wire has no memory of what it carried before the\n"
         "                     lead went in. What it does have is the four things\n"
         "                     you can do standing there: `power on` (and the boot\n"
-        "                     comes up the line, live), `mains on` if it is not\n"
-        "                     plugged in, `rescue` for the medium on the cart,\n"
-        "                     and `unplug`\n"
+        "                     comes up the line, live), `rescue` for the medium\n"
+        "                     on the cart, and `unplug`\n"
         "  rescue <box>       the live medium on the cart, in the front of it and\n"
         "                     booted. For a box whose own root will not mount --\n"
         "                     which is what the initrd's own last line tells you\n"
@@ -1691,9 +1694,21 @@ static void do_open(Session *ses, Buf *out)
 {
     /* The bridge is never on this list: it was in service before the player
      * arrived and nobody is going to be charged a fit-out for it. */
-    if (ses->floors >= ses->b.floors ||
-        ses->floors == ses_bridge_deck(ses)) {
+    if (ses->floors >= ses->b.floors) {
         buf_puts(out, "every deck in this station is already in service.\n");
+        return;
+    }
+    /* AND THE BRIDGE IS NOT ON THE LIST, but saying "every deck is already in
+     * service" while `where` says five of six is a contradiction a player
+     * cannot resolve -- a blind playtester hit exactly that on deck 4 and
+     * reported it as a lie. It is not: the only deck left is the bridge, and
+     * it has been open since the first morning. That is what it says now. */
+    if (ses->floors == ses_bridge_deck(ses)) {
+        buf_printf(out, "the only deck left is the bridge, and it has been in "
+                        "service since\n  the morning you came aboard -- the "
+                        "crew were already on it. %d of %d decks\n  are open, "
+                        "and there is nothing left to sign off.\n",
+                   ses->floors + 1, ses->b.floors);
         return;
     }
     int f = ses->floors;

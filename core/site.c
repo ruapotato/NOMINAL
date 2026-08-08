@@ -1347,16 +1347,22 @@ void site_dump_crew(const Site *s, Buf *out)
         buf_puts(out, "this station has no bridge.\n");
         return;
     }
-    buf_puts(out, "  station   deck  room            machine   state\n");
+    buf_puts(out, "  station   deck  room           machine   state\n");
     for (int i = 0; i < s->ncrew; i++) {
         const SiteCrew *c = &s->crew[i];
         const char *why = site_crew_why(s, i);
         char box[24];
         if (c->dev >= 0) snprintf(box, sizeof box, "%s", s->dev[c->dev].name);
         else             snprintf(box, sizeof box, "-");
-        buf_printf(out, "  %-9s d%-4d %-15s %-9s %s\n",
+        /* THE ROOM NUMBER, NOT JUST THE KIND. A blind playtester put three
+     * consoles in `d5 bridge #129` -- fed, powered and cabled -- and `crew`
+     * reported them as "no machine at it" for ever, because the stations are
+     * in #128 and both rooms print as "bridge". There was no way for a player
+     * to find that out: `rooms 5` lists two rooms with the same word and this
+     * column showed the word. */
+    buf_printf(out, "  %-9s d%-4d %-6s #%-7d %-9s %s\n",
                    c->name, s->b->rooms[c->room].floor,
-                   bld_kind_name(s->b->rooms[c->room].kind), box,
+                   bld_kind_name(s->b->rooms[c->room].kind), (int)c->room, box,
                    why ? why : "working");
     }
     buf_printf(out, "%d of %d bridge stations working. They were aboard "
