@@ -20,13 +20,26 @@ it is wherever the pressure hull has standing room above the floor, so no two
 decks are the same shape and some of them do not join the bow to the stern at
 all.
 
-    make build/hullshot && build/hullshot 1 > /tmp/hull.ppm    # profile, plan, bow
-    make build/deckshot && build/deckshot 1 > /tmp/decks.ppm   # every deck as a plan
+    make build/hullshot && build/hullshot > /tmp/hull.ppm    # profile, plan, bow
+    make build/deckshot && build/deckshot > /tmp/decks.ppm   # every deck as a plan
+    make build/deckwalk && build/deckwalk                    # can you get everywhere
 
-On seed 1 — a 171 m ship — deck 0 is engineering hull only because the command
-section rides too high to have floor at the keel; deck 2 has floor in the bow
-and floor in the stern and no walkable route between them; deck 4 is the
-command lozenge at its widest, 4,134 m² of it. Nobody wrote any of that down.
+**There is one ship, and it is the same every run**, the way a crew knows one
+ship. Where the shafts are, which deck crosses the neck, how far it is from the
+core to the bridge at four in the morning — that knowledge is most of what
+being the engineer feels like, and a hull that changed every run would throw it
+away at the start of every run.
+
+She is 171 m long over six decks, 15,205 m² of floor. Deck 0 is engineering
+hull only, because the command section rides too high to have floor at the
+keel. Deck 2 has 2,035 m² of floor with only 220 of it reachable from the bow —
+floor at both ends and no walkable route between them. Deck 4 is the command
+lozenge at its widest, 4,026 m². Nobody wrote any of that down; it falls out of
+the frames.
+
+Getting between the two halves means finding a shaft. Seven of them — four
+turbolifts and three stairwells — placed by searching for the spots with floor
+on every deck of a run, so on deck 2 you go down, cross, and come back up.
 
 ## The loops
 
@@ -100,7 +113,7 @@ prop too.
     ./build/bf --mancheck   every command example in every manual and README,
                             RUN on a booted machine
 
-    ./Godot_v4.7.1-stable_linux.x86_64 --path game -- --seed=S
+    ./Godot_v4.7.1-stable_linux.x86_64 --path game
 
 ## The rule
 

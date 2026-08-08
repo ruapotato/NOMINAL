@@ -96,40 +96,46 @@ bool ship_generate(Ship *s, uint64_t seed)
     memset(s, 0, sizeof *s);
     s->seed = seed;
 
-    Rng r;
-    rng_seed(&r, seed ^ 0x51119a0000ull);
+    /* ONE SHIP, THE SAME EVERY RUN.
+     *
+     * David: "Not sure we need more than one seed for the ship generation. It
+     * could be the same in every game run." He is right, and it is the better
+     * game as well as the smaller job. A crew learns ONE ship: where the
+     * shafts are, which deck crosses the neck, how far it is from the core to
+     * the bridge at four in the morning. That knowledge is most of what being
+     * the engineer feels like, and a hull that is different every run throws
+     * it away at the start of every run.
+     *
+     * It also moves the work to the right place. A generator has to produce an
+     * adequate ship for every seed; a fixed hull can be tuned until THIS ship
+     * is good, and every gate can check it exhaustively instead of sampling.
+     *
+     * So the numbers below are numbers rather than ranges. The seed argument
+     * stays on the signature because the tools and the game already pass one
+     * and a second class of ship is a plausible thing to want later -- but
+     * nothing reads it, which is why there is no Rng here at all.
+     */
+    (void)seed;
 
-    /* THE PROPORTIONS, and they are a ship's proportions rather than numbers
-     * that looked nice. Length overall is the one thing that varies much: a
-     * hull is a hull, and a family of ships that differ in every dimension at
-     * once reads as a family of unrelated objects. */
-    int loa   = 168 + (int)rng_range(&r, 0, 44);      /* 168..212 m */
-    /* THE COMMAND SECTION IS THE SHIP, and the first render is why that is
-     * written down. At 32% of the length against a 54% engineering hull the
-     * silhouette was a barge with a pointed nose: the secondary hull was
-     * longer, wider and taller than the primary one, so the eye read the whole
-     * thing as one slab. The primary hull leads. */
-    int cmd_l = (int)lround(loa * 0.42);              /* the bow wedge  */
-    int nek_l = (int)lround(loa * 0.12);              /* the spine      */
+    int loa   = 171;
+    /* THE COMMAND SECTION IS THE SHIP. At 32% of the length against a 54%
+     * engineering hull the silhouette was a barge with a pointed nose. */
+    int cmd_l = (int)lround(loa * 0.42);
+    int nek_l = (int)lround(loa * 0.12);
     int eng_l = loa - cmd_l - nek_l;
 
-    /* THE DECK HEIGHT IS THE UNIT EVERYTHING ELSE IS BUILT FROM. 3 m floor to
-     * floor is what the station used and what the doors, the trays and the
-     * ladders are all sized against, so it does not move. */
+    /* 3 m floor to floor, which is what the doors, the trays and the ladders
+     * are all sized against. */
     s->deck_h = 3;
 
-    int cmd_hw = 28 + (int)rng_range(&r, 0, 8);       /* half beam at the widest */
-    int cmd_hh = 7;                                   /* the wedge is LOW        */
-    /* AND THE ENGINEERING HULL IS SMALLER THAN IT, in every dimension. It was
-     * nearly as wide as the command section and taller, which left no contrast
-     * between the two bodies at all. */
-    int eng_hw = 11 + (int)rng_range(&r, 0, 3);
+    int cmd_hw = 31;          /* half beam at the widest */
+    int cmd_hh = 7;           /* the wedge is LOW        */
+    /* And the engineering hull is smaller in every dimension, or there is no
+     * contrast between the two bodies at all. */
+    int eng_hw = 12;
     int eng_hh = 9;
-    /* WHERE EACH BODY SITS ON THE KEEL. The command section rides HIGH and the
-     * engineering hull hangs BELOW it -- that offset is most of what makes a
-     * two-hull ship read as two hulls. The first version had them the other way
-     * round, with the secondary hull sitting above the primary, and the result
-     * looked like a barge with a nose on it. */
+    /* The command section rides HIGH and the engineering hull hangs BELOW it.
+     * That offset is most of what makes a two-hull ship read as two hulls. */
     int cmd_cy = 13;
     int eng_cy = 6;
 
@@ -176,7 +182,7 @@ bool ship_generate(Ship *s, uint64_t seed)
      * it. Its radius is set off the engineering hull rather than chosen, so a
      * fatter ship gets a bigger ring and the silhouette stays in proportion. */
     s->ring.cx = (int16_t)(e0 + (int)lround(eng_l * 0.72));
-    s->ring.radius = (int16_t)(eng_hw + 15 + (int)rng_range(&r, 0, 5));
+    s->ring.radius = (int16_t)(eng_hw + 17);
     s->ring.tube = 4;
     s->ring.pylon_w = 3;
 
