@@ -5525,6 +5525,18 @@ func hud_lines() -> String:
 			if bool(c.up):
 				up += 1
 		s += "\nbridge: %d of %d crew stations working" % [up, nc]
+	# AND WHAT TO DO ABOUT ANY OF IT. `next` is the model's own answer to
+	# "what should I do now" -- rent first, then anything about to trip, then
+	# the bridge -- and a HUD that lists what is wrong without saying what to
+	# type is the same failure a blind playtester reported over the socket.
+	# The first line of it is enough here; the verb prints the rest.
+	if not run_over:
+		var nx: String = str(_snap.get("next", "")).strip_edges()
+		if nx != "":
+			var head: String = nx.split("\n")[0]
+			if head.length() > 76:
+				head = head.substr(0, 73) + "..."
+			s += "\nnext: " + head + "   (`next` for the line to type)"
 	if not run_over:
 		s += "\n[N] the next day"
 	else:
@@ -6268,6 +6280,14 @@ func _snapshot() -> void:
 	_snap.status = site("status")
 	_snap.service = site("service")
 	_snap.load = site("load")
+	# WHAT TO DO NEXT, taken with the rest of the clipboard rather than in the
+	# draw. The first version asked the session for it inside hud_lines(),
+	# which runs every frame -- four session verbs sixty times a second was
+	# the reason this clipboard exists -- and site() clears the state cache as
+	# a side effect, so a display function was quietly invalidating the thing
+	# the crosshair reads. game/tests/tower.gd started failing at the console
+	# probe, which is a long way from the HUD.
+	_snap.next = site("next")
 	# WHAT IS IN YOUR HANDS, in core's words rather than in a copy of them.
 	# `spool` is the drum: how much is left on it and what grade it is, which
 	# is what the HUD and the crosshair both say and what [R] changes.
