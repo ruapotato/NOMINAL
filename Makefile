@@ -89,6 +89,12 @@ faults: build/faulthist
 build/hullshot: core/util.c core/ship.c tools/hullshot.c core/ship.h core/nom.h | build
 	$(CC) $(CFLAGS) -o $@ core/util.c core/ship.c tools/hullshot.c -lm
 
+# EVERY DECK AS A PLAN, one under the other. The shape of each deck is a
+# consequence of the hull, so if the plans are boring the hull is wrong.
+#   make build/deckshot && build/deckshot 1 > /tmp/decks.ppm
+build/deckshot: core/util.c core/ship.c tools/deckshot.c core/ship.h core/nom.h | build
+	$(CC) $(CFLAGS) -o $@ core/util.c core/ship.c tools/deckshot.c -lm
+
 build/faulthist: $(BF_SRC_LIB) tools/faulthist.c core/machine.h core/nom.h \
                  core/kernel.h core/guestbin.h | build
 	$(CC) $(CFLAGS) -o $@ $(BF_SRC_LIB) tools/faulthist.c

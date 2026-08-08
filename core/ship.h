@@ -91,6 +91,32 @@ bool ship_section(const Ship *s, double x, double *half_w, double *half_h,
  * will ask a few hundred thousand times. */
 bool ship_inside(const Ship *s, double x, double y, double z);
 
+/* ------------------------------------------------------------------ decks
+ *
+ * A deck is a horizontal slice of the hull, and where it EXISTS is a fact
+ * about the hull rather than a plan somebody drew: there is deck at (x,z) only
+ * where the pressure hull has standing room above the floor. That is what
+ * makes the command section a broad lozenge, the engineering hull a narrow
+ * one, and the neck a small connection that only some decks pass through --
+ * and it is why routing anything from the bow to the stern is a real problem
+ * rather than a corridor somebody chose to draw.
+ *
+ * SHIP_HEADROOM is what a deck needs to be walkable. Below it the space is
+ * still inside the hull, and it is where tanks, trays and the awkward crawl
+ * spaces go -- but it is not deck. */
+#define SHIP_HEADROOM 2.4
+
+/* The floor height of a deck, in metres above the keel. */
+double ship_deck_floor(const Ship *s, int deck);
+
+/* Is there walkable deck here? */
+bool ship_deck_at(const Ship *s, int deck, double x, double z);
+
+/* The deck's extent, for anything that wants to walk it or draw it. Returns
+ * false when the deck is empty. */
+bool ship_deck_bounds(const Ship *s, int deck, double *x0, double *x1,
+                      double *z0, double *z1, double *area);
+
 const char *ship_hull_name(int kind);
 
 #endif

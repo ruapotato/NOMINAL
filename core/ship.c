@@ -191,6 +191,50 @@ bool ship_generate(Ship *s, uint64_t seed)
 
 void ship_free(Ship *s) { if (s) memset(s, 0, sizeof *s); }
 
+/* ---------------------------------------------------------------- decks */
+
+double ship_deck_floor(const Ship *s, int deck)
+{
+    /* FROM THE KEEL UP, in whole deck heights, so decks in the command section
+     * and decks in the engineering hull are at the SAME heights and a walk
+     * between them is level. A ship whose two halves had their own deck
+     * spacing would need a ramp at every junction. */
+    return (double)deck * (double)s->deck_h;
+}
+
+bool ship_deck_at(const Ship *s, int deck, double x, double z)
+{
+    double y = ship_deck_floor(s, deck);
+    /* Standing room: the floor has to be inside the hull, and so does the
+     * space a person occupies above it. */
+    return ship_inside(s, x, y + 0.1, z) &&
+           ship_inside(s, x, y + SHIP_HEADROOM, z);
+}
+
+bool ship_deck_bounds(const Ship *s, int deck, double *x0, double *x1,
+                      double *z0, double *z1, double *area)
+{
+    double ax0 = 1e9, ax1 = -1e9, az0 = 1e9, az1 = -1e9;
+    double a = 0.0;
+    for (int x = 0; x <= s->loa; x++) {
+        double hw = 0, hh = 0, cy = 0;
+        if (!ship_section(s, x, &hw, &hh, &cy)) continue;
+        for (double z = -hw; z <= hw; z += 1.0) {
+            if (!ship_deck_at(s, deck, x, z)) continue;
+            a += 1.0;
+            if (x < ax0) ax0 = x;
+            if (x > ax1) ax1 = x;
+            if (z < az0) az0 = z;
+            if (z > az1) az1 = z;
+        }
+    }
+    if (a <= 0.0) return false;
+    if (x0) *x0 = ax0;  if (x1) *x1 = ax1;
+    if (z0) *z0 = az0;  if (z1) *z1 = az1;
+    if (area) *area = a;
+    return true;
+}
+
 /* ------------------------------------------------------------ questions */
 
 bool ship_section(const Ship *s, double x, double *half_w, double *half_h,
