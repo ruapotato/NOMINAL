@@ -796,24 +796,28 @@ bool site_disk(Site *s, int dev)
  * an eight-port switch is a wall wart, a server with disks in it is a fan
  * heater -- and the desks are not counted because they are the tenant's own
  * machines in the tenant's own room, which is a room with a window in it. */
+/* WHAT A BOX DRAWS, AND THERE IS ONE ANSWER TO IT.
+ *
+ * This function used to be a table. It listed nine kinds with their own
+ * wattages, and core/site.c's KIT[] listed the same nine with DIFFERENT ones:
+ * a switch24 was 60 W here and 90 W there, a rackserver 520 against 700, a
+ * router 45 against 120. Two nameplates on one box, and which one you got
+ * depended on which question you asked -- the conduit model charged KIT[], the
+ * heat model charged this, and `conduits` and the room temperature were
+ * describing different stations.
+ *
+ * The two that were not merely different were wrong outright. The player's own
+ * workstation was not in this switch at all, so it fell to `default: 0` and
+ * heated its room by nothing while drawing 180 W off the conduit standing
+ * beside it. The ISP handoff was the mirror image: 15 W of heat out of a box
+ * KIT[] correctly rates at zero, because it is on the ISP's meter and not on
+ * yours.
+ *
+ * So it is deleted, and site_kind_watts() is the nameplate. Adding a kind to
+ * the catalogue now heats a room on the same commit that gives it a price. */
 static int watts_of(int kind)
 {
-    switch (kind) {
-    case SDEV_UPLINK:   return 15;
-    /* A four-port desktop switch is a wall wart with four holes in it. */
-    case SDEV_SWITCH4:  return 12;
-    case SDEV_SWITCH8:  return 25;
-    case SDEV_SWITCH24: return 60;
-    case SDEV_ROUTER:   return 45;
-    case SDEV_PC:       return 130;
-    /* A minitower is a desktop box with one disk in it; a rack server is
-     * two power supplies, a shelf of spindles and the fans to go with them,
-     * and a comms cupboard with four outlets and no window will notice. */
-    case SDEV_MINITOWER: return 110;
-    case SDEV_SERVER:   return 320;
-    case SDEV_RACKSERVER: return 520;
-    default:            return 0;
-    }
+    return site_kind_watts(kind);
 }
 
 int site_room_watts(const Site *s, int room)

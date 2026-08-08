@@ -4674,6 +4674,132 @@ static void check_conduits(const Building *b)
     site_free(&s);
 }
 
+/* ONE NAMEPLATE PER BOX, ASKED THREE WAYS.
+ *
+ * There were two watt tables. core/site.c's KIT[] priced the conduit model --
+ * what a run carries, what trips it, what `conduits` prints -- and a private
+ * switch in core/siteday.c priced the heat model, with different numbers for
+ * the same nine boxes: a switch24 90 W against 60, a rackserver 700 against
+ * 520, a router 120 against 45. Neither was checkable against the other,
+ * because nothing asked both questions in one place.
+ *
+ * Two of them were not merely different. The player's own workstation was
+ * missing from the heat switch, so it fell through to zero: the box standing
+ * beside the core on the morning of day one drew 180 W off the conduit and
+ * heated its room by nothing. The handoff was the reverse -- 15 W of heat out
+ * of a box that is on the ISP's meter and draws nothing of yours.
+ *
+ * This gate is what makes the merge stay merged. It asks the same question of
+ * the catalogue, of the conduit tree and of the room's temperature, and they
+ * have to agree box by box -- so a tenth kind added with a price and no heat,
+ * or a private table reintroduced, fails here rather than in a player's
+ * station four decks up. */
+static void check_one_nameplate(const Building *b)
+{
+    printf("\nwhat a box draws: one nameplate, asked three ways\n");
+    Site s;
+    site_new(&s, b, GATE_SEED, 400000);
+
+    /* --- THE TWO THAT WERE WRONG, and they need no setup: both are standing
+     * in Engineering on the morning of day one. */
+    int ws = site_dev_by_name(&s, "ws");
+    int up = site_dev_by_name(&s, "uplink");
+    ck("the day-one workstation and the handoff are both in the model",
+       ws >= 0 && up >= 0);
+    /* WHAT ENGINEERING SHEDS, ADDED UP FROM THE CATALOGUE. Not a literal: the
+     * gate walks the same devices site_room_watts() counts and prices them off
+     * the shop's accessor, so the only way the two can differ is if the heat
+     * model is reading a second table. It is exactly this sum that caught the
+     * workstation contributing nothing and the handoff contributing 15 W. */
+    int eng = s.dev[ws].room;
+    int shop = 0;
+    for (int i = 0; i < s.ndev; i++) {
+        const SiteDev *d = &s.dev[i];
+        if (d->room != eng || d->kind == SDEV_DESK || !d->mains) continue;
+        if (site_kind_has_os(d->kind) && !d->powered) continue;
+        shop += site_kind_watts(d->kind);
+    }
+    ck("Engineering's heat on the first morning is its catalogue, added up",
+       site_room_watts(&s, eng) == shop);
+    printf("    Engineering: %d W measured, %d W off the shop's own prices\n",
+           site_room_watts(&s, eng), shop);
+    ck("the player's own workstation is a box that draws power like any other",
+       site_kind_watts(SDEV_WORKSTATION) > 0);
+    ck("and the handoff is on the ISP's meter, so it draws nothing of yours",
+       site_kind_watts(SDEV_UPLINK) == 0);
+    printf("    workstation %d W, handoff %d W\n",
+           site_kind_watts(SDEV_WORKSTATION), site_kind_watts(SDEV_UPLINK));
+
+    /* --- A ROOM'S HEAT IS THE SUM OF ITS NAMEPLATES, box by box, and it is
+     * the conduit that decides which boxes count.
+     *
+     * One empty room, kit added one at a time, each fed off its own output of
+     * the core, and the room's watts checked against the running total after
+     * every one. Note the order this asserts, because it is the D59 rule and
+     * it is easy to get backwards: a box lands DARK, and heats nothing, until
+     * a run reaches it. So each kind is measured twice -- cold on delivery,
+     * and hot the moment it is fed. */
+    int core = site_dev_by_name(&s, "core0");
+    int room = a_room(b, 2);
+    ck("an empty leasable room starts cold", room >= 0 && core >= 0 &&
+       site_room_watts(&s, room) == 0);
+    static const struct { int kind; const char *nm; } APPL[] = {
+        { SDEV_SWITCH4,  "s4" }, { SDEV_SWITCH8,  "s8" },
+        { SDEV_SWITCH24, "s24" }, { SDEV_ROUTER,  "rt" },
+    };
+    int want = 0, run24 = -1;
+    bool summed = true, dark = true;
+    for (unsigned i = 0; i < sizeof APPL / sizeof APPL[0]; i++) {
+        /* MEASURED EITHER SIDE OF THE DELIVERY, not against the running
+         * total: a box that lands must not move the room's own number, and
+         * asking it that way keeps this claim independent of the next one. */
+        int was = site_room_watts(&s, room);
+        int d = site_install(&s, APPL[i].kind, room, APPL[i].nm);
+        if (d < 0 || site_room_watts(&s, room) != was) dark = false;
+        /* OUTPUT 0 IS SPOKEN FOR: site_new() feeds the day-one workstation
+         * off it, so a gate that wants free outputs counts from one. */
+        int r = site_conduit(&s, core, (int)i + 1, d);
+        want += site_kind_watts(APPL[i].kind);
+        if (APPL[i].kind == SDEV_SWITCH24) run24 = r;
+        if (r < 0 || site_room_watts(&s, room) != want) {
+            summed = false;
+            printf("    with %s fed the room reads %d W and the catalogue adds to %d\n",
+                   APPL[i].nm, site_room_watts(&s, room), want);
+        }
+    }
+    ck("a box heats nothing between the pallet and the conduit reaching it",
+       dark);
+    ck("and once fed, a room sheds the sum of its nameplates",
+       summed);
+    printf("    %d W in the cupboard, off the same table the shop prices from\n",
+           want);
+
+    /* --- AND THE CONDUIT FEEDING ONE CHARGES THE SAME NUMBER. Two models,
+     * two code paths, one answer -- which is the comparison that could not be
+     * made at all while there were two tables. */
+    ck("the run feeding a switch carries what the room says it is shedding",
+       run24 >= 0 && site_conduit_load(&s, run24) == site_kind_watts(SDEV_SWITCH24));
+    printf("    switch24: %d W on its conduit, and %d W of the room's heat\n",
+           site_conduit_load(&s, run24), site_kind_watts(SDEV_SWITCH24));
+
+    /* --- A BOX WITH A BUTTON IS NOT HOT UNTIL SOMEBODY PRESSES IT. The plug
+     * is an appliance's button and no server's; this is the one place the two
+     * halves of that rule can be told apart, so it is checked here. */
+    int srv = site_install(&s, SDEV_SERVER, room, "hot");
+    int rs = site_conduit(&s, core, 5, srv);
+    int cold = site_room_watts(&s, room);
+    ck("a server fed and not switched on adds nothing to the room",
+       srv >= 0 && rs >= 0 && s.dev[srv].mains && !s.dev[srv].powered &&
+       cold == want);
+    ck("and the button is what makes it hot, by its own nameplate",
+       site_power(&s, srv, true) &&
+       site_room_watts(&s, room) == want + site_kind_watts(SDEV_SERVER));
+    printf("    the button on one server: %d W becomes %d W\n",
+           cold, site_room_watts(&s, room));
+
+    site_free(&s);
+}
+
 static void check_one_fact_two_answers(const Building *b)
 {
     printf("\nD43: the reports the playtest caught contradicting themselves\n");
@@ -5430,6 +5556,7 @@ int site_selfcheck(void)
     check_crew(&b);
     check_watch(&b);
     check_next(&b);
+    check_one_nameplate(&b);
     check_one_fact_two_answers(&b);
     check_ambiguity_and_the_diary();
     /* D43: and the decision the first twenty days did not have. */
