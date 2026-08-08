@@ -467,6 +467,80 @@ def loft():
     return obj
 
 
+# THE NACELLE'S OWN PROFILE, as radius against distance along its axis.
+#
+# David: "the nacelles themselves need to have a cap so they're not just a flat
+# cylinder." Quite -- a cylinder with a disc on each end reads as pipe offcut.
+# A nacelle has a domed nose where it gathers whatever it gathers, a parallel
+# midbody, and a tapered stern it exhausts through, and those three together
+# are most of what makes it read as an engine.
+#
+#          u        radius, as a fraction of NAC_R
+NAC_PROFILE = [
+    (0.000,   0.00),   # the tip of the nose
+    (0.020,   0.42),
+    (0.055,   0.68),
+    (0.110,   0.88),
+    (0.190,   0.99),
+    (0.300,   1.00),   # parallel midbody begins
+    (0.720,   1.00),   # and ends
+    (0.820,   0.95),
+    (0.910,   0.82),
+    (0.970,   0.66),
+    (1.000,   0.52),   # the exhaust, tapered rather than cut off
+]
+
+
+def tube(centre, axis_len, radius, segs=28):
+    """A lathed body along the keel: nose cap, midbody, tapered tail.
+
+    Built as rings like the hull rather than as a primitive, because a
+    primitive cylinder has no way to be anything but flat at the ends.
+    """
+    bm = bmesh.new()
+    cx, cy, cz = centre
+    rings = []
+    for u, r in NAC_PROFILE:
+        y = cy - axis_len * 0.5 + u * axis_len
+        if r <= 0.0:
+            rings.append(None)
+            tip = bm.verts.new((cx, y, cz))
+            cap_tip = tip
+            continue
+        ring = []
+        for s in range(segs):
+            a = math.tau * s / segs
+            ring.append(bm.verts.new((cx + math.cos(a) * r * radius, y,
+                                      cz + math.sin(a) * r * radius)))
+        rings.append(ring)
+    real = [r for r in rings if r]
+    for i in range(len(real) - 1):
+        for s in range(segs):
+            n = (s + 1) % segs
+            bm.faces.new((real[i][s], real[i][n], real[i + 1][n], real[i + 1][s]))
+    # the nose closes on a point, the tail on a disc
+    for s in range(segs):
+        n = (s + 1) % segs
+        bm.faces.new((cap_tip, real[0][n], real[0][s]))
+    bm.faces.new(list(reversed(real[-1])))
+    # NORMALS OUTWARD, EXPLICITLY. A lathe built ring by ring has whatever
+    # winding the loop order gives it, and the EXACT boolean solver treats an
+    # inward-facing closed surface as a hole rather than a body -- which showed
+    # up the moment these replaced the primitive cylinders: the weld check went
+    # from 1 connected piece to 2. Recalculating is one call and removes the
+    # whole class of problem.
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces[:])
+    bm.normal_update()
+    me = bpy.data.meshes.new("NacelleMesh")
+    bm.to_mesh(me)
+    bm.free()
+    obj = bpy.data.objects.new("Nacelle", me)
+    bpy.context.collection.objects.link(obj)
+    for poly in obj.data.polygons:
+        poly.use_smooth = True
+    return obj
+
+
 def nacelles():
     """Four engines at the diagonals, and the corridors that reach them.
 
@@ -487,12 +561,7 @@ def nacelles():
         ux, uz = math.cos(ang), math.sin(ang)
         cx = ux * NAC_OFF * LOA
         cz = 0.045 * LOA + uz * NAC_OFF * LOA
-        bpy.ops.mesh.primitive_cylinder_add(
-            vertices=32, radius=NAC_R * LOA, depth=NAC_LEN * LOA,
-            end_fill_type="NGON",
-            location=(cx, NAC_T * LOA, cz),
-            rotation=(math.radians(90), 0, 0))
-        nac = bpy.context.object
+        nac = tube((cx, NAC_T * LOA, cz), NAC_LEN * LOA, NAC_R * LOA)
         nac.name = "Nacelle" + name
         made.append(nac)
 
