@@ -2224,20 +2224,40 @@ static void check_quote(const Building *b)
     site_forwarding(&s, rt, true);
     site_dhcpd(&s, rt, net_ip(10, 0, 1, 1), 400, net_mask_bits(16),
                net_ip(10, 0, 0, 1), s.wan_isp);
+    /* A TENANCY ON THE DECK THE MARGINAL SWITCH IS ON, and `far` decides
+     * which deck that is -- not the literal 3 this used to carry. The room
+     * is chosen by its distance from the hub, and on a station that can land
+     * on any deck the arms reach. */
+    int deck = b->rooms[far].floor;
+    printf("    the marginal switch is on deck %d, %d m of tray from the hub\n",
+           deck, mfar);
     int who = -1;
     for (int i = 0; i < 400 && who < 0; i++) {
         unserved_day(&s, NULL);
         for (int t = 0; t < s.ntenant; t++)
-            if (s.tenant[t].moved && s.tenant[t].floor == 3) who = t;
+            if (s.tenant[t].moved && s.tenant[t].floor == deck) who = t;
     }
     if (who >= 0) site_serve(&s, who, sw, CAB_CAT5E);
+    /* HOW LONG IT TAKES IS THE MODEL'S TO SAY, and it is measured rather
+     * than assumed at forty days.
+     *
+     * siteday.c accumulates errors at (load x metres past the margin), so a
+     * run two metres over degrades five times slower than one ten metres
+     * over -- which is the point of the rule. The old plate's far room was
+     * 95 m and warned inside forty days; the station's is 91 m and takes
+     * longer, and a gate that stopped at forty was measuring its own
+     * patience rather than the model. It runs to a year and prints the day
+     * it warned on, so if that number ever moves, it moves in the output. */
     bool warned = false, control = true;
-    for (int i = 0; i < 40 && !warned; i++) {
+    int warn_day = -1;
+    for (int i = 0; i < 365 && !warned; i++) {
         unserved_day(&s, NULL);
         buf_clear(&o);
         site_dump_events(&s, &o);
-        if (has(o.p, "taking errors under load")) warned = true;
+        if (has(o.p, "taking errors under load")) { warned = true; warn_day = i + 1; }
     }
+    printf("    %d m over the margin: it warned on day %d of a year\n",
+           s.link[l].metres - (SITE_COPPER_MARGIN_M - 1), warn_day);
     ck("the world agrees the marginal run is the marginal one: it takes "
        "errors",
        warned && has(o.p, "sw3"));
@@ -2476,14 +2496,75 @@ static void check_industry_upload(void)
              s->tenant[stu].up_kb, s->tenant[stu].up_want_kb, got_pct(s, stu));
     ck(line, got_pct(s, stu) < 80 && s->tenant[stu].up_want_kb > 0 &&
              s->tenant[stu].up_kb < s->tenant[stu].up_want_kb);
-    /* AND IT TAKES THE FLOOR WITH IT, which is the owner's sentence in one
-     * measurement: *worth taking if you have built for it, ruinous if you
-     * have not.* The office's own files never leave the floor and their day
-     * still falls apart, because the suites next door are filling the only
-     * way out of the building with a stream that cannot be slowed down. */
-    snprintf(line, sizeof line, "and takes the OFFICE down with it, whose files "
-             "never leave the deck (%d%% from %d%%)", got_pct(s, off), off_was);
-    ck(line, got_pct(s, off) < off_was - 20);
+    /* AND WHO ELSE IT TAKES DOWN DEPENDS ON WHERE THEIR FILES ARE, which is
+     * the decision this whole section exists to price.
+     *
+     * THIS ASSERTION USED TO BE A LIE THAT PASSED. It read "and takes the
+     * OFFICE down with it, whose files never leave the deck", and demanded
+     * the office lose more than twenty points. It passed on the old office
+     * plate -- 98% down to 8% -- and the reason it passed was the opposite
+     * of the sentence it printed: `tenant[off].files_dev` was -1 on that
+     * tower, so the office had NO file server, and every one of its file
+     * transfers fell back to the far side of the handoff. Its files left the
+     * deck on every single one of them. The hub-and-spoke plate resolves the
+     * server properly (files_dev 8, "files", cabled to the office's own
+     * switch), the office's files really do stay on the deck, and it now
+     * loses two points instead of ninety -- which is CORRECT, and is what
+     * the README has claimed all along.
+     *
+     * So the gate measures the decision rather than the accident, and the
+     * decision is the one the old tower was accidentally demonstrating: an
+     * office WITH a file server against the same office WITHOUT one. A
+     * tenancy with nowhere of its own to read from does every transfer
+     * across the landlord's circuit -- siteday.c falls the files back to
+     * `web` when files_dev is -1 -- so the studio next door ruins them,
+     * while the office reading off a box in the station is barely touched.
+     *
+     * NOT `floor_files`, which was the first thing I reached for and is the
+     * wrong lever: it moves the server from the deck's cupboard to
+     * Engineering, and both of those are INSIDE the station. 98% against
+     * 97%, measured. What crosses the circuit is not where the server is,
+     * it is whether there is one.
+     *
+     * That is "worth taking if you have built for it, ruinous if you have
+     * not" in a number, and unlike the old one it is true. */
+    int off_local = got_pct(s, off);
+    int off_basement = -1, stu_basement = -1;
+    {
+        Tower w2;
+        tower_up(&w2, &b, 22ull, comms, CAB_CAT5E, true, 3);
+        Site *s2 = &w2.s;
+        int o2 = trade_on(s2, TEN_OFFICE, 1), u2 = trade_on(s2, TEN_STUDIO, 1);
+        if (o2 >= 0 && u2 >= 0) {
+            tower_until(&w2, u2);
+            site_serve(s2, o2, w2.sw[0], CAB_CAT5E);
+            site_serve(s2, u2, w2.sw[1], CAB_CAT5E);
+            /* THE ONE THING THAT IS DIFFERENT: nowhere in the station to
+             * read from. The box is switched off, which is a state a player
+             * reaches by not buying it, by not feeding it, or by an
+             * overnight blackout -- all three of which this game already
+             * does to them. */
+            site_power(s2, w2.srv, false);
+            site_isp(s2, 100);
+            site_day(s2, NULL);
+            off_basement = got_pct(s2, o2);
+            stu_basement = got_pct(s2, u2);
+            printf("    with the server off, the office's files fall back to "
+                   "the far side of the handoff: files_dev %d\n",
+                   s2->tenant[o2].files_dev);
+        }
+        site_free(s2);
+    }
+    printf("    the office with a file server in the station: %d%%.  the same "
+           "office with none: %d%%\n", off_local, off_basement);
+    snprintf(line, sizeof line, "and it takes down the tenancy that has no "
+             "server of its own, whose every transfer crosses the circuit "
+             "(%d%% against %d%%)", off_basement, off_local);
+    ck(line, off_basement >= 0 && stu_basement >= 0 &&
+             off_basement < 80 && off_local >= 80 &&
+             off_local - off_basement > 20);
+    ck("and the office whose files never leave the deck is barely touched",
+       off_local >= off_was - 5);
     /* AND THE FIX IS A MONTHLY BILL RATHER THAN A CABLE, which is the only
      * recurring decision in this game and the one a studio makes expensive. */
     site_isp(s, 500);
@@ -2740,11 +2821,39 @@ static void check_desk_rooms(const Building *b)
     int comms = comms_on(b, floor, 0);
     tower_up(&w, b, GATE_SEED, comms, CAB_CAT6, true, 1);
     Site *s = &w.s;
+    /* A TENANCY WITH THE SHAPE THIS GATE IS ABOUT, and it looks for one.
+     *
+     * This took the first tenancy on deck 1, and then asserted that it holds
+     * at least five rooms, a server room of its own, and rooms of different
+     * sizes. On the old floorplate the first one always did. On a station the
+     * letting queue hands out runs of arm rooms and a server room is a 30%
+     * draw, so the first tenancy on a deck may hold four uniform rooms and
+     * no cupboard -- and the gate would then be failing the GENERATOR for
+     * not producing the tenancy the gate wanted, which is not a defect.
+     *
+     * So it searches the whole station for a tenancy that has the shape, and
+     * only fails if no tenancy anywhere does -- which WOULD be a defect,
+     * because a station where nobody ever holds a spread of rooms with a
+     * cupboard in it has stopped producing the situation this gate prices. */
     int ti = -1;
-    for (int i = 0; i < s->ntenant; i++)
-        if (s->tenant[i].floor == floor) { ti = i; break; }
-    if (ti < 0) { ck("the gate's tower lets a tenancy on deck 1", false);
+    for (int i = 0; i < s->ntenant && ti < 0; i++) {
+        int rooms = 0, srv = 0;
+        double lo = 1e9, hi = 0;
+        for (int r = 0; r < b->nrooms; r++) {
+            if (b->rooms[r].tenant != s->tenant[i].tenant) continue;
+            if (b->rooms[r].kind == RM_SERVER) { srv++; continue; }
+            if (!leasable(b->rooms[r].kind)) continue;
+            rooms++;
+            double a1 = bld_room_area(&b->rooms[r]);
+            if (a1 > hi) hi = a1;
+            if (a1 < lo) lo = a1;
+        }
+        if (rooms >= 5 && srv >= 1 && hi > lo) ti = i;
+    }
+    if (ti < 0) { ck("some tenancy in this station holds a spread of rooms "
+                     "and a cupboard of its own", false);
                   site_free(s); return; }
+    floor = s->tenant[ti].floor;
     tower_until(&w, ti);
     SiteTenant *t = &s->tenant[ti];
 
@@ -2797,11 +2906,57 @@ static void check_desk_rooms(const Building *b)
            "%.0f m2 room holds %d\n",
            t->ndesk, occupied, biggest, big_desks, smallest, small_desks);
 
-    /* ---- AND THE SPLIT IS THE SQUARE METRES. A bigger room holds more
-     * desks, and the biggest room holds at least twice what the smallest
-     * does when it is at least twice the size. */
-    ck("a bigger room takes more desks than a smaller one",
-       big_desks > small_desks && small_desks >= 1);
+    /* ---- AND THE SPLIT IS THE SQUARE METRES.
+     *
+     * A ROOM THAT IS MEANINGFULLY BIGGER holds more desks. This demanded it
+     * of the biggest and smallest rooms the tenancy holds, whatever they
+     * were -- and on a station the arms cut rooms into four-to-eight metre
+     * lengths of one seven-metre band, so a tenancy's biggest and smallest
+     * can be 105 m2 and 98 m2. Three desks and three desks is the RIGHT
+     * answer for those two, and the gate was calling it a failure.
+     *
+     * So it asks for a pair that really differ -- a quarter bigger is the
+     * threshold, which is comfortably more than the rounding in one desk --
+     * and asserts on that. If a tenancy's rooms are all within a quarter of
+     * each other there is no claim to make and the monotone check below is
+     * what covers them. */
+    {
+        double la = 0, ha = 0;
+        int ld = 0, hd = 0;
+        for (int i = 0; i < b->nrooms; i++) {
+            if (b->rooms[i].tenant != t->tenant) continue;
+            if (!leasable(b->rooms[i].kind) || b->rooms[i].kind == RM_SERVER)
+                continue;
+            double a1 = bld_room_area(&b->rooms[i]);
+            int d1 = 0;
+            for (int k = t->desk0; k < t->desk0 + t->ndesk; k++)
+                if (s->dev[k].room == (uint16_t)i) d1++;
+            if (d1 == 0) continue;
+            for (int j = 0; j < b->nrooms; j++) {
+                if (b->rooms[j].tenant != t->tenant) continue;
+                if (!leasable(b->rooms[j].kind) ||
+                    b->rooms[j].kind == RM_SERVER) continue;
+                double a2 = bld_room_area(&b->rooms[j]);
+                if (a2 < a1 * 1.25) continue;
+                int d2 = 0;
+                for (int k = t->desk0; k < t->desk0 + t->ndesk; k++)
+                    if (s->dev[k].room == (uint16_t)j) d2++;
+                if (d2 == 0) continue;
+                if (a2 - a1 > ha - la) { la = a1; ha = a2; ld = d1; hd = d2; }
+            }
+        }
+        if (ha > 0.0) {
+            printf("    %.0f m2 holds %d and the %.0f m2 room a quarter "
+                   "bigger holds %d\n", la, ld, ha, hd);
+            ck("a room a quarter bigger takes more desks than a smaller one",
+               hd > ld && ld >= 1);
+        } else {
+            printf("    every room this tenancy holds is within a quarter of "
+                   "every other, so there is no bigger room to test\n");
+            ck("a room a quarter bigger takes more desks than a smaller one",
+               small_desks >= 1 && big_desks >= small_desks);
+        }
+    }
     /* A PAIR THAT IS REALLY TWICE THE SIZE, if this station has one.
      *
      * This demanded `biggest >= 2 * smallest` of the tenancy's own rooms and

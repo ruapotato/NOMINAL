@@ -185,9 +185,15 @@ static bool add_door(Building *b, int floor, int x, int y, int dir)
  * either side of it are, and ARM_LEN is the shortest arm worth building --
  * below that the rooms would be closer to the hub than the ring is wide and
  * the arm would read as a bulge rather than a limb. */
-#define ARM_SPINE 3
+#define ARM_SPINE 5
 #define ARM_ROOM  7
 #define ARM_LEN   9
+/* THE RING IS A CONCOURSE, NOT A PASSAGEWAY. David: "The corridors in general
+ * are kinda tight. They should be more spacious." It was two metres, which is
+ * a service corridor -- two people pass sideways. Four is a street: the ring
+ * is the thing every walk in the station goes through, so it is the one to
+ * widen first, and the arms' spines went from three to five with it. */
+#define RING_W    4
 
 static int split_span(Rng *r, int lo, int hi, int cutlo, int cuthi,
                       int minw, int target, int minrooms, int maxrooms,
@@ -304,8 +310,8 @@ bool bld_generate(Building *b, uint64_t seed)
     int my = (b->fy0[top] + b->fy1[top]) / 2;
     b->core_x0 = (int16_t)(mx - cw / 2);   b->core_x1 = (int16_t)(mx - cw / 2 + cw);
     b->core_y0 = (int16_t)(my - ch / 2);   b->core_y1 = (int16_t)(my - ch / 2 + ch);
-    b->ring_x0 = (int16_t)(b->core_x0 - 2); b->ring_y0 = (int16_t)(b->core_y0 - 2);
-    b->ring_x1 = (int16_t)(b->core_x1 + 2); b->ring_y1 = (int16_t)(b->core_y1 + 2);
+    b->ring_x0 = (int16_t)(b->core_x0 - RING_W); b->ring_y0 = (int16_t)(b->core_y0 - RING_W);
+    b->ring_x1 = (int16_t)(b->core_x1 + RING_W); b->ring_y1 = (int16_t)(b->core_y1 + RING_W);
     int CW = b->core_x1 - b->core_x0, CH = b->core_y1 - b->core_y0;
     if (CW < 21 || CH < 6) return false;
 
@@ -371,10 +377,10 @@ bool bld_generate(Building *b, uint64_t seed)
         /* The ring, as four legs. They are separate rectangles because a Room
          * is a rectangle; circulation is open between them, and the gate
          * checks the loop is actually connected rather than trusting that. */
-        add_room(b, f, RM_CORRIDOR, 0, rx0, ry0, rx1, ry0 + 2);
-        add_room(b, f, RM_CORRIDOR, 0, rx0, ry1 - 2, rx1, ry1);
-        add_room(b, f, RM_CORRIDOR, 0, rx0, ry0 + 2, rx0 + 2, ry1 - 2);
-        add_room(b, f, RM_CORRIDOR, 0, rx1 - 2, ry0 + 2, rx1, ry1 - 2);
+        add_room(b, f, RM_CORRIDOR, 0, rx0, ry0, rx1, ry0 + RING_W);
+        add_room(b, f, RM_CORRIDOR, 0, rx0, ry1 - RING_W, rx1, ry1);
+        add_room(b, f, RM_CORRIDOR, 0, rx0, ry0 + RING_W, rx0 + RING_W, ry1 - RING_W);
+        add_room(b, f, RM_CORRIDOR, 0, rx1 - RING_W, ry0 + RING_W, rx1, ry1 - RING_W);
 
         /* The core. */
         int x = cx0, stair = -1, lobby = -1, lifta = -1, liftb = -1;

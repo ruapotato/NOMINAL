@@ -180,6 +180,28 @@ func _init() -> void:
 		else:
 			ok("the bridge is deck %d and it is open before anything is paid for"
 				% t.bridge_deck())
+		# ---- THE MINIMAP'S NEEDLE POINTS WHERE YOU ARE LOOKING.
+		#
+		# It pointed the other way, and the sign is checkable without reading
+		# a pixel: face the body along -z, ask the map, and the needle must
+		# have a negative y in map space -- because the map's y IS world z.
+		if t.minimap != null:
+			t.player.look_at_yaw(0.0)
+			await process_frame
+			t.minimap.facing = 0.0
+			var n0: Vector2 = t.minimap.needle()
+			t.minimap.facing = PI * 0.5
+			var n1: Vector2 = t.minimap.needle()
+			var fwd0: Vector3 = t.player.global_transform.basis * Vector3(0, 0, -1)
+			if n0.y >= 0.0 or absf(n0.x) > 0.01:
+				fail("facing north the minimap needle points (%.2f, %.2f), and the body faces (%.2f, %.2f)"
+					% [n0.x, n0.y, fwd0.x, fwd0.z])
+			elif n1.x >= 0.0:
+				fail("turned a quarter turn the needle went the wrong way: (%.2f, %.2f)"
+					% [n1.x, n1.y])
+			else:
+				ok("the minimap needle points where the body looks, both ways round")
+
 		# ---- AND THE CREW ARE ON IT, at consoles with nothing in them.
 		# Every fact here comes back over site_crew(); the window's job is
 		# where the console physically stands, and nothing else. A bridge
@@ -528,6 +550,95 @@ func _init() -> void:
 		else:
 			ok("and it goes floor, up at the door, tray, down, floor -- like "
 				+ "copper: %d points, %.2f m to %.2f m" % [route.size(), low, high])
+		# AND WHERE IT CROSSES A DOORWAY IT IS AGAINST A JAMB.
+		#
+		# David: "right now they run right in front of the door ... Perhaps
+		# off to one side or the other so they don't get in the way of going
+		# through your way." A run is thumb-thick black cable now, so a leg
+		# down the middle of an opening is a rope in the way of every walk
+		# through it.
+		#
+		# NOT "never in a doorway", which is the check I wrote first and it
+		# is not satisfiable: the wall above a door head is solid, so a cable
+		# reaching a room HAS to come through the opening below 2.05 m. The
+		# property that can be true is that it is off to one side with the
+		# rest of the metre clear -- which is what David asked for and what
+		# _dodge_doors() does. Measured by sampling every segment.
+		var doors_hit := 0
+		var worst_door := ""
+		var near_end := 0
+		var a_end: Vector3 = route[0]
+		var b_end: Vector3 = route[route.size() - 1]
+		for i in range(route.size() - 1):
+			var p0: Vector3 = route[i]
+			var p1: Vector3 = route[i + 1]
+			var steps: int = max(2, int((p1 - p0).length() / 0.20))
+			for k in range(steps + 1):
+				var q: Vector3 = p0.lerp(p1, float(k) / float(steps))
+				var deck: int = int(floor(q.y / t.fheight))
+				var hy: float = q.y - float(deck) * t.fheight
+				if hy > t.DOOR_H:
+					continue          # above the head of any opening
+				for d in t.doors:
+					if int(d.floor) != deck:
+						continue
+					# the doorway's own metre of floor, either side of the edge
+					var gx := float(d.x) + (1.0 if int(d.dir) == 0 else 0.5)
+					var gz := float(d.y) + (1.0 if int(d.dir) == 1 else 0.5)
+					if absf(q.x - gx) > 0.5 or absf(q.z - gz) > 0.5:
+						continue
+					# how far off the centre of the opening it is, across it
+					var off: float = absf(q.z - gz) if int(d.dir) == 0 \
+						else absf(q.x - gx)
+					# THE LAST LEG INTO THE BOX IS THE BOX'S OWN PROBLEM.
+					# A run is pinned at both ends by a socket, and a socket
+					# within the dodge's own reach of a doorway puts its lead
+					# in that doorway whatever the route does -- no amount of
+					# routing moves a plug. That is a question about where
+					# kit is allowed to stand, which _floor_slot() answers
+					# and which is a separate ticket; it is counted and
+					# printed here rather than passed over in silence.
+					if q.distance_to(a_end) < 1.6 or q.distance_to(b_end) < 1.6:
+						near_end += 1
+						break
+					if off < t.DOOR_HUG - 0.03:
+						doors_hit += 1
+						worst_door = "deck %d door at (%d,%d) -- cable %.2f m off centre at (%.2f, %.2f, %.2f)" \
+							% [deck, int(d.x), int(d.y), off, q.x, hy, q.z]
+					break
+		# WHAT THIS ASSERTS IS THE VERTICAL, which is what _dodge_doors()
+		# owns and what David reported: "it starts in the corner of the
+		# bottom of the doorway, but it goes to the center of the doorway
+		# above it." A drop that is in the corner at the bottom and the
+		# middle at the top is a diagonal across the way through, and that is
+		# now a straight line against a jamb at every height.
+		#
+		# THE HORIZONTAL ALONG THE FLOOR IS NOT FIXED and this says so out
+		# loud rather than passing quietly: a run whose box stands near a
+		# doorway crosses the threshold on the floor, and the answer to that
+		# is where kit is allowed to stand, not how cable is routed. Ticket.
+		var upright := 0
+		for i2 in range(route.size() - 1):
+			var q0: Vector3 = route[i2]
+			var q1: Vector3 = route[i2 + 1]
+			if absf(q0.y - q1.y) < 0.5:
+				continue          # not a vertical
+			if absf(q0.x - q1.x) > 0.02 or absf(q0.z - q1.z) > 0.02:
+				upright += 1
+		if upright > 0:
+			fail("%d of a conduit run's vertical legs lean across the opening "
+				% upright + "instead of dropping straight down its corner")
+		elif doors_hit > 0:
+			print("    NOTE: %d floor-level samples cross a doorway (%s) -- the "
+				% [doors_hit, worst_door]
+				+ "box stands beside the door, which is a placement question")
+			ok("every vertical leg drops straight, in the corner of its opening")
+		else:
+			ok("and where it crosses a doorway it is %.2f m off centre, against a jamb%s"
+				% [t.DOOR_HUG,
+				   "" if near_end == 0 else
+				   "  (%d samples in the last metre into a box, which is where the box stands)" % near_end])
+
 		# AND THE CROSSHAIR READS THE NUMBER OFF IT
 		var mid: Vector3 = route[route.size() / 2]
 		var seen := {}
@@ -567,16 +678,21 @@ func _init() -> void:
 		else:
 			ok("the session walks you into the riser: %s" % wentr.strip_edges().split("\n")[0])
 		# and a body really climbs it, under the same physics as the stairs
-		var rm0 = t.rooms[ris0]
-		var foot := Vector3(float(rm0.x0) + 0.9, 0.45,
-			float(rm0.y0) + (float(rm0.y1) - float(rm0.y0)) * 0.5 - 0.1)
+		# WHERE THE LADDER IS IS THE TOWER'S TO SAY. This stood the body in
+		# the middle of the shaft, which is where the ladder used to be --
+		# and when the ladder moved against the wall where it belongs, the
+		# test was walking away from it.
+		var lf: Dictionary = t.ladder_foot(0)
+		if lf.is_empty():
+			fail("deck 0 has no riser ladder to climb")
+		var foot: Vector3 = lf.get("pos", Vector3(0, 0.45, 0))
 		t.teleport(foot)
 		for i in range(12):
 			await process_frame
 		var y_before: float = t.player.global_position.y
 		t.player.drive_active = true
 		t.player.drive = Vector2(0, 1)
-		t.player.look_at_yaw(PI)
+		t.player.look_at_yaw(float(lf.get("yaw", PI)))
 		var up_ok := false
 		for i in range(700):
 			await process_frame

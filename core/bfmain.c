@@ -301,13 +301,17 @@ static int bld_mutate(Building *b, int which)
             if (rm->x0 < b->ring_x0 || rm->x1 > b->ring_x1) continue;
             if (rm->y0 < b->ring_y0 || rm->y1 > b->ring_y1) continue;
             if (rm->x1 - rm->x0 <= 6) continue;      /* a north/south leg */
-            /* NOT AT THE MIDDLE. An arm's spine meets the ring at the
-             * centre of the leg and is three metres wide, so a one-metre
-             * cut there is BRIDGED by the arm -- the circulation survives
-             * it, which is a true and rather nice property of building the
-             * station this way and not a miss by the check. Cut near the
-             * corner instead, where nothing spans it. */
-            int x = rm->x0 + 2;
+            /* NOT AT THE MIDDLE AND NOT AT A CORNER.
+             *
+             * An arm's spine meets the ring at the centre of the leg and is
+             * five metres wide, so a one-metre cut there is BRIDGED by the
+             * arm. And the ring is four metres wide now, so its corners are
+             * four-by-four blocks joined to the leg round the turn -- a cut
+             * two metres in is bridged by the corner. Both of those are true
+             * and rather nice properties of building the station this way,
+             * and neither is a miss by the check. A quarter of the way along
+             * is clear of both. */
+            int x = rm->x0 + (rm->x1 - rm->x0) / 4;
             for (int y = rm->y0; y < rm->y1; y++)
                 b->cell[(((size_t)1 * (size_t)b->h + (size_t)y) * (size_t)b->w) + (size_t)x]
                     = BLD_NOROOM;

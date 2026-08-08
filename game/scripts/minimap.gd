@@ -73,6 +73,13 @@ func show_floor(f: int, r: Array, at: Vector2, yaw: float) -> void:
 	queue_redraw()
 
 
+# The needle, as a unit vector in map space, so a test can ask which way it
+# points without reading pixels. One expression, used by _draw() and by the
+# assertion in game/tests/tower.gd.
+func needle() -> Vector2:
+	return Vector2(-sin(facing), -cos(facing))
+
+
 func _draw() -> void:
 	draw_rect(Rect2(Vector2.ZERO, Vector2(W, H)), Color(0.04, 0.06, 0.08, 0.72))
 	draw_rect(Rect2(Vector2.ZERO, Vector2(W, H)), Color(0.42, 0.48, 0.55, 0.55), false, 1.0)
@@ -117,7 +124,14 @@ func _draw() -> void:
 	# YOU, and which way you are looking. A dot alone on a plan is not enough
 	# to turn towards a door with.
 	var me: Vector2 = org + (here - mn) * k
-	var dir := Vector2(sin(facing), cos(facing))
+	# WHICH WAY THE NEEDLE POINTS, and it pointed backwards.
+	#
+	# David: "A mini map is a circle with a line, but the line points behind
+	# you, not in front of you." He is right and it is a sign: a body's
+	# forward in this engine is `basis * Vector3(0, 0, -1)`, which in world
+	# x/z is (-sin(yaw), -cos(yaw)), and this drew (+sin, +cos) -- the exact
+	# negation. The map's y is world z with no flip, so the two have to agree.
+	var dir := needle()
 	draw_line(me, me + dir * 9.0, Color("#ffd479"), 1.5)
 	draw_circle(me, 2.6, Color("#ffd479"))
 

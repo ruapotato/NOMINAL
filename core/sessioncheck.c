@@ -2525,15 +2525,23 @@ static void check_quote_played(int *passed, int *total)
     };
     for (int i = 0; SETUP[i]; i++) say(&ses, SETUP[i], &o);
 
-    /* THE TWO ROOMS ON ONE FLOOR THAT LOOK THE SAME AND ARE NOT. Floor 3 of
-     * this seed's tower runs from sixty metres to ninety-five from the MDF,
-     * and `rooms 3` prints both of them as "office". */
+    /* THE TWO ROOMS ON ONE DECK THAT LOOK THE SAME AND ARE NOT: `rooms 3`
+     * prints both of them as "office" and one of them is past the margin.
+     *
+     * THE FAR ONE IS THE FURTHEST COPPER STILL REACHES, not the furthest
+     * full stop. On a floorplate every room on a deck was inside a hundred
+     * metres, so the two were the same room; a station's arms run past what
+     * copper carries at all, and this section goes on to lay a cat5e run to
+     * `far` and read the speed off the port. A run that carries nothing is a
+     * true thing for the game to say and a useless thing for this gate to
+     * measure -- the decision it is about is margin, which only exists where
+     * there is a link. */
     int mdf = ses.room, far = -1, near = -1, dfar = -1, dnear = 1 << 30;
     for (int i = 0; i < ses.b.nrooms; i++) {
         const Room *r = &ses.b.rooms[i];
         if (r->floor != 3 || r->kind != RM_OFFICE) continue;
         int m = site_metres(&ses.s, mdf, i);
-        if (m < 0) continue;
+        if (m < 0 || site_cable_speed(CAB_CAT5E, m) <= 0) continue;
         if (m > dfar)  { dfar = m; far = i; }
         if (m < dnear) { dnear = m; near = i; }
     }
@@ -3235,14 +3243,31 @@ static void check_sit(int *passed, int *total)
     /* AND MOVING STRAIGHT FROM ONE CHAIR TO THE NEXT still holds one, which
      * is the shape of the cap that could most easily go wrong: `sit` from
      * inside the seat stands you up first. */
-    if (ses.s.tenant[ti].ndesk > 1) {
+    /* TWO CHAIRS IN THE SAME ROOM, and it has to look for them.
+     *
+     * This took desks 0 and 1 of the tenancy, which on an office floorplate
+     * were always in the same let room. A station's tenancy holds a run of
+     * rooms down an arm, so d0 and d1 can be in different ones -- and `sit`
+     * quite rightly refuses a chair you are not standing next to, which is
+     * the rule that makes a desk a place rather than a menu entry. What this
+     * assertion is about is the machine CAP when you move straight from one
+     * chair to the next, so it wants two chairs you really can move between. */
+    int seat_a = -1, seat_b = -1;
+    for (int i = 0; i < ses.s.tenant[ti].ndesk && seat_b < 0; i++)
+        for (int j = i + 1; j < ses.s.tenant[ti].ndesk && seat_b < 0; j++)
+            if (ses.s.dev[d0 + i].room == ses.s.dev[d0 + j].room) {
+                seat_a = d0 + i; seat_b = d0 + j;
+            }
+    if (seat_b >= 0) {
         char line[32];
-        snprintf(line, sizeof line, "sit %s", first);
+        snprintf(line, sizeof line, "go %s", ses.s.dev[seat_a].name);
         say(&ses, line, &o);
-        snprintf(line, sizeof line, "sit %s", ses.s.dev[d0 + 1].name);
+        snprintf(line, sizeof line, "sit %s", ses.s.dev[seat_a].name);
+        say(&ses, line, &o);
+        snprintf(line, sizeof line, "sit %s", ses.s.dev[seat_b].name);
         say(&ses, line, &o);
         ck("moving straight to the next desk holds one machine, not two",
-           desk_machines(&ses) == 1 && seated_at(&ses, ses.s.dev[d0 + 1].name));
+           desk_machines(&ses) == 1 && seated_at(&ses, ses.s.dev[seat_b].name));
         say(&ses, "stand", &o);
         ck("and standing up from that one leaves nothing behind either",
            desk_machines(&ses) == 0 && on_your_feet(&ses));

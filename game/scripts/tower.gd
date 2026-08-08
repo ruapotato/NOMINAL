@@ -1665,9 +1665,30 @@ func _riser_ladder(f: int) -> void:
 	if r < 0 or up < 0:
 		return
 	var rm = rooms[r]
-	# against the long wall, out of the way of the cable drops
+	# AGAINST THE WALL, WHICH IS WHERE A LADDER IS.
+	#
+	# David, from a walkthrough: "The ladder works, but it should be up
+	# against the wall right now. It's like a meter away from the wall. Which
+	# acts kinda funny 'cause then you walk right through the ladder."
+	#
+	# He was reading it exactly right and the cause is one line: `z0` was the
+	# MIDDLE of the riser's depth -- (y0 + y1) / 2 -- so the ladder stood in
+	# free air halfway across the shaft with room to walk behind it. It is
+	# now 120 mm off the north wall's finished face, which clears the dado
+	# plate and the hull frames that stand proud of it.
+	# AND ON THE WALL YOU CAN STEP OFF FROM. David, after the first move:
+	# "The ladder that was in the center between walls was pushed to the
+	# wrong wall. So that when you're climbing the ladder you're always
+	# facing a wall and don't really have an option to get off the ladder and
+	# get onto a particular floor."
+	#
+	# Both halves of that are the same mistake: a ladder belongs on the wall
+	# OPPOSITE the landing, so a climber faces out across the grating and
+	# steps off forwards. It went onto y0 while the grating is drawn at the
+	# far end of the shaft, so the climber arrived nose-to-plate with nothing
+	# behind them but the hole. The grating decides; the ladder follows.
 	var x0 := float(rm.x0) + 0.25
-	var z0 := float(rm.y0) + (float(rm.y1) - float(rm.y0)) * 0.5 - 0.22
+	var z0 := float(rm.y1) - 0.17
 	var base := float(f) * fheight
 	var col := Color("#8a8f96")
 	# two stiles
@@ -1691,11 +1712,11 @@ func _riser_ladder(f: int) -> void:
 	# stopped dead at y = 1.79, one storey short, with its head on the
 	# underside of its own landing.
 	var gy := float(f + 1) * fheight
-	var gx0 := x0 + 0.80
-	var gw := float(rm.x1) - 0.10 - gx0
-	if gw > 0.5:
-		_box(Vector3(gx0, gy - 0.06, float(rm.y0) + 0.10),
-			Vector3(gw, 0.06, float(rm.y1 - rm.y0) - 0.20),
+	var gz1 := z0 - 0.55                      # clear of the rungs
+	var gd := gz1 - (float(rm.y0) + 0.10)
+	if gd > 0.5:
+		_box(Vector3(float(rm.x0) + 0.10, gy - 0.06, float(rm.y0) + 0.10),
+			Vector3(float(rm.x1 - rm.x0) - 0.20, 0.06, gd),
 			Color("#6f757c"), true)
 	# WHERE THE CLIMBING HAPPENS. Not a ramp: an 81 degree incline is not
 	# something a capsule walks up -- floor_max_angle is 50 -- and the first
@@ -1711,9 +1732,42 @@ func _riser_ladder(f: int) -> void:
 	# rungs put it outside the ladder a third of the way up -- measured, out
 	# at y = 1.15 and back down to the floor. Along the ladder's own wall you
 	# can climb; the rest of the riser is a room you stand in.
-	_ladders.append(Rect3ish(float(rm.x0) - 0.10, float(rm.y0) + 0.10,
-		float(rm.x0) + 1.50, float(rm.y1) - 0.10,
+	# AND THE CLIMBING VOLUME FOLLOWS THE LADDER rather than covering the
+	# room. It used to run the whole depth of the riser, which is the other
+	# half of what David saw: "you can walk through the ladder and then push
+	# up against the wall and it still lets you climb." Now it is the band in
+	# front of the rungs -- deep enough for the forward drift a climbing body
+	# has (measured at 0.4 m/s, which took the first 0.8 m volume off the
+	# ladder a third of the way up), and no deeper.
+	_ladders.append(Rect3ish(x0 - 0.35, z0 - 1.30,
+		x0 + 0.78, z0 + 0.20,
 		base - 0.10, base + fheight + 0.55))
+
+
+# WHERE YOU STAND TO CLIMB, and which way you face to do it.
+#
+# The riser ladder is against the north wall of the shaft, so the way onto it
+# is from the room side walking towards that wall. A test that wants to climb
+# should ask rather than guess -- the ladder moved once already (it used to
+# stand in the middle of the shaft) and the test that hardcoded the middle
+# went on passing for the wrong reason and then failed for a good one.
+# Returns {} when this deck has no ladder.
+func ladder_foot(f: int) -> Dictionary:
+	var r := find_room(f, K_RISER)
+	if r < 0 or f + 1 >= nfloors:
+		return {}
+	var rm = rooms[r]
+	return {
+		"pos": Vector3(float(rm.x0) + 0.50, float(f) * fheight + 0.45,
+			float(rm.y1) - 1.05),
+		# FACING THE WALL THE LADDER IS ON. walker.gd drives along the local
+		# -z axis (`transform.basis * Vector3(x, 0, -y)`), so a yaw of zero
+		# walks towards -z and PI towards +z. The ladder is on the y1 wall,
+		# so from in front of it that is PI -- and the landing is behind you
+		# at the y0 end, which is the point: you climb facing the rungs and
+		# step off backwards onto the grating rather than into the hole.
+		"yaw": PI,
+	}
 
 
 # ------------------------------------------------------------ the tube lights
@@ -2263,14 +2317,23 @@ func _draw_power() -> void:
 	# conduit and a patch lead between two rooms follow the same path in the
 	# world as well as costing the same in the model.
 	#
-	# It is thicker than copper because it is, and its colour is what it is
-	# carrying rather than what grade it is: a run at 93% is the thing you
-	# need to see from the doorway.
+	# IT IS BLACK, AND IT IS THICK. David: "Power conduit needs to be thicker
+	# ... Power conduit should also be black."
+	#
+	# It used to be drawn in the utilisation ramp -- green through amber to
+	# red by how loaded the run is -- on the argument that a run at 93% is
+	# what you need to see from the doorway. That was a picture doing a
+	# readout's job: five coloured ropes over your head tell you there is
+	# something to worry about without telling you which run or what number,
+	# and the crosshair already prints the percentage when you look at one.
+	# So the run looks like what it is -- heavy black armoured cable -- and
+	# the number stays in the words. _conduit_colour() is still what the
+	# hover text tints with, which is where a ramp belongs.
 	for c in site_conduits():
 		var pts: Array = conduit_route(int(c.from), int(c.to))
 		if pts.size() < 2:
 			continue
-		_run_cable(g, pts, _conduit_colour(int(c.pct)), 4000 + int(c.i))
+		_run_cable(g, pts, CONDUIT_COL, 4000 + int(c.i), CONDUIT_R)
 	_power_node = MeshInstance3D.new()
 	_power_node.name = "Power"
 	_power_node.mesh = g.mesh()
@@ -2428,6 +2491,10 @@ func _draw_cables() -> void:
 # model's and are untouched: this is the diameter of the picture, not of the
 # copper the game charges you for.
 const CABLE_R := 0.0045
+# A POWER RUN IS NOT A PATCH LEAD. Armoured cable carrying 1500 W is the
+# thickness of a thumb, not of a shoelace, and it is black.
+const CONDUIT_R := 0.022
+const CONDUIT_COL := Color("#14171a")
 const BEND_R := 0.09           # the radius copper will actually take
 const SKIRT_Y := 0.06          # where a lead lies when it is lying on a floor
 
@@ -2598,7 +2665,10 @@ func _route_between(a1: Vector3, b1: Vector3, skirt_a := -1, skirt_b := -1) -> A
 	var tail := Vector3(b1.x, endy, b1.z)
 	if pts.is_empty() or pts[pts.size() - 1].distance_to(tail) > 0.01:
 		pts.append(tail)
-	return pts
+	# AND OUT OF THE WAY OF THE DOORS. Part of the route, so the polyline a
+	# test reads and the mesh a player sees are the same line. See
+	# _dodge_doors().
+	return _dodge_doors(pts)
 
 
 # THE TRAY, AS A ROUTE. Breadth-first over the metre grid of the floor, through
@@ -2714,13 +2784,88 @@ func _open_edge(f: int, x0: int, y0: int, x1: int, y1: int) -> bool:
 
 # Waypoints in, copper out: corners rounded to a bend radius, spans given the
 # slack they would really have, and the whole thing swept as one length.
-func _run_cable(g, pts: Array, col: Color, salt := 0) -> void:
+# OFF TO ONE SIDE OF THE OPENING.
+#
+# David: "right now they run right in front of the door. It would be nice if
+# they don't hang down over the door like they do currently. Perhaps off to
+# one side or the other so they don't get in the way of going through your
+# way."
+#
+# A cable entering a room HAS to cross the opening below the door head: the
+# wall above a doorway is solid -- _walls() draws the head -- so the tray
+# cannot carry it through. That is why the run comes down to floor level at
+# the door in the first place, and it is right. What was wrong is that it
+# crossed down the MIDDLE of the metre.
+#
+# So every point of a run that is below head height and inside a doorway's own
+# metre is slid sideways to DOOR_HUG off the centre, leaving the rest of the
+# opening clear. Which side is stable per door, so the same run hugs the same
+# jamb every time it is drawn.
+#
+# AND IT IS PART OF THE ROUTE, NOT OF THE DRAWING. The first version did this
+# inside _run_cable(), where the mesh is built -- and game/tests/tower.gd
+# reads conduit_route(), so the test measured a line the player never sees
+# and passed a cable that was still in the doorway. The route is the one
+# answer; the mesh is drawn from it.
+const DOOR_HUG := 0.34          # from the centre of the opening, either way
+
+func _dodge_doors(line: Array) -> Array:
+	if doors.is_empty():
+		return line
+	var out: Array = []
+	for idx in range(line.size()):
+		var q: Vector3 = line[idx]
+		# NEVER THE ENDS. The first and last points of a run are the socket
+		# on the box; moving one of them takes the cable off the port, and
+		# the crosshair -- which finds a port by what is drawn at it -- stops
+		# being able to see it. Measured: "nothing can reach port 0 of core".
+		if idx == 0 or idx == line.size() - 1:
+			out.append(q)
+			continue
+		var deck: int = int(floor(q.y / fheight))
+		var hy: float = q.y - float(deck) * fheight
+		# THE WHOLE HEIGHT OF IT, not only the part below the door head.
+		#
+		# David: "it's still in the wrong place at the top. Where it starts in
+		# the corner of the bottom of the doorway, but it goes to the center
+		# of the doorway above it. So it still partly covers the door
+		# entryway." Exactly right: the bottom of the vertical was hugging its
+		# jamb and the top of it was still over the middle, so the leg SLANTED
+		# across the opening. Dodging at every height makes the drop a
+		# straight line in the corner.
+		if hy < fheight:
+			for d in doors:
+				if int(d.floor) != deck:
+					continue
+				var gx := float(d.x) + (1.0 if int(d.dir) == 0 else 0.5)
+				var gz := float(d.y) + (1.0 if int(d.dir) == 1 else 0.5)
+				# THE APPROACH TOO, not just the metre of the opening. Moving
+				# only the points inside the doorway left the SEGMENT between
+				# a dodged point and its undodged neighbour sweeping straight
+				# back across the middle of the threshold -- measured at 0.27 m
+				# off centre where the rule wanted 0.34. The cable is put on
+				# its jamb a metre and a half out, so it arrives already there.
+				if absf(q.x - gx) > 1.5 or absf(q.z - gz) > 1.5:
+					continue
+				# the opening runs across the direction the door faces
+				var side: float = 1.0 if ((int(d.x) + int(d.y)) % 2) == 0 else -1.0
+				if int(d.dir) == 0:
+					q.z = gz + DOOR_HUG * side
+				else:
+					q.x = gx + DOOR_HUG * side
+				break
+		out.append(q)
+	return out
+
+
+func _run_cable(g, pts: Array, col: Color, salt := 0, radius := -1.0) -> void:
 	if pts.size() < 2:
 		return
 	var line := _round_corners(pts, BEND_R)
 	line = _sag(line, salt)
+	var rr: float = CABLE_R if radius < 0.0 else radius
 	for i in range(line.size() - 1):
-		g.tube(line[i], line[i + 1], CABLE_R, col)
+		g.tube(line[i], line[i + 1], rr, col)
 
 
 # A corner is an arc, not a right angle. Four segments of one, which at 90 mm
