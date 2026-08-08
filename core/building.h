@@ -63,7 +63,7 @@ typedef enum {
 
 /* What the floor as a whole is, which is what decides the mix. */
 typedef enum { FL_GROUND, FL_OFFICE, FL_RESIDENTIAL, FL_PLANT, FL_BRIDGE,
-               FL_KIND_COUNT } FloorKind;
+               FL_PROMENADE, FL_KIND_COUNT } FloorKind;
 
 typedef struct {
     uint8_t floor;

@@ -280,6 +280,46 @@ func _init() -> void:
 					ok("the viewscreen is on the forward bulkhead, %.1f m from the chair"
 						% Vector2(sc.x - Vector3(plan2.chair).x,
 							sc.z - Vector3(plan2.chair).z).length())
+		# ---- AND NO TWO DECKS RUNNING ARE THE SAME KIND OF PLACE.
+		#
+		# David, four times: "Six floors of essentially the same thing is not
+		# what a spacestation would have." Measured, he was understating it --
+		# every deck of every seed had a byte-for-byte identical histogram and
+		# the only difference was one room kind painted over the arm rooms.
+		# The generator deals deck kinds from a shuffled bag now, and each
+		# kind has its own SHAPE, so this checks the thing a player notices:
+		# that you do not step out of the lift into the deck you just left.
+		var kinds: Array = []
+		for f in range(t.nfloors):
+			kinds.append(t.deck_name(f))
+		var repeats := 0
+		for f in range(1, t.nfloors):
+			if str(kinds[f]) != "" and str(kinds[f]) == str(kinds[f - 1]):
+				repeats += 1
+		if kinds.is_empty() or str(kinds[0]) == "":
+			fail("the window does not know what kind of place any deck is")
+		elif repeats > 0:
+			fail("%d pairs of adjacent decks are the same kind: %s"
+				% [repeats, str(kinds)])
+		else:
+			ok("%d decks and no two running the same: %s" % [t.nfloors, str(kinds)])
+		# and the shapes really differ, not just the labels
+		var counts := {}
+		for f in range(t.nfloors):
+			var n := 0
+			for r in t.rooms:
+				if int(r.floor) == f:
+					n += 1
+			counts[str(kinds[f])] = n
+		var distinct := {}
+		for k in counts:
+			distinct[counts[k]] = true
+		if distinct.size() < 2:
+			fail("every deck kind has the same number of rooms (%s), so the shapes are still identical"
+				% str(counts))
+		else:
+			ok("and the kinds are different shapes: %s" % str(counts))
+
 		if closed < 0:
 			fail("this station has no dark deck between deck 0 and the bridge")
 		elif t.in_service(closed):

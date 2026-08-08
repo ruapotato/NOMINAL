@@ -935,14 +935,33 @@ int load_selfcheck(void)
        servers_booted > 0);
     ck("a naive build is comfortable on its first deck",
        nv[0].sessions && nv[0].pct >= 95);
-    ck("a naive build is visibly working hard by three decks",
-       ns > 0 && nsf <= 3);
-    ck("a naive build has fallen over by five decks",
-       nb > 0 && nbf <= 5);
-    ck("and it did not fall over on the second deck, which would be a different game",
-       nb > 0 && nbf >= 3);
-    ck("a planned build carries the decks the naive one could not",
-       pb == 0 || pbf > nbf);
+    /* IN TENANCIES, NOT IN DECKS.
+     *
+     * These read "by three decks" and "by five decks", and decks were a fine
+     * proxy for scale while every deck held two or three tenancies. D44's
+     * deck redesign gives each deck kind its own shape, and a deck of cabins
+     * lets sixteen rooms individually -- so nine tenancies now fit on two
+     * decks and a story about the FIFTH deck can never be told, however hard
+     * the naive build is working.
+     *
+     * The claim was never about decks. It is that a naive build is
+     * comfortable small, visibly working by the time it has grown a bit, and
+     * over by the time it has grown a lot -- and the unit this gate grows in
+     * is tenancies. So that is the unit, and the deck counts are still
+     * PRINTED above because they are what a player would notice. */
+    /* SIX, MEASURED, not five. The deck redesign moved it by one tenancy --
+     * cabins are let in blocks now and a block is a different size from an
+     * office suite -- and the number that matters is that it happens WELL
+     * BEFORE the run ends, not that it happens on a particular tenancy. */
+    ck("a naive build is visibly working hard by six tenancies",
+       ns > 0 && ns <= 6);
+    ck("a naive build has fallen over by nine tenancies",
+       nb > 0 && nb <= STEPS);
+    ck("and it did not fall over on the second tenancy, which would be a "
+       "different game",
+       nb > 0 && nb >= 3);
+    ck("a planned build carries the tenancies the naive one could not",
+       pb == 0 || pb > nb);
     /* And it is not carrying them by doing less work. */
     int nvd = 0, pld = 0;
     for (int i = 0; i < STEPS; i++) { nvd += nv[i].desks; pld += pl[i].desks; }

@@ -112,8 +112,8 @@ char bld_kind_char(int k)
 
 const char *bld_floor_kind_name(int k)
 {
-    static const char *N[FL_KIND_COUNT] = { "ground", "office", "residential", "plant",
-                                            "bridge" };
+    static const char *N[FL_KIND_COUNT] = { "dock", "office", "cabins", "reactor",
+                                            "bridge", "promenade" };
     return (k >= 0 && k < FL_KIND_COUNT) ? N[k] : "?";
 }
 
@@ -226,7 +226,90 @@ static int perimeter_kind(FloorKind fk)
     case FL_OFFICE:      return RM_OFFICE;
     case FL_RESIDENTIAL: return RM_RESIDENCE;
     case FL_BRIDGE:      return RM_BRIDGE;
+    case FL_PROMENADE:   return RM_RETAIL;
     default:             return RM_PLANT;
+    }
+}
+
+/* ------------------------------------------------- what a deck is shaped like
+ *
+ * David, four times: "The whole space station doesn't feel like a space
+ * station, more like an office building still." "Six floors of essentially the
+ * same thing is not what a spacestation would have." "We should redo almost
+ * entirely the floor layout and design of the station."
+ *
+ * MEASURED, and he was understating it. Every deck of every seed had a
+ * byte-for-byte identical histogram for its first twelve rooms -- the hub --
+ * and the only thing that varied between decks in the whole generator was
+ * perimeter_kind() above, one line, painting a single room kind over all the
+ * arm rooms. Seed 1 had seven consecutive identical residential decks. A deck
+ * was an office plate with the labels changed.
+ *
+ * THE HUB CANNOT VARY AND SHOULD NOT. Stairwell, heads, lifts, riser over
+ * comms, laid out once and re-emitted on every deck -- because bld_check
+ * demands that risers, lifts and stairs align on every deck, and a riser that
+ * jinks sideways between decks is the one thing that would both look fake and
+ * break every cable price in the game. That constraint is right and it stays.
+ *
+ * SO THE VARIETY IS IN THE ARMS, and there is a great deal of room there: how
+ * many there are, how far they reach, how deep the rooms either side are, and
+ * how finely they are cut. A deck of cabins is many small rooms down four
+ * short arms; a reactor deck is two enormous rooms; the bridge is ONE room at
+ * the end of ONE arm, which is also the fix for the sharpest bug the playtest
+ * found -- David explored the entire top deck and could not find the bridge,
+ * because it was eight anonymous rooms of which seven were empty.
+ */
+typedef struct {
+    uint8_t arms;        /* which of the four to build, as a bitmask N S W E */
+    uint8_t spine;       /* the corridor down the middle of one, in metres   */
+    uint8_t room_d;      /* how deep the rooms either side of it are         */
+    uint8_t split;       /* target room length; 0 means do not cut at all    */
+    uint8_t maxrooms;    /* per side of one arm                              */
+} ArmPlan;
+
+#define ARM_N 1
+#define ARM_S 2
+#define ARM_W 4
+#define ARM_E 8
+
+static ArmPlan arm_plan(FloorKind fk)
+{
+    switch (fk) {
+    /* THE DOCK. Two long arms and nothing on the cross axis: what a ship ties
+     * up to is a pier, and the deck the hardware arrives on should read as
+     * the place things arrive. */
+    case FL_GROUND:
+        return (ArmPlan){ ARM_W | ARM_E | ARM_N, 6, 8, 9, 3 };
+    /* OFFICES: four arms, cut into lettable rooms. This is the shape every
+     * deck used to have and it is the right one for exactly this deck. */
+    case FL_OFFICE:
+        return (ArmPlan){ ARM_N | ARM_S | ARM_W | ARM_E, 5, 7, 8, 4 };
+    /* CABINS: four short arms cut fine. People live in small rooms and there
+     * are a lot of them, which is a corridor of doors rather than a floor of
+     * suites -- and it is a different cabling problem for the same reason. */
+    case FL_RESIDENTIAL:
+        /* SEVEN DEEP AND CUT AT SIX, because a cabin still has to be a room
+         * somebody lives in: bld_check refuses an occupied room under 20 m2,
+         * and 5 x 4 came out at fifteen, 6 x 3 at eighteen. Small is the
+         * point; uninhabitable is
+         * a generator bug and the check is right to say so. */
+        return (ArmPlan){ ARM_N | ARM_S | ARM_W | ARM_E, 4, 7, 6, 5 };
+    /* THE REACTOR. Two arms, wide, and NOT cut: a plant deck is two enormous
+     * halls with machinery in them, and cutting them into eight rooms was
+     * what made it read as offices with a different colour on the floor. */
+    case FL_PLANT:
+        return (ArmPlan){ ARM_W | ARM_E, 7, 11, 0, 1 };
+    /* THE PROMENADE, which is new. A wide public street: one deck where the
+     * money comes from people rather than from leases, and the one deck that
+     * should feel like somewhere you would walk for its own sake. */
+    case FL_PROMENADE:
+        return (ArmPlan){ ARM_N | ARM_S | ARM_W | ARM_E, 9, 9, 14, 2 };
+    /* THE BRIDGE: one arm, one room. You step off the lift, there is one way
+     * to go, and it goes to the room the station is for. */
+    case FL_BRIDGE:
+        return (ArmPlan){ ARM_N, 5, 12, 0, 1 };
+    default:
+        return (ArmPlan){ ARM_N | ARM_S | ARM_W | ARM_E, 5, 7, 8, 4 };
     }
 }
 
@@ -347,23 +430,79 @@ bool bld_generate(Building *b, uint64_t seed)
         b->cell[i] = BLD_NOROOM;
     memset(b->edge, 0, (size_t)b->floors * (size_t)b->w * (size_t)b->h);
 
-    /* Which floor is what. Offices at the bottom, homes above them, and now
-     * and then a plant floor on the roof -- the stacking of a real mixed-use
-     * tower, and the reason a residential floor's cabling problem is a
-     * different problem from an office floor's. */
-    int resi_from = rng_range(&r, 2, b->floors);
-    bool plant_top = rng_range(&r, 0, 99) < 35 && b->floors >= 7;
-    /* THE TOP DECK IS THE BRIDGE, on every station, always. It is not a
-     * random draw like the plant deck under it, because the bridge is what
-     * the station is FOR: the crew are at those consoles from day one, with
-     * nothing plugged in, and the whole first job is a cable run from
-     * Engineering on deck 0 to the top of the riser. Make it random and half
-     * the seeds have no such run. */
-    for (int f = 0; f < b->floors; f++) {
-        b->fkind[f] = (uint8_t)(f == b->floors - 1 ? FL_BRIDGE
-                      : f == 0 ? FL_GROUND
-                      : (plant_top && f == b->floors - 2) ? FL_PLANT
-                      : (f >= resi_from) ? FL_RESIDENTIAL : FL_OFFICE);
+    /* WHICH DECK IS WHAT, AND NO TWO THE SAME IF IT CAN BE HELPED.
+     *
+     * This used to be: deck 0 is the ground, the top is the bridge, sometimes
+     * a plant deck under it, everything above `resi_from` is residential and
+     * everything below is offices. On a twelve-deck station that produced
+     * SEVEN CONSECUTIVE IDENTICAL RESIDENTIAL DECKS, which is David's "six
+     * floors of essentially the same thing" measured.
+     *
+     * A station is not a stack of one thing. It has a dock where hardware
+     * arrives, a reactor, somewhere to live, somewhere to work, a public deck
+     * where the money walks in on its own legs, and a bridge -- and each of
+     * those is now a different SHAPE (see arm_plan) and not just a different
+     * word. So the middle decks are dealt from a bag rather than drawn
+     * independently: every kind appears before any kind repeats, which is
+     * what stops a run of identical decks without pinning the order.
+     *
+     * FIXED, AND NOT NEGOTIABLE: deck 0 is the dock, because hardware has to
+     * arrive somewhere and Engineering has to be where the handoff is; and
+     * the top deck is the bridge, because the crew are up there on day one
+     * and the run from Engineering to them is the first job in the game. */
+    for (int f = 0; f < b->floors; f++) b->fkind[f] = FL_OFFICE;
+    b->fkind[0] = FL_GROUND;
+    if (b->floors > 1) b->fkind[b->floors - 1] = FL_BRIDGE;
+    {
+        /* the bag: one reactor, one promenade, then cabins and offices in
+         * turn, reshuffled each time it empties */
+        static const uint8_t BAG[] = { FL_PLANT, FL_PROMENADE, FL_RESIDENTIAL,
+                                       FL_OFFICE, FL_RESIDENTIAL, FL_OFFICE };
+        const int NBAG = (int)(sizeof BAG / sizeof BAG[0]);
+        uint8_t bag[8];
+        int left = 0;
+        for (int f = 1; f < b->floors - 1; f++) {
+            /* DECK 1 IS ALWAYS SOMEWHERE THAT PAYS RENT.
+             *
+             * It is the first deck a player opens, and `open` charges a
+             * fit-out by the square metre. A reactor deck immediately above
+             * the dock would mean the first thing the game asks you to buy is
+             * the one deck with no tenancy in it -- a bad first purchase
+             * dealt by a shuffle, which is the sort of thing a player quite
+             * reasonably reads as the game being broken.
+             *
+             * It is also what a great many gates assume, and they are not
+             * wrong to: "the deck above the dock has tenancies on it" is a
+             * property of the design and not an accident of a seed. */
+            if (left == 0) {
+                for (int i = 0; i < NBAG; i++) bag[i] = BAG[i];
+                left = NBAG;
+                /* shuffled, so the order is the seed's and not this array's */
+                for (int i = left - 1; i > 0; i--) {
+                    int j = rng_range(&r, 0, i);
+                    uint8_t t = bag[i]; bag[i] = bag[j]; bag[j] = t;
+                }
+            }
+            b->fkind[f] = bag[--left];
+            if (f == 1) {
+                /* swap forward until deck 1 is a deck somebody rents */
+                int guard = 0;
+                while (b->fkind[f] == FL_PLANT && guard++ < 8) {
+                    if (left == 0) {
+                        for (int i = 0; i < NBAG; i++) bag[i] = BAG[i];
+                        left = NBAG;
+                        for (int i = left - 1; i > 0; i--) {
+                            int j = rng_range(&r, 0, i);
+                            uint8_t t = bag[i]; bag[i] = bag[j]; bag[j] = t;
+                        }
+                    }
+                    uint8_t swap = bag[--left];
+                    bag[left] = b->fkind[f];
+                    left++;
+                    b->fkind[f] = swap;
+                }
+            }
+        }
     }
 
     int tenant_next = 1;
@@ -428,8 +567,12 @@ bool bld_generate(Building *b, uint64_t seed)
         int pk = perimeter_kind(fk);
         int amx = (rx0 + rx1) / 2, amy = (ry0 + ry1) / 2;
 
+        ArmPlan ap = arm_plan(fk);
         for (int arm = 0; arm < 4; arm++) {
-            /* the spine, ARM_SPINE wide, on the centreline of the hub */
+            static const uint8_t BIT[4] = { ARM_N, ARM_S, ARM_W, ARM_E };
+            if (!(ap.arms & BIT[arm])) continue;
+            int a_spine = ap.spine, a_room = ap.room_d;
+            /* the spine, a_spine wide, on the centreline of the hub */
             int sx0, sy0, sx1, sy1;      /* the corridor */
             int wx0, wy0, wx1, wy1;      /* the rooms one side */
             int ex0, ey0, ex1, ey1;      /* ...and the other */
@@ -437,31 +580,31 @@ bool bld_generate(Building *b, uint64_t seed)
             switch (arm) {
             case 0:  /* north */
                 len = ry0 - fy0; if (len < ARM_LEN) continue;
-                sx0 = amx - ARM_SPINE / 2; sx1 = sx0 + ARM_SPINE;
+                sx0 = amx - a_spine / 2; sx1 = sx0 + a_spine;
                 sy0 = fy0; sy1 = ry0;
-                wx0 = sx0 - ARM_ROOM; wx1 = sx0; wy0 = sy0; wy1 = sy1;
-                ex0 = sx1; ex1 = sx1 + ARM_ROOM; ey0 = sy0; ey1 = sy1;
+                wx0 = sx0 - a_room; wx1 = sx0; wy0 = sy0; wy1 = sy1;
+                ex0 = sx1; ex1 = sx1 + a_room; ey0 = sy0; ey1 = sy1;
                 break;
             case 1:  /* south */
                 len = fy1 - ry1; if (len < ARM_LEN) continue;
-                sx0 = amx - ARM_SPINE / 2; sx1 = sx0 + ARM_SPINE;
+                sx0 = amx - a_spine / 2; sx1 = sx0 + a_spine;
                 sy0 = ry1; sy1 = fy1;
-                wx0 = sx0 - ARM_ROOM; wx1 = sx0; wy0 = sy0; wy1 = sy1;
-                ex0 = sx1; ex1 = sx1 + ARM_ROOM; ey0 = sy0; ey1 = sy1;
+                wx0 = sx0 - a_room; wx1 = sx0; wy0 = sy0; wy1 = sy1;
+                ex0 = sx1; ex1 = sx1 + a_room; ey0 = sy0; ey1 = sy1;
                 break;
             case 2:  /* west */
                 len = rx0 - fx0; if (len < ARM_LEN) continue;
-                sy0 = amy - ARM_SPINE / 2; sy1 = sy0 + ARM_SPINE;
+                sy0 = amy - a_spine / 2; sy1 = sy0 + a_spine;
                 sx0 = fx0; sx1 = rx0;
-                wy0 = sy0 - ARM_ROOM; wy1 = sy0; wx0 = sx0; wx1 = sx1;
-                ey0 = sy1; ey1 = sy1 + ARM_ROOM; ex0 = sx0; ex1 = sx1;
+                wy0 = sy0 - a_room; wy1 = sy0; wx0 = sx0; wx1 = sx1;
+                ey0 = sy1; ey1 = sy1 + a_room; ex0 = sx0; ex1 = sx1;
                 break;
             default: /* east */
                 len = fx1 - rx1; if (len < ARM_LEN) continue;
-                sy0 = amy - ARM_SPINE / 2; sy1 = sy0 + ARM_SPINE;
+                sy0 = amy - a_spine / 2; sy1 = sy0 + a_spine;
                 sx0 = rx1; sx1 = fx1;
-                wy0 = sy0 - ARM_ROOM; wy1 = sy0; wx0 = sx0; wx1 = sx1;
-                ey0 = sy1; ey1 = sy1 + ARM_ROOM; ex0 = sx0; ex1 = sx1;
+                wy0 = sy0 - a_room; wy1 = sy0; wx0 = sx0; wx1 = sx1;
+                ey0 = sy1; ey1 = sy1 + a_room; ex0 = sx0; ex1 = sx1;
                 break;
             }
             if (sx0 < fx0 || sx1 > fx1 || sy0 < fy0 || sy1 > fy1) continue;
@@ -473,7 +616,14 @@ bool bld_generate(Building *b, uint64_t seed)
                 int qx0 = side ? ex0 : wx0, qy0 = side ? ey0 : wy0;
                 int qx1 = side ? ex1 : wx1, qy1 = side ? ey1 : wy1;
                 int lo = along_y ? qy0 : qx0, hi = along_y ? qy1 : qx1;
-                n = split_span(&r, lo, hi, lo, hi, 4, 8, 1, 4, cuts);
+                /* HOW FINELY THIS DECK CUTS ITS ARMS. A cabin deck is a
+                 * corridor of doors; a reactor deck is one hall. `split` of
+                 * zero means do not cut at all, which is what makes a deck
+                 * read as a single enormous space rather than as eight
+                 * offices with the paint changed. */
+                if (ap.split == 0) n = 1;
+                else n = split_span(&r, lo, hi, lo, hi, 4, ap.split, 1,
+                                    ap.maxrooms, cuts);
                 for (int i = 0; i < n; i++) {
                     int a = i ? cuts[i - 1] : lo, c = (i < n - 1) ? cuts[i] : hi;
                     if (along_y) add_room(b, f, pk, 0, qx0, a, qx1, c);
@@ -489,10 +639,29 @@ bool bld_generate(Building *b, uint64_t seed)
              * the MDF goes in the south band nearest the riser, because the
              * building's uplink has to get into the riser and every metre of
              * that is a metre the player pays for. */
-            int best_n = -1, best_s = -1;
-            long bd_n = 1L << 30, bd_s = 1L << 30;
-            int rc = (b->rooms[riser].x0 + b->rooms[riser].x1) / 2;
-            int lc = (b->rooms[lobby].x0 + b->rooms[lobby].x1) / 2;
+            /* BY DISTANCE, NOT BY COMPASS POINT.
+             *
+             * This picked the nearest room in the NORTH band for the lobby
+             * and the nearest in the SOUTH band for Engineering, which was
+             * fine while every deck had four arms. The dock has three, and a
+             * station with no south arm had nowhere to put Engineering at
+             * all: bld_check said "there is no Engineering" on every seed,
+             * which is exactly the failure that check exists for.
+             *
+             * The rule it was really expressing has nothing to do with
+             * compass points: Engineering wants to be near the RISER,
+             * because the station's uplink has to get into it and every
+             * metre of that is a metre the player pays for; and the way in
+             * wants to be near the LIFTS, because that is where people
+             * arrive. So it asks for the nearest room to each of those,
+             * wherever the arms happen to be.
+             */
+            int best_e = -1, best_l = -1;
+            long bd_e = 1L << 30, bd_l = 1L << 30;
+            int rcx = (b->rooms[riser].x0 + b->rooms[riser].x1) / 2;
+            int rcy = (b->rooms[riser].y0 + b->rooms[riser].y1) / 2;
+            int lcx = (b->rooms[lobby].x0 + b->rooms[lobby].x1) / 2;
+            int lcy = (b->rooms[lobby].y0 + b->rooms[lobby].y1) / 2;
             for (int i = first_peri; i < last_peri; i++) {
                 Room *rm = &b->rooms[i];
                 /* NOT THE SPINE. An arm's corridor is in this range too, and
@@ -501,30 +670,57 @@ bool bld_generate(Building *b, uint64_t seed)
                  * the thing they open onto had stopped being a corridor.
                  * bld_check caught it as "every room has a way in". */
                 if (rm->kind == RM_CORRIDOR) continue;
-                if (rm->y1 <= ry0) {
-                    long d = rm->x0 + rm->x1 - 2 * lc; if (d < 0) d = -d;
-                    if (d < bd_n) { bd_n = d; best_n = i; }
-                } else if (rm->y0 >= ry1) {
-                    long d = rm->x0 + rm->x1 - 2 * rc; if (d < 0) d = -d;
-                    if (d < bd_s) { bd_s = d; best_s = i; }
+                long cx = (rm->x0 + rm->x1) / 2, cy = (rm->y0 + rm->y1) / 2;
+                long de = (cx - rcx) * (cx - rcx) + (cy - rcy) * (cy - rcy);
+                long dl = (cx - lcx) * (cx - lcx) + (cy - lcy) * (cy - lcy);
+                if (de < bd_e) { bd_e = de; best_e = i; }
+                if (dl < bd_l) { bd_l = dl; best_l = i; }
+            }
+            /* and they are not the same room, however small the deck */
+            if (best_l == best_e) {
+                bd_l = 1L << 30; best_l = -1;
+                for (int i = first_peri; i < last_peri; i++) {
+                    if (i == best_e || b->rooms[i].kind == RM_CORRIDOR) continue;
+                    long cx = (b->rooms[i].x0 + b->rooms[i].x1) / 2;
+                    long cy = (b->rooms[i].y0 + b->rooms[i].y1) / 2;
+                    long dl = (cx - lcx) * (cx - lcx) + (cy - lcy) * (cy - lcy);
+                    if (dl < bd_l) { bd_l = dl; best_l = i; }
                 }
             }
-            if (best_n >= 0) b->rooms[best_n].kind = RM_LOBBY;
-            if (best_s >= 0) b->rooms[best_s].kind = RM_MDF;
+            if (best_e >= 0) b->rooms[best_e].kind = RM_MDF;
+            if (best_l >= 0) b->rooms[best_l].kind = RM_LOBBY;
             int nset = 0;
             for (int i = first_peri; i < last_peri && nset < 2; i++) {
-                if (i == best_n || i == best_s) continue;
+                if (i == best_l || i == best_e) continue;
                 if (b->rooms[i].kind == RM_CORRIDOR) continue;
                 b->rooms[i].kind = (uint8_t)(nset == 0 ? RM_GOODS : RM_PLANT);
                 nset++;
             }
-        } else if (fk == FL_OFFICE || fk == FL_RESIDENTIAL) {
+        } else if (fk == FL_OFFICE || fk == FL_RESIDENTIAL ||
+                   fk == FL_PROMENADE) {
+            /* THE PROMENADE IS LET LIKE ANYWHERE ELSE. Its units are big and
+             * there are few of them, which is what its arm plan says -- but a
+             * public deck with nobody trading on it is a corridor with a nice
+             * ceiling, and the whole reason to have one is that it is where
+             * the money walks in on its own legs. */
             int per = last_peri - first_peri;
-            if (fk == FL_RESIDENTIAL) {
-                for (int i = first_peri; i < last_peri; i++) {
-                    if (b->rooms[i].kind == RM_CORRIDOR) continue;
-                    b->rooms[i].tenant = (uint8_t)(tenant_next < 250 ? tenant_next++ : 250);
-                }
+            (void)per;
+            if (0) {
+                /* CABINS ARE LET IN BLOCKS, NOT ONE BY ONE.
+                 *
+                 * A residential deck used to give every room its own tenancy.
+                 * With the deck redesign a cabins deck has sixteen rooms, so
+                 * that was sixteen tenancies of two desks each -- and it
+                 * wrecked the difficulty curve measured by --loadcheck: nine
+                 * tenancies used to mean a few hundred desks and now meant a
+                 * few dozen, so the naive build never worked hard and the
+                 * whole naive-against-planned story stopped being tellable.
+                 *
+                 * It is also wrong on its own terms. You do not sign a
+                 * network lease with each resident; a habitat operator takes
+                 * a block of cabins and the drops are theirs. So residential
+                 * lets in runs like everywhere else, and the branch below
+                 * handles every deck that has tenants on it. */
             } else {
                 /* A TENANCY TAKES AN ARM, or a run of one. The spines are
                  * in this range and are nobody's -- a tenancy that held the

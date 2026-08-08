@@ -97,7 +97,11 @@ var bh := 0
 var nfloors := 0
 var fheight := 3.0
 var rooms: Array = []          # {i,floor,kind,tenant,x0,y0,x1,y1,name}
-var floor_rect: Array = []     # per floor [x0,y0,x1,y1]
+var floor_rect: Array = []
+# what each deck is FOR, straight off bld_floors(). The generator's word, not
+# a second opinion: "dock", "reactor", "cabins", "promenade", "office",
+# "bridge".
+var deck_kind: Array = []     # per floor [x0,y0,x1,y1]
 var cells: Array = []          # per floor PackedInt32Array, bw*bh
 var doorset := {}              # "f,x,y,dir" -> true
 var doors: Array = []
@@ -192,9 +196,16 @@ func build(s: int) -> bool:
 			"floor_height": fheight = float(f[1])
 
 	floor_rect.clear()
+	deck_kind.clear()
 	for line in str(machine.bld_floors()).split("\n", false):
 		var f: PackedStringArray = line.split(" ", false)
 		floor_rect.append([int(f[2]), int(f[3]), int(f[4]), int(f[5])])
+		# WHAT KIND OF DECK IT IS, which the generator has always known and
+		# the window has never said. Every deck used to be the same shape with
+		# a different room kind painted on it, so there was nothing to tell;
+		# now a deck is a dock, a reactor, cabins, a promenade, offices or the
+		# bridge, and a player stepping out of the lift should be told which.
+		deck_kind.append(str(f[6]) if f.size() > 6 else "")
 
 	rooms.clear()
 	for line in str(machine.bld_rooms()).split("\n", false):
@@ -1951,6 +1962,11 @@ func bridge_deck() -> int:
 	return int(ses_state().get("bridge", -1))
 
 
+# The generator's own word for what a deck is, or "" if it has not said.
+func deck_name(f: int) -> String:
+	return str(deck_kind[f]) if f >= 0 and f < deck_kind.size() else ""
+
+
 func in_service(f: int) -> bool:
 	return f >= 0 and (f < floors_in_service or f == bridge_deck())
 
@@ -2018,6 +2034,9 @@ func _signage() -> void:
 		if r.kind != K_LIFTLOBBY:
 			continue
 		var t := "DECK %d" % r.floor
+		var dk: String = deck_name(int(r.floor))
+		if dk != "":
+			t += "   " + dk.to_upper()
 		if not in_service(r.floor):
 			t += "  NOT IN SERVICE"
 		# ON THE WALLS, not floating in the middle of the room. A sign at the
@@ -5423,8 +5442,8 @@ func map_text() -> String:
 	if player == null:
 		return ""
 	var p: Vector3 = player.global_position
-	var s := "deck %d, %d rooms, you at (%.0f, %.0f m)\n" \
-		% [player_floor(), map_rows().size(), p.x, p.z]
+	var s := "deck %d %s, %d rooms, you at (%.0f, %.0f m)\n" \
+		% [player_floor(), deck_name(player_floor()), map_rows().size(), p.x, p.z]
 	for m in map_rows():
 		s += "%s %-18s %2.0f,%2.0f to %2.0f,%2.0f  %d socket%s, %d free\n" \
 			% ["*" if bool(m.here) else " ", str(m.name),

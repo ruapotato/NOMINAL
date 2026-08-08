@@ -136,7 +136,15 @@ func _draw() -> void:
 	draw_circle(me, 2.6, Color("#ffd479"))
 
 	if _font:
-		draw_string(_font, Vector2(PAD, PAD + 8.0), "DECK %d" % floor_no,
+		var head := "DECK %d" % floor_no
+		# AND WHAT KIND OF DECK. Six decks that all said "DECK n" and looked
+		# identical is what "six floors of essentially the same thing" felt
+		# like from inside; the generator has always known which is which.
+		if tower != null and tower.has_method("deck_name"):
+			var dk: String = str(tower.deck_name(floor_no))
+			if dk != "":
+				head += "  " + dk.to_upper()
+		draw_string(_font, Vector2(PAD, PAD + 8.0), head,
 			HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(0.78, 0.84, 0.90))
 
 

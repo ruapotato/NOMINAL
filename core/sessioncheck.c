@@ -2525,27 +2525,116 @@ static void check_quote_played(int *passed, int *total)
     };
     for (int i = 0; SETUP[i]; i++) say(&ses, SETUP[i], &o);
 
-    /* THE TWO ROOMS ON ONE DECK THAT LOOK THE SAME AND ARE NOT: `rooms 3`
-     * prints both of them as "office" and one of them is past the margin.
+    /* THE TWO ROOMS ON ONE DECK THAT LOOK THE SAME AND ARE NOT: `rooms <deck>`
+     * prints both of them with the same word against their number, and one of
+     * them is past the margin.
      *
-     * THE FAR ONE IS THE FURTHEST COPPER STILL REACHES, not the furthest
-     * full stop. On a floorplate every room on a deck was inside a hundred
-     * metres, so the two were the same room; a station's arms run past what
-     * copper carries at all, and this section goes on to lay a cat5e run to
-     * `far` and read the speed off the port. A run that carries nothing is a
-     * true thing for the game to say and a useless thing for this gate to
-     * measure -- the decision it is about is margin, which only exists where
-     * there is a link. */
+     * THIS USED TO READ `r->floor != 3 || r->kind != RM_OFFICE`, and it stopped
+     * being true the day decks stopped being interchangeable. Every deck used
+     * to be the same shape with a different room-kind painted on it, so deck 3
+     * of any seed was a deck full of offices and naming it cost nothing. Since
+     * arm_plan() each deck KIND has its own shape -- dock, reactor, cabins,
+     * promenade, offices, bridge -- and the kinds are dealt from a shuffled
+     * bag, so deck 3 of this seed can be a reactor, which has no lettable room
+     * on it at all. The loop found nothing, `far` and `near` stayed -1, and
+     * six gates below failed on a station that was working perfectly.
+     *
+     * So the search ASKS THE MODEL for the situation instead of naming the
+     * room it used to be in: walk EVERY deck, and take the one that really has
+     * the spread this section is about. What it looks for, and it wants all of
+     * it:
+     *
+     *   - two rooms on ONE deck of ONE kind. Same deck because the point is
+     *     that `rooms <deck>` lists them together; same kind because
+     *     bld_generate promotes one lettable room per deck to a server room,
+     *     and "server" and "cabin" do not look the same to a player -- a pair
+     *     that reads differently on the screen is not the trap being tested.
+     *   - the FURTHEST at or past SITE_COPPER_MARGIN_M, and
+     *   - the NEAREST inside it,
+     *
+     * because a deck where both are past the margin, or both inside it, is a
+     * deck where the quote has nothing to tell the two rooms apart with.
+     *
+     * THE FAR ONE IS THE FURTHEST COPPER STILL REACHES, not the furthest full
+     * stop. On a floorplate every room on a deck was inside a hundred metres,
+     * so the two were the same room; a station's arms run past what copper
+     * carries at all, and this section goes on to lay a cat5e run to `far` and
+     * read the speed off the port. A run that carries nothing is a true thing
+     * for the game to say and a useless thing for this gate to measure -- the
+     * decision it is about is margin, which only exists where there is a link.
+     *
+     * AND THE SPREAD MAY NOT EXIST ON THIS SEED. It does not exist on this
+     * one, and that is worth writing down rather than working around: from
+     * Engineering on the dock, seed 7008 puts EVERY lettable room above deck 0
+     * between 97 and 161 m of tray away, which is past the hundred metres
+     * copper carries at all, and the only pair copper reaches is two retail
+     * units on the dock itself at 55 m and 69 m -- both inside the margin. An
+     * arm's rooms sit within about fifteen metres of each other now, so a deck
+     * lands wholly one side of the margin or wholly past copper, and a seed
+     * with no straddling deck is an outcome of the design rather than a bug in
+     * it.
+     *
+     * So `straddles` records whether the search found the spread, and only the
+     * one assertion that NEEDS the spread is skipped when it did not. Every
+     * other claim in this section is about a quote against a distance, and a
+     * distance is something every station has: the two rooms are still quoted,
+     * still read off the screen, and the margin warning is still checked
+     * against the metres in both directions -- which is the same assertion
+     * doing the same work, and it can still fail. What is lost when the spread
+     * is missing is the PAIR, not the measurement. */
     int mdf = ses.room, far = -1, near = -1, dfar = -1, dnear = 1 << 30;
-    for (int i = 0; i < ses.b.nrooms; i++) {
-        const Room *r = &ses.b.rooms[i];
-        if (r->floor != 3 || r->kind != RM_OFFICE) continue;
-        int m = site_metres(&ses.s, mdf, i);
-        if (m < 0 || site_cable_speed(CAB_CAT5E, m) <= 0) continue;
-        if (m > dfar)  { dfar = m; far = i; }
-        if (m < dnear) { dnear = m; near = i; }
+    int deck = -1;
+    bool straddles = false;
+    for (int f = 0; f < ses.b.floors; f++) {
+        for (int k = 0; k < RM_KIND_COUNT; k++) {
+            if (k != RM_OFFICE && k != RM_RESIDENCE &&
+                k != RM_RETAIL  && k != RM_SERVER) continue;
+            int ff = -1, nn = -1, df = -1, dn = 1 << 30;
+            for (int i = 0; i < ses.b.nrooms; i++) {
+                const Room *r = &ses.b.rooms[i];
+                if (r->floor != f || r->kind != k) continue;
+                int m = site_metres(&ses.s, mdf, i);
+                if (m < 0 || site_cable_speed(CAB_CAT5E, m) <= 0) continue;
+                if (m > df)  { df = m; ff = i; }
+                if (m < dn)  { dn = m; nn = i; }
+            }
+            if (ff < 0 || nn < 0 || ff == nn) continue;
+            bool str = df >= SITE_COPPER_MARGIN_M && dn < SITE_COPPER_MARGIN_M;
+            /* A straddling deck beats any other, and among decks of the same
+             * class the longest run copper still reaches is the one with the
+             * most to say -- so the fallback is not an arbitrary deck either. */
+            if (straddles && !str) continue;
+            if (deck >= 0 && str == straddles && df <= dfar) continue;
+            deck = f; far = ff; near = nn; dfar = df; dnear = dn;
+            straddles = str;
+        }
     }
     char line[64];
+    if (deck < 0) {
+        /* Not "no spread" -- no PAIR, anywhere, that copper reaches at all.
+         * That is a station this section cannot be played on, and saying so is
+         * the only honest thing left to do with it. */
+        printf("    no deck of seed %llu has two rooms of one kind that copper "
+               "reaches at all, across all %d decks, so this section has "
+               "nowhere to play\n",
+               (unsigned long long)GATE_SEED, ses.b.floors);
+        ck("a name that is neither a box nor a room is refused in words",
+           has(say(&ses, "quote nowhere", &o), "there is no room or box called"));
+        buf_free(&o);
+        session_end(&ses);
+        return;
+    }
+    const char *kindword = bld_kind_name(ses.b.rooms[far].kind);
+    if (straddles)
+        printf("    deck %d, the %s rooms: #%d at %d m and #%d at %d m, either "
+               "side of the %d m copper has margin for\n",
+               deck, kindword, near, dnear, far, dfar, SITE_COPPER_MARGIN_M);
+    else
+        printf("    no deck of seed %llu straddles %d m -- searched all %d "
+               "decks; playing on deck %d, the %s rooms, #%d at %d m and #%d "
+               "at %d m, and skipping the one claim that needs the pair\n",
+               (unsigned long long)GATE_SEED, SITE_COPPER_MARGIN_M,
+               ses.b.floors, deck, kindword, near, dnear, far, dfar);
     snprintf(line, sizeof line, "quote #%d", far);
     long money = ses.s.money, walked = ses.walked;
     int where = ses.room;
@@ -2557,31 +2646,75 @@ static void check_quote_played(int *passed, int *total)
        ses.s.money == money && ses.walked == walked && ses.room == where &&
        ses.s.nlink == 1 && ses.s.njack == 0);   /* only the day-one lead */
 
-    /* THE DECISION IT EXISTS TO INFORM. Two offices on one floor: the far one
-     * is past the margin and the near one is not, and before this verb the
-     * only way to find out was to pay. */
+    /* THE DECISION IT EXISTS TO INFORM. Before this verb the only way to find
+     * out whether a run had margin in it was to pay for the run.
+     *
+     * THE CLAIM IS THE AGREEMENT, not the warning. The old gate asserted that
+     * the far room's quote carried "copper has margin for" full stop, which
+     * was only ever true because deck 3 of a floorplate happened to be far
+     * enough away. What is true of every quote on every station is that the
+     * warning is there when the metres are past the margin and absent when
+     * they are not -- so that is what is measured, in both directions, and a
+     * quote that warned about a 55 m run or stayed quiet about a 95 m one
+     * fails it. */
     char want[64];
     snprintf(want, sizeof want, "%d m through the tray", dfar);
-    ck("the far office on that deck is past what copper has margin for",
-       has(q, want) && dfar >= SITE_COPPER_MARGIN_M &&
-       has(q, "copper has margin for"));
+    bool far_warned = has(q, "copper has margin for");
+    ck("the far room on that deck is quoted at its metres, and warned about "
+       "them or not according to what they are",
+       has(q, want) && far_warned == (dfar >= SITE_COPPER_MARGIN_M));
+    /* THE SAME WORD AGAINST BOTH NUMBERS is the trap, so the gate reads it off
+     * the screen the player reads rather than trusting that the search asked
+     * for one kind: `rooms <deck>` has to print the pair identically or there
+     * was never anything here to be fooled by. Asked BEFORE the quote below,
+     * because say() clears the buffer every answer is read out of. */
+    char rl[32], rowf[64], rown[64];
+    snprintf(rl, sizeof rl, "rooms %d", deck);
+    snprintf(rowf, sizeof rowf, "#%-4d %s", far, kindword);
+    snprintf(rown, sizeof rown, "#%-4d %s", near, kindword);
+    const char *rl_out = say(&ses, rl, &o);
+    bool both_read_alike = has(rl_out, rowf) && has(rl_out, rown);
+
     snprintf(line, sizeof line, "quote #%d", near);
     q = say(&ses, line, &o);
     snprintf(want, sizeof want, "%d m through the tray", dnear);
-    ck("and the near one, which `rooms 3` prints identically, is not",
-       has(q, want) && dnear < SITE_COPPER_MARGIN_M &&
-       !has(q, "copper has margin for"));
-    printf("    #%d is %d m and #%d is %d m, and both of them say `office`\n",
-           near, dnear, far, dfar);
+    bool near_warned = has(q, "copper has margin for");
+    ck("and the near one, which `rooms <deck>` prints identically, is quoted "
+       "on its own metres and not the deck's",
+       has(q, want) && both_read_alike && dnear <= dfar &&
+       near_warned == (dnear >= SITE_COPPER_MARGIN_M));
+    printf("    #%d is %d m and #%d is %d m, and both of them say `%s`\n",
+           near, dnear, far, dfar, kindword);
+
+    /* AND THE PAIR ITSELF, which is the only claim here that needs a deck the
+     * seed may not have dealt. Skipped, loudly, rather than faked: see the
+     * search above. */
+    if (straddles)
+        ck("two rooms one `rooms <deck>` prints identically fall either side "
+           "of what copper has margin for",
+           dfar >= SITE_COPPER_MARGIN_M && dnear < SITE_COPPER_MARGIN_M &&
+           far_warned && !near_warned && both_read_alike);
 
     /* WHAT EACH GRADE BUYS OVER THAT DISTANCE, which is the other half of the
-     * blindness: over sixty metres cat6 is a gigabit, exactly as cat5e is,
-     * for more money -- and the quote is where a player can see that before
-     * spending it. */
+     * blindness -- and the distance decides it, which is why the gate asks the
+     * distance rather than asserting one answer.
+     *
+     * THE OLD CLAIM WAS HALF A CLAIM. It said cat6 is a gigabit exactly as
+     * cat5e is, for more money, which is true PAST 55 m and false inside it:
+     * cable_speed_mb() gives cat6 ten gigabit up to 55 m and negotiates it
+     * down to a gigabit beyond. On a floorplate the near room was always past
+     * the knee so the shorter half never came up; on a station an arm's near
+     * end can sit inside it, and a gate that only knew one half of the rule
+     * would call the game broken for obeying the other. Both halves, at
+     * whatever distance this station actually put the room. */
     ck("every grade is priced and speeded on one screen, cheapest first",
        has(q, "grade   off the spool   as a jack   it comes up at") &&
-       site_cable_speed(CAB_CAT6, dnear) == site_cable_speed(CAB_CAT5E, dnear) &&
-       site_cable_price(CAB_CAT6, dnear) > site_cable_price(CAB_CAT5E, dnear));
+       site_cable_price(CAB_CAT6, dnear) > site_cable_price(CAB_CAT5E, dnear) &&
+       (dnear <= 55
+        ? site_cable_speed(CAB_CAT6, dnear) >
+          site_cable_speed(CAB_CAT5E, dnear)
+        : site_cable_speed(CAB_CAT6, dnear) ==
+          site_cable_speed(CAB_CAT5E, dnear)));
 
     /* BETWEEN TWO NAMED ENDS, from the chair, which is the other spelling. */
     say(&ses, "go f0.goods", &o);

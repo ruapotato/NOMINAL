@@ -2070,7 +2070,8 @@ static void far_and_near(const Site *s, const Building *b, int floor, int from,
 {
     int bf = -1, bn = -1, dfar = -1, dnear = 1 << 30;
     for (int i = 0; i < b->nrooms; i++) {
-        if (b->rooms[i].floor != floor || !leasable(b->rooms[i].kind)) continue;
+        if (floor >= 0 && b->rooms[i].floor != floor) continue;
+        if (!leasable(b->rooms[i].kind)) continue;
         int m = site_metres(s, from, i);
         if (m < 0) continue;
         if (site_cable_speed(CAB_CAT5E, m) <= 0) continue;
@@ -2083,15 +2084,78 @@ static void far_and_near(const Site *s, const Building *b, int floor, int from,
 static void check_quote(const Building *b)
 {
     printf("\nwhat a run would cost, asked before the money leaves\n");
+    /* A STATION WITH THE SPREAD ON IT, and it goes looking for one.
+     *
+     * The lesson here is "one deck spans safe to marginal, which is why a
+     * room name tells you nothing" -- two rooms `rooms 3` prints identically
+     * and only one of which copper reaches with margin. It needs a deck that
+     * really does span ninety metres, and after the deck redesign most do
+     * not: an arm's rooms are all within about fifteen metres of each other,
+     * so a deck is usually all inside the margin or all past it.
+     *
+     * That is not the lesson going away. It is the lesson needing a station
+     * where the situation arises, so the gate finds one and PRINTS which --
+     * a gate that quietly chose a different world is a gate nobody can
+     * reproduce. It fails only if forty seeds running have no such deck,
+     * which would mean the situation had stopped occurring. */
+    Building own;
+    const Building *use = b;
+    uint64_t useseed = GATE_SEED;
+    int spread = -1;
+    bool made_own = false;
+    for (uint64_t k = 0; k < 40 && spread < 0; k++) {
+        const Building *cand = b;
+        if (k > 0) {
+            if (made_own) bld_free(&own);
+            made_own = false;
+            if (!bld_generate(&own, GATE_SEED + k)) continue;
+            made_own = true;
+            cand = &own;
+        }
+        Site probe;
+        site_new(&probe, cand, GATE_SEED + k, 1000);
+        int m0 = bld_find(cand, 0, RM_MDF);
+        for (int f = 1; f < cand->floors && spread < 0; f++) {
+            int ff = -1, nn = -1;
+            far_and_near(&probe, cand, f, m0, &ff, &nn);
+            if (ff < 0 || nn < 0 || ff == nn) continue;
+            if (site_metres(&probe, m0, ff) >= SITE_COPPER_MARGIN_M &&
+                site_metres(&probe, m0, nn) < SITE_COPPER_MARGIN_M) {
+                spread = f;
+                use = cand;
+                useseed = GATE_SEED + k;
+            }
+        }
+        site_free(&probe);
+    }
+    if (spread < 0) { ck("some station has a deck that spans the margin", false); return; }
+    printf("    seed %llu, deck %d: its rooms run from inside the margin to past it\n",
+           (unsigned long long)useseed, spread);
+    b = use;
     Site s; Buf o = {0};
-    site_new(&s, b, GATE_SEED, 200000);
+    site_new(&s, b, useseed, 200000);
     int mdf = bld_find(b, 0, RM_MDF);
     int core = gate_box(&s, SDEV_SWITCH24, mdf, "core");
 
     /* ---- THE THING THE PLAYTESTER COULD NOT SEE. One floor, two rooms, and
      * the difference between them is the whole marginal-copper rule. */
     int far = -1, near = -1;
-    far_and_near(&s, b, 3, mdf, &far, &near);
+    /* THE DECK THAT HAS THE SPREAD, and it looks for one.
+     *
+     * This asked deck 3 for its furthest and nearest lettable rooms and then
+     * asserted the pair spans copper's margin -- "one deck spans safe to
+     * marginal, which is why a room name tells you nothing". That was true of
+     * deck 3 while every deck was the same shape. Now a deck is a dock, a
+     * reactor, cabins, a promenade, offices or the bridge, and deck 3 might
+     * be a reactor with no lettable room on it at all.
+     *
+     * The claim is about a DECK, any deck: somewhere in this station there is
+     * one whose rooms run from inside the margin to past it, and a player
+     * reading `rooms 3` cannot tell which is which. So the gate finds that
+     * deck rather than naming it, and prints which -- and it only fails if no
+     * deck in the whole station has the spread, which really would mean the
+     * lesson had stopped being true. */
+    far_and_near(&s, b, spread, mdf, &far, &near);
     int mfar = site_metres(&s, mdf, far), mnear = site_metres(&s, mdf, near);
     ck("one deck spans safe to marginal, which is why a room name tells "
        "you nothing",
@@ -2385,6 +2449,95 @@ static int trade_on(const Site *s, int kind, int floor)
     return -1;
 }
 
+/* A DECK WITH BOTH OF THESE TRADES ON IT, or -1.
+ *
+ * Half a dozen gates in this file are about two trades that share a deck and
+ * want opposite things -- an office and a studio, an office and a call centre
+ * -- and every one of them named DECK 1 and seed 22, because on the old
+ * generator deck 1 of seed 22 happened to have both. The deck redesign gives
+ * each deck kind its own shape and deals the kinds from a shuffled bag, so
+ * deck 1 is now cabins or a promenade as often as offices, and "seed 22 lets
+ * an office and a call centre onto deck 1" started failing on every one of
+ * them at once.
+ *
+ * The claim those gates make has nothing to do with deck 1. It is that two
+ * trades sharing a deck pull in different directions, and it needs A deck
+ * where that is the case. This finds one. Where none exists at all the gate
+ * is right to fail, because the situation it prices has stopped occurring.
+ */
+static int deck_with_both(const Site *s, int kind_a, int kind_b);
+static uint64_t station_with_both_min(Building *out, uint64_t first,
+                                      int kind_a, int kind_b, int *deck,
+                                      int min_drops_b);
+
+/* A STATION WHERE TWO TRADES REALLY DO SHARE A DECK.
+ *
+ * deck_with_both() finds the deck once you have a station; this finds the
+ * station. Seed 22 used to have an office and a call centre on deck 1 and
+ * three gates were written against that fact -- and after the deck redesign
+ * it does not, because a deck now holds one to three tenancies rather than a
+ * band of them, so the odds of any particular pair sharing one fell.
+ *
+ * Generates from `first` upwards, fills `out` with the building it settled on
+ * and returns the seed, or 0 if forty seeds running have no such deck. The
+ * caller owns the Building and must bld_free() it. It prints what it chose,
+ * because a gate nobody can reproduce is not a gate.
+ */
+static uint64_t station_with_both(Building *out, uint64_t first,
+                                  int kind_a, int kind_b, int *deck)
+{
+    return station_with_both_min(out, first, kind_a, kind_b, deck, 0);
+}
+
+/* ...and with a floor under how big the second one is.
+ *
+ * The studio gate needs a studio that can really flood a hundred megabit
+ * circuit: SITE_BUSY_MS at 100 Mb carries about fifty megabytes, so a suite
+ * wanting twenty-four is served comfortably and proves nothing. Tenancy sizes
+ * moved with the deck redesign -- a deck holds fewer, differently-shaped
+ * tenancies now -- and the gate was measuring a studio too small to be
+ * ruined. `min_drops_b` is how many drops the second trade must want. */
+static uint64_t station_with_both_min(Building *out, uint64_t first,
+                                      int kind_a, int kind_b, int *deck,
+                                      int min_drops_b)
+{
+    for (uint64_t k = 0; k < 60; k++) {
+        if (!bld_generate(out, first + k)) continue;
+        Site probe;
+        site_new(&probe, out, first + k, 1000);
+        int d = deck_with_both(&probe, kind_a, kind_b);
+        if (d >= 1 && min_drops_b > 0) {
+            int big = 0;
+            for (int i = 0; i < probe.ntenant; i++)
+                if (probe.tenant[i].kind == kind_b &&
+                    probe.tenant[i].floor == d &&
+                    probe.tenant[i].drops >= min_drops_b) big = 1;
+            if (!big) d = -1;
+        }
+        site_free(&probe);
+        if (d >= 1) {
+            if (deck) *deck = d;
+            printf("    seed %llu has them together on deck %d\n",
+                   (unsigned long long)(first + k), d);
+            return first + k;
+        }
+        bld_free(out);
+    }
+    return 0;
+}
+
+static int deck_with_both(const Site *s, int kind_a, int kind_b)
+{
+    for (int i = 0; i < s->ntenant; i++) {
+        if (s->tenant[i].kind != kind_a) continue;
+        for (int j = 0; j < s->ntenant; j++)
+            if (j != i && s->tenant[j].kind == kind_b &&
+                s->tenant[j].floor == s->tenant[i].floor)
+                return s->tenant[i].floor;
+    }
+    return -1;
+}
+
 /* A tower with a routed edge, a core switch and a switch per tenancy on one
  * floor, flat on 10.0.0.0/16 with the router serving addresses -- the build
  * a player has by the end of their first hour. `riser` is the drum they put
@@ -2460,16 +2613,27 @@ static void check_industry_upload(void)
 {
     printf("\nan office and a studio on one deck, wanting opposite things\n");
     Building b;
-    if (!bld_generate(&b, 22ull)) { ck("seed 22 makes a building", false); return; }
-    int comms = bld_find(&b, 1, RM_COMMS);
-    if (comms < 0) comms = a_room(&b, 1);
+    int shared = -1;
+    /* BIG ENOUGH TO BE RUINED. A hundred megabits carries about fifty
+     * megabytes in a busy period, so a studio wanting twenty-four is served
+     * and the lesson cannot be told. Twenty drops is comfortably past it. */
+    uint64_t useseed = station_with_both_min(&b, 22ull, TEN_OFFICE,
+                                             TEN_STUDIO, &shared, 20);
+    if (!useseed) { ck("some station lets these two trades share a deck", false); return; }
+    /* AND THE CUPBOARD IS ON THE DECK THEY SHARE. This took the cupboard on
+     * deck 1 and served two tenancies through it that might be on deck 4 --
+     * a run the model priced honestly and a gate that then wondered why the
+     * office was at nought per cent. */
+    int comms = bld_find(&b, shared, RM_COMMS);
+    if (comms < 0) comms = a_room(&b, shared);
 
     Tower w;
-    tower_up(&w, &b, 22ull, comms, CAB_CAT5E, true, 3);
+    tower_up(&w, &b, useseed, comms, CAB_CAT5E, true, 3);
     Site *s = &w.s;
-    int off = trade_on(s, TEN_OFFICE, 1), stu = trade_on(s, TEN_STUDIO, 1);
+    shared = deck_with_both(s, TEN_OFFICE, TEN_STUDIO);
+    int off = trade_on(s, TEN_OFFICE, shared), stu = trade_on(s, TEN_STUDIO, shared);
     if (off < 0 || stu < 0) {
-        ck("seed 22 lets an office and a studio onto deck 1", false);
+        ck("some deck of seed 22 lets an office and a studio side by side", false);
         site_free(s); bld_free(&b); return;
     }
     tower_until(&w, stu);
@@ -2532,9 +2696,17 @@ static void check_industry_upload(void)
     int off_basement = -1, stu_basement = -1;
     {
         Tower w2;
-        tower_up(&w2, &b, 22ull, comms, CAB_CAT5E, true, 3);
+        /* THE SAME STATION, and it has to be the same one: this is a
+         * controlled comparison and a second tower built on a different seed
+         * or served through a different deck's cupboard would be comparing
+         * two things at once. It said 22ull and deck 1 while the first tower
+         * had moved to whatever seed and deck really had the two trades on
+         * it, so the office in here was never served at all and the gate
+         * read -1%. */
+        tower_up(&w2, &b, useseed, comms, CAB_CAT5E, true, 3);
         Site *s2 = &w2.s;
-        int o2 = trade_on(s2, TEN_OFFICE, 1), u2 = trade_on(s2, TEN_STUDIO, 1);
+        int o2 = trade_on(s2, TEN_OFFICE, shared),
+            u2 = trade_on(s2, TEN_STUDIO, shared);
         if (o2 >= 0 && u2 >= 0) {
             tower_until(&w2, u2);
             site_serve(s2, o2, w2.sw[0], CAB_CAT5E);
@@ -2688,21 +2860,34 @@ static void check_industry_voice(void)
 {
     printf("\nan office and a call centre behind one riser\n");
     Building b;
-    if (!bld_generate(&b, 22ull)) { ck("seed 22 makes a building", false); return; }
-    int comms = bld_find(&b, 1, RM_COMMS);
-    if (comms < 0) comms = a_room(&b, 1);
+    int shared = -1;
+    uint64_t useseed = station_with_both(&b, 22ull, TEN_OFFICE, TEN_VOICE, &shared);
+    if (!useseed) { ck("some station lets these two trades share a deck", false); return; }
+    /* AND THE CUPBOARD IS ON THE DECK THEY SHARE. This took the cupboard on
+     * deck 1 and served two tenancies through it that might be on deck 4 --
+     * a run the model priced honestly and a gate that then wondered why the
+     * office was at nought per cent. */
+    int comms = bld_find(&b, shared, RM_COMMS);
+    if (comms < 0) comms = a_room(&b, shared);
 
     /* THE PLANNED ANSWER FIRST: the files on the floor, so a floor's day
      * never crosses the riser at all. */
     Tower w;
-    tower_up(&w, &b, 22ull, comms, CAB_CAT5E, true, 3);
+    tower_up(&w, &b, useseed, comms, CAB_CAT5E, true, 3);
     Site *s = &w.s;
-    int off = trade_on(s, TEN_OFFICE, 1), voi = trade_on(s, TEN_VOICE, 1);
+    shared = deck_with_both(s, TEN_OFFICE, TEN_VOICE);
+    int off = trade_on(s, TEN_OFFICE, shared), voi = trade_on(s, TEN_VOICE, shared);
     if (off < 0 || voi < 0) {
-        ck("seed 22 lets an office and a call centre onto deck 1", false);
+        ck("some deck of seed 22 lets an office and a call centre side by side", false);
         site_free(s); bld_free(&b); return;
     }
+    /* UNTIL BOTH OF THEM ARE IN. This ran until the call centre had the
+     * keys and then served both -- and `serve` on a tenancy the letting
+     * queue has not brought in yet does nothing, so on a station where the
+     * office arrives later the office was never cabled and the gate read it
+     * at nought per cent and blamed the network. */
     tower_until(&w, voi);
+    tower_until(&w, off);
     site_serve(s, off, w.sw[0], CAB_CAT5E);
     site_serve(s, voi, w.sw[2], CAB_CAT5E);
     site_day(s, NULL);
@@ -2721,7 +2906,13 @@ static void check_industry_voice(void)
      * up it. The office survives it. The calls do not. */
     tower_up(&w, &b, 22ull, comms, CAB_CAT5, false, 3);
     s = &w.s;
+    /* UNTIL BOTH OF THEM ARE IN. This ran until the call centre had the
+     * keys and then served both -- and `serve` on a tenancy the letting
+     * queue has not brought in yet does nothing, so on a station where the
+     * office arrives later the office was never cabled and the gate read it
+     * at nought per cent and blamed the network. */
     tower_until(&w, voi);
+    tower_until(&w, off);
     site_serve(s, off, w.sw[0], CAB_CAT5E);
     site_serve(s, voi, w.sw[2], CAB_CAT5E);
     site_day(s, NULL);
@@ -2817,43 +3008,98 @@ static void check_desk_rooms(const Building *b)
 {
     printf("\nthe rooms a tenancy occupies, and what the copper to them costs\n");
     Tower w;
-    int floor = 1;
-    int comms = comms_on(b, floor, 0);
-    tower_up(&w, b, GATE_SEED, comms, CAB_CAT6, true, 1);
-    Site *s = &w.s;
-    /* A TENANCY WITH THE SHAPE THIS GATE IS ABOUT, and it looks for one.
+    /* A TENANCY WITH THE SHAPE THIS GATE IS ABOUT, and it looks for one --
+     * across every deck of this station first, and across other stations only
+     * when this one has none.
      *
      * This took the first tenancy on deck 1, and then asserted that it holds
      * at least five rooms, a server room of its own, and rooms of different
-     * sizes. On the old floorplate the first one always did. On a station the
-     * letting queue hands out runs of arm rooms and a server room is a 30%
-     * draw, so the first tenancy on a deck may hold four uniform rooms and
-     * no cupboard -- and the gate would then be failing the GENERATOR for
-     * not producing the tenancy the gate wanted, which is not a defect.
+     * sizes. On the old floorplate the first one always did. Two things about
+     * a station broke that. Each deck kind now has its own shape, so a deck is
+     * as likely to be a dock or a promenade as offices; and residential decks
+     * are let in BLOCKS -- a run of cabins to one tenancy -- so GATE_SEED's
+     * only tenancy with a cupboard of its own held FIFTEEN cabins for THIRTEEN
+     * people. Thirteen people cannot sit in fifteen rooms, and the desks are
+     * apportioned by floor area, so five of that block's rooms took one desk
+     * each and no room took two. "Every room they lease has desks in it" was
+     * then false, and "a bigger room takes more desks" had no room holding
+     * more than one desk to compare -- and both failures were the gate asking
+     * a thirteen-person tenancy to fill a fifteen-room block, not a defect in
+     * the apportionment.
      *
-     * So it searches the whole station for a tenancy that has the shape, and
-     * only fails if no tenancy anywhere does -- which WOULD be a defect,
-     * because a station where nobody ever holds a spread of rooms with a
-     * cupboard in it has stopped producing the situation this gate prices. */
-    int ti = -1;
-    for (int i = 0; i < s->ntenant && ti < 0; i++) {
-        int rooms = 0, srv = 0;
-        double lo = 1e9, hi = 0;
-        for (int r = 0; r < b->nrooms; r++) {
-            if (b->rooms[r].tenant != s->tenant[i].tenant) continue;
-            if (b->rooms[r].kind == RM_SERVER) { srv++; continue; }
-            if (!leasable(b->rooms[r].kind)) continue;
-            rooms++;
-            double a1 = bld_room_area(&b->rooms[r]);
-            if (a1 > hi) hi = a1;
-            if (a1 < lo) lo = a1;
+     * So the shape it searches for is the shape the three claims below are
+     * ABOUT, stated in floor area and people, which is all the apportionment
+     * uses: five or more rooms, a server room of its own, ENOUGH PEOPLE THAT
+     * EVERY ROOM'S SHARE OF THE FLOOR COMES TO A WHOLE DESK (drops * smallest
+     * >= total, so a room standing empty is a real defect and not arithmetic),
+     * and rooms that really differ -- a 2:1 pair for the doubling claim, and
+     * failing that a quarter, with the doubling claim skipped out loud.
+     *
+     * None of that selects on where the desks ended up. It selects on the
+     * building's own square metres, so every assertion below can still fail. */
+    Building own;
+    bool mine = false;
+    uint64_t useseed = GATE_SEED;
+    int want_tenant = -1, floor = -1;
+    bool two_to_one = false;
+    for (int pass = 0; pass < 2 && want_tenant < 0; pass++) {
+        for (uint64_t k = 0; k < 60 && want_tenant < 0; k++) {
+            const Building *cand = b;
+            if (k > 0) {
+                if (!bld_generate(&own, GATE_SEED + k)) continue;
+                mine = true;
+                cand = &own;
+            }
+            Site probe;
+            site_new(&probe, cand, GATE_SEED + k, 1000);
+            for (int i = 0; i < probe.ntenant && want_tenant < 0; i++) {
+                int held = 0, srv = 0, drops = probe.tenant[i].drops;
+                double total = 0, mn = 1e9, mx = 0;
+                for (int r = 0; r < cand->nrooms; r++) {
+                    if (cand->rooms[r].tenant != probe.tenant[i].tenant) continue;
+                    if (cand->rooms[r].kind == RM_SERVER) { srv++; continue; }
+                    if (!leasable(cand->rooms[r].kind)) continue;
+                    held++;
+                    double a1 = bld_room_area(&cand->rooms[r]);
+                    total += a1;
+                    if (a1 > mx) mx = a1;
+                    if (a1 < mn) mn = a1;
+                }
+                if (held < 5 || srv < 1 || drops < 1) continue;
+                if ((double)drops * mn < total) continue;
+                if (mx < 1.25 * mn) continue;
+                if (pass == 0 && mx < 2.0 * mn) continue;
+                want_tenant = probe.tenant[i].tenant;
+                floor       = probe.tenant[i].floor;
+                useseed     = GATE_SEED + k;
+                two_to_one  = mx >= 2.0 * mn;
+                printf("    seed %llu deck %d: tenancy %d holds %d rooms from "
+                       "%.0f to %.0f m2 for %d people, and a server room\n",
+                       (unsigned long long)useseed, floor, want_tenant, held,
+                       mn, mx, drops);
+            }
+            site_free(&probe);
+            if (want_tenant < 0 && mine) { bld_free(&own); mine = false; }
         }
-        if (rooms >= 5 && srv >= 1 && hi > lo) ti = i;
     }
-    if (ti < 0) { ck("some tenancy in this station holds a spread of rooms "
-                     "and a cupboard of its own", false);
-                  site_free(s); return; }
-    floor = s->tenant[ti].floor;
+    if (want_tenant < 0) {
+        ck("some station holds a tenancy with a spread of rooms, a cupboard "
+           "of its own and people enough to fill them", false);
+        return;
+    }
+    if (mine) b = &own;
+    /* THE CUPBOARD IS ON THEIR OWN DECK. It was deck 1's, whatever deck the
+     * tenancy turned out to be on, which prices a run down the spine that no
+     * player would lay. */
+    int comms = comms_on(b, floor, 0);
+    tower_up(&w, b, useseed, comms, CAB_CAT6, true, 1);
+    Site *s = &w.s;
+    int ti = -1;
+    for (int i = 0; i < s->ntenant; i++)
+        if (s->tenant[i].tenant == want_tenant) ti = i;
+    if (ti < 0) { ck("the tenancy the gate chose is in the tower it built",
+                     false);
+                  site_free(s); if (mine) bld_free(&own); return; }
     tower_until(&w, ti);
     SiteTenant *t = &s->tenant[ti];
 
@@ -2951,10 +3197,17 @@ static void check_desk_rooms(const Building *b)
             ck("a room a quarter bigger takes more desks than a smaller one",
                hd > ld && ld >= 1);
         } else {
-            printf("    every room this tenancy holds is within a quarter of "
-                   "every other, so there is no bigger room to test\n");
+            /* The gate picked a tenancy whose biggest room is at least a
+             * quarter bigger than its smallest, and dense enough that every
+             * room's share of the floor is a whole desk. So the only way to
+             * get here is with one of those two rooms standing empty, which
+             * is the defect this whole section is about -- not a situation
+             * that fails to arise, and not something to skip. */
+            printf("    no OCCUPIED pair of this tenancy's rooms differs by a "
+                   "quarter, though its rooms do: a room the gate chose for "
+                   "having people in it has none\n");
             ck("a room a quarter bigger takes more desks than a smaller one",
-               small_desks >= 1 && big_desks >= small_desks);
+               false);
         }
     }
     /* A PAIR THAT IS REALLY TWICE THE SIZE, if this station has one.
@@ -2993,11 +3246,23 @@ static void check_desk_rooms(const Building *b)
                    lo_a, lo_d, hi_a, hi_d);
             ck("and twice the deck area takes at least twice the people",
                hi_d >= 2 * lo_d);
+        } else if (!two_to_one) {
+            /* SKIPPED, AND SAID SO. No station in sixty seeds had a tenancy
+             * with both the cupboard this section needs and a 2:1 pair of
+             * rooms, so the situation this claim prices does not arise here.
+             * The old fallback asserted `big_desks >= small_desks` instead,
+             * which the monotone check below already proves of every pair --
+             * a claim that cannot fail is not a claim. */
+            printf("    SKIPPED: the tenancy this gate found has no two rooms "
+                   "differing by 2:1 in area, so there is nothing to double\n");
         } else {
-            printf("    no two of this tenancy's rooms differ by 2:1 in area, "
-                   "so there is nothing here to double\n");
+            /* The tenancy WAS chosen for having a 2:1 pair of rooms, and it
+             * is dense enough that every room earns a whole desk, so one of
+             * that pair standing empty is a defect in the apportionment. */
+            printf("    this tenancy has rooms differing by 2:1 and one of "
+                   "them holds nobody\n");
             ck("and twice the deck area takes at least twice the people",
-               big_desks >= small_desks && small_desks >= 1);
+               false);
         }
     }
     /* No pair of their rooms is the wrong way round: over the whole
@@ -3089,7 +3354,7 @@ static void check_desk_rooms(const Building *b)
      * same rooms: the apportionment takes no draw at all, so it cannot have
      * moved anything else's stream. */
     Tower w2;
-    tower_up(&w2, b, GATE_SEED, comms, CAB_CAT6, true, 1);
+    tower_up(&w2, b, useseed, comms, CAB_CAT6, true, 1);
     tower_until(&w2, ti);
     bool same = w2.s.tenant[ti].ndesk == t->ndesk;
     for (int d = 0; same && d < w2.s.tenant[ti].ndesk; d++)
@@ -3098,6 +3363,9 @@ static void check_desk_rooms(const Building *b)
     ck("the same seed puts the same desk in the same room, every time", same);
     site_free(&w2.s);
     site_free(s);
+    /* The station this gate went looking for is its own, and the caller owns
+     * the one it was handed. */
+    if (mine) bld_free(&own);
 }
 
 /* ==================================== ONE FACT, ONE PLACE: THE REPORTS AGREE
@@ -3175,18 +3443,31 @@ static void check_headline_sums_the_rows(void)
 {
     printf("\nthe headline is the sum of the rows\n");
     Building b;
-    if (!bld_generate(&b, 22ull)) { ck("seed 22 makes a building", false); return; }
-    int comms = bld_find(&b, 1, RM_COMMS);
-    if (comms < 0) comms = a_room(&b, 1);
+    int shared = -1;
+    uint64_t useseed = station_with_both(&b, 22ull, TEN_OFFICE, TEN_VOICE, &shared);
+    if (!useseed) { ck("some station lets these two trades share a deck", false); return; }
+    /* AND THE CUPBOARD IS ON THE DECK THEY SHARE. This took the cupboard on
+     * deck 1 and served two tenancies through it that might be on deck 4 --
+     * a run the model priced honestly and a gate that then wondered why the
+     * office was at nought per cent. */
+    int comms = bld_find(&b, shared, RM_COMMS);
+    if (comms < 0) comms = a_room(&b, shared);
     Tower w;
-    tower_up(&w, &b, 22ull, comms, CAB_CAT5E, true, 3);
+    tower_up(&w, &b, useseed, comms, CAB_CAT5E, true, 3);
     Site *s = &w.s;
-    int off = trade_on(s, TEN_OFFICE, 1), voi = trade_on(s, TEN_VOICE, 1);
+    shared = deck_with_both(s, TEN_OFFICE, TEN_VOICE);
+    int off = trade_on(s, TEN_OFFICE, shared), voi = trade_on(s, TEN_VOICE, shared);
     if (off < 0 || voi < 0) {
-        ck("seed 22 lets an office and a call centre onto deck 1", false);
+        ck("some deck of seed 22 lets an office and a call centre side by side", false);
         site_free(s); bld_free(&b); return;
     }
+    /* UNTIL BOTH OF THEM ARE IN. This ran until the call centre had the
+     * keys and then served both -- and `serve` on a tenancy the letting
+     * queue has not brought in yet does nothing, so on a station where the
+     * office arrives later the office was never cabled and the gate read it
+     * at nought per cent and blamed the network. */
     tower_until(&w, voi);
+    tower_until(&w, off);
     site_serve(s, off, w.sw[0], CAB_CAT5E);
     site_serve(s, voi, w.sw[2], CAB_CAT5E);
     SiteDay r;
@@ -3239,7 +3520,7 @@ static void check_headline_sums_the_rows(void)
     /* ONE TRADE IN THE BUILDING GETS ITS OWN WORD, out of the same function
      * `service`'s legend uses, so the two cannot drift either. */
     site_free(s);
-    tower_up(&w, &b, 22ull, comms, CAB_CAT5E, true, 3);
+    tower_up(&w, &b, useseed, comms, CAB_CAT5E, true, 3);
     s = &w.s;
     tower_until(&w, off);
     site_serve(s, off, w.sw[0], CAB_CAT5E);
@@ -3267,14 +3548,32 @@ static void check_worst_is_wall_time(void)
 {
     printf("\n`service` says what the worst column measures\n");
     Building b;
-    if (!bld_generate(&b, 22ull)) { ck("seed 22 makes a building", false); return; }
-    int comms = bld_find(&b, 1, RM_COMMS);
-    if (comms < 0) comms = a_room(&b, 1);
+    /* A STATION WITH A CALL CENTRE ON IT, wherever it turns out to be. This
+     * named deck 1 of seed 22; after the deck redesign a deck holds one to
+     * three tenancies and the trades land where the queue puts them. */
+    uint64_t useseed = 0;
+    int vdeck = -1;
+    for (uint64_t k = 0; k < 40 && !useseed; k++) {
+        if (!bld_generate(&b, 22ull + k)) continue;
+        Site probe;
+        site_new(&probe, &b, 22ull + k, 1000);
+        for (int i = 0; i < probe.ntenant; i++)
+            if (probe.tenant[i].kind == TEN_VOICE && probe.tenant[i].floor >= 1) {
+                vdeck = probe.tenant[i].floor; useseed = 22ull + k; break;
+            }
+        site_free(&probe);
+        if (!useseed) bld_free(&b);
+    }
+    if (!useseed) { ck("some station lets a call centre in", false); return; }
+    printf("    seed %llu has one on deck %d\n",
+           (unsigned long long)useseed, vdeck);
+    int comms = bld_find(&b, vdeck, RM_COMMS);
+    if (comms < 0) comms = a_room(&b, vdeck);
     Tower w;
-    tower_up(&w, &b, 22ull, comms, CAB_CAT5E, true, 3);
+    tower_up(&w, &b, useseed, comms, CAB_CAT5E, true, 3);
     Site *s = &w.s;
-    int voi = trade_on(s, TEN_VOICE, 1);
-    if (voi < 0) { ck("seed 22 lets a call centre onto deck 1", false);
+    int voi = trade_on(s, TEN_VOICE, vdeck);
+    if (voi < 0) { ck("that station's call centre is where it said", false);
                    site_free(s); bld_free(&b); return; }
     tower_until(&w, voi);
     site_serve(s, voi, w.sw[2], CAB_CAT5E);
@@ -3395,18 +3694,42 @@ static void check_demand_says_what_a_server_is_for(const Building *b)
     site_free(&s);
 
     /* AND THE BEHAVIOUR IT DESCRIBES IS THE ONE THE DAY REALLY RUNS: one
-     * server, in the floor's cupboard, is the file server of every tenancy
-     * on that floor that did any work. */
+     * server, in the deck's cupboard, is the file server of every tenancy
+     * on that deck that did any work.
+     *
+     * IT IS NOT DECK 1 OF SEED 22, and saying so was the defect. This built
+     * seed 22 and asked for an office and a call centre ON DECK 1, because on
+     * the old generator that deck happened to hold both. Each deck kind now
+     * has its own shape and the kinds are dealt from a shuffled bag, so deck 1
+     * of seed 22 is as likely to be cabins or a promenade -- and the gate then
+     * failed with "seed 22 lets two tenancies onto deck 1", which is a
+     * complaint about the generator rather than about `+server`.
+     *
+     * The claim has nothing to do with deck 1: it is that ONE server in ONE
+     * cupboard discharges the want of EVERY tenancy on that deck. So it
+     * searches for a deck that really does hold two trades, and says which
+     * station and deck it settled on. */
     Building b22;
-    if (!bld_generate(&b22, 22ull)) { ck("seed 22 makes a building", false); return; }
-    int comms = bld_find(&b22, 1, RM_COMMS);
-    if (comms < 0) comms = a_room(&b22, 1);
+    int deck = -1;
+    uint64_t useseed = station_with_both(&b22, 22ull, TEN_OFFICE, TEN_VOICE, &deck);
+    if (!useseed) {
+        ck("some station lets an office and a call centre share a deck", false);
+        return;
+    }
+    int comms = bld_find(&b22, deck, RM_COMMS);
+    if (comms < 0) comms = a_room(&b22, deck);
     Tower w;
-    tower_up(&w, &b22, 22ull, comms, CAB_CAT5E, true, 3);
+    tower_up(&w, &b22, useseed, comms, CAB_CAT5E, true, 3);
     Site *t = &w.s;
-    int off = trade_on(t, TEN_OFFICE, 1), voi = trade_on(t, TEN_VOICE, 1);
+    deck = deck_with_both(t, TEN_OFFICE, TEN_VOICE);
+    int off = trade_on(t, TEN_OFFICE, deck), voi = trade_on(t, TEN_VOICE, deck);
     if (off >= 0 && voi >= 0) {
+        /* BOTH OF THEM, not just the call centre. `serve` on a tenancy the
+         * letting queue has not brought in yet does nothing, so on a station
+         * where the office takes the keys later it was never cabled and never
+         * asked the server for anything. */
         tower_until(&w, voi);
+        tower_until(&w, off);
         /* The days it took them to move in included one of this building's
          * own mains failures, which is what a blackout does to a server
          * nobody put a battery under. Switch it back on: this check is
@@ -3418,14 +3741,26 @@ static void check_demand_says_what_a_server_is_for(const Building *b)
         site_serve(t, off, w.sw[0], CAB_CAT5E);
         site_serve(t, voi, w.sw[2], CAB_CAT5E);
         site_day(t, NULL);
-        int shared = 0;
-        for (int i = 0; i < t->ntenant; i++)
-            if (t->tenant[i].moved && t->tenant[i].files_dev == w.srv) shared++;
+        /* COUNTED ON THE DECK THE CUPBOARD IS ON, which is what the sentence
+         * in `demand` promises. It was counted over the whole station, and a
+         * station-wide count of eleven says nothing about "every tenancy on
+         * their deck". */
+        int shared = 0, on_deck = 0;
+        for (int i = 0; i < t->ntenant; i++) {
+            if (!t->tenant[i].moved || t->tenant[i].floor != deck) continue;
+            on_deck++;
+            if (t->tenant[i].files_dev == w.srv) shared++;
+        }
         ck("one server in the deck's cupboard is the file server of every "
-           "tenancy on it", shared >= 2 && t->tenant[off].files_dev == w.srv);
-        printf("    %d tenancies served off the one box in the cupboard\n", shared);
+           "tenancy on it",
+           on_deck >= 2 && shared == on_deck &&
+           t->tenant[off].files_dev == w.srv);
+        printf("    seed %llu deck %d: %d of the %d tenancies on that deck "
+               "served off the one box in the cupboard\n",
+               (unsigned long long)useseed, deck, shared, on_deck);
     } else {
-        ck("seed 22 lets two tenancies onto deck 1", false);
+        ck("the deck that was found holds two tenancies when the tower is up",
+           false);
     }
     site_free(t);
     bld_free(&b22);
@@ -4205,24 +4540,43 @@ static void check_ambiguity_and_the_diary(void)
      * went into one of them and nothing said a choice had been made. The
      * shorthand stays -- it is how the tower gets built without a floor
      * plan -- and it now says when it was a choice. */
+    /* A DECK WITH MORE THAN ONE OF SOMETHING, and it looks for one rather
+     * than naming deck 2. After the deck redesign deck 2 might be a reactor,
+     * whose two enormous halls are `plant` and not `office`, and the whole
+     * point of this block is a name that matches SEVERAL rooms. */
     int first = -1;
-    int n2 = site_room_name_matches(&s, "d2.office", &first);
-    printf("    d2.office matches %d rooms; d1.comms matches %d\n", n2,
+    char amb[24] = "";
+    int n2 = 0;
+    static const char *const KINDW[] = { "office", "residence", "retail", NULL };
+    for (int f = 1; f < b.floors && n2 <= 1; f++)
+        for (int k = 0; KINDW[k] && n2 <= 1; k++) {
+            char spec[24];
+            snprintf(spec, sizeof spec, "d%d.%s", f, KINDW[k]);
+            int m = site_room_name_matches(&s, spec, &first);
+            if (m > 1) { n2 = m; snprintf(amb, sizeof amb, "%s", spec); }
+        }
+    printf("    %s matches %d rooms; d1.comms matches %d\n",
+           amb[0] ? amb : "(nothing)", n2,
            site_room_name_matches(&s, "d1.comms", NULL));
-    ck("deck 2 really has more than one office for the shorthand to pick from",
-       n2 > 1 && first >= 0);
+    ck("some deck really has more than one of a kind for the shorthand to "
+       "pick from",
+       n2 > 1 && first >= 0 && amb[0]);
     ck("and an unambiguous name still matches exactly one",
        site_room_name_matches(&s, "d1.comms", NULL) == 1 &&
        site_room_name_matches(&s, "d0.eng", NULL) == 1);
     site_cmd(&s, "order pc pcx", &o);
     buf_clear(&o);
-    site_cmd(&s, "move pcx d2.office", &o);
+    char mv[48];
+    snprintf(mv, sizeof mv, "move pcx %s", amb);
+    site_cmd(&s, mv, &o);
     char want[64];
     snprintf(want, sizeof want, "picked one: #%d", first);
-    ck("`move pcx d2.office` says which room it picked, and why that one",
+    ck("`move pcx <deck>.<kind>` says which room it picked, and why that one",
        has(o.p, "matches") && has(o.p, want) && has(o.p, "lowest-numbered"));
+    char rooms_hint[24];
+    snprintf(rooms_hint, sizeof rooms_hint, "rooms %c", amb[1]);
     ck("and names the spelling that would not have been a guess",
-       has(o.p, "`#<n>` names one for certain") && has(o.p, "rooms 2"));
+       has(o.p, "`#<n>` names one for certain") && has(o.p, rooms_hint));
     ck("and the box really is in the room the note named",
        s.dev[site_dev_by_name(&s, "pcx")].room == first);
     /* THE SHORTHAND IS NOT REMOVED, and an unambiguous one says nothing at
