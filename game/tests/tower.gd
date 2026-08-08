@@ -210,30 +210,54 @@ func _init() -> void:
 			else:
 				ok("%d crew stations on the bridge, every one of them dark"
 					% st.size())
-			# and each one is somewhere a body could actually stand
+			# ---- AND THE ROOM IS ORGANISED ROUND A POINT, which is the
+			# difference between a bridge and a call centre. Every station is
+			# inside the room, every one of them faces the same way as the
+			# viewscreen, and the captain's chair has clear deck round it.
 			var placed := 0
 			var per := {}
 			for c in st:
 				per[int(c.room)] = int(per.get(int(c.room), 0)) + 1
+			var clear := true
 			for c in st:
-				var bnd = t._wall_band(int(c.room), t.CON_D, 0.35, 1.00,
-					t.CON_W + float(int(per[int(c.room)]) - 1) * t.CON_STEP)
-				var g: Dictionary = t._crew_place(bnd, int(c.room), int(c.slot))
-				if g.is_empty():
-					continue
 				var rm: Dictionary = t.rooms[int(c.room)]
-				var mn: Vector3 = g.mn
-				if mn.x < float(rm.x0) or mn.x > float(rm.x1) \
-						or mn.z < float(rm.y0) or mn.z > float(rm.y1):
+				var g: Dictionary = t.crew_station_at(int(c.room), int(c.slot),
+					int(per[int(c.room)]))
+				var q: Vector3 = g.centre
+				if q.x < float(rm.x0) or q.x > float(rm.x1) \
+						or q.z < float(rm.y0) or q.z > float(rm.y1):
 					fail("the %s console is drawn outside the room it belongs to"
 						% str(c.name))
-				else:
-					placed += 1
+					continue
+				placed += 1
+				var plan: Dictionary = t.bridge_plan(int(c.room))
+				# facing the screen, not the wall
+				if Vector3(g.forward).dot(Vector3(plan.forward)) < 0.99:
+					fail("the %s console does not face the viewscreen" % str(c.name))
+				# and out of the captain's circle
+				var ch: Vector3 = plan.chair
+				if Vector2(q.x - ch.x, q.z - ch.z).length() < 1.0:
+					clear = false
 			if placed < st.size():
-				fail("only %d of %d crew consoles found a wall to stand against"
+				fail("only %d of %d crew consoles landed inside the bridge"
 					% [placed, st.size()])
+			elif not clear:
+				fail("a console is standing in the captain's clear deck")
 			else:
-				ok("all %d consoles stand inside the bridge, against its wall" % placed)
+				ok("%d consoles on the arc, all facing the screen, and the chair has its metre"
+					% placed)
+			# the viewscreen is on the bulkhead furthest from the way in
+			for room in per:
+				var plan2: Dictionary = t.bridge_plan(int(room))
+				var rm2: Dictionary = t.rooms[int(room)]
+				var sc: Vector3 = plan2.screen
+				if sc.x < float(rm2.x0) - 0.3 or sc.x > float(rm2.x1) + 0.3 \
+						or sc.z < float(rm2.y0) - 0.3 or sc.z > float(rm2.y1) + 0.3:
+					fail("the viewscreen is not on a wall of the bridge")
+				else:
+					ok("the viewscreen is on the forward bulkhead, %.1f m from the chair"
+						% Vector2(sc.x - Vector3(plan2.chair).x,
+							sc.z - Vector3(plan2.chair).z).length())
 		if closed < 0:
 			fail("this station has no dark deck between deck 0 and the bridge")
 		elif t.in_service(closed):

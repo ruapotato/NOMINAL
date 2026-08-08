@@ -26,6 +26,7 @@ func _init() -> void:
 		["corridor", 0, t.K_CORRIDOR],
 		["goods", 0, t.K_GOODS],
 		["liftlobby", 0, t.K_LIFTLOBBY],
+		["outer_ring", 0, t.K_RETAIL],
 	]
 	for w in want:
 		var ri: int = t.find_room(int(w[1]), int(w[2]))
@@ -56,6 +57,13 @@ func _init() -> void:
 		print("  ", t.command("go #%d" % ri).strip_edges().split("\n")[0])
 		for i in range(2):
 			await process_frame
+		# A BRIDGE IS PHOTOGRAPHED FROM BEHIND THE CHAIR, looking at the
+		# screen, because that is the shot that says what the room is for.
+		if int(w[2]) == t.K_BRIDGE:
+			var plan: Dictionary = t.bridge_plan(ri)
+			var fwd: Vector3 = plan.forward
+			eye = Vector3(plan.chair) - fwd * 4.4 + Vector3(0, 1.72, 0)
+			at = Vector3(plan.screen) + Vector3(0, 1.35, 0)
 		cam.global_position = eye
 		cam.look_at(at, Vector3.UP)
 		for i in range(3):

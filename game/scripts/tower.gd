@@ -656,6 +656,8 @@ func _walls(f: int) -> void:
 					_hatch(mn, size, dir, base)
 					continue
 				_box(mn, size, col)
+				if outer:
+					_port(mn, size, dir, base, f, a, b)
 				_box(skirt_mn, skirt_sz, SKIRT_COL, false)
 				# the lower plate and the line along the top of it
 				var dm := skirt_mn
@@ -747,6 +749,94 @@ func _hatch(mn: Vector3, size: Vector3, dir: int, base: float) -> void:
 	_box(sm, ss, HATCH_COL, false)
 
 
+# A WINDOW ON THE OUTSIDE, AND WHAT IS THROUGH IT IS SPACE.
+#
+# David: "I'd also like windows on the outside ring where you can look out
+# into space." The outer wall is the hull, so a viewport goes in every OTHER
+# cell of it -- a run of them along a corridor, a pair in a room, which is
+# the rhythm a real hull has because the frames between them are structure.
+# On the pitch, so a port never lands on top of a hull frame.
+#
+# WHAT IS OUTSIDE IS BLACK WITH STARS IN IT, and the stars are geometry like
+# everything else in this file: a handful of tiny bright quads on the pane,
+# placed from a hash of the cell so the same window has the same stars every
+# time it is drawn and two windows do not have the same sky. There is no
+# skybox, no texture and no light -- and a headless test renders exactly what
+# the window does, which is the rule the whole file is built on.
+const PORT_PITCH := 2       # every other cell, between the frames
+const PORT_LO := 1.05       # sill: the top of the lower plate
+const PORT_HI := 2.15
+const PORT_GLASS := Color("#05070c")
+const PORT_FRAME := Color("#39424a")
+const STAR_COL := Color(1.55, 1.55, 1.62)   # through _shade()'s side face
+
+func _port(mn: Vector3, size: Vector3, dir: int, base: float,
+		f: int, ra: int, rb: int) -> void:
+	# not on a hull frame, and not in a room with no business having a window
+	var cell: int = int(round(mn.z if dir == 0 else mn.x))
+	if cell % PORT_PITCH != 0 or cell % RIB_PITCH == 0:
+		return
+	var inside: int = ra if ra != NOROOM else rb
+	if inside == NOROOM:
+		return
+	var k: int = int(rooms[inside].kind)
+	if k == K_RISER or k == K_LIFT or k == K_STAIR:
+		return
+	if base + PORT_HI > base + size.y:
+		return
+	var h: float = PORT_HI - PORT_LO
+	# the pane, set into the hull, and a frame standing proud round it
+	var pm := mn
+	var ps := size
+	pm.y = base + PORT_LO
+	ps.y = h
+	if dir == 0:
+		pm.z += 0.16
+		ps.z -= 0.32
+		pm.x -= 0.02
+		ps.x += 0.04
+	else:
+		pm.x += 0.16
+		ps.x -= 0.32
+		pm.z -= 0.02
+		ps.z += 0.04
+	_box(pm, ps, PORT_FRAME, false)
+	var gm := pm
+	var gs := ps
+	gm.y += 0.08
+	gs.y -= 0.16
+	if dir == 0:
+		gm.z += 0.08
+		gs.z -= 0.16
+		gm.x -= 0.02
+		gs.x += 0.04
+	else:
+		gm.x += 0.08
+		gs.x -= 0.16
+		gm.z -= 0.02
+		gs.z += 0.04
+	_box(gm, gs, PORT_GLASS, false)
+	# and the sky, from this cell's own number, so it never changes
+	var seed_i: int = (f * 7919 + cell * 104729) & 0xffff
+	var n: int = 3 + (seed_i % 4)
+	for i in range(n):
+		seed_i = (seed_i * 1103515245 + 12345) & 0x7fffffff
+		var u: float = float((seed_i >> 7) % 1000) / 1000.0
+		seed_i = (seed_i * 1103515245 + 12345) & 0x7fffffff
+		var v: float = float((seed_i >> 7) % 1000) / 1000.0
+		var sm := gm
+		var d := 0.02
+		sm.y += 0.06 + v * (gs.y - 0.12)
+		if dir == 0:
+			sm.z += 0.06 + u * (gs.z - 0.12)
+			sm.x -= 0.01
+			_box(sm, Vector3(gs.x + 0.02, d, d), STAR_COL, false)
+		else:
+			sm.x += 0.06 + u * (gs.x - 0.12)
+			sm.z -= 0.01
+			_box(sm, Vector3(d, d, gs.z + 0.02), STAR_COL, false)
+
+
 # THE BULKHEAD IS NOT ONE FLAT COLOUR. A ship's wall is a dark lower plate, a
 # lighter panel above it and a line between the two -- which is what the eye
 # reads as "built out of parts" rather than "painted". The line is the same
@@ -781,30 +871,39 @@ func _rib(mn: Vector3, size: Vector3, dir: int, x: int, y: int) -> void:
 	_box(rm, rs, RIB_COL, false)
 
 
-# ---------------------------------------------------------- the bridge
+# A BRIDGE IS NOT A ROW OF DESKS AGAINST A WALL.
 #
-# THE CONSOLES THE CREW SIT AT, and every fact about them comes from core.
-# site_crew() gives one line a station: index, room, slot, name, the device
-# standing at it (-1 for none) and whether it is WORKING -- which is the
-# model's three-part answer (a machine, power in it, a cable out of it), not
-# something this file re-derives from the geometry.
+# David, on the first bridge: "it looks like a call center. Lol. The Bridge
+# needs to have a star trek like bridge, with stations and a clear spot for
+# the captain, and a display/monitor for external view."
 #
-# What the view adds is where the console physically is, and that is the same
-# rule the racks and the desks already use: along a wall with no door in it,
-# evenly spaced, front out. A player walks up to the helm console the way they
-# walk up to a rack.
+# He is right and the reason is the LAYOUT, not the furniture. A wall of
+# consoles all facing the same way is an open-plan office; a bridge is a
+# ROOM ORGANISED ROUND A POINT. So:
 #
-# A DARK CONSOLE IS THE POINT. On the first morning every one of these has a
-# dead grey slab where the screen goes, because there is no machine at it --
-# and that is what the crew are sitting in front of until the player runs
-# conduit up eleven decks and a cable along the top of the riser.
-const CON_W := 1.40         # a console is wider than a desk and shallower
-const CON_D := 0.70
-const CON_H := 0.78
+#   the viewscreen   fills the forward bulkhead -- the wall furthest from
+#                    the door, so the room faces away from where you came in
+#   the captain      a chair on the centreline, alone, with clear deck round
+#                    it. The clear spot IS the composition: everything else
+#                    is arranged relative to it
+#   the stations     an arc behind and either side of the chair, each console
+#                    turned to face the screen rather than the wall
+#
+# WHICH STATION IS WHERE IS STILL THE MODEL'S. site_crew() gives the order --
+# helm, ops, tactical, science, comms, damage -- and the arc spends that
+# order outwards from the centreline, so the helm is always the console
+# nearest the screen on the left and `go` to it means the same thing twice.
+const CON_W := 1.30
+const CON_D := 0.72
+const CON_H := 0.80
 const CON_BODY := Color("#2b3138")
 const CON_TOP := Color("#39414a")
 const CON_DARK := Color("#20262c")           # the screen with nothing behind it
 const CON_LIVE := Color("#1d4f63")           # ...and with a machine that works
+const SCREEN_COL := Color("#0b1016")         # the viewscreen, off
+const SCREEN_FRAME := Color("#39424a")
+const CHAIR_COL := Color("#2f353c")
+const CHAIR_TRIM := Color("#8a6a34")
 
 var crew: Array = []        # [{i, room, slot, name, dev, up}]
 
@@ -824,81 +923,173 @@ func crew_stations() -> Array:
 	return out
 
 
+# WHICH WAY THE ROOM FACES. Away from its door: you come in at the back of a
+# bridge and the screen is in front of you, which is true of every bridge
+# anybody has ever drawn. Returns a unit vector along an axis, pointing at
+# the forward bulkhead.
+func bridge_forward(room: int) -> Vector3:
+	var r: Dictionary = rooms[room]
+	var cx := (float(r.x0) + float(r.x1)) * 0.5
+	var cz := (float(r.y0) + float(r.y1)) * 0.5
+	# ALONG THE LONG AXIS, ALWAYS. The first version took whichever direction
+	# was furthest from the door, and on a 14 x 6 m room that is the SHORT
+	# axis: a seven-metre viewscreen went on a six-metre wall and the arc had
+	# three metres to unfold in, which is how you get a call centre with a
+	# television in it. A bridge is deep, so it faces down the room.
+	var along_x: bool = (r.x1 - r.x0) >= (r.y1 - r.y0)
+	var dl: Array = room_doors(room)
+	# ...and the SIGN is away from the way in, so you enter at the back of it
+	# and the screen is in front of you.
+	var m := 0.0
+	if dl.is_empty():
+		m = (cx if along_x else cz)      # no door: either end will do
+	else:
+		for d in dl:
+			var gp: Vector2 = d.gate
+			m += (gp.x if along_x else gp.y)
+		m /= float(dl.size())
+	var c: float = cx if along_x else cz
+	var sign: float = 1.0 if c >= m else -1.0
+	return Vector3(sign, 0, 0) if along_x else Vector3(0, 0, sign)
+
+
+# The geometry of one bridge room: where the screen is, where the chair is,
+# and where each station stands. Everything that draws the bridge -- the
+# consoles, the crew, the test that checks them -- reads this one function,
+# so there is one answer to "where is the helm" and not three.
+func bridge_plan(room: int) -> Dictionary:
+	var r: Dictionary = rooms[room]
+	var f: Vector3 = bridge_forward(room)
+	var y: float = float(r.floor) * fheight
+	var cx := (float(r.x0) + float(r.x1)) * 0.5
+	var cz := (float(r.y0) + float(r.y1)) * 0.5
+	# half the room along and across the forward axis
+	var along: float = (float(r.x1 - r.x0) if absf(f.x) > 0.5 else float(r.y1 - r.y0)) * 0.5
+	var across: float = (float(r.y1 - r.y0) if absf(f.x) > 0.5 else float(r.x1 - r.x0)) * 0.5
+	var side := Vector3(-f.z, 0, f.x)          # 90 degrees from forward
+	var mid := Vector3(cx, y, cz)
+	return {
+		"forward": f, "side": side, "mid": mid, "along": along, "across": across,
+		# the screen sits on the forward bulkhead
+		"screen": mid + f * (along - 0.12),
+		# the chair is forward of centre, with the arc behind it
+		"chair": mid + f * (along * 0.10),
+		"y": y,
+	}
+
+
+# Where station `k` of `n` stands, on the arc behind the chair. Odd k to the
+# left of the centreline and even to the right, outwards -- so the first
+# station in core's order is nearest the middle and the arc grows evenly
+# rather than filling one side first.
+func crew_station_at(room: int, k: int, n: int) -> Dictionary:
+	var p: Dictionary = bridge_plan(room)
+	var f: Vector3 = p.forward
+	var side: Vector3 = p.side
+	var rank: int = (k + 1) / 2                 # 0,1,1,2,2,3,3...
+	var hand: float = -1.0 if (k % 2) == 1 else 1.0
+	if k == 0:
+		hand = 0.0
+	var lateral: float = float(rank) * (CON_W + 0.70) * hand
+	# clamp inside the room, leaving the aisle the hatch needs
+	var lim: float = float(p.across) - CON_W * 0.5 - 0.9
+	lateral = clampf(lateral, -lim, lim)
+	# the arc: the further out, the further back from the screen
+	var back: float = 1.30 + float(rank) * 0.80
+	var c: Vector3 = p.chair - f * back + side * lateral
+	return {"centre": c, "yaw": atan2(f.x, f.z), "forward": f, "side": side,
+		"y": p.y}
+
+
 func _crew_consoles() -> void:
 	crew = crew_stations()
-	# ONE BAND PER ROOM, not one per console. Asking _wall_band() again for
-	# every station let each one pick a different wall of the same room --
-	# the helm on the north side and ops on the west, which is not a bridge,
-	# it is furniture scattered round a hall. The row is planned once, for
-	# the number of stations that room actually has, exactly as a rack row is.
 	var per := {}
 	for c in crew:
 		per[int(c.room)] = int(per.get(int(c.room), 0)) + 1
-	var band := {}
 	for room in per:
-		band[room] = _wall_band(int(room), CON_D, 0.35, 1.00,
-			CON_W + float(int(per[room]) - 1) * CON_STEP)
+		_viewscreen(int(room))
+		_captains_chair(int(room))
 	for c in crew:
-		var g: Dictionary = _crew_place(band.get(int(c.room), {}), int(c.room),
-			int(c.slot))
-		if g.is_empty():
-			continue
-		var mn: Vector3 = g.mn
-		var along_x: bool = bool(g.along_x)
-		var w: float = CON_W if along_x else CON_D
-		var d: float = CON_D if along_x else CON_W
-		# the body, and a top surface a shade lighter so it reads as a desk
-		_box(mn, Vector3(w, CON_H, d), CON_BODY, true, CON_TOP)
-		# the screen, standing off the back edge of it, leaning back a little
-		# -- drawn as a thin upright slab because that is what _box gives us
-		var sc := mn
-		var sw: float = w * 0.80
-		var sd: float = 0.06
-		if along_x:
-			sc.x += (w - sw) * 0.5
-			sc.z += d - 0.12
-		else:
-			sc.z += (d - sw) * 0.5
-			sc.x += w - 0.12
-		sc.y += CON_H
-		var col: Color = CON_LIVE if bool(c.up) else CON_DARK
-		if along_x:
-			_box(sc, Vector3(sw, 0.52, sd), col, false)
-		else:
-			_box(sc, Vector3(sd, 0.52, sw), col, false)
+		var g: Dictionary = crew_station_at(int(c.room), int(c.slot),
+			int(per[int(c.room)]))
+		_console(g, bool(c.up))
 
 
-# Where a station stands in the row that was planned for its room. `slot` is
-# its number in that room, so the helm is always the same console and walking
-# up to it means something. Off the end of the wall it wraps back along the
-# row at half a pitch, which is what a second rank of consoles looks like --
-# rather than not being drawn at all, which is what it used to do.
-const CON_STEP := 1.70
+# THE VIEWSCREEN. David: "a display/monitor for external view." It is dark on
+# day one and it stays dark: there is nothing feeding it yet, which is the
+# same sentence every console on this deck is making. What goes on it when
+# the station has sensors is a later piece of work, and painting a starfield
+# on it now would be exactly the kind of thing this project keeps deleting --
+# a picture of a system that does not exist.
+func _viewscreen(room: int) -> void:
+	var p: Dictionary = bridge_plan(room)
+	var f: Vector3 = p.forward
+	var side: Vector3 = p.side
+	var w: float = min(float(p.across) * 1.5, 7.0)
+	var h := 2.05
+	var y0: float = float(p.y) + 0.85
+	var c: Vector3 = p.screen
+	# the frame, then the glass a little proud of it
+	var fw: float = w + 0.30
+	_slab(c, side, fw, h + 0.24, y0 - 0.12, 0.14, SCREEN_FRAME)
+	_slab(c - f * 0.05, side, w, h, y0, 0.06, SCREEN_COL)
 
-func _crew_place(b: Dictionary, room: int, slot: int) -> Dictionary:
-	if b.is_empty():
-		return {}
-	var r: Dictionary = rooms[room]
-	var y: float = r.floor * fheight + 0.02
-	var run: float = b.hi - b.lo
-	var fits: int = max(1, int(floor((run - CON_W) / CON_STEP)) + 1)
-	var rank: int = slot / fits
-	var t: float = b.lo + float(slot % fits) * CON_STEP
-	if rank > 0:
-		t += CON_STEP * 0.5
-		if t > b.hi - CON_W:
-			t = b.hi - CON_W
-	# A second rank stands a metre and a half in front of the first, facing
-	# the same way -- the shape of a real bridge, and it keeps the walking
-	# space between them that every other row in this building leaves.
-	var inset: float = float(rank) * 1.60
-	if b.along_x:
-		var z: float = b.band.position.y
-		z += inset * (1.0 if b.face.z > 0.0 else -1.0)
-		return {"mn": Vector3(t, y, z), "along_x": true}
-	var x: float = b.band.position.x
-	x += inset * (1.0 if b.face.x > 0.0 else -1.0)
-	return {"mn": Vector3(x, y, t), "along_x": false}
+
+# A thin upright panel across `side`, `w` wide and `h` high, standing at `c`.
+func _slab(c: Vector3, side: Vector3, w: float, h: float, y0: float,
+		d: float, col: Color) -> void:
+	var a: Vector3 = c - side * (w * 0.5)
+	var sz: Vector3
+	var mn: Vector3
+	if absf(side.x) > 0.5:
+		mn = Vector3(min(a.x, a.x + side.x * w), y0, c.z - d * 0.5)
+		sz = Vector3(w, h, d)
+	else:
+		mn = Vector3(c.x - d * 0.5, y0, min(a.z, a.z + side.z * w))
+		sz = Vector3(d, h, w)
+	_box(mn, sz, col, false)
+
+
+# THE CLEAR SPOT. A chair on the centreline with deck round it, and nothing
+# else allowed in that circle -- the racks and the deliveries already avoid
+# doorways by the same kind of rule, and this is the bridge's version of it.
+func _captains_chair(room: int) -> void:
+	var p: Dictionary = bridge_plan(room)
+	var c: Vector3 = p.chair
+	var y: float = float(p.y)
+	var f: Vector3 = p.forward
+	# pedestal, seat, back
+	_box(Vector3(c.x - 0.22, y + 0.02, c.z - 0.22), Vector3(0.44, 0.36, 0.44),
+		CHAIR_COL)
+	_box(Vector3(c.x - 0.34, y + 0.38, c.z - 0.34), Vector3(0.68, 0.12, 0.68),
+		CHAIR_COL)
+	var b: Vector3 = c - f * 0.30
+	if absf(f.x) > 0.5:
+		_box(Vector3(b.x - 0.08, y + 0.50, b.z - 0.32), Vector3(0.16, 0.72, 0.64),
+			CHAIR_COL)
+	else:
+		_box(Vector3(b.x - 0.32, y + 0.50, b.z - 0.08), Vector3(0.64, 0.72, 0.16),
+			CHAIR_COL)
+	# the two arms, with the ochre line the whole deck carries
+	for hand in [-1.0, 1.0]:
+		var side: Vector3 = p.side * (hand * 0.40)
+		var am: Vector3 = c + side
+		_box(Vector3(am.x - 0.12, y + 0.50, am.z - 0.12), Vector3(0.24, 0.14, 0.44),
+			CHAIR_TRIM if hand > 0.0 else CHAIR_COL)
+
+
+func _console(g: Dictionary, live: bool) -> void:
+	var c: Vector3 = g.centre
+	var f: Vector3 = g.forward
+	var side: Vector3 = g.side
+	var y: float = float(g.y) + 0.02
+	# the body, turned to face the screen
+	_slab(c, side, CON_W, CON_H, y, CON_D, CON_BODY)
+	# the top surface
+	_slab(c, side, CON_W, 0.05, y + CON_H - 0.05, CON_D + 0.04, CON_TOP)
+	# and the glass, standing up off the far edge
+	_slab(c + f * (CON_D * 0.36), side, CON_W * 0.82, 0.46, y + CON_H, 0.06,
+		CON_LIVE if live else CON_DARK)
 
 
 func _roof() -> void:
@@ -3023,24 +3214,15 @@ func _crew_seats() -> Array:
 	var per := {}
 	for c in crew:
 		per[int(c.room)] = int(per.get(int(c.room), 0)) + 1
-	var band := {}
-	for room in per:
-		band[room] = _wall_band(int(room), CON_D, 0.35, 1.00,
-			CON_W + float(int(per[room]) - 1) * CON_STEP)
 	for c in crew:
-		var g: Dictionary = _crew_place(band.get(int(c.room), {}), int(c.room),
-			int(c.slot))
-		if g.is_empty():
-			continue
-		var mn: Vector3 = g.mn
-		var f: Vector3 = band[int(c.room)].face
-		# a metre out from the console, on the side you can walk up to
-		var p := Vector3(mn.x + (CON_W if bool(g.along_x) else CON_D) * 0.5,
-			mn.y, mn.z + (CON_D if bool(g.along_x) else CON_W) * 0.5)
-		# ON THE ROOM SIDE OF IT. `face` is the direction the console's front
-		# looks in, so a person at it stands that way from its centre --
-		# subtracting put six officers inside the wall behind their desks.
-		p += f * 0.85
+		var g: Dictionary = crew_station_at(int(c.room), int(c.slot),
+			int(per[int(c.room)]))
+		var f: Vector3 = g.forward
+		# BEHIND THEIR OWN CONSOLE, facing the screen with it. The console is
+		# turned to the viewscreen, so the officer is on the near side of it
+		# looking the same way -- which is what puts the back of six heads
+		# between the camera and the screen, and is the shape of a bridge.
+		var p: Vector3 = g.centre - f * 0.80
 		out.append({"pos": p, "yaw": atan2(f.x, f.z), "mood": 0 if bool(c.up) else 2,
 			"floor": int(rooms[int(c.room)].floor), "dev": -1,
 			"trade": S.T_OFFICE, "state": 0, "done": 1.0 if bool(c.up) else 0.0,
