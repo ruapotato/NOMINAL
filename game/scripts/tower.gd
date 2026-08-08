@@ -6456,6 +6456,21 @@ func _snapshot() -> void:
 	# the crosshair reads. game/tests/tower.gd started failing at the console
 	# probe, which is a long way from the HUD.
 	_snap.next = site("next")
+	# AND WHERE THAT JOB IS, off the `where:` line the session prints rather
+	# than worked out again here. core/site.c ends every rung of `next` that
+	# names a job with "  where: d6 bridge #170", which reads as English at a
+	# pipe and parses in one line here -- so the marker on the minimap and the
+	# sentence in the HUD cannot disagree, because there is only one of them.
+	# -1 is "nothing to point at", which `next` says when the station is quiet.
+	_snap.next_room = -1
+	for ln in str(_snap.next).split("\n", false):
+		var t: String = ln.strip_edges()
+		if not t.begins_with("where:"):
+			continue
+		var h: int = t.rfind("#")
+		if h >= 0:
+			_snap.next_room = int(t.substr(h + 1))
+		break
 	# WHAT IS IN YOUR HANDS, in core's words rather than in a copy of them.
 	# `spool` is the drum: how much is left on it and what grade it is, which
 	# is what the HUD and the crosshair both say and what [R] changes.
@@ -7674,9 +7689,16 @@ func _process(_dt: float) -> void:
 	_run_clock(_dt)
 	_slide_doors(_dt)
 	if minimap != null and is_instance_valid(minimap):
+		var mdeck := -1
+		var mat := Vector2.ZERO
+		var mr: int = int(_snap.get("next_room", -1))
+		if mr >= 0 and mr < rooms.size():
+			mdeck = int(rooms[mr].floor)
+			mat = Vector2((rooms[mr].x0 + rooms[mr].x1) * 0.5,
+				(rooms[mr].y0 + rooms[mr].y1) * 0.5)
 		minimap.show_floor(player_floor(), map_rows(),
 			Vector2(player.global_position.x, player.global_position.z),
-			player.rotation.y)
+			player.rotation.y, mdeck, mat)
 	# THE CLIPBOARD, RE-READ WHEN SOMETHING HAPPENED AND NOT OTHERWISE. Four
 	# session verbs is nothing once, and a great deal sixty times a second.
 	if _snap_dirty:

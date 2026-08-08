@@ -60,9 +60,20 @@ func _ready() -> void:
 # Called every frame by tower.gd and redrawn only when something moved enough
 # to see. A map that repaints sixty times a second while you stand still costs
 # more than the floor it is a picture of.
-func show_floor(f: int, r: Array, at: Vector2, yaw: float) -> void:
-	var sig := "%d:%d:%d:%d:%d" % [f, r.size(), int(at.x * 2.0), int(at.y * 2.0),
-		int(yaw * 8.0)]
+# THE JOB MARKER. David: "I want the game to hand hold me... markers on the
+# minimap." `mark_deck`/`mark_at` are where the next job is, straight off the
+# `where:` line the session prints -- this file computes no part of it. -1 is
+# nothing to point at, which is a real answer: `next` says so when the station
+# is quiet.
+var mark_deck := -1
+var mark_at := Vector2.ZERO
+
+func show_floor(f: int, r: Array, at: Vector2, yaw: float,
+		md := -1, ma := Vector2.ZERO) -> void:
+	mark_deck = md
+	mark_at = ma
+	var sig := "%d:%d:%d:%d:%d:%d:%d:%d" % [f, r.size(), int(at.x * 2.0), int(at.y * 2.0),
+		int(yaw * 8.0), md, int(ma.x), int(ma.y)]
 	if sig == _sig:
 		return
 	_sig = sig
@@ -134,6 +145,34 @@ func _draw() -> void:
 	var dir := needle()
 	draw_line(me, me + dir * 9.0, Color("#ffd479"), 1.5)
 	draw_circle(me, 2.6, Color("#ffd479"))
+
+	# THE JOB, AND WHERE IT IS. Drawn last so it sits over the plate and over
+	# you: it is the one thing on this panel you are meant to walk towards.
+	#
+	# It is a ring rather than a filled dot because a filled dot is what YOU
+	# are, and two solid marks of different colours on a plan is a puzzle. On
+	# this deck it rings the room; on another deck there is nothing on this
+	# plate to ring, so it becomes a chevron at the edge in the direction you
+	# have to travel -- up or down -- with the deck number beside it, because
+	# "somewhere else" is not a direction and this map has no third dimension
+	# to draw it in.
+	if mark_deck >= 0:
+		var col := Color("#7fd4ff")
+		if mark_deck == floor_no:
+			var mk: Vector2 = org + (mark_at - mn) * k
+			draw_arc(mk, 6.0, 0.0, TAU, 20, col, 1.6)
+			draw_arc(mk, 2.0, 0.0, TAU, 12, col, 1.6)
+			# a leader from you to it, so the eye joins the two without hunting
+			draw_line(me, mk, Color(col.r, col.g, col.b, 0.30), 1.0)
+		elif _font:
+			var up: bool = mark_deck > floor_no
+			var tipy: float = (PAD + 14.0) if up else (H - PAD - 4.0)
+			var tx: float = W - PAD - 16.0
+			var s1 := 1.0 if up else -1.0
+			draw_line(Vector2(tx, tipy), Vector2(tx - 4.0, tipy + 5.0 * s1), col, 1.6)
+			draw_line(Vector2(tx, tipy), Vector2(tx + 4.0, tipy + 5.0 * s1), col, 1.6)
+			draw_string(_font, Vector2(tx - 3.0, tipy + (14.0 if up else -8.0)),
+				"d%d" % mark_deck, HORIZONTAL_ALIGNMENT_LEFT, -1, 9, col)
 
 	if _font:
 		var head := "DECK %d" % floor_no

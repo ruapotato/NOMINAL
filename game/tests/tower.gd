@@ -2689,6 +2689,54 @@ func _init() -> void:
 		else:
 			ok("and it shuts again behind you")
 
+	# ---- THE JOB MARKER ON THE MINIMAP
+	#
+	# David: "I want the game to hand hold me to walk me through how it's
+	# played, with markers on the minimap."
+	#
+	# The place comes from the model -- core/site.c ends every rung of `next`
+	# with "where: d6 bridge #170" -- and this is the half only a running
+	# window can check: that the number parsed out of that line is a real
+	# room, and that the marker handed to the minimap is THAT room and not a
+	# room this file picked.
+	var mk_room: int = int(t._snap.get("next_room", -1))
+	if mk_room < 0:
+		fail("`next` named a job and the HUD parsed no room out of its `where:` line")
+	elif mk_room >= t.rooms.size():
+		fail("the marker points at room %d and there are %d" % [mk_room, t.rooms.size()])
+	else:
+		ok("the HUD read the job's room off `next`: #%d on deck %d"
+			% [mk_room, int(t.rooms[mk_room].floor)])
+		# and the room it points at is the one the sentence names
+		var said := ""
+		for ln in str(t._snap.next).split("\n", false):
+			if ln.strip_edges().begins_with("where:"):
+				said = ln.strip_edges()
+		if said.find("#%d" % mk_room) < 0:
+			fail("the marker says room %d and `next` says %s" % [mk_room, said])
+		else:
+			ok("and it is the room the sentence names, not one this test chose")
+		# the minimap is given the same room, in metres
+		t.minimap.show_floor(t.player_floor(), t.map_rows(),
+			Vector2(t.player.global_position.x, t.player.global_position.z),
+			t.player.rotation.y, int(t.rooms[mk_room].floor),
+			Vector2((t.rooms[mk_room].x0 + t.rooms[mk_room].x1) * 0.5,
+				(t.rooms[mk_room].y0 + t.rooms[mk_room].y1) * 0.5))
+		var inside: bool = t.minimap.mark_at.x >= float(t.rooms[mk_room].x0) \
+			and t.minimap.mark_at.x <= float(t.rooms[mk_room].x1) \
+			and t.minimap.mark_at.y >= float(t.rooms[mk_room].y0) \
+			and t.minimap.mark_at.y <= float(t.rooms[mk_room].y1)
+		if not inside:
+			fail("the minimap's mark at %v is not inside room %d" % [t.minimap.mark_at, mk_room])
+		else:
+			ok("the minimap's mark lands inside that room, at %.0f, %.0f m"
+				% [t.minimap.mark_at.x, t.minimap.mark_at.y])
+		# and when the job is on another deck it says which way, rather than
+		# marking a room that is not on this plate
+		if t.minimap.mark_deck != t.player_floor():
+			ok("the job is on deck %d and you are on %d, so the map points off it"
+				% [t.minimap.mark_deck, t.player_floor()])
+
 	print("tower: %d failures" % bad)
 	quit(1 if bad else 0)
 

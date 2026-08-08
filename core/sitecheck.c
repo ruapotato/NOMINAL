@@ -4716,6 +4716,53 @@ static void check_next(const Building *b)
         if (stop2) break;
     }
 
+    /* AND EVERY RUNG SAYS WHERE, so the window can put a marker on it.
+     *
+     * David: "I want the game to hand hold me to walk me through how it's
+     * played, with markers on the minimap." A marker needs a place, and the
+     * place has to come from here or the minimap is inventing one. Walked the
+     * same way as the instructions: read out of the text, checked against the
+     * building. Nothing here knows which room the answer will name. */
+    {
+        Session w;
+        int rungs = 0, placed = 0, wrong = 0;
+        if (!session_start(&w, GATE_SEED, 200000)) {
+            ck("a session starts for the where-walk", false);
+        } else {
+            Buf n = {0};
+            for (int step = 0; step < 20; step++) {
+                buf_clear(&n);
+                session_line(&w, "next", &n);
+                const char *arrow = strstr(n.p ? n.p : "", "-> `");
+                if (!arrow) break;
+                rungs++;
+                const char *wh = strstr(n.p, "where: d");
+                if (!wh) { wrong++; break; }
+                int deck = atoi(wh + 8);
+                const char *hash = strchr(wh, '#');
+                int room = hash ? atoi(hash + 1) : -1;
+                /* the room exists, and it is on the deck the line claims */
+                if (room < 0 || room >= b->nrooms ||
+                    b->rooms[room].floor != deck) { wrong++; break; }
+                placed++;
+                /* follow the instruction so the next rung is a different one */
+                const char *q0 = strchr(arrow + 3, '`');
+                const char *q1 = q0 ? strchr(q0 + 1, '`') : NULL;
+                if (!q0 || !q1) break;
+                char cmd[128];
+                int len = (int)(q1 - q0 - 1);
+                if (len > (int)sizeof cmd - 1) len = (int)sizeof cmd - 1;
+                memcpy(cmd, q0 + 1, (size_t)len); cmd[len] = 0;
+                Buf r = {0}; session_line(&w, cmd, &r); buf_free(&r);
+            }
+            buf_free(&n);
+            session_end(&w);
+        }
+        ck("every rung of `next` says which room the job is in", rungs > 0 && wrong == 0);
+        printf("    %d of %d rungs carried a room that is on the deck they named\n",
+               placed, rungs);
+    }
+
     ck("every command `next` dictated is a command this game has", !unknown);
     if (unknown) printf("    it told the player to type `%s`\n", badcmd);
     ck("and every one of them was taken in the state `next` had left behind",

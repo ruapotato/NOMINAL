@@ -1367,6 +1367,24 @@ int site_crew_working(const Site *s)
  * about strategy -- every line names a fact the model is holding and the verb
  * that changes it.
  */
+/* WHERE THE THING `next` IS TALKING ABOUT ACTUALLY IS.
+ *
+ * David: "I want the game to hand hold me to walk me through how it's played,
+ * with markers on the minimap." A marker needs a place, and the place has to
+ * come from the model or the minimap is inventing one -- which is the rule
+ * this whole project is built on: the view is never the source of truth.
+ *
+ * So every rung of `next` that names a job ends with one line in a fixed
+ * shape. It reads as English for a person at a pipe and parses in one line
+ * for the window, which is the same trick the rest of this file uses: the
+ * human sentence IS the data, so there is no second copy to drift. */
+static void next_where(const Site *s, Buf *out, int room)
+{
+    if (!s->b || room < 0 || room >= s->b->nrooms) return;
+    buf_printf(out, "  where: d%d %s #%d\n", s->b->rooms[room].floor,
+               bld_kind_name(s->b->rooms[room].kind), room);
+}
+
 void site_dump_next(const Site *s, Buf *out)
 {
     /* 1. SOMEBODY HAS THE KEYS AND CANNOT WORK. This is rent going out of
@@ -1465,6 +1483,7 @@ void site_dump_next(const Site *s, Buf *out)
             buf_puts(out, "  -> `service` for the row this came off, and "
                           "`load` for the port behind it\n");
         }
+        next_where(s, out, t->room);
         return;
     }
     /* 2. A RUN THAT IS ABOUT TO TRIP takes everything behind it down with it,
@@ -1478,6 +1497,7 @@ void site_dump_next(const Site *s, Buf *out)
                         "dark.\n"
                         "  -> `conduits` to see them all, and `feed` a fresh "
                         "run to take some off it\n", r, pct);
+        next_where(s, out, s->dev[s->cond[r].to].room);
         return;
     }
     /* 3. A BOX THAT IS SWITCHED OFF is doing nothing for anybody. */
@@ -1486,6 +1506,7 @@ void site_dump_next(const Site *s, Buf *out)
         if (!site_kind_has_os(d->kind) || d->powered || !d->mains) continue;
         buf_printf(out, "%s has power to it and is switched off.\n"
                         "  -> `power %s on`\n", d->name, d->name);
+        next_where(s, out, d->room);
         return;
     }
     /* 4. THE BRIDGE. Not urgent in the way rent is, which is why it is here
@@ -1537,6 +1558,7 @@ void site_dump_next(const Site *s, Buf *out)
                 buf_printf(out, "  -> `order switch8 bsw`, then "
                                 "`deliver bsw d%d.comms`\n", deck);
         }
+        next_where(s, out, s->crew[i].room);
         return;
     }
     /* 5. NOTHING IS WRONG, which is a real answer and should say what the
