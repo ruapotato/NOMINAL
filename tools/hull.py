@@ -136,12 +136,16 @@ FRAMES = [
     (0.390,   0.120,   0.020,    0.140,   3.8),   # the shoulder, heading down
     (0.440,   0.040,   0.026,    0.124,   3.2),   # the neck: narrow, and
     (0.500,   0.032,   0.030,    0.100,   3.0),   #   ramping down and aft
-    (0.560,   0.038,   0.036,    0.074,   3.0),   # levelling into engineering
-    (0.640,   0.046,   0.046,    0.052,   3.6),
-    (0.760,   0.048,   0.048,    0.045,   3.6),
-    (0.880,   0.044,   0.044,    0.045,   3.4),
-    (0.960,   0.034,   0.034,    0.046,   3.0),
-    (1.000,   0.022,   0.022,    0.047,   2.8),   # the stern
+    # AND THE STERN IS FLAT TOO, though not as flat as the disc. David: "the
+    # back section should be flatter as well. Not as flat as the top saucer
+    # section, but still flat. Not a tube." It was 1:1 -- a cylinder -- which
+    # is exactly the tube he means. These run about 2.4:1.
+    (0.560,   0.046,   0.030,    0.074,   3.0),   # levelling into engineering
+    (0.640,   0.066,   0.030,    0.054,   3.6),
+    (0.760,   0.072,   0.030,    0.048,   3.8),
+    (0.880,   0.066,   0.028,    0.048,   3.6),
+    (0.960,   0.048,   0.022,    0.049,   3.2),
+    (1.000,   0.030,   0.015,    0.050,   3.0),   # the stern
 ]
 
 # FOUR NACELLES, at twelve, three, six and nine o'clock.
@@ -164,11 +168,19 @@ NAC_OFF = 0.105         # how far off the keel they stand
 NAC_ROLL = math.radians(45)
 # AND THE PYLONS ARE CORRIDORS. "The connections between the mesh needs to be
 # hollow. As it is, there's no way we could navigate into a port nacelle."
-# Quite -- you repair a nacelle, so you have to be able to walk to it. At 9 m
-# across these carry a passage with room for the conduit beside it, and they
-# are solidified like the hull so the inside is a space rather than a solid.
-PYLON_W = 0.030         # across the pylon
-PYLON_H = 0.022         # and its depth
+# Quite -- you repair a nacelle, so you have to be able to walk to it.
+#
+# THE DIMENSIONS BELOW ARE THE CORRIDOR'S OWN, and the RADIAL REACH is derived
+# from where the nacelle actually is rather than being a third number that can
+# disagree with it. That is not fussiness: the first version used PYLON_W as
+# the radial length, so every pylon was a 9 m stub trying to span a 31 m gap,
+# and --connect found two of the four nacelles with no way in at all. The other
+# two only "passed" because they happened to overlap the hull directly, which
+# is an accident and not a corridor.
+PYLON_W = 0.030         # the corridor's width, along the keel
+PYLON_H = 0.022         # and its height
+PYLON_OVER = 1.25       # how far past the gap it runs, so the shells overlap
+                        # at BOTH ends and the interiors actually join
 
 SEG = 48                # segments round a frame; subsurf smooths the rest
 
@@ -280,6 +292,123 @@ def topology():
             "decks": decks, "pylons": pylons, "nacelles": nacelles}
 
 
+# --------------------------------------------------------------- reachable
+#
+# CAN YOU ACTUALLY WALK FROM ENGINEERING INTO A NACELLE?
+#
+# I claimed you could, in a commit message, on the strength of having put a
+# Solidify modifier on the pylons and nacelles so they were shells rather than
+# solids. That is not the same thing. Three shells that touch are still three
+# separate rooms if their INTERIORS do not overlap, and nothing had checked.
+#
+# A nacelle you cannot reach is a system the engineer cannot repair, which in
+# this game is the difference between a working loop and scenery. So it gets a
+# measurement rather than an assertion: flood fill the interior volume at two
+# metre cells from a point inside the engineering hull and see which of the
+# four nacelle centres the fill arrives at.
+
+
+def in_pylon(x, y, z):
+    """Inside one of the four pylon corridors? The pylon is a box lying along
+    the keel, rotated about Y so it points out at its nacelle's angle."""
+    for ang in (NAC_ROLL, -NAC_ROLL, math.pi + NAC_ROLL, math.pi - NAC_ROLL):
+        ux, uz = math.cos(ang), math.sin(ang)
+        cx = ux * NAC_OFF * LOA * 0.5
+        cy = NAC_T * LOA - NAC_LEN * LOA * 0.10
+        cz = 0.045 * LOA + uz * NAC_OFF * LOA * 0.5
+        # into the pylon's own frame: it is rotated by `ang` about Y, so the
+        # long axis across the ship is the radial direction
+        dx, dz = x - cx, z - cz
+        radial = dx * ux + dz * uz
+        across = -dx * uz + dz * ux
+        # THE SAME THREE NUMBERS THE MESH IS BUILT FROM. If this test and the
+        # box ever describe different corridors, the check is measuring
+        # something the player cannot walk.
+        if (abs(radial) <= NAC_OFF * LOA * PYLON_OVER * 0.5 and
+                abs(across) <= PYLON_H * LOA * 0.5 and
+                abs(y - cy) <= PYLON_W * LOA * 0.5):
+            return True
+    return False
+
+
+def in_nacelle(x, y, z):
+    for ang in (NAC_ROLL, -NAC_ROLL, math.pi + NAC_ROLL, math.pi - NAC_ROLL):
+        ux, uz = math.cos(ang), math.sin(ang)
+        cx = ux * NAC_OFF * LOA
+        cz = 0.045 * LOA + uz * NAC_OFF * LOA
+        if (abs(y - NAC_T * LOA) <= NAC_LEN * LOA * 0.5 and
+                (x - cx) ** 2 + (z - cz) ** 2 <= (NAC_R * LOA) ** 2):
+            return True
+    return False
+
+
+def in_ship(x, y, z):
+    if 0.0 <= y <= LOA and inside(y / LOA, x, z):
+        return True
+    return in_pylon(x, y, z) or in_nacelle(x, y, z)
+
+
+def connectivity():
+    step = 2.0
+    xr = int((NAC_OFF * LOA + NAC_R * LOA + 6.0) / step) + 1
+    zlo, zhi = -10.0, max(f[3] + f[2] for f in FRAMES) * LOA + 10.0
+    nz = int((zhi - zlo) / step) + 1
+    ny = int(LOA / step) + 1
+
+    def key(i, j, k):
+        return (i * ny + j) * nz + k
+
+    # start deep in the engineering hull, on the keel
+    sy = 0.80 * LOA
+    shb, shh, sch, _ = section(0.80)
+    si, sj, sk = xr, int(sy / step), int((sch * LOA - zlo) / step)
+    if not in_ship(0.0, sy, sch * LOA):
+        print("connectivity: the start point is not inside the ship")
+        return
+
+    seen = {key(si, sj, sk)}
+    stack = [(si, sj, sk)]
+    while stack:
+        i, j, k = stack.pop()
+        for di, dj, dk in ((1, 0, 0), (-1, 0, 0), (0, 1, 0),
+                           (0, -1, 0), (0, 0, 1), (0, 0, -1)):
+            ni, nj, nk = i + di, j + dj, k + dk
+            if not (0 <= ni <= 2 * xr and 0 <= nj < ny and 0 <= nk < nz):
+                continue
+            kk = key(ni, nj, nk)
+            if kk in seen:
+                continue
+            x = (ni - xr) * step
+            y = nj * step
+            z = zlo + nk * step
+            if not in_ship(x, y, z):
+                continue
+            seen.add(kk)
+            stack.append((ni, nj, nk))
+
+    print("connectivity: %d cells of %.0f m3 reachable from engineering"
+          % (len(seen), step ** 3))
+    bad = 0
+    for name, ang in (("StbdUpper", NAC_ROLL), ("StbdLower", -NAC_ROLL),
+                      ("PortLower", math.pi + NAC_ROLL),
+                      ("PortUpper", math.pi - NAC_ROLL)):
+        ux, uz = math.cos(ang), math.sin(ang)
+        cx = ux * NAC_OFF * LOA
+        cz = 0.045 * LOA + uz * NAC_OFF * LOA
+        i = int(round(cx / step)) + xr
+        j = int(round(NAC_T * LOA / step))
+        k = int(round((cz - zlo) / step))
+        ok = key(i, j, k) in seen
+        if not ok:
+            bad += 1
+        print("  nacelle %-10s at (%6.1f,%6.1f,%6.1f)  %s"
+              % (name, cx, NAC_T * LOA, cz,
+                 "REACHABLE on foot" if ok else "CUT OFF -- no way in"))
+    print("connectivity: %s"
+          % ("every nacelle can be walked to" if bad == 0
+             else "%d of 4 nacelles cannot be reached" % bad))
+
+
 def clear():
     bpy.ops.object.select_all(action="SELECT")
     bpy.ops.object.delete()
@@ -365,9 +494,6 @@ def nacelles():
             rotation=(math.radians(90), 0, 0))
         nac = bpy.context.object
         nac.name = "Nacelle" + name
-        sol = nac.modifiers.new("Solidify", "SOLIDIFY")
-        sol.thickness = 0.006 * LOA
-        sol.offset = 1.0
         made.append(nac)
 
         # THE PYLON, running from inside the hull out to inside the nacelle.
@@ -379,17 +505,18 @@ def nacelles():
             0.045 * LOA + uz * NAC_OFF * LOA * 0.5))
         arm = bpy.context.object
         arm.name = "Pylon" + name
-        arm.scale = (PYLON_W * LOA, NAC_LEN * LOA * 0.40, PYLON_H * LOA)
-        arm.rotation_euler = (0, ang, 0)
-        sol = arm.modifiers.new("Solidify", "SOLIDIFY")
-        sol.thickness = 0.005 * LOA
-        sol.offset = 1.0
+        # x is the RADIAL reach, and it is the distance to the nacelle with a
+        # quarter over so it buries itself in the hull at one end and the
+        # nacelle at the other.
+        arm.scale = (NAC_OFF * LOA * PYLON_OVER, PYLON_W * LOA, PYLON_H * LOA)
+        arm.rotation_euler = (0, -ang, 0)
         made.append(arm)
     return made
 
 
-def finish(obj):
-    """The four modifiers that are the whole reason this is a Blender script."""
+def shape(obj):
+    """Curvature and edges. NOT thickness -- that comes last, once the whole
+    ship is a single surface. See weld() for why that ordering matters."""
     sub = obj.modifiers.new("Subdivision", "SUBSURF")
     sub.levels = 1
     sub.render_levels = 2
@@ -400,12 +527,85 @@ def finish(obj):
     bev.limit_method = "ANGLE"
     bev.angle_limit = math.radians(35)
 
-    sol = obj.modifiers.new("Solidify", "SOLIDIFY")
-    sol.thickness = 0.0035 * LOA
-    sol.offset = -1.0
-
     for poly in obj.data.polygons:
         poly.use_smooth = True
+
+
+def apply_all(obj):
+    bpy.context.view_layer.objects.active = obj
+    for m in list(obj.modifiers):
+        bpy.ops.object.modifier_apply(modifier=m.name)
+
+
+def weld(hull, parts):
+    """ONE MESH, NOT SEVERAL OVERLAPPING ONES.
+
+    David: "They can't be separate meshes or they won't have a connection to
+    the inside of the rest of the ship. It has to be one mesh, not many meshes
+    overlapping into each other."
+
+    He is right, and it is a sharper point than the flood fill I wrote first.
+    That test filled the mathematical union of the primitives and reported
+    every nacelle reachable -- but the GEOMETRY was a hull shell, four nacelle
+    shells and four pylon shells, each solidified separately, so at every
+    overlap there were two walls between the two spaces. Mathematically joined,
+    physically a set of sealed rooms. A check that measures the intent instead
+    of the artefact is worse than no check, because it reads as evidence.
+
+    So: boolean UNION every part into the hull, apply it, and only THEN
+    solidify. One surface, one shell, one interior -- and the pylons really are
+    corridors into the nacelles rather than pipes glued to the outside.
+    """
+    for p in parts:
+        apply_all(p)
+    for p in parts:
+        b = hull.modifiers.new("Weld" + p.name, "BOOLEAN")
+        b.operation = "UNION"
+        b.object = p
+        b.solver = "EXACT"
+    apply_all(hull)
+    for p in parts:
+        bpy.data.objects.remove(p)
+
+    # HOW MANY PIECES THE UNION CAME OUT IN, counted BEFORE thickness -- and
+    # the ordering is the whole subtlety. Solidifying a closed manifold gives
+    # an outer shell AND an inner one, two closed surfaces that share no edge,
+    # so a piece count taken afterwards reads 2 for a perfectly good hull. The
+    # claim worth making is about the UNION: one piece means the hull, the four
+    # pylons and the four nacelles are a single connected surface, so the space
+    # inside them is a single space.
+    pieces = loose_parts(hull)
+
+    # AND THE THICKNESS LAST, on that single surface.
+    sol = hull.modifiers.new("Solidify", "SOLIDIFY")
+    sol.thickness = 0.0035 * LOA
+    sol.offset = -1.0
+    apply_all(hull)
+    print("weld: %d connected piece%s before thickness, %d after"
+          % (pieces, "" if pieces == 1 else "s", loose_parts(hull)))
+    return pieces
+
+
+def loose_parts(obj):
+    bm = bmesh.new()
+    bm.from_mesh(obj.data)
+    seen = set()
+    pieces = 0
+    for v in bm.verts:
+        if v.index in seen:
+            continue
+        pieces += 1
+        stack = [v]
+        seen.add(v.index)
+        while stack:
+            u = stack.pop()
+            for e in u.link_edges:
+                w = e.other_vert(u)
+                if w.index not in seen:
+                    seen.add(w.index)
+                    stack.append(w)
+    bm.free()
+    return pieces
 
 
 def material(obj):
@@ -474,15 +674,13 @@ def preview(path):
 def main():
     clear()
     hull = loft()
-    finish(hull)
-    material(hull)
-
+    shape(hull)
     parts = nacelles()
-    for p in parts:
-        material(p)
-        b = p.modifiers.new("Bevel", "BEVEL")
-        b.width = 0.0012 * LOA
-        b.segments = 2
+    pieces = weld(hull, parts)
+    material(hull)
+    if pieces != 1:
+        print("weld: WARNING -- the ship is in %d pieces, so its interiors "
+              "are not joined" % pieces)
 
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     bpy.ops.object.select_all(action="SELECT")
@@ -512,7 +710,7 @@ def measure():
     rounds unsure which of the two was wrong."""
     clear()
     h = loft()
-    finish(h)
+    shape(h)
     dg = bpy.context.evaluated_depsgraph_get()
     me = h.evaluated_get(dg).to_mesh()
     xs = [v.co.x for v in me.vertices]
@@ -535,5 +733,7 @@ def measure():
 
 if "--measure" in argv:
     measure()
+elif "--connect" in argv:
+    connectivity()
 else:
     main()
