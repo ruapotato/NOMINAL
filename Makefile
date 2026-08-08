@@ -85,18 +85,9 @@ faults: build/faulthist
 # THE HULL, IN THREE VIEWS. Profile, plan and bow, straight off ship.c with
 # nothing between the model and the picture that could flatter it -- which is
 # how you audit a hull before building a mesh pipeline for it.
-#   make build/hullshot && build/hullshot 1 > /tmp/hull.ppm
-build/hullshot: core/util.c core/ship.c tools/hullshot.c core/ship.h core/nom.h | build
-	$(CC) $(CFLAGS) -o $@ core/util.c core/ship.c tools/hullshot.c -lm
 
 # EVERY DECK AS A PLAN, one under the other. The shape of each deck is a
 # consequence of the hull, so if the plans are boring the hull is wrong.
-#   make build/deckshot && build/deckshot 1 > /tmp/decks.ppm
-build/deckshot: core/util.c core/ship.c tools/deckshot.c core/ship.h core/nom.h | build
-	$(CC) $(CFLAGS) -o $@ core/util.c core/ship.c tools/deckshot.c -lm
-
-build/deckwalk: core/util.c core/ship.c tools/deckwalk.c core/ship.h core/nom.h | build
-	$(CC) $(CFLAGS) -o $@ core/util.c core/ship.c tools/deckwalk.c -lm
 
 build/faulthist: $(BF_SRC_LIB) tools/faulthist.c core/machine.h core/nom.h \
                  core/kernel.h core/guestbin.h | build

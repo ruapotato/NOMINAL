@@ -11,10 +11,28 @@
 
 extends CharacterBody3D
 
-const SPEED := 3.6
-const RUN := 6.0
-const GRAVITY := 12.0
-const EYE := 1.62
+# TUNABLE FROM THE EDITOR, not from this file.
+#
+# David: "Maybe the player mesh is too big?... Seems like something that could
+# just be a scene file. Allow me to edit it."
+#
+# He was right to ask. These were consts, so the only way to change how the
+# player moves was to edit GDScript -- and the reason he could not jump was one
+# of them: JUMP was 4.2 m/s against a GRAVITY of 12, which is an apex of
+# v^2/2g = 0.73 m. A knee-high hop, which inside a 4.75 m deck reads as not
+# leaving the ground at all. I scaled the ship fourfold chasing that number.
+#
+# They are exported now and live in scenes/player.tscn, so the capsule, the
+# eye height, the speed and the jump are all things to try rather than things
+# to ask for.
+@export var SPEED := 3.6
+@export var RUN := 6.0
+@export var GRAVITY := 12.0
+@export var JUMP := 6.5          # apex = JUMP^2 / (2*GRAVITY) metres
+@export var EYE := 1.62
+@export var CAP_HEIGHT := 1.75
+@export var CAP_RADIUS := 0.28
+@export var FOV := 75.0
 const MOUSE := 0.0022
 
 var cam: Camera3D
@@ -46,20 +64,30 @@ var on_ladder := false
 
 
 func _ready() -> void:
-	var cs := CollisionShape3D.new()
-	var cap := CapsuleShape3D.new()
-	cap.height = 1.75
-	cap.radius = 0.28
-	cs.shape = cap
-	cs.position = Vector3(0, 0.875, 0)
-	add_child(cs)
+	# BUILT HERE ONLY IF THE SCENE DID NOT BRING ONE. scenes/player.tscn has a
+	# capsule and a camera in it that can be dragged about in the editor; this
+	# is the fallback for the tests and tools that instantiate the script on
+	# its own.
+	var cs: CollisionShape3D = get_node_or_null("Collider")
+	if cs == null:
+		cs = CollisionShape3D.new()
+		cs.name = "Collider"
+		var cap := CapsuleShape3D.new()
+		cap.height = CAP_HEIGHT
+		cap.radius = CAP_RADIUS
+		cs.shape = cap
+		cs.position = Vector3(0, CAP_HEIGHT * 0.5, 0)
+		add_child(cs)
 
-	cam = Camera3D.new()
+	cam = get_node_or_null("Camera3D")
+	if cam == null:
+		cam = Camera3D.new()
+		cam.name = "Camera3D"
+		add_child(cam)
 	cam.position = Vector3(0, EYE, 0)
-	cam.fov = 75.0
+	cam.fov = FOV
 	cam.near = 0.05
-	cam.far = 400.0
-	add_child(cam)
+	cam.far = 4000.0
 	cam.current = true
 	floor_max_angle = deg_to_rad(50.0)
 	floor_snap_length = 0.4
@@ -117,5 +145,5 @@ func _physics_process(delta: float) -> void:
 	else:
 		velocity.y = -0.1
 		if not drive_active and Input.is_key_pressed(KEY_SPACE):
-			velocity.y = 4.2
+			velocity.y = JUMP
 	move_and_slide()

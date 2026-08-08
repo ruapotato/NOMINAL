@@ -1,0 +1,153 @@
+[gd_scene load_steps=2 format=3]
+
+; THE SHIP. Hand-authored topology -- open it, drag things, add rooms.
+;
+; EVERY CSGBox3D UNDER A DECK IS A ROOM VOLUME, not a solid. scripts/ship.gd
+; turns each one into a floor, four walls and a ceiling, and where two boxes
+; OVERLAP it leaves a doorway. So the way to join two rooms is to make their
+; boxes overlap a little, and the way to make a corridor is a long thin box
+; that overlaps everything it serves.
+;
+; A Deck node's Y position is the deck's floor. Rooms sit on it; their box
+; height is the clear head, so 4 m of box is 4 m you can stand up in.
+;
+; Shafts are Marker3D under Shafts, named Lift* or Stair*, with the deck range
+; in the name: LiftMid_0_3 serves decks 0 to 3 inclusive.
+;
+; x runs bow (0) to stern. z is port/starboard. Metres throughout.
+
+[ext_resource type="Script" path="res://scripts/ship.gd" id="1"]
+
+[node name="Ship" type="Node3D"]
+script = ExtResource("1")
+
+; ---------------------------------------------------------------- DECK 0
+; The bottom of the engineering hull: the plant, and the things that keep
+; people alive. Nothing here is in the command section -- the bow does not
+; reach this low, which is why deck 0 stops at x=100.
+
+[node name="Deck0" type="Node3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0)
+
+[node name="Spine" type="CSGBox3D" parent="Deck0"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 135, 2, 0)
+size = Vector3(70, 4, 8)
+
+[node name="MainEngineering" type="CSGBox3D" parent="Deck0"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 145, 2, 20)
+size = Vector3(44, 4, 28)
+
+[node name="ReactorBay" type="CSGBox3D" parent="Deck0"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 145, 2, -20)
+size = Vector3(44, 4, 28)
+
+[node name="LifeSupport" type="CSGBox3D" parent="Deck0"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 112, 2, 18)
+size = Vector3(24, 4, 24)
+
+[node name="WaterAndAir" type="CSGBox3D" parent="Deck0"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 112, 2, -18)
+size = Vector3(24, 4, 24)
+
+; ---------------------------------------------------------------- DECK 1
+; Upper engineering, and the computer core. The neck starts here: the spine
+; runs forward to x=90, far enough to meet the lift that climbs to the command
+; section.
+
+[node name="Deck1" type="Node3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 4, 0)
+
+[node name="Spine" type="CSGBox3D" parent="Deck1"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 130, 2, 0)
+size = Vector3(84, 4, 8)
+
+[node name="ComputerCore" type="CSGBox3D" parent="Deck1"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 152, 2, 16)
+size = Vector3(28, 4, 24)
+
+[node name="PowerDistribution" type="CSGBox3D" parent="Deck1"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 152, 2, -16)
+size = Vector3(28, 4, 24)
+
+[node name="CargoHold" type="CSGBox3D" parent="Deck1"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 118, 2, 17)
+size = Vector3(28, 4, 26)
+
+[node name="Workshop" type="CSGBox3D" parent="Deck1"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 118, 2, -17)
+size = Vector3(28, 4, 26)
+
+; ---------------------------------------------------------------- DECK 2
+; The long deck: the only one that runs the whole length of the ship, so it is
+; the one that crosses the neck. Everything routed from the core to the bow
+; goes along here, which makes it the single point of failure the game is
+; about.
+
+[node name="Deck2" type="Node3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 8, 0)
+
+[node name="Spine" type="CSGBox3D" parent="Deck2"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 90, 2, 0)
+size = Vector3(150, 4, 8)
+
+[node name="Neck" type="CSGBox3D" parent="Deck2"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 90, 2, 0)
+size = Vector3(36, 4, 16)
+
+[node name="ShuttleBay" type="CSGBox3D" parent="Deck2"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 140, 2, 0)
+size = Vector3(40, 4, 44)
+
+[node name="CrewQuarters" type="CSGBox3D" parent="Deck2"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 48, 2, 22)
+size = Vector3(52, 4, 32)
+
+[node name="Mess" type="CSGBox3D" parent="Deck2"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 48, 2, -22)
+size = Vector3(52, 4, 32)
+
+[node name="SensorArray" type="CSGBox3D" parent="Deck2"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 16, 2, 0)
+size = Vector3(26, 4, 30)
+
+; ---------------------------------------------------------------- DECK 3
+; The top of the command section. The bridge, and the compartments that only
+; matter when the bridge is manned.
+
+[node name="Deck3" type="Node3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 12, 0)
+
+[node name="Spine" type="CSGBox3D" parent="Deck3"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 45, 2, 0)
+size = Vector3(70, 4, 8)
+
+[node name="Bridge" type="CSGBox3D" parent="Deck3"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 20, 2, 0)
+size = Vector3(34, 4, 34)
+
+[node name="ShieldControl" type="CSGBox3D" parent="Deck3"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 58, 2, 18)
+size = Vector3(26, 4, 24)
+
+[node name="WeaponsControl" type="CSGBox3D" parent="Deck3"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 58, 2, -18)
+size = Vector3(26, 4, 24)
+
+; ---------------------------------------------------------------- SHAFTS
+; Named with the deck range they serve. LiftMid is the one that matters: it is
+; the only way from the engineering hull up to the deck that crosses the neck,
+; so losing it splits the ship in half.
+
+[node name="Shafts" type="Node3D" parent="."]
+
+[node name="LiftAft_0_2" type="Marker3D" parent="Shafts"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 160, 0, 0)
+
+[node name="LiftMid_0_3" type="Marker3D" parent="Shafts"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 108, 0, 0)
+
+[node name="LiftFwd_2_3" type="Marker3D" parent="Shafts"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 40, 0, 0)
+
+[node name="StairMid_1_2" type="Marker3D" parent="Shafts"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 124, 0, 0)

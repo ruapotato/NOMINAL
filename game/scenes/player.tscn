@@ -1,0 +1,25 @@
+[gd_scene load_steps=3 format=3]
+
+; THE PLAYER. Everything about how he moves is on this node -- open it and
+; change the numbers. JUMP is metres per second at takeoff; the height you
+; clear is JUMP^2 / (2 * GRAVITY), so 6.5 against 12 is about 1.76 m.
+; It was 4.2, which is 0.73 m, and that is why jumping felt like nothing.
+
+[ext_resource type="Script" path="res://scripts/walker.gd" id="1"]
+
+[sub_resource type="CapsuleShape3D" id="cap"]
+height = 1.75
+radius = 0.28
+
+[node name="Player" type="CharacterBody3D"]
+script = ExtResource("1")
+
+[node name="Collider" type="CollisionShape3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.875, 0)
+shape = SubResource("cap")
+
+[node name="Camera3D" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.62, 0)
+fov = 75.0
+near = 0.05
+far = 2000.0
