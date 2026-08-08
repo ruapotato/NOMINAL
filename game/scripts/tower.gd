@@ -1407,7 +1407,31 @@ func _plan_racks() -> void:
 			K_SERVER: n = 3
 			_: continue
 		var want: float = float(n - 1) * RACK_PITCH + RACK_W
-		var b := _wall_band(r.i, RACK_D, RACK_BACK, RACK_AISLE, want)
+		# AND A ROW HAS TO HAVE AN AISLE YOU CAN STAND IN.
+		#
+		# _wall_band() scores a band on how far it is from doorways and from
+		# rows already placed, and never asks whether there is floor in front
+		# of it. On a deck whose arms are eight metres deep that came out as a
+		# rack row facing something a body cannot get to -- and since the
+		# handoff and the power core are racked in Engineering, their only
+		# sockets became unreachable: "nothing can reach port 0 of uplink".
+		# The row tries each side until one has an aisle, which is the same
+		# rule _floor_slot() follows for a box on the floor.
+		var b := {}
+		var skip: Array = []
+		for tries in range(4):
+			var cand := _wall_band(r.i, RACK_D, RACK_BACK, RACK_AISLE, want, skip)
+			if cand.is_empty():
+				break
+			var probe := {
+				"mn": Vector3(cand.band.position.x, 0.0, cand.band.position.y),
+				"size": Vector3(cand.band.size.x, 0.0, cand.band.size.y),
+				"face": cand.face,
+			}
+			if _can_stand_at(r.i, probe):
+				b = cand
+				break
+			skip.append(int(cand.side))
 		if b.is_empty():
 			continue                      # no wall in this room can hold a row
 		# The usable run is the wall minus a way past each end of the row.
@@ -1515,11 +1539,67 @@ func _floor_slot(room: int, k: int, nu: int) -> Dictionary:
 		return {"mn": Vector3(float(r.x0) + 0.7, y, zf),
 				"size": Vector3(0.62, h, 0.62), "face": Vector3(1, 0, 0)}
 	var t: float = min(b.lo + float(k) * step, b.hi - 0.62)
+	var slot: Dictionary
 	if b.along_x:
-		return {"mn": Vector3(t, y, b.band.position.y),
+		slot = {"mn": Vector3(t, y, b.band.position.y),
 				"size": Vector3(0.62, h, 0.62), "face": b.face}
-	return {"mn": Vector3(b.band.position.x, y, t),
-			"size": Vector3(0.62, h, 0.62), "face": b.face}
+	else:
+		slot = {"mn": Vector3(b.band.position.x, y, t),
+				"size": Vector3(0.62, h, 0.62), "face": b.face}
+	# AND THERE HAS TO BE SOMEWHERE TO STAND IN FRONT OF IT.
+	#
+	# A box against a wall with its ports facing into the room is only usable
+	# if the room is still there half a metre out. `_wall_band()` scores a
+	# band on its clearance from doorways and rack rows and never asks that,
+	# and while every deck was the same shape it never mattered. The dock's
+	# arms are eight metres deep and six wide and three boxes -- the handoff,
+	# the power core and the workstation -- came out with their only socket
+	# facing something a body cannot stand in: game/tests/tower.gd reported
+	# "nothing can reach port 0 of uplink", which is the third time this
+	# family of bug has been found and the first time the CAUSE is fixed
+	# rather than the symptom nudged.
+	#
+	# So the slot is checked, and a side that has no standing room is refused
+	# and the next one tried. If none of the four works the box goes in the
+	# middle of the room, where a person can walk all the way round it.
+	if _can_stand_at(room, slot):
+		return slot
+	var avoid: Array = [int(b.side)]
+	for tries in range(3):
+		var b2 := _wall_band(room, 0.62, 0.20, 0.90, 0.62 + float(k) * 0.85, avoid)
+		if b2.is_empty():
+			break
+		var t2: float = min(b2.lo + float(k) * step, b2.hi - 0.62)
+		var s2: Dictionary
+		if b2.along_x:
+			s2 = {"mn": Vector3(t2, y, b2.band.position.y),
+				  "size": Vector3(0.62, h, 0.62), "face": b2.face}
+		else:
+			s2 = {"mn": Vector3(b2.band.position.x, y, t2),
+				  "size": Vector3(0.62, h, 0.62), "face": b2.face}
+		if _can_stand_at(room, s2):
+			return s2
+		avoid.append(int(b2.side))
+	# nothing against a wall works: stand it clear of every wall instead
+	var cx: float = (float(r.x0) + float(r.x1)) * 0.5 + float(k) * step
+	var cz: float = (float(r.y0) + float(r.y1)) * 0.5
+	cx = clampf(cx, float(r.x0) + 1.2, float(r.x1) - 1.2)
+	return {"mn": Vector3(cx, y, cz), "size": Vector3(0.62, h, 0.62),
+			"face": Vector3(0, 0, 1)}
+
+
+# Is there room to stand in front of this slot and look at its ports? The
+# point a person's feet would be, at the reach the crosshair uses, has to be
+# inside the same room -- not in a wall, not in the next room, not outside.
+func _can_stand_at(room: int, slot: Dictionary) -> bool:
+	var r: Dictionary = rooms[room]
+	var mn: Vector3 = slot.mn
+	var sz: Vector3 = slot.size
+	var f: Vector3 = slot.face
+	var c := Vector3(mn.x + sz.x * 0.5, 0.0, mn.z + sz.z * 0.5)
+	var p: Vector3 = c + f * 0.85
+	return p.x > float(r.x0) + 0.25 and p.x < float(r.x1) - 0.25 \
+		and p.z > float(r.y0) + 0.25 and p.z < float(r.y1) - 0.25
 
 
 # A TENANT'S DESK, on the floor of the room they rent.
@@ -3803,6 +3883,28 @@ func _workstation(room: int, ws := {}) -> void:
 	var size := Vector3(absf(t1.x - t0.x), 0.45, absf(t1.z - t0.z))
 	size.x = max(size.x, 0.20)
 	size.z = max(size.z, 0.20)
+	# AND SOMEWHERE TO STAND IN FRONT OF ITS SOCKET, checked rather than
+	# assumed. This is the third time the player's own machine has ended up
+	# with its only port facing something a body cannot get to, and the first
+	# two fixes both moved the box and neither asked the question. It asks
+	# now: if the reach point is not inside this room, the tower goes to the
+	# OTHER end of the desk, and if that fails too it stands clear of the
+	# desk entirely -- a computer in the middle of the floor is untidy and a
+	# computer nobody can cable is broken.
+	if not _can_stand_at(room, {"mn": mn, "size": size, "face": b.face}):
+		var a0: Vector3 = fr.org + fr.along * (u - 0.32) + fr.out * 0.10
+		var a1: Vector3 = fr.org + fr.along * (u - 0.10) + fr.out * 0.56
+		var mn2 := Vector3(min(a0.x, a1.x), y + 0.02, min(a0.z, a1.z))
+		var sz2 := Vector3(max(absf(a1.x - a0.x), 0.20), 0.45,
+			max(absf(a1.z - a0.z), 0.20))
+		if _can_stand_at(room, {"mn": mn2, "size": sz2, "face": b.face}):
+			mn = mn2
+			size = sz2
+		else:
+			var rr: Dictionary = rooms[room]
+			mn = Vector3((float(rr.x0) + float(rr.x1)) * 0.5,
+				y + 0.02, (float(rr.y0) + float(rr.y1)) * 0.5)
+			size = Vector3(0.24, 0.45, 0.46)
 	# THE DEVICE, AND IT IS THE SITE'S DEVICE. Until D41 this was added with
 	# `nports 0, site_i -1`: a picture of a computer, on nobody's network, with
 	# no socket on the back of it and nothing the model knew about. It is a box
@@ -7277,7 +7379,18 @@ func _run_clock(dt: float) -> void:
 	_tick_owed -= float(ms)
 	var report := str(machine.ses_tick(ms))
 	if report.strip_edges() != "":
-		# a day ended while you were standing there
+		# A DAY ENDED WHILE YOU WERE STANDING THERE, and everything the window
+		# had cached about the session is now a day out of date.
+		#
+		# ses_state() is cached for the frame -- four session verbs sixty
+		# times a second is a great deal -- and every other path that changes
+		# the world goes through site(), which clears the cache. This one does
+		# not: the clock changes the world without anybody typing. So the day
+		# rolled over, `service` had new tenancies in it, and the HUD went on
+		# reading the old day out of the cache. game/tests/clock.gd caught it
+		# as "the day never ended" while the report it was complaining about
+		# was already on the screen.
+		_st_frame = -1
 		_reconcile()
 		_snap_dirty = true
 		_show_report(report)

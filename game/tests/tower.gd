@@ -1006,8 +1006,23 @@ func _init() -> void:
 		var pcc: Vector3 = pf0.c
 		var stand: Vector3 = pcc + Vector3(pf0.n) * 0.65 - Vector3(0, 0.24, 0)
 		t.teleport(stand + Vector3(0, 0.3, 0))
-		for j in range(12):
+		# WAIT UNTIL THE BODY HAS STOPPED MOVING, rather than counting frames.
+		#
+		# This waited twelve frames and then looked, and a teleported capsule
+		# is still settling after twelve frames -- it falls the 0.3 m it was
+		# lifted by, and if it landed touching the box it is being pushed out
+		# as well. So the eye was somewhere slightly different on every run
+		# and the same station gave 4, 2 and 4 failures on three consecutive
+		# identical runs. A flaky gate is worse than no gate: it costs an hour
+		# of chasing a placement bug that was not there, which is exactly what
+		# it just cost.
+		var last := Vector3(1e9, 1e9, 1e9)
+		for j in range(240):
 			await process_frame
+			var now: Vector3 = t.player.global_position
+			if now.distance_to(last) < 0.0005:
+				break
+			last = now
 		t.aim_at(pcc)
 		for j in range(4):
 			await process_frame
