@@ -178,6 +178,17 @@ static bool add_door(Building *b, int floor, int x, int y, int dir)
  * and no two cuts come closer than minw. For the north and south bands that
  * window is the core's x extent, which is what drags the end rooms around the
  * ring corner far enough to have a door. */
+/* THE ARMS' PROPORTIONS, and they are the station's shape.
+ *
+ * ARM_SPINE is the corridor down the middle of an arm: 3 m, which is a
+ * passageway two people pass in, not a room. ARM_ROOM is how deep the rooms
+ * either side of it are, and ARM_LEN is the shortest arm worth building --
+ * below that the rooms would be closer to the hub than the ring is wide and
+ * the arm would read as a bulge rather than a limb. */
+#define ARM_SPINE 3
+#define ARM_ROOM  7
+#define ARM_LEN   9
+
 static int split_span(Rng *r, int lo, int hi, int cutlo, int cuthi,
                       int minw, int target, int minrooms, int maxrooms,
                       int *cuts)
@@ -224,8 +235,25 @@ bool bld_generate(Building *b, uint64_t seed)
 
     /* The TOP plate first. The core is sized from the smallest floor, so no
      * later setback can cut a riser out of the building. */
-    int tw = rng_range(&r, 38, 44);
-    int th = rng_range(&r, 22, 26);
+    /* A STATION IS A HUB AND ARMS, NOT A PLATE.
+     *
+     * David, looking at the first station: "The building is still square, not
+     * a hub and spoke like shape like you'd expect for a space station."
+     *
+     * He is right and it is the deepest of the three things he asked for,
+     * because it is not paint: it is what the generator makes. An office
+     * floorplate is a rectangle filled edge to edge with a corridor ring in
+     * it, and every room has neighbours on three sides. A station is a core
+     * with ARMS radiating off it and VACUUM between them, which means most
+     * rooms have hull on two sides, the outer wall is four times as long,
+     * and a walk from one arm to another goes back through the hub -- so
+     * where you put a switch matters more than it did on a plate.
+     *
+     * The plate is bigger and squarer than an office one because the arms
+     * need length to be arms: four of them, each reaching from the ring to
+     * the edge, with the corners left as space. */
+    int tw = rng_range(&r, 56, 66);
+    int th = rng_range(&r, 42, 50);
 
     int shx0[BLD_MAX_FLOORS] = {0}, shy0[BLD_MAX_FLOORS] = {0};
     int shx1[BLD_MAX_FLOORS] = {0}, shy1[BLD_MAX_FLOORS] = {0};
@@ -251,11 +279,33 @@ bool bld_generate(Building *b, uint64_t seed)
         b->fx1[f] = (int16_t)(b->w - shx1[f]);     b->fy1[f] = (int16_t)(b->h - shy1[f]);
     }
 
-    /* Ring and core, from the top plate, in the building's own coordinates. */
-    b->ring_x0 = (int16_t)(b->fx0[top] + 6); b->ring_y0 = (int16_t)(b->fy0[top] + 6);
-    b->ring_x1 = (int16_t)(b->fx1[top] - 6); b->ring_y1 = (int16_t)(b->fy1[top] - 6);
-    b->core_x0 = (int16_t)(b->ring_x0 + 2);  b->core_y0 = (int16_t)(b->ring_y0 + 2);
-    b->core_x1 = (int16_t)(b->ring_x1 - 2);  b->core_y1 = (int16_t)(b->ring_y1 - 2);
+    /* THE HUB, IN THE MIDDLE, WITH VACUUM ROUND IT.
+     *
+     * The core is the same row of five slots it always was -- stairwell,
+     * heads, heads, lifts, riser over comms -- because that cluster is what
+     * makes a deck stack, and the ring is the concourse round it. What
+     * changed is where it sits: it used to be six metres in from the edge of
+     * a plate filled to its corners, and now it is CENTRED in a much bigger
+     * one with nothing between it and the edge except the four arms.
+     *
+     * Sized from the SMALLEST plate, the same rule the old core followed: a
+     * setback on deck 7 must not cut a riser out of the station. */
+    int mnw = b->w, mnh = b->h;
+    for (int f = 0; f < b->floors; f++) {
+        int wf = b->fx1[f] - b->fx0[f], hf = b->fy1[f] - b->fy0[f];
+        if (wf < mnw) mnw = wf;
+        if (hf < mnh) mnh = hf;
+    }
+    int cw = 26, ch = 8;
+    if (cw > mnw - 2 * (ARM_LEN + 2)) cw = mnw - 2 * (ARM_LEN + 2);
+    if (ch > mnh - 2 * (ARM_LEN + 2)) ch = mnh - 2 * (ARM_LEN + 2);
+    if (cw < 21 || ch < 6) return false;
+    int mx = (b->fx0[top] + b->fx1[top]) / 2;
+    int my = (b->fy0[top] + b->fy1[top]) / 2;
+    b->core_x0 = (int16_t)(mx - cw / 2);   b->core_x1 = (int16_t)(mx - cw / 2 + cw);
+    b->core_y0 = (int16_t)(my - ch / 2);   b->core_y1 = (int16_t)(my - ch / 2 + ch);
+    b->ring_x0 = (int16_t)(b->core_x0 - 2); b->ring_y0 = (int16_t)(b->core_y0 - 2);
+    b->ring_x1 = (int16_t)(b->core_x1 + 2); b->ring_y1 = (int16_t)(b->core_y1 + 2);
     int CW = b->core_x1 - b->core_x0, CH = b->core_y1 - b->core_y0;
     if (CW < 21 || CH < 6) return false;
 
@@ -352,31 +402,78 @@ bool bld_generate(Building *b, uint64_t seed)
         }
         if (stair < 0 || lobby < 0 || riser < 0 || comms < 0 || nwc != 2) return false;
 
-        /* The perimeter band. North and south run the full width and wrap the
-         * corners; east and west take what is left between them. */
+        /* THE ARMS. Four of them, north, south, east and west, each a spine
+         * of corridor running from the ring out to the hull with rooms down
+         * both sides of it -- and nothing at all in the corners between.
+         *
+         * WHY A CORRIDOR AND NOT A BAND OF ROOMS. On a plate the perimeter
+         * rooms opened straight onto the ring, so every room on the deck was
+         * one door from the lifts. An arm has a spine, so a room at the end
+         * of it is the length of the arm from the hub -- and the walk to it
+         * goes back through the ring, past the riser, and out again. That is
+         * the whole reason to do this: it makes WHERE a switch goes a
+         * decision instead of a formality, and `quote` was already able to
+         * price it.
+         *
+         * The rooms are two deep either side, which is what leaves the
+         * corners empty and gives most of them hull on two sides. */
         int first_peri = b->nrooms;
         int cuts[16], n;
         int pk = perimeter_kind(fk);
+        int amx = (rx0 + rx1) / 2, amy = (ry0 + ry1) / 2;
 
-        n = split_span(&r, fx0, fx1, cx0, cx1, 4, 9, 2, 5, cuts);
-        for (int i = 0; i < n; i++) {
-            int a = i ? cuts[i - 1] : fx0, c = (i < n - 1) ? cuts[i] : fx1;
-            add_room(b, f, pk, 0, a, fy0, c, ry0);
-        }
-        n = split_span(&r, ry0, ry1, ry0 + 4, ry1 - 4, 4, 8, 1, 2, cuts);
-        for (int i = 0; i < n; i++) {
-            int a = i ? cuts[i - 1] : ry0, c = (i < n - 1) ? cuts[i] : ry1;
-            add_room(b, f, pk, 0, fx0, a, rx0, c);
-        }
-        n = split_span(&r, fx0, fx1, cx0, cx1, 4, 9, 2, 5, cuts);
-        for (int i = 0; i < n; i++) {
-            int a = i ? cuts[i - 1] : fx0, c = (i < n - 1) ? cuts[i] : fx1;
-            add_room(b, f, pk, 0, a, ry1, c, fy1);
-        }
-        n = split_span(&r, ry0, ry1, ry0 + 4, ry1 - 4, 4, 8, 1, 2, cuts);
-        for (int i = 0; i < n; i++) {
-            int a = i ? cuts[i - 1] : ry0, c = (i < n - 1) ? cuts[i] : ry1;
-            add_room(b, f, pk, 0, rx1, a, fx1, c);
+        for (int arm = 0; arm < 4; arm++) {
+            /* the spine, ARM_SPINE wide, on the centreline of the hub */
+            int sx0, sy0, sx1, sy1;      /* the corridor */
+            int wx0, wy0, wx1, wy1;      /* the rooms one side */
+            int ex0, ey0, ex1, ey1;      /* ...and the other */
+            int len;
+            switch (arm) {
+            case 0:  /* north */
+                len = ry0 - fy0; if (len < ARM_LEN) continue;
+                sx0 = amx - ARM_SPINE / 2; sx1 = sx0 + ARM_SPINE;
+                sy0 = fy0; sy1 = ry0;
+                wx0 = sx0 - ARM_ROOM; wx1 = sx0; wy0 = sy0; wy1 = sy1;
+                ex0 = sx1; ex1 = sx1 + ARM_ROOM; ey0 = sy0; ey1 = sy1;
+                break;
+            case 1:  /* south */
+                len = fy1 - ry1; if (len < ARM_LEN) continue;
+                sx0 = amx - ARM_SPINE / 2; sx1 = sx0 + ARM_SPINE;
+                sy0 = ry1; sy1 = fy1;
+                wx0 = sx0 - ARM_ROOM; wx1 = sx0; wy0 = sy0; wy1 = sy1;
+                ex0 = sx1; ex1 = sx1 + ARM_ROOM; ey0 = sy0; ey1 = sy1;
+                break;
+            case 2:  /* west */
+                len = rx0 - fx0; if (len < ARM_LEN) continue;
+                sy0 = amy - ARM_SPINE / 2; sy1 = sy0 + ARM_SPINE;
+                sx0 = fx0; sx1 = rx0;
+                wy0 = sy0 - ARM_ROOM; wy1 = sy0; wx0 = sx0; wx1 = sx1;
+                ey0 = sy1; ey1 = sy1 + ARM_ROOM; ex0 = sx0; ex1 = sx1;
+                break;
+            default: /* east */
+                len = fx1 - rx1; if (len < ARM_LEN) continue;
+                sy0 = amy - ARM_SPINE / 2; sy1 = sy0 + ARM_SPINE;
+                sx0 = rx1; sx1 = fx1;
+                wy0 = sy0 - ARM_ROOM; wy1 = sy0; wx0 = sx0; wx1 = sx1;
+                ey0 = sy1; ey1 = sy1 + ARM_ROOM; ex0 = sx0; ex1 = sx1;
+                break;
+            }
+            if (sx0 < fx0 || sx1 > fx1 || sy0 < fy0 || sy1 > fy1) continue;
+            if (wx0 < fx0 || wy0 < fy0 || ex1 > fx1 || ey1 > fy1) continue;
+            add_room(b, f, RM_CORRIDOR, 0, sx0, sy0, sx1, sy1);
+            /* and the rooms down each side of it, cut along the arm */
+            bool along_y = (arm < 2);
+            for (int side = 0; side < 2; side++) {
+                int qx0 = side ? ex0 : wx0, qy0 = side ? ey0 : wy0;
+                int qx1 = side ? ex1 : wx1, qy1 = side ? ey1 : wy1;
+                int lo = along_y ? qy0 : qx0, hi = along_y ? qy1 : qx1;
+                n = split_span(&r, lo, hi, lo, hi, 4, 8, 1, 4, cuts);
+                for (int i = 0; i < n; i++) {
+                    int a = i ? cuts[i - 1] : lo, c = (i < n - 1) ? cuts[i] : hi;
+                    if (along_y) add_room(b, f, pk, 0, qx0, a, qx1, c);
+                    else         add_room(b, f, pk, 0, a, qy0, c, qy1);
+                }
+            }
         }
         int last_peri = b->nrooms;
 
@@ -392,6 +489,12 @@ bool bld_generate(Building *b, uint64_t seed)
             int lc = (b->rooms[lobby].x0 + b->rooms[lobby].x1) / 2;
             for (int i = first_peri; i < last_peri; i++) {
                 Room *rm = &b->rooms[i];
+                /* NOT THE SPINE. An arm's corridor is in this range too, and
+                 * the first pass painted goods in over the top of one --
+                 * which left every room on that arm with no way out, because
+                 * the thing they open onto had stopped being a corridor.
+                 * bld_check caught it as "every room has a way in". */
+                if (rm->kind == RM_CORRIDOR) continue;
                 if (rm->y1 <= ry0) {
                     long d = rm->x0 + rm->x1 - 2 * lc; if (d < 0) d = -d;
                     if (d < bd_n) { bd_n = d; best_n = i; }
@@ -405,34 +508,47 @@ bool bld_generate(Building *b, uint64_t seed)
             int nset = 0;
             for (int i = first_peri; i < last_peri && nset < 2; i++) {
                 if (i == best_n || i == best_s) continue;
+                if (b->rooms[i].kind == RM_CORRIDOR) continue;
                 b->rooms[i].kind = (uint8_t)(nset == 0 ? RM_GOODS : RM_PLANT);
                 nset++;
             }
         } else if (fk == FL_OFFICE || fk == FL_RESIDENTIAL) {
             int per = last_peri - first_peri;
             if (fk == FL_RESIDENTIAL) {
-                for (int i = first_peri; i < last_peri; i++)
+                for (int i = first_peri; i < last_peri; i++) {
+                    if (b->rooms[i].kind == RM_CORRIDOR) continue;
                     b->rooms[i].tenant = (uint8_t)(tenant_next < 250 ? tenant_next++ : 250);
+                }
             } else {
-                int nt = rng_range(&r, 1, per >= 8 ? 3 : 2);
-                int at = first_peri;
+                /* A TENANCY TAKES AN ARM, or a run of one. The spines are
+                 * in this range and are nobody's -- a tenancy that held the
+                 * corridor its neighbours walk down would fail "nobody
+                 * crosses another tenant's space", which is the check that
+                 * has always decided what a lettable room is.
+                 *
+                 * The runs are cut in room ORDER, and room order follows the
+                 * arms, so a tenancy tends to get one limb rather than a
+                 * scatter across four of them. */
+                int lets[BLD_MAX_ROOMS], nlet = 0;
+                for (int i = first_peri; i < last_peri; i++)
+                    if (b->rooms[i].kind != RM_CORRIDOR) lets[nlet++] = i;
+                int nt = rng_range(&r, 1, nlet >= 8 ? 3 : 2);
+                int at = 0;
                 for (int t = 0; t < nt; t++) {
-                    int take = (per - (at - first_peri)) / (nt - t);
+                    int take = (nlet - at) / (nt - t);
                     if (take < 1) take = 1;
                     int id = tenant_next < 250 ? tenant_next++ : 250;
-                    for (int i = at; i < at + take && i < last_peri; i++)
-                        b->rooms[i].tenant = (uint8_t)id;
+                    for (int k = at; k < at + take && k < nlet; k++)
+                        b->rooms[lets[k]].tenant = (uint8_t)id;
                     at += take;
                 }
-                for (int i = at; i < last_peri; i++)
-                    b->rooms[i].tenant = b->rooms[last_peri - 1].tenant;
-                /* Somebody on this floor keeps their own kit in a cupboard of
+                for (int k = at; k < nlet; k++)
+                    b->rooms[lets[k]].tenant = b->rooms[lets[nlet - 1]].tenant;
+                /* Somebody on this deck keeps their own kit in a cupboard of
                  * their own, which is a different cable problem from the
-                 * comms cupboard in the core. */
-                if (rng_range(&r, 0, 99) < 30 && per > 2) {
-                    int pick = first_peri + rng_range(&r, 0, per - 1);
-                    b->rooms[pick].kind = RM_SERVER;
-                }
+                 * comms cupboard in the hub. */
+                if (nlet > 2 && rng_range(&r, 0, 99) < 30)
+                    b->rooms[lets[rng_range(&r, 0, nlet - 1)]].kind = RM_SERVER;
             }
         }
 
@@ -474,26 +590,48 @@ bool bld_generate(Building *b, uint64_t seed)
             if (!add_door(b, f, (rm->x0 + rm->x1) / 2, cy0 + 2, 1)) return false;
         }
 
-        /* Perimeter doors, each onto the leg of the ring it actually touches. */
+        /* ARM DOORS. Every room opens onto the SPINE of its own arm, and
+         * every spine opens onto the ring. Not onto the ring directly: a
+         * room at the end of an arm is the length of the arm from the lifts,
+         * which is the point of building it this way.
+         *
+         * Which spine a room belongs to is not looked up in a list -- it is
+         * the one it is touching, which the cell grid already knows. That is
+         * the same rule the core doors use and it cannot go out of step with
+         * where the rooms actually are. */
         for (int i = first_peri; i < last_peri; i++) {
             Room *rm = &b->rooms[i];
-            bool ok;
-            if (rm->y1 <= ry0) {                 /* north band */
-                int lo = rm->x0 > rx0 ? rm->x0 : rx0;
-                int hi = rm->x1 < rx1 ? rm->x1 : rx1;
-                if (hi <= lo) return false;
-                ok = add_door(b, f, (lo + hi - 1) / 2, ry0 - 1, 1);
-            } else if (rm->y0 >= ry1) {          /* south band */
-                int lo = rm->x0 > rx0 ? rm->x0 : rx0;
-                int hi = rm->x1 < rx1 ? rm->x1 : rx1;
-                if (hi <= lo) return false;
-                ok = add_door(b, f, (lo + hi - 1) / 2, ry1 - 1, 1);
-            } else if (rm->x1 <= rx0) {          /* west band */
-                ok = add_door(b, f, rx0 - 1, (rm->y0 + rm->y1 - 1) / 2, 0);
-            } else {                             /* east band */
-                ok = add_door(b, f, rx1 - 1, (rm->y0 + rm->y1 - 1) / 2, 0);
+            if (rm->kind == RM_CORRIDOR) {
+                /* the spine: one door into the ring, at the end nearest it */
+                bool ok;
+                if (rm->y1 <= ry0)      ok = add_door(b, f, (rm->x0 + rm->x1 - 1) / 2, ry0 - 1, 1);
+                else if (rm->y0 >= ry1) ok = add_door(b, f, (rm->x0 + rm->x1 - 1) / 2, ry1 - 1, 1);
+                else if (rm->x1 <= rx0) ok = add_door(b, f, rx0 - 1, (rm->y0 + rm->y1 - 1) / 2, 0);
+                else                    ok = add_door(b, f, rx1 - 1, (rm->y0 + rm->y1 - 1) / 2, 0);
+                if (!ok) return false;
+                continue;
             }
-            if (!ok) return false;
+            /* a room: walk its own edge until a cell across it is corridor */
+            bool hung = false;
+            for (int yy = rm->y0; yy < rm->y1 && !hung; yy++) {
+                for (int xx = rm->x0; xx < rm->x1 && !hung; xx++) {
+                    if (xx != rm->x0 && xx != rm->x1 - 1 &&
+                        yy != rm->y0 && yy != rm->y1 - 1) continue;
+                    static const int DX[4] = { 1, -1, 0, 0 };
+                    static const int DY[4] = { 0, 0, 1, -1 };
+                    for (int k = 0; k < 4 && !hung; k++) {
+                        int nx = xx + DX[k], ny = yy + DY[k];
+                        uint16_t o = cell_at(b, f, nx, ny);
+                        if (o == BLD_NOROOM || b->rooms[o].kind != RM_CORRIDOR)
+                            continue;
+                        /* add_door takes the lower cell of the pair */
+                        int dx = DX[k] > 0 || DY[k] > 0 ? xx : nx;
+                        int dy = DX[k] > 0 || DY[k] > 0 ? yy : ny;
+                        hung = add_door(b, f, dx, dy, DY[k] != 0 ? 1 : 0);
+                    }
+                }
+            }
+            if (!hung) return false;
         }
     }
     b->ntenants = tenant_next - 1;
@@ -848,12 +986,59 @@ int bld_check(const Building *b, Buf *out, int *fails)
                     cover[ci] = 1;
                 }
         }
-        for (int f = 0; f < b->floors; f++)
+        /* AND WHAT IS NOT A ROOM IS VACUUM, WHICH HAS TO BE OUTSIDE.
+         *
+         * This used to demand that every square metre of the plate be in
+         * exactly one room, and on an office floorplate that is right: the
+         * plate IS the building. A station is a hub with arms and the
+         * corners between them are space, so the honest check is not
+         * "everything is a room" -- it is that every square metre of vacuum
+         * is CONNECTED TO THE OUTSIDE. A sealed void in the middle of the
+         * station, with pressurised rooms all round it, is a hole nobody
+         * can reach and nothing can be built in: a generator bug that would
+         * cost a player nothing to notice and everything to explain.
+         *
+         * Flood the outside in from the plate edge; anything left is a
+         * pocket. */
+        uint8_t *out_side = nom_alloc(ncells);
+        memset(out_side, 0, ncells);
+        int *q = nom_alloc(ncells * sizeof(int));
+        for (int f = 0; f < b->floors; f++) {
+            int qh = 0, qt = 0;
             for (int y = b->fy0[f]; y < b->fy1[f]; y++)
-                for (int x = b->fx0[f]; x < b->fx1[f]; x++)
-                    if (!cover[CIDX(b, f, x, y)])
+                for (int x = b->fx0[f]; x < b->fx1[f]; x++) {
+                    bool edge = (x == b->fx0[f] || x == b->fx1[f] - 1 ||
+                                 y == b->fy0[f] || y == b->fy1[f] - 1);
+                    size_t ci = CIDX(b, f, x, y);
+                    if (!edge || cover[ci] || out_side[ci]) continue;
+                    out_side[ci] = 1;
+                    q[qt++] = (int)(y * b->w + x);
+                }
+            while (qh < qt) {
+                int v = q[qh++], x = v % b->w, y = v / b->w;
+                static const int DX[4] = { 1, -1, 0, 0 };
+                static const int DY[4] = { 0, 0, 1, -1 };
+                for (int k = 0; k < 4; k++) {
+                    int nx = x + DX[k], ny = y + DY[k];
+                    if (nx < b->fx0[f] || nx >= b->fx1[f]) continue;
+                    if (ny < b->fy0[f] || ny >= b->fy1[f]) continue;
+                    size_t ni = CIDX(b, f, nx, ny);
+                    if (cover[ni] || out_side[ni]) continue;
+                    out_side[ni] = 1;
+                    q[qt++] = ny * b->w + nx;
+                }
+            }
+            for (int y = b->fy0[f]; y < b->fy1[f]; y++)
+                for (int x = b->fx0[f]; x < b->fx1[f]; x++) {
+                    size_t ci = CIDX(b, f, x, y);
+                    if (!cover[ci] && !out_side[ci])
                         fail(out, fails, BC_TESSELLATE,
-                             "deck %d (%d,%d) is in no room at all", f, x, y);
+                             "deck %d (%d,%d) is a sealed void: not a room, "
+                             "and no way out to space", f, x, y);
+                }
+        }
+        nom_free(q);
+        nom_free(out_side);
         nom_free(cover);
     }
 

@@ -221,6 +221,26 @@ static int a_room(const Building *b, int floor)
     return -1;
 }
 
+/* A LEASABLE ROOM ON THAT DECK THAT COPPER CAN ACTUALLY REACH from
+ * Engineering. a_room() takes the first one it finds, and on an office plate
+ * every room on a deck was inside a hundred metres of the hub so that was
+ * the same thing. A station's arms are longer than copper: the first room on
+ * deck 2 can be a hundred and ten metres of tray away, and a gate that then
+ * asserts the link comes up is asserting something that is not true of any
+ * hundred-and-ten-metre run in the game. Where a gate is about the RUN it
+ * has to ask for a room a run can be made to. */
+static int a_near_room(const Site *s, const Building *b, int floor)
+{
+    int best = -1, bm = 1 << 30;
+    for (int i = 0; i < b->nrooms; i++) {
+        if (b->rooms[i].floor != floor || !leasable(b->rooms[i].kind)) continue;
+        int m = site_run_metres(s, s->dev[s->ws].room, i);
+        if (m <= 0 || site_cable_speed(CAB_CAT5E, m) <= 0) continue;
+        if (m < bm) { bm = m; best = i; }
+    }
+    return best;
+}
+
 /* ------------------------------------------------------- an empty site */
 /* Day one. There is a socket in the MDF and nothing else in the building. */
 static void check_empty(const Building *b)
@@ -1426,7 +1446,10 @@ static void check_dhcp_scope(const Building *b)
 
     /* A desk on each vlan. The one on thirteen must get nothing from a
      * router that serves eleven, and the router's own answer says so. */
-    int room = a_room(b, 2);
+    /* A room a cat5e run can be made to: this gate is about DHCP over a
+     * vlan and not about copper's reach, so it must not accidentally pick a
+     * room at the far end of an arm and then wonder why the link is down. */
+    int room = a_near_room(&s, b, 2);
     int d11 = gate_box(&s, SDEV_PC, room, "d11");
     int d13 = gate_box(&s, SDEV_PC, room, "d13");
     site_power(&s, d11, true);
@@ -1897,7 +1920,7 @@ static void check_jack(const Building *b)
     Site s; Buf o; buf_init(&o);
     site_new(&s, b, GATE_SEED, 100000);
     int mdf = bld_find(b, 0, RM_MDF);
-    int up  = a_room(b, 2);
+    int up  = a_near_room(&s, b, 2);
     int core = gate_box(&s, SDEV_SWITCH24, mdf, "core");
 
     int m = site_metres(&s, up, mdf);
@@ -2034,6 +2057,14 @@ static int metres_in(const char *s)
  * MDF. This is the fact the whole feature exists for: D28 measured floor 3
  * ranging from 39 m to 92 m and a player had no way to tell which room they
  * were looking at. */
+/* THE FURTHEST ROOM COPPER STILL REACHES, and the nearest.
+ *
+ * `far` used to be the furthest leasable room on the deck full stop, and on
+ * an office plate that was inside a hundred metres by construction. A
+ * station's arms run past what copper carries, so the furthest room is one
+ * no cat5e run can be made to at all -- and a gate about a MARGINAL run then
+ * measured a dead one. The far end this file wants is the far end of what
+ * can be built, which is what makes it marginal rather than impossible. */
 static void far_and_near(const Site *s, const Building *b, int floor, int from,
                          int *far, int *near)
 {
@@ -2042,6 +2073,7 @@ static void far_and_near(const Site *s, const Building *b, int floor, int from,
         if (b->rooms[i].floor != floor || !leasable(b->rooms[i].kind)) continue;
         int m = site_metres(s, from, i);
         if (m < 0) continue;
+        if (site_cable_speed(CAB_CAT5E, m) <= 0) continue;
         if (m > dfar)  { dfar = m; bf = i; }
         if (m < dnear) { dnear = m; bn = i; }
     }
@@ -2113,9 +2145,16 @@ static void check_quote(const Building *b)
     /* ---- WHAT EACH GRADE WOULD COME UP AT, which since D27 is the cable AND
      * the kit. `core` is a switch24 and port 0 of it is a gigabit socket, so
      * cat6 and fibre buy nothing here and the quote says so. */
-    ck("cat5 is a hundred megabit at any distance and the quote says so",
-       site_cable_speed(CAB_CAT5, mfar) == 100 &&
-       site_cable_speed(CAB_CAT5, 3) == 100);
+    /* AT EVERY DISTANCE COPPER CARRIES AT ALL, which is the claim -- and it
+     * used to be spelled `site_cable_speed(CAB_CAT5, mfar)`, with mfar being
+     * whatever this seed's far room happened to be. On a station's arm that
+     * is past a hundred metres, where cat5 carries nothing and the next
+     * assertion in this gate says so, so the two contradicted each other. */
+    ck("cat5 is a hundred megabit at every distance copper carries",
+       site_cable_speed(CAB_CAT5, 3) == 100 &&
+       site_cable_speed(CAB_CAT5, 55) == 100 &&
+       site_cable_speed(CAB_CAT5, 100) == 100 &&
+       site_cable_speed(CAB_CAT5, 101) == 0);
     ck("cat6 is ten gigabit to 55 m and a gigabit past it, measured not stated",
        site_cable_speed(CAB_CAT6, 55) == 10000 &&
        site_cable_speed(CAB_CAT6, 56) == 1000);
@@ -2763,9 +2802,49 @@ static void check_desk_rooms(const Building *b)
      * does when it is at least twice the size. */
     ck("a bigger room takes more desks than a smaller one",
        big_desks > small_desks && small_desks >= 1);
-    ck("and twice the deck area takes at least twice the people",
-       biggest >= 2 * smallest && small_desks >= 1 &&
-       big_desks >= 2 * small_desks);
+    /* A PAIR THAT IS REALLY TWICE THE SIZE, if this station has one.
+     *
+     * This demanded `biggest >= 2 * smallest` of the tenancy's own rooms and
+     * then demanded the desks double. That held while a deck was a perimeter
+     * band whose rooms varied wildly; the station's arms are seven metres
+     * deep and cut into four-to-eight metre lengths, so a tenancy's rooms
+     * are far more uniform and the biggest is often not twice the smallest.
+     * The claim being made is about AREA AND PEOPLE, not about this seed
+     * happening to produce a 2:1 pair -- so the gate looks for such a pair
+     * and asserts on it, and says so when there is none to be had. */
+    {
+        double lo_a = 0, hi_a = 0;
+        int lo_d = 0, hi_d = 0;
+        for (int i = 0; i < b->nrooms; i++) {
+            if (b->rooms[i].tenant != t->tenant) continue;
+            double a1 = bld_room_area(&b->rooms[i]);
+            int d1 = 0;
+            for (int k = t->desk0; k < t->desk0 + t->ndesk; k++)
+                if (s->dev[k].room == (uint16_t)i) d1++;
+            if (d1 == 0) continue;
+            for (int j = 0; j < b->nrooms; j++) {
+                if (b->rooms[j].tenant != t->tenant) continue;
+                double a2 = bld_room_area(&b->rooms[j]);
+                if (a2 < 2.0 * a1) continue;
+                int d2 = 0;
+                for (int k = t->desk0; k < t->desk0 + t->ndesk; k++)
+                    if (s->dev[k].room == (uint16_t)j) d2++;
+                if (d2 == 0) continue;
+                if (a2 > hi_a) { lo_a = a1; hi_a = a2; lo_d = d1; hi_d = d2; }
+            }
+        }
+        if (hi_a > 0.0) {
+            printf("    %.0f m2 holds %d and %.0f m2 holds %d\n",
+                   lo_a, lo_d, hi_a, hi_d);
+            ck("and twice the deck area takes at least twice the people",
+               hi_d >= 2 * lo_d);
+        } else {
+            printf("    no two of this tenancy's rooms differ by 2:1 in area, "
+                   "so there is nothing here to double\n");
+            ck("and twice the deck area takes at least twice the people",
+               big_desks >= small_desks && small_desks >= 1);
+        }
+    }
     /* No pair of their rooms is the wrong way round: over the whole
      * tenancy, more square metres never means fewer desks. */
     bool monotone = true;

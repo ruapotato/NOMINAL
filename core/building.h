@@ -33,8 +33,8 @@
 #define BLD_MAX_FLOORS  16
 #define BLD_MAX_ROOMS   640
 #define BLD_MAX_DOORS   768
-#define BLD_MAX_W       56
-#define BLD_MAX_H       36
+#define BLD_MAX_W       72
+#define BLD_MAX_H       56
 #define BLD_NOROOM      0xFFFFu
 #define BLD_INF         1e18
 

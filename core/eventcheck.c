@@ -949,9 +949,44 @@ static void check_disk(void)
  */
 static void check_copper(void)
 {
-    printf("\nninety-five metres of copper under a deck of desks\n");
+    printf("\ncopper with no margin left in it, under a deck of desks\n");
     Session ses;
-    if (!session_start(&ses, EV_SEED, 200000)) { ck("a session starts", false); return; }
+    /* A STATION WITH A ROOM AT THE RIGHT DISTANCE, and the gate finds one
+     * rather than assuming it.
+     *
+     * This ran on EV_SEED alone and put the switch in `d3.office`, which on
+     * the old office plate happened to be 95 m of tray from the hub. The
+     * station's arms are a different length and the arms of one seed are a
+     * different length from another's: on EV_SEED every open room is either
+     * inside the margin or past what copper carries at all, and there is no
+     * marginal run to be had. What this section needs is a room between
+     * SITE_COPPER_MARGIN_M and the end of copper, so it walks seeds until it
+     * has one -- and prints which, because a gate that quietly chose a
+     * different world is a gate nobody can reproduce. */
+    uint64_t use = 0;
+    int want_room = -1, want_m = -1;
+    for (uint64_t k = 0; k < 40 && want_room < 0; k++) {
+        Session t;
+        if (!session_start(&t, EV_SEED + k, 200000)) continue;
+        /* three decks open is what BUILD below arranges */
+        int open_to = t.b.floors < 4 ? t.b.floors : 4;
+        int hub = t.room;
+        for (int i = 0; i < t.b.nrooms; i++) {
+            const Room *rm = &t.b.rooms[i];
+            if (rm->kind != RM_OFFICE && rm->kind != RM_RESIDENCE &&
+                rm->kind != RM_RETAIL) continue;
+            if (rm->floor >= open_to) continue;
+            int m = site_run_metres(&t.s, hub, i);
+            if (m < SITE_COPPER_MARGIN_M) continue;
+            if (site_cable_speed(CAB_CAT5E, m) <= 0) continue;
+            if (m > want_m) { want_m = m; want_room = i; use = EV_SEED + k; }
+        }
+        session_end(&t);
+    }
+    if (want_room < 0) { ck("a station with a marginal run in it", false); return; }
+    printf("    seed %llu, room #%d, %d m of tray from the hub\n",
+           (unsigned long long)use, want_room, want_m);
+    if (!session_start(&ses, use, 200000)) { ck("a session starts", false); return; }
     Buf o = {0};
 
     static const char *const BUILD[] = {
@@ -962,9 +997,20 @@ static void check_copper(void)
         "spool back", "go goods", "carry files", "go mdf", "drop",
         "go f2.stairwell", "open", "go f3.stairwell", "open",
         "buy switch24 far",
-        /* IN THE OFFICE, WITH THE DESKS. Which is where somebody who has
-         * never had to unbuild one puts it. */
-        "spool back", "go goods", "carry far", "go f3.office", "drop",
+        NULL
+    };
+    /* IN AN OFFICE, WITH THE DESKS -- which is where somebody who has never
+     * had to unbuild one puts it. WHICH office is chosen by the tray, not by
+     * a spelling: this section is about a run with no margin left in it, so
+     * it wants the room that is nearly a hundred metres of tray from the
+     * hub and not "the first office on deck 3".
+     *
+     * It used to be `go d3.office`, and on an office plate that landed 95 m
+     * out. A station's arms are longer than a plate's perimeter band, so the
+     * same words now land 103 m out -- past what copper carries at all, so
+     * the cable was refused and ten assertions about a run degrading failed
+     * because there was no run. */
+    static const char *const BUILD2[] = {
         "go mdf",
         "cable uplink:0 edge:0 cat6",
         "cable edge:1 core:22 cat6",
@@ -980,16 +1026,45 @@ static void check_copper(void)
         "spool back",
         NULL
     };
-    ck("a deck's switch in the office, home-run to the core in copper",
-       script(&ses, BUILD, &o));
+    bool built = script(&ses, BUILD, &o);
+    {
+        char c[64];
+        static const char *const CARRY[] = { "spool back", "go goods",
+                                             "carry far", NULL };
+        built = script(&ses, CARRY, &o) && built;
+        snprintf(c, sizeof c, "go #%d", want_room);
+        say(&ses, c, &o);
+        say(&ses, "drop", &o);
+    }
+    built = script(&ses, BUILD2, &o) && built;
+    ck("a deck's switch in an office, home-run to the hub in copper, with no "
+       "margin left in it",
+       built && want_room >= 0);
 
     int cd = site_dev_by_name(&ses.s, "core");
     int marginal = -1;
     for (int i = 0; i < ses.s.nlink; i++)
         if (ses.s.link[i].a == cd && ses.s.link[i].aport == 0) marginal = i;
-    ck("the building measures that run at ninety-five metres of cat5e",
-       marginal >= 0 && ses.s.link[marginal].metres == 95 &&
-       ses.s.link[marginal].kind == CAB_CAT5E);
+    /* NOT NINETY-FIVE METRES ANY MORE, and not a number at all.
+     *
+     * This read `metres == 95`, which was true of the office plate seed 7008
+     * used to make: a switch dropped in the first office on deck 3 was 95 m
+     * of tray from the core. The station's arms are longer than a plate's
+     * perimeter band, so the same script now measures something else -- and
+     * pinning the gate to the new number would just move the same bug to the
+     * next time the generator changes.
+     *
+     * What this section is ABOUT is a run with no margin left in it: inside
+     * what copper carries, past what it carries comfortably. So that is what
+     * is asserted, against the same two constants site.c prices from. */
+    ck("the building measures that run past what copper has margin for",
+       marginal >= 0 && ses.s.link[marginal].kind == CAB_CAT5E &&
+       ses.s.link[marginal].metres >= SITE_COPPER_MARGIN_M &&
+       site_cable_speed(CAB_CAT5E, ses.s.link[marginal].metres) > 0);
+    printf("    the run from the core to the switch in the office is %d m of "
+           "cat5e, and copper's margin runs out at %d\n",
+           marginal >= 0 ? ses.s.link[marginal].metres : -1,
+           SITE_COPPER_MARGIN_M);
     ck("and it comes up at a gigabit, because it is inside what copper carries",
        net_port_speed(ses.s.net, ses.s.dev[cd].node, 0) == 1000);
 
@@ -1003,12 +1078,17 @@ static void check_copper(void)
         days(&ses, 1, &o);
         for (int t = 0; t < ses.s.ntenant; t++) {
             const SiteTenant *tn = &ses.s.tenant[t];
-            if (tn->moved && ses.b.rooms[tn->room].floor == 3 &&
+            /* ON THE DECK THE SWITCH IS ON, whichever that turned out to
+             * be -- the room was chosen by its distance from the hub above,
+             * not by its deck number, so this cannot say 3 and mean it. */
+            if (tn->moved &&
+                ses.b.rooms[tn->room].floor == ses.b.rooms[want_room].floor &&
                 site_tenant_connected(&ses.s, t) == 0) { t3 = t; break; }
         }
     }
     char scmd[64];
-    say(&ses, "go d3.office", &o);
+    snprintf(scmd, sizeof scmd, "go #%d", want_room);
+    say(&ses, scmd, &o);
     snprintf(scmd, sizeof scmd, "serve %d far cat5e", t3 + 1);
     say(&ses, scmd, &o);
     days(&ses, 1, &o);
@@ -1047,8 +1127,13 @@ static void check_copper(void)
     ck("`load` prints the new speed against the port's own name",
        has(load, "core:0") && has(load, "100Mb"));
     const char *ev = say(&ses, "events", &o);
+    /* THE METRES ARE THE BUILDING'S, so the expected string is built from
+     * what the building said rather than typed. `95 m` was the office
+     * plate's answer for a room this gate no longer names by spelling. */
+    char want_ev[32];
+    snprintf(want_ev, sizeof want_ev, "%d m", want_m);
     ck("and `events` names both ends of the run and how long it is",
-       has(ev, "core:0") && has(ev, "far:23") && has(ev, "95 m"));
+       has(ev, "core:0") && has(ev, "far:23") && has(ev, want_ev));
 
     /* AND IT COSTS THE TENANCY BEHIND IT, which is the whole reason a speed
      * is worth reading. A hundred megabits under a floor of desks is the

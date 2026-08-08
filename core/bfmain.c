@@ -232,10 +232,30 @@ static int bld_mutate(Building *b, int which)
         if (top < 1) return -1;
         b->fx1[top] = (int16_t)(b->fx1[top - 1] + 1);
         return BC_STACK;
-    case BC_TESSELLATE: { /* a metre of floor that is in no room */
-        int r = bld_find(b, 1, RM_OFFICE);
-        if (r < 0) r = bld_find(b, 1, RM_RESIDENCE);
+    case BC_TESSELLATE: { /* A SEALED VOID: a metre with no hull round it and
+                           * no way out to space.
+                           *
+                           * This used to shrink an office by a metre, which
+                           * left a hole in a plate that was filled edge to
+                           * edge. A station's plate is NOT filled -- the
+                           * corners between the arms are vacuum -- so that
+                           * hole now floods to space through the arm's own
+                           * end and the check is right not to complain. The
+                           * decoy has to make the thing the check is really
+                           * about: a void the outside cannot reach. Take a
+                           * bite out of a room on the INSIDE of the ring,
+                           * which is enclosed on all four sides. */
+        int r = -1;
+        for (int i = 0; i < b->nrooms; i++) {
+            const Room *rm = &b->rooms[i];
+            if (rm->floor != 1 || rm->kind != RM_TOILET) continue;
+            if (rm->x1 - rm->x0 < 3 || rm->y1 - rm->y0 < 3) continue;
+            r = i; break;
+        }
         if (r < 0) return -1;
+        /* Shrink the RECTANGLE, because that is what the check reads: the
+         * heads are in the middle of the hub with a stairwell one side and
+         * the lifts the other, so the strip this leaves is enclosed. */
         b->rooms[r].x1 = (int16_t)(b->rooms[r].x1 - 1);
         return BC_TESSELLATE; }
     case BC_ROOMSIZE: { /* a room one metre wide */
@@ -274,8 +294,20 @@ static int bld_mutate(Building *b, int which)
         for (int i = 0; i < b->nrooms && cut < 2; i++) {
             const Room *rm = &b->rooms[i];
             if (rm->floor != 1 || rm->kind != RM_CORRIDOR) continue;
-            if (rm->x1 - rm->x0 <= 2) continue;      /* a north/south leg */
-            int x = (rm->x0 + rm->x1) / 2;
+            /* A LEG OF THE RING, not an arm's spine. The station's arms are
+             * corridors too, and cutting two of those leaves the ring whole
+             * -- which is the honest answer and not a miss, so the decoy has
+             * to cut the ring itself. A ring leg lies against the hub. */
+            if (rm->x0 < b->ring_x0 || rm->x1 > b->ring_x1) continue;
+            if (rm->y0 < b->ring_y0 || rm->y1 > b->ring_y1) continue;
+            if (rm->x1 - rm->x0 <= 6) continue;      /* a north/south leg */
+            /* NOT AT THE MIDDLE. An arm's spine meets the ring at the
+             * centre of the leg and is three metres wide, so a one-metre
+             * cut there is BRIDGED by the arm -- the circulation survives
+             * it, which is a true and rather nice property of building the
+             * station this way and not a miss by the check. Cut near the
+             * corner instead, where nothing spans it. */
+            int x = rm->x0 + 2;
             for (int y = rm->y0; y < rm->y1; y++)
                 b->cell[(((size_t)1 * (size_t)b->h + (size_t)y) * (size_t)b->w) + (size_t)x]
                     = BLD_NOROOM;
